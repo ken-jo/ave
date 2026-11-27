@@ -151,7 +151,7 @@ test.describe("Sandbox approval flow", () => {
     await expect(dock.getByTestId("tool-approval-input")).toHaveText(command);
     await expect(dock.getByTestId(TEST_IDS.allowSessionButton)).toBeDisabled();
     await expect(dock.getByTestId(TEST_IDS.approveButton)).toBeEnabled();
-    await expect(dock.getByTestId(TEST_IDS.denyButton)).toBeFocused();
+    await expect(dock.getByTestId("tool-approval-panel")).toBeFocused();
     await expect(dock.locator('input, textarea, [contenteditable="true"]')).toHaveCount(0);
     await testInfo.attach("explicit-host-approval", { body: await dock.screenshot(), contentType: "image/png" });
   });

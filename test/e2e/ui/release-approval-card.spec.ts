@@ -148,13 +148,7 @@ test.describe("release check — docked approval card", () => {
       await expect(page.getByTestId(testId)).toBeVisible();
     }
 
-    // Focus Reject on arrival so pending composer keystrokes cannot approve accidentally.
-    await expect
-      .poll(async () => page.evaluate(() => {
-        const el = document.activeElement;
-        return !!el?.closest('[data-testid="approval-dock"]');
-      }), { timeout: 5_000 })
-      .toBe(true);
+    await expect(overlay.getByTestId("tool-approval-panel")).toBeFocused({ timeout: 5_000 });
 
     await page.getByTestId(TEST_IDS.approveButton).focus();
 

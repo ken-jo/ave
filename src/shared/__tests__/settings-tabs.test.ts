@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import {
   SETTINGS_PATH_PATTERN,
   SETTINGS_SECTIONS,
@@ -45,11 +46,17 @@ describe("SETTINGS_SECTIONS", () => {
   });
 
   it("spells every id in the kebab-case the path grammar accepts", () => {
-    for (const [tab, sections] of Object.entries(SETTINGS_SECTIONS)) {
-      for (const section of sections) {
-        expect(`${tab}/${section}`).toMatch(pathGrammar);
-        expect(parseSettingsPath(`${tab}/${section}`)).toEqual({ tab, section });
+    const host = process.platform;
+    setProcessPlatform("win32");
+    try {
+      for (const [tab, sections] of Object.entries(SETTINGS_SECTIONS)) {
+        for (const section of sections) {
+          expect(`${tab}/${section}`).toMatch(pathGrammar);
+          expect(parseSettingsPath(`${tab}/${section}`)).toEqual({ tab, section });
+        }
       }
+    } finally {
+      setProcessPlatform(host);
     }
   });
 
@@ -119,6 +126,16 @@ describe("isSettingsSection", () => {
 });
 
 describe("parseSettingsPath", () => {
+  it.each(["darwin", "linux"] as const)("keeps Windows-only destinations unavailable on %s", platform => {
+    const host = process.platform;
+    setProcessPlatform(platform);
+    try {
+      expect(parseSettingsPath("chat/session-indexing")).toBeNull();
+    } finally {
+      setProcessPlatform(host);
+    }
+  });
+
   it("accepts a bare tab and reports no section", () => {
     expect(parseSettingsPath("permissions")).toEqual({ tab: "permissions" });
     expect(parseSettingsPath("remote-surfaces")).toEqual({ tab: "remote-surfaces" });

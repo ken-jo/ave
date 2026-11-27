@@ -58,13 +58,15 @@ async function afterPack(context: Awaited<ReturnType<typeof createPackage>>["con
   if (context.electronPlatformName === "darwin" && macPins === undefined) return packageHook(context);
   if (context.electronPlatformName === "linux") {
     if (process.platform !== "win32") return packageHook(context);
-    // Simulated POSIX packages on Windows need their POSIX file mode represented in the fixture.
-    const { packaged } = linuxLauncher(context.appOutDir);
+    // Simulated POSIX packages on Windows need their POSIX file mode represented in the fixture: the launcher and the
+    // shell filter are the package's two executables.
+    const executables = [linuxLauncher(context.appOutDir).packaged,
+      join(context.appOutDir, "resources", "linux-shell-seccomp", "x64", "apply-seccomp")];
     const fs = require("node:fs") as typeof import("node:fs");
     const lstat = fs.lstatSync;
     fs.lstatSync = ((file: Parameters<typeof lstat>[0], options: Parameters<typeof lstat>[1]) => {
       const entry = lstat(file, options);
-      if (file === packaged && typeof entry?.mode === "number") entry.mode |= 0o111;
+      if (executables.includes(String(file)) && typeof entry?.mode === "number") entry.mode |= 0o111;
       return entry;
     }) as typeof lstat;
     syncBuiltinESMExports();

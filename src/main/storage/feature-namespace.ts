@@ -1,6 +1,6 @@
 /** Private feature storage; Windows boundary creation belongs to boot. */
 import { randomBytes } from "node:crypto";
-import { constants, promises as fs } from "node:fs";
+import { constants, lstatSync, promises as fs } from "node:fs";
 import { join, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import type { FileHandle } from "node:fs/promises";
 import { platform } from "node:process";
@@ -14,7 +14,7 @@ import {
   transientFsLockDelayMs,
 } from "../../lib/transient-fs-lock-retry.js";
 import { sleep } from "../../shared/abortable-deadline.js";
-import { committedDirectorySyncError, guardAtomicWrite, isCommittedAtomicWriteError, PRIVATE_DIR_MODE, PRIVATE_FILE_MODE, replaceUtf8FileAtomicSyncIf } from "../../lib/atomic-file.js";
+import { committedDirectorySyncError, guardAtomicWrite, isCommittedAtomicWriteError, PRIVATE_DIR_MODE, PRIVATE_FILE_MODE, replaceUtf8FileAtomicSyncIf, writeUtf8FileAtomicSync } from "../../lib/atomic-file.js";
 
 const log = createLogger("feature-namespace");
 
@@ -35,7 +35,7 @@ function assertProtectedBoundary(dir: string): string | undefined {
 }
 
 /** Never let recursive creation recreate a missing protected boundary. */
-async function ensureDir(dir: string): Promise<void> {
+async function ensureDir(dir: string, assertStillValid?: () => void): Promise<void> {
   const boundary = assertProtectedBoundary(dir);
   if (boundary) {
     let current = boundary;
@@ -43,12 +43,15 @@ async function ensureDir(dir: string): Promise<void> {
     if (!remainder) return;
     for (const segment of remainder.split(sep)) {
       current = join(current, segment);
+      assertStillValid?.();
       try { await fs.mkdir(current, { mode: PRIVATE_DIR_MODE }); }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
     }
     return;
   }
+  assertStillValid?.();
   await fs.mkdir(dir, { recursive: true, mode: PRIVATE_DIR_MODE });
+  assertStillValid?.();
   try {
     await fs.chmod(dir, PRIVATE_DIR_MODE);
   } catch {
@@ -57,22 +60,25 @@ async function ensureDir(dir: string): Promise<void> {
 }
 
 /** Exclusive slots never chmod a path that another process can replace. */
-async function createExclusiveChild(parent: string, name: string): Promise<void> {
-  await ensureDir(parent);
+async function createExclusiveChild(parent: string, name: string, assertStillValid?: () => void): Promise<void> {
+  await ensureDir(parent, assertStillValid);
   const child = resolve(parent, name);
   const boundary = assertProtectedBoundary(child);
   if (boundary && child.toLowerCase() === boundary.toLowerCase()) {
     throw Object.assign(new Error(`Protected boundary directory "${boundary}" already exists`), { code: "EEXIST" });
   }
   if (platform === "win32") {
+    assertStillValid?.();
     await fs.mkdir(join(parent, name), { mode: PRIVATE_DIR_MODE });
     return;
   }
   const flags = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW;
   const parentHandle = await fs.open(parent, flags);
   try {
+    assertStillValid?.();
     await parentHandle.chmod(PRIVATE_DIR_MODE);
     const child = platform === "linux" ? `/proc/self/fd/${parentHandle.fd}/${name}` : join(parent, name);
+    assertStillValid?.();
     await fs.mkdir(child, { mode: PRIVATE_DIR_MODE });
     // mkdir already grants at most 0700. Opening without following a link verifies the slot without a path-based chmod after its creation.
     const childHandle = await fs.open(child, flags);
@@ -204,13 +210,30 @@ export async function writeJsonAtomic<T>(dir: string, name: string, value: T): P
 }
 
 /** Prepare a private parent directory before the caller's guarded commit. */
-export function preparePrivateFileDirectory(filePath: string): Promise<void> {
-  return ensureDir(dirname(filePath));
+export function preparePrivateFileDirectory(filePath: string, assertStillValid?: () => void): Promise<void> {
+  return ensureDir(dirname(filePath), assertStillValid);
 }
 
+const ATOMIC_COMMIT_REFUSED = Symbol("atomic commit refused");
+
 /** Finish directory preparation, then check authority, commit and deliver the commit receipt without yielding. */
-export async function writeFileAtomicAtPathIf(filePath: string, body: string, canCommit: () => boolean, didCommit?: () => void): Promise<boolean> {
-  await preparePrivateFileDirectory(filePath);
+export async function writeFileAtomicAtPathIf(
+  filePath: string,
+  body: string,
+  canCommit: () => boolean,
+  didCommit?: () => void,
+  requireDirectoryAdmission = false,
+): Promise<boolean> {
+  const assertCanCommit = requireDirectoryAdmission ? () => {
+    if (!canCommit()) throw ATOMIC_COMMIT_REFUSED;
+  } : undefined;
+  try {
+    await preparePrivateFileDirectory(filePath, assertCanCommit);
+    assertCanCommit?.();
+  } catch (error) {
+    if (error === ATOMIC_COMMIT_REFUSED) return false;
+    throw error;
+  }
   let committed: boolean;
   try {
     committed = replaceUtf8FileAtomicSyncIf(filePath, body, canCommit);
@@ -222,6 +245,11 @@ export async function writeFileAtomicAtPathIf(filePath: string, body: string, ca
   return committed;
 }
 
+/** Require admission for directory writes and atomic staging as well as the final replacement. */
+export function writeFileAtomicAtPathAdmitted(filePath: string, body: string, canCommit: () => boolean, onCommitted?: () => void): Promise<boolean> {
+  return writeFileAtomicAtPathIf(filePath, body, canCommit, onCommitted, true);
+}
+
 export interface FeatureNamespaceHandle {
   /** Absolute path to the feature's `~/.ave/<feature>/` directory. Resolved lazily on every access through {@link aveHome}, so the
    * `AVE_HOME` env override (set per-test by e2e fixtures) is always honoured even when the handle is created once at module load. */
@@ -231,9 +259,9 @@ export interface FeatureNamespaceHandle {
   /** Atomically write `<dir>/<name>` (0o700 dir, 0o600 file). */
   writeJson<T>(name: string, value: T): Promise<void>;
   /** Create a 0o700 subdirectory; exclusive creation rejects an existing entry. */
-  childDir(name: string, options?: { exclusive?: boolean }): Promise<string>;
+  childDir(name: string, options?: { exclusive?: boolean; assertStillValid?: () => void }): Promise<string>;
   /** Create an exclusive 0o600 file below existing non-linked namespace directories. The caller owns streaming, sync and close. */
-  createFile(name: string): Promise<FileHandle>;
+  createFile(name: string, assertStillValid?: () => void): Promise<FileHandle>;
 }
 
 /**
@@ -261,7 +289,7 @@ export async function replaceNamespaceFile(namespace: FeatureNamespaceHandle, na
   await syncDirectoryEntry(dirname(join(dir, name)));
 }
 
-async function createNamespaceFile(root: string, name: string): Promise<FileHandle> {
+async function createNamespaceFile(root: string, name: string, assertStillValid?: () => void): Promise<FileHandle> {
   if (!name || isAbsolute(name) || name.includes("\\") || name.includes("\0") || name.includes(":")
     || name.split("/").some((part) => !part || part === "." || part === "..")) {
     throw new Error("Invalid namespace file name");
@@ -280,6 +308,7 @@ async function createNamespaceFile(root: string, name: string): Promise<FileHand
   try {
     const before = directory ? await directory.stat({ bigint: true }) : await fs.lstat(parent, { bigint: true });
     const target = platform === "linux" ? `/proc/self/fd/${directory!.fd}/${name.split("/").at(-1)!}` : path;
+    assertStillValid?.();
     const handle = await fs.open(target, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL
       | (platform === "win32" ? 0 : constants.O_NOFOLLOW), PRIVATE_FILE_MODE);
     try {
@@ -297,23 +326,32 @@ async function createNamespaceFile(root: string, name: string): Promise<FileHand
 
 /** Open a handle to the `~/.ave/<featureId>/` namespace. Ordinary directories materialize on first write; Windows boundaries must already exist. `featureId` is a single path segment
  * (the domain name or plugin id). The directory path is resolved through {@link aveHome} on every operation (never cached) so a module-level handle still respects a later `AVE_HOME` override; matching the lazy-resolution contract documented on `aveHome`. */
-export function openFeatureNamespace(featureId: string): FeatureNamespaceHandle {
+export function openFeatureNamespace(featureId: string, root?: string): FeatureNamespaceHandle & {
+  writeExistingJsonSync(name: string, value: unknown): void;
+} {
   if (!featureId || featureId.includes("/") || featureId.includes("\\") || featureId.includes("..")) {
     throw new Error(`openFeatureNamespace: invalid featureId "${featureId}"`);
   }
-  const resolveDir = (): string => join(aveHome(), featureId);
+  const resolveDir = (): string => join(root ?? aveHome(), featureId);
   return {
     get dir(): string {
       return resolveDir();
     },
     readJson: <T>(name: string, fallback: T) => readJsonFile(join(resolveDir(), name), fallback),
     writeJson: <T>(name: string, value: T) => writeJsonAtomic(resolveDir(), name, value),
+    writeExistingJsonSync: (name, value) => {
+      const dir = resolveDir();
+      if (!name || name === "." || name === ".." || /[\\/:\0]/.test(name)) throw new Error("Invalid namespace file name");
+      assertProtectedBoundary(dir);
+      if (!lstatSync(dir).isDirectory()) throw new Error("Namespace directory is not a plain directory");
+      writeUtf8FileAtomicSync(join(dir, name), `${JSON.stringify(value)}\n`);
+    },
     childDir: async (name: string, options) => {
       const child = join(resolveDir(), name);
-      if (options?.exclusive) await createExclusiveChild(resolveDir(), name);
-      else await ensureDir(child);
+      if (options?.exclusive) await createExclusiveChild(resolveDir(), name, options.assertStillValid);
+      else await ensureDir(child, options?.assertStillValid);
       return child;
     },
-    createFile: (name) => createNamespaceFile(resolveDir(), name),
+    createFile: (name, assertStillValid) => createNamespaceFile(resolveDir(), name, assertStillValid),
   };
 }

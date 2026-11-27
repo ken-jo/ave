@@ -23,7 +23,10 @@ import { VerdictCache } from "../../permissions/reviewer/verdict-cache.js";
 import { buildShellRuleApproval } from "../../permissions/rules/shell-rule-approval.js";
 import { inspectPowerShellCommand } from "../../permissions/rules/powershell-exfiltration.js";
 import { decidePermission } from "../../permissions/decision-pipeline.js";
-import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, setActiveSandboxCapability, setShellSandboxRequestedAtBoot } from "../../permissions/sandbox-capability.js";
+import {
+  __resetActiveSandboxCapabilityForTest, __resetContainerShellSubstrateForTest, __resetSandboxRequestedAtBootForTest, setActiveSandboxCapability,
+  setContainerShellSubstrate, setShellSandboxRequestedAtBoot,
+} from "../../permissions/sandbox-capability.js";
 import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
 import { runWithToolExecutionCwd } from "../execution-context.js";
 import { ToolExecutor } from "../executor.js";
@@ -41,6 +44,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   __resetActiveSandboxCapabilityForTest();
+  __resetContainerShellSubstrateForTest();
   __resetSandboxRequestedAtBootForTest();
   rmSync(dir, { recursive: true, force: true });
   setProcessPlatform(HOST_PLATFORM);
@@ -49,7 +53,10 @@ afterEach(() => {
 async function run(toolName: "bash" | "powershell", command: string, savedGrant?: string, runsSandboxed = false, exactRule?: string, mode: Parameters<PermissionManager["setMode"]>[0] = "allow") {
   __resetActiveSandboxCapabilityForTest();
   setShellSandboxRequestedAtBoot(runsSandboxed);
+  __resetContainerShellSubstrateForTest();
   if (runsSandboxed) setActiveSandboxCapability({ kind: "asrt", confidence: "verified", platform: process.platform, reason: "Controlled shell containment", confines: { filesystem: true, process: true, network: true } });
+  // A sandboxed POSIX shell runs in its container: boot published a live one.
+  if (runsSandboxed && (process.platform === "linux" || process.platform === "darwin")) setContainerShellSubstrate(process.platform, { state: "available" });
   const pm = new PermissionManager(join(dir, "permissions.json"));
   pm.setMode(mode);
   const classify = vi.fn(() => ({ level: "high" as const, reason: "The action needs human confirmation" }));

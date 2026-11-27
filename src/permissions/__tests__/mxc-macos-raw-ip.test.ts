@@ -152,11 +152,11 @@ describe.runIf(process.platform === "darwin")("macOS raw-IP verdict lifetime", (
         return capability;
       };
       const first = await boot();
-      first.setContainerShellSubstrate({ state: "available", rawIpProbe: blocked("measured") as MacRawIpVerdict });
+      first.setContainerShellSubstrate("darwin", { state: "available", rawIpProbe: blocked("measured") as MacRawIpVerdict });
       expect(first.getHostShellExecutionPlan().egressProtocolCoverage).toEqual({ dns: "unknown", rawIp: "blocked" });
       expect(readdirSync(aveHome)).toEqual([]);
       const next = await boot();
-      expect(next.getMacContainerShellInfo()).toBeUndefined();
+      expect(next.getContainerShellInfo()).toBeUndefined();
       expect(next.getHostShellExecutionPlan().egressProtocolCoverage.rawIp).toBe("unknown");
     } finally {
       rmSync(aveHome, { recursive: true, force: true });

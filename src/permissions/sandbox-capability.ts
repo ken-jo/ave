@@ -1,18 +1,19 @@
 // Reviewer relaxation requires live OS isolation; none forbids intent-only downgrades from MEDIUM/HIGH to LOW. Inactive gates publish verified none; audit stores the resulting verdict rather than the full capability (docs/architecture/permission-policy-design.md).
 
-import { acceptMeasuredContainerEgress, assertSandboxMacExtensionPlan, assertSandboxWindowsExtensionPlan, containerEgressProtocolCoverage, egressProtocolCoverageFor } from "../shared/sandbox-capability-info.js";
+import { acceptMeasuredContainerEgress, assertSandboxMacExtensionPlan, assertSandboxWindowsExtensionPlan, containerEgressProtocolCoverage, egressProtocolCoverageFor, posixContainerMeasuredEgress } from "../shared/sandbox-capability-info.js";
 import { isContainerHolderRouteEnabled, isContainerShellRouteEnabled } from "../shared/container-platform.js";
 import { getAveHomePrivacyFailure, isAveHomePrivacyApprovable, isAveHomePrivacyVerifiedAtBoot } from "../shared/ave-home.js";
 import { windowsDenyUnenforceableAtBoot } from "./admitted-obligation.js";
 import { t } from "../i18n/index.js";
 import type { ToolCategory, ToolSource } from "../tools/types.js";
 import type {
+  ContainerRawIpEvidenceKind,
   EgressProtocolCoverage,
   SandboxMacExtensionReason,
   SandboxBootOutcome,
   SandboxConfinement,
-  SandboxMacContainerShellInfo,
-  SandboxMacContainerShellSupport,
+  SandboxContainerShellInfo,
+  SandboxContainerShellSupport,
   SandboxWindowsSubstrateInfo,
   SandboxExtensionPlan,
   SandboxMacExtensionPlan,
@@ -98,7 +99,8 @@ let _windowsSubstrate: SandboxWindowsSubstrateInfo | null = null;
 let _mxcShellCapability: SandboxCapability | undefined;
 export interface WindowsMxcShellEgressMeasurement {
   readonly coverage: EgressProtocolCoverage;
-  readonly evidenceKind: "measured" | "structural";
+  // The shared evidence vocabulary; the Windows probe never measures by arrival.
+  readonly evidenceKind: Exclude<ContainerRawIpEvidenceKind, "arrival">;
 }
 
 let _windowsMxcShellEgressMeasurement: WindowsMxcShellEgressMeasurement | undefined;
@@ -334,14 +336,19 @@ export function getMacHolderCapability(): MacHolderCapability | undefined {
   return _macHolderCapability;
 }
 
-let _containerShellSubstrate: SandboxMacContainerShellSupport | undefined;
+const containerShellSubstrates: Partial<Record<"darwin" | "linux", SandboxContainerShellSupport>> = {};
 const MAC_CONTAINER_SHELL_CAPABILITY: SandboxCapability = Object.freeze({
   kind: "asrt", platform: "darwin", confidence: "verified", reason: "macOS container shell verified",
   confines: Object.freeze({ filesystem: true, process: true, network: true }),
 });
 
-export function setContainerShellSubstrate(support: SandboxMacContainerShellSupport): void {
-  _containerShellSubstrate = Object.freeze({ ...support });
+const LINUX_CONTAINER_SHELL_CAPABILITY: SandboxCapability = Object.freeze({
+  kind: "asrt", platform: "linux", confidence: "verified", reason: "Linux container shell verified",
+  confines: Object.freeze({ filesystem: true, process: true, network: true }),
+});
+
+export function setContainerShellSubstrate(platform: "darwin" | "linux", support: SandboxContainerShellSupport): void {
+  containerShellSubstrates[platform] = Object.freeze({ ...support });
   _sandboxGeneration += 1;
   notifySandboxStatusChanged();
 }
@@ -349,36 +356,35 @@ export function setContainerShellSubstrate(support: SandboxMacContainerShellSupp
 // The capability of a Bash/PowerShell tool command launched in an MXC container, or undefined when that route is not live: MXC carries the shells this boot, the shell sandbox was requested, and the process-wide ASRT runtime (whose proxy the containers reach) is still published.
 export function detectMxcShellCapability(): SandboxCapability | undefined {
   if (!_shellSandboxRequestedAtBoot || _activeCapability?.kind !== "asrt") return undefined;
-  if (process.platform === "darwin" && isContainerShellRouteEnabled("darwin")) {
-    return _containerShellSubstrate?.state === "available" ? MAC_CONTAINER_SHELL_CAPABILITY : undefined;
+  const platform = process.platform;
+  if ((platform === "darwin" || platform === "linux") && isContainerShellRouteEnabled(platform)) {
+    if (containerShellSubstrates[platform]?.state !== "available") return undefined;
+    return platform === "darwin" ? MAC_CONTAINER_SHELL_CAPABILITY : LINUX_CONTAINER_SHELL_CAPABILITY;
   }
   return _mxcShellCapability;
 }
 
 // @internal — test teardown only.
 export function __resetContainerShellSubstrateForTest(): void {
-  if (_containerShellSubstrate !== undefined) _sandboxGeneration += 1;
-  _containerShellSubstrate = undefined;
+  if (containerShellSubstrates.darwin !== undefined || containerShellSubstrates.linux !== undefined) _sandboxGeneration += 1;
+  delete containerShellSubstrates.darwin;
+  delete containerShellSubstrates.linux;
 }
 
-// The macOS container's measured coverage, in the shape `acceptMeasuredContainerEgress` takes: rawIp `blocked` only
-// from an available container's own canary measurement. DNS is not measured there.
-function macContainerMeasuredEgress(support: SandboxMacContainerShellSupport | undefined): EgressProtocolCoverage | undefined {
-  return support?.state === "available" && support.rawIpProbe?.rawIp === "blocked"
-    ? acceptMeasuredContainerEgress("darwin", "seatbelt", { dns: "unknown", rawIp: "blocked" }) : undefined;
-}
-
-// The macOS container's coverage: measured, or the seatbelt backend's unmeasured coverage; unavailable is unknown.
-function macContainerEgressCoverage(support: SandboxMacContainerShellSupport | undefined): EgressProtocolCoverage {
-  if (support?.state !== "available") return egressProtocolCoverageFor("none");
-  return macContainerMeasuredEgress(support) ?? containerEgressProtocolCoverage("seatbelt");
-}
-
-export function getMacContainerShellInfo(): SandboxMacContainerShellInfo | undefined {
-  if (process.platform !== "darwin" || !isShellSandboxRequestedAtBoot() || _containerShellSubstrate === undefined) return undefined;
-  const support = _containerShellSubstrate.state === "available" && detectMxcShellCapability() === undefined
-    ? { state: "unavailable", reason: "shell-start-failed" } as const : _containerShellSubstrate;
-  return { ...support, egressProtocolCoverage: macContainerEgressCoverage(support) };
+export function getContainerShellInfo(): SandboxContainerShellInfo | undefined {
+  const platform = process.platform;
+  if ((platform !== "darwin" && platform !== "linux") || !isShellSandboxRequestedAtBoot()) return undefined;
+  const recorded = containerShellSubstrates[platform];
+  if (recorded === undefined) return undefined;
+  const support = recorded.state === "available" && detectMxcShellCapability() === undefined
+    ? { state: "unavailable", reason: "shell-start-failed" } as const : recorded;
+  // raw IP only from an available container's own measurement; an unavailable container has no coverage.
+  const backend = platform === "darwin" ? "seatbelt" : "bubblewrap";
+  const egressProtocolCoverage = support.state === "available"
+    ? acceptMeasuredContainerEgress(platform, backend, posixContainerMeasuredEgress(support.rawIpProbe))
+      ?? containerEgressProtocolCoverage(backend)
+    : egressProtocolCoverageFor("none");
+  return { ...support, egressProtocolCoverage };
 }
 
 // Windows: no sandbox HOME can be made this run (the container runtime root is unproved, or its HOME parent was replaced).
@@ -478,23 +484,26 @@ export function getHostShellExecutionPlan(
 ): HostShellExecutionPlan {
   const generation = getSandboxGeneration();
   const darwin = process.platform === "darwin";
+  const posix = darwin || process.platform === "linux";
   // A macOS hook runs in a container once the holder route is on: as its own holder, so only when the shell container
   // AND the holder capability are both proven. Otherwise its plan has no substrate (the no-confinement floor), never
-  // the wrap. Before the route is on, a hook stays on the existing sandbox.
+  // the wrap. Before the route is on, a hook stays on the existing sandbox. A Linux hook never selects the container.
   const holderHook = darwin && consumer === "hook" && isContainerHolderRouteEnabled("darwin");
-  const selectsMacContainer = darwin && (consumer === "shell" || holderHook) && isContainerShellRouteEnabled("darwin");
-  const shellContainer = darwin && consumer === "hook" && !holderHook ? undefined : detectMxcShellCapability();
+  const selectsPosixContainer = posix && (consumer === "shell" || holderHook) && isContainerShellRouteEnabled(process.platform);
+  const shellContainer = posix && consumer === "hook" && !holderHook ? undefined : detectMxcShellCapability();
   const mxc = holderHook && _macHolderCapability?.state !== "ready" ? undefined : shellContainer;
   const privacyFailure = getAveHomePrivacyFailure();
-  // Only a live macOS container route carries its own measurement; every other route is unmeasured.
-  const macMeasuredContainerEgress = darwin && mxc !== undefined ? macContainerMeasuredEgress(_containerShellSubstrate) : undefined;
+  // Only a live POSIX container route carries its own measurement; every other route is unmeasured.
+  const recorded = posix && mxc !== undefined ? containerShellSubstrates[process.platform as "darwin" | "linux"] : undefined;
+  const containerRawIpProbe = recorded?.state === "available" ? recorded.rawIpProbe : undefined;
   const plan = buildHostShellExecutionPlan({
     platform: process.platform,
     requestedSandbox: isShellSandboxRequestedAtBoot(),
     activeCapability: mxc ?? detectShellSandboxCapability(),
-    shellSubstrate: mxc !== undefined ? "mxc" : selectsMacContainer ? "none" : "asrt",
+    shellSubstrate: mxc !== undefined ? "mxc" : selectsPosixContainer ? "none" : "asrt",
     measuredContainerEgress: process.platform === "win32" && _windowsSubstrate?.shells === "mxc"
-      ? getWindowsMxcShellEgressMeasurement()?.coverage : macMeasuredContainerEgress,
+      ? getWindowsMxcShellEgressMeasurement()?.coverage
+      : posixContainerMeasuredEgress(containerRawIpProbe),
     executionMode,
     unavailableCauses: _bootOutcome?.causes,
     unavailableSandboxRequiresAsk: privacyFailure !== undefined || windowsDenyUnenforceableAtBoot() !== undefined,

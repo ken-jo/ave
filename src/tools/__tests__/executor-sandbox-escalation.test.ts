@@ -25,7 +25,10 @@ import { PermissionManager } from "../../permissions/permission-manager.js";
 import { ApprovalGate, IPC_APPROVAL_REQUEST, type ApprovalRequest } from "../../permissions/approval-gate.js";
 import { NO_APPROVER_MESSAGE } from "../../permissions/decision-pipeline.js";
 import { attachSandboxBlock, issueFilesystemSandboxBlock } from "../../shared/sandbox-block.js";
-import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, setActiveSandboxCapability, setShellSandboxRequestedAtBoot } from "../../permissions/sandbox-capability.js";
+import {
+  __resetActiveSandboxCapabilityForTest, __resetContainerShellSubstrateForTest, __resetSandboxRequestedAtBootForTest, setActiveSandboxCapability,
+  setContainerShellSubstrate, setShellSandboxRequestedAtBoot,
+} from "../../permissions/sandbox-capability.js";
 import { __resetShellResolverCache } from "../../lib/shell-resolver.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { runWithToolExecutionCwd } from "../execution-context.js";
@@ -83,11 +86,14 @@ beforeEach(() => {
   setShellSandboxRequestedAtBoot(true);
   setActiveSandboxCapability({ kind: "asrt", confidence: "verified", platform: "linux", reason: "Controlled native sandbox transport",
     confines: { filesystem: true, process: true, network: true } });
+  // The Linux shell's sandbox is its container: boot published a live one.
+  setContainerShellSubstrate("linux", { state: "available" });
 });
 afterEach(async () => {
   fsProbe.beforeMkdir = undefined;
   try {
     __resetActiveSandboxCapabilityForTest();
+    __resetContainerShellSubstrateForTest();
     __resetSandboxRequestedAtBootForTest();
     __resetShellResolverCache();
     setProcessPlatform(originalPlatform);

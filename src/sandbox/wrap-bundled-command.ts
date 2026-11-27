@@ -10,7 +10,8 @@ import { createAveHomeBoundarySnapshot } from "../permissions/ave-home-boundary-
 import { buildLauncherEnvironment, prepareSandboxTargetLaunch, type SandboxTargetLaunch } from "../permissions/launcher-environment.js";
 import type { ChildProcess } from "node:child_process";
 import {
-  abandonManagedLaunch, assertManagedChildProcessAdmissionOpen, createManagedRelayResources, observeManagedWindowsRelayExit, recordManagedCleanup,
+  abandonManagedLaunch, assertManagedChildProcessAdmissionOpen, createManagedRelayResources, createManagedResources, ManagedExitUnconfirmedError,
+  observeManagedWindowsRelayExit, observeManagedWindowsRelayTreeExit, recordManagedCleanup,
   releaseManagedResources, type ManagedResources, type RelayBestEffortExit,
 } from "../main/managed-child-processes.js";
 import { randomBytes } from "node:crypto";
@@ -18,6 +19,8 @@ import { chmodSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSyn
 import { join, posix as posixPath, win32 as winPath } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import { t } from "../i18n/index.js";
+import { raceWithTimeout } from "../shared/abortable-deadline.js";
+import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { errorMessage } from "../shared/error-message.js";
 import { isContainerHolderRouteEnabled } from "../shared/container-platform.js";
 import { createLogger } from "../lib/logger.js";
@@ -26,6 +29,7 @@ import {
   spawnConfinedChild,
   spawnMxcConfinedChild,
   type MxcConfinedChildSpawn,
+  type MxcHolderIncarnation,
   type MxcHolderProcess,
   type MxcConfinedChildSpec,
 } from "../permissions/confined-child.js";
@@ -151,6 +155,62 @@ export async function wrapManagedBundledCommand(input: Omit<BundledWrapInput, "s
     homeEnv: sandboxHome.env,
     targetLaunch: wrapped.targetLaunch,
     noteProcessGroup: (pid) => wrapped.egress.noteProcessGroup(pid),
+  };
+}
+
+/** Own a private HOME and command wrap for a Windows launch with no lifetime ACL grants. */
+export function prepareManagedWindowsProcessHome(label: string, treeReceiptLine?: string, onExitConfirmed?: () => void, onExitLost?: () => void) {
+  if (process.platform !== "win32") throw new Error("Managed Windows process HOME requires Windows");
+  const home = treeReceiptLine === undefined ? createSandboxProcessHome() : createSandboxProcessHome("win32", undefined, null);
+  const resources = treeReceiptLine === undefined ? createManagedRelayResources() : createManagedResources();
+  let child: ChildProcess | undefined;
+  let treeExit: Promise<void> | undefined;
+  let directExit: Promise<void> | undefined;
+  let wrapped = false;
+  recordManagedCleanup(resources, home.cleanup, () => wrapped ? cleanupAsrtSandboxAfterCommand() : undefined);
+  return {
+    env: home.env,
+    onWrapped() { wrapped = true; },
+    onSpawn(running: ChildProcess) {
+      child = running;
+      if (treeReceiptLine !== undefined) {
+        treeExit = observeManagedWindowsRelayTreeExit(running, resources, treeReceiptLine).then(receipt => {
+          if (receipt === undefined) {
+            onExitLost?.();
+            throw new ManagedExitUnconfirmedError();
+          }
+          onExitConfirmed?.();
+          return releaseManagedResources(resources, receipt);
+        });
+        void treeExit.catch(() => {});
+        return;
+      }
+      directExit = observeManagedWindowsRelayExit(running, resources).then(receipt => {
+        onExitConfirmed?.();
+        void releaseManagedResources(resources, receipt)
+          .catch((error: unknown) => log.warn(`[${label}] sandbox home release failed: ${errorMessage(error)}`));
+      });
+    },
+    async stop(preAuthenticationMs = 0) {
+      if (child === undefined) {
+        onExitConfirmed?.();
+        return abandonManagedLaunch(resources);
+      }
+      if (treeExit === undefined) {
+        terminateChildBestEffort(child);
+        if (directExit === undefined) throw new ManagedExitUnconfirmedError();
+        return raceWithTimeout(directExit, TOOL_TIMEOUT_POLICY.windowsInferenceTargetExitMs,
+          () => new ManagedExitUnconfirmedError());
+      }
+      try {
+        await raceWithTimeout(treeExit, preAuthenticationMs + TOOL_TIMEOUT_POLICY.windowsInferenceRelayStopMs,
+          () => new ManagedExitUnconfirmedError());
+      } catch (error) {
+        terminateChildBestEffort(child);
+        log.warn(`[${label}] sandbox teardown refused: ${errorMessage(error)}`);
+        throw error;
+      }
+    },
   };
 }
 
@@ -737,15 +797,13 @@ export interface MxcBundledHolderInput {
   readonly signal?: AbortSignal;
 }
 
-export interface MxcBundledHolder {
-  readonly process: MxcHolderProcess;
-  readonly confinement: "windows-mxc" | "macos-seatbelt";
+export type MxcBundledHolder = MxcHolderIncarnation & {
   /** Resolves after verified termination, then removes the staging tree. Rejection means termination is unverified: the
    * holder stays quarantined with its listener, token and staging tree, and a later call retries the cleanup. */
   release(): Promise<void>;
   /** Sticky once a release failed. */
   readonly quarantined: boolean;
-}
+};
 
 /** What a plugin child's planner needs from this adapter: a fresh staging tree. The plugin-child adapter drives row 2
  * itself, so nothing is spawned here. Every refusal comes before the staging tree exists; with no registered
@@ -828,8 +886,9 @@ export async function spawnMxcBundledHolder(input: MxcBundledHolderInput): Promi
   let releasing: Promise<void> | undefined;
   let quarantined = false;
   return {
-    process: spawned.process,
-    confinement: spawned.confinement,
+    ...(spawned.confinement === "windows-mxc"
+      ? { process: spawned.process, confinement: spawned.confinement }
+      : { process: spawned.process, confinement: spawned.confinement }),
     get quarantined() { return quarantined; },
     release: () => releasing ??= spawned.release().then(() => removeHolderStaging(staging.root), (error: unknown) => {
       quarantined = true;

@@ -10,7 +10,7 @@ import { openEgressInvocation } from "../egress-invocations.js";
 import { openEgressRelay } from "../egress-relay/relay.js";
 import {
   __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest,
-  detectMxcShellCapability, getHostShellExecutionPlan, getMacContainerShellInfo, setActiveSandboxCapability, setContainerShellSubstrate, setShellSandboxRequestedAtBoot,
+  detectMxcShellCapability, getHostShellExecutionPlan, getContainerShellInfo, setActiveSandboxCapability, setContainerShellSubstrate, setShellSandboxRequestedAtBoot,
 } from "../sandbox-capability.js";
 
 const platform = process.platform;
@@ -35,25 +35,25 @@ describe.runIf(platform === "darwin" || platform === "linux")("POSIX shell and h
     expect(isContainerShellRouteEnabled(platform)).toBe(true);
     expect(isContainerHolderRouteEnabled(platform)).toBe(false);
     // Unmeasured raw IP is unknown; only this boot's measured verdict publishes blocked, on the plan and in Settings.
-    setContainerShellSubstrate({ state: "available" });
+    setContainerShellSubstrate("darwin", { state: "available" });
     expect(getHostShellExecutionPlan()).toMatchObject({
       identity: "host-shell-execution-plan/v4:darwin:mxc", sandboxed: true,
       egressProtocolCoverage: { dns: "unknown", rawIp: "unknown" },
     });
     const measured = { state: "available", rawIpProbe: { rawIp: "blocked", reason: "blocked", evidenceKind: "measured", reachableTargets: [], udpArrival: "absent" } } as const;
-    setContainerShellSubstrate(measured);
+    setContainerShellSubstrate("darwin", measured);
     expect(getHostShellExecutionPlan().egressProtocolCoverage).toEqual({ dns: "unknown", rawIp: "blocked" });
     expect(getHostShellExecutionPlan("default", "hook").identity).toBe("host-shell-execution-plan/v4:darwin:asrt");
     expect(getHostShellExecutionPlan("default", "hook").egressProtocolCoverage.rawIp).toBe("unknown");
-    expect(getMacContainerShellInfo()).toEqual({ ...measured, egressProtocolCoverage: { dns: "unknown", rawIp: "blocked" } });
-    setContainerShellSubstrate({ state: "available", rawIpProbe: { rawIp: "unknown", reason: "ipv6-unmeasured", reachableTargets: [], udpArrival: "absent" } });
+    expect(getContainerShellInfo()).toEqual({ ...measured, egressProtocolCoverage: { dns: "unknown", rawIp: "blocked" } });
+    setContainerShellSubstrate("darwin", { state: "available", rawIpProbe: { rawIp: "unknown", reason: "ipv6-unmeasured", reachableTargets: [], udpArrival: "absent" } });
     expect(getHostShellExecutionPlan().egressProtocolCoverage.rawIp).toBe("unknown");
     // An explicit host request on a host whose backend is ready keeps ordinary rules and modes (tree: host-shell row).
     expect(getHostShellExecutionPlan("host")).toMatchObject({
       mode: "plain", executionRequest: "host", identity: "host-shell-execution-plan/v4:darwin:explicit-host",
     });
-    setContainerShellSubstrate({ state: "unavailable", reason: "shell-start-failed" });
-    expect(getMacContainerShellInfo()).toEqual({
+    setContainerShellSubstrate("darwin", { state: "unavailable", reason: "shell-start-failed" });
+    expect(getContainerShellInfo()).toEqual({
       state: "unavailable", reason: "shell-start-failed", egressProtocolCoverage: { dns: "unknown", rawIp: "unknown" },
     });
     expect(getHostShellExecutionPlan()).toMatchObject({
@@ -69,28 +69,41 @@ describe.runIf(platform === "darwin" || platform === "linux")("POSIX shell and h
     expect(getHostShellExecutionPlan().fallbackReason).toBe("requested-sandbox-unavailable");
   });
 
-  it.runIf(platform === "linux")("keeps the Linux shell on its wrap and both container routes off", () => {
+  it.runIf(platform === "linux")("requires the Linux container proof for shells and keeps the hook wrap", () => {
     publishWrap();
-    expect(isContainerShellRouteEnabled(platform)).toBe(false);
+    expect(isContainerShellRouteEnabled(platform)).toBe(true);
     expect(isContainerHolderRouteEnabled(platform)).toBe(false);
+    setContainerShellSubstrate("linux", { state: "unavailable", reason: "tools-missing", detail: ["slirp4netns"] });
     expect(detectMxcShellCapability()).toBeUndefined();
-    expect(getHostShellExecutionPlan().identity).toBe("host-shell-execution-plan/v4:linux:asrt");
+    expect(getHostShellExecutionPlan()).toMatchObject({ substrate: "none", requiresExplicitUserApproval: true,
+      fallbackReason: "active-sandbox-not-shell-contained" });
+    expect(getContainerShellInfo()).toMatchObject({ state: "unavailable", reason: "tools-missing", detail: ["slirp4netns"] });
+    expect(getHostShellExecutionPlan("default", "hook").identity).toBe("host-shell-execution-plan/v4:linux:asrt");
+    expect(getContainerShellInfo()?.egressProtocolCoverage).toEqual({ dns: "unknown", rawIp: "unknown" });
+    setContainerShellSubstrate("linux", { state: "available" });
+    expect(getHostShellExecutionPlan()).toMatchObject({ identity: "host-shell-execution-plan/v4:linux:mxc", sandboxed: true,
+      egressProtocolCoverage: { dns: "unknown", rawIp: "unknown" } });
+    setContainerShellSubstrate("linux", { state: "available", rawIpProbe: { rawIp: "unknown", reason: "timeout", reachableTargets: [], udpArrival: "absent" } });
+    expect(getHostShellExecutionPlan().egressProtocolCoverage).toEqual({ dns: "unknown", rawIp: "unknown" });
+    expect(getContainerShellInfo()).toMatchObject({ rawIpProbe: { rawIp: "unknown", reason: "timeout" } });
+    setContainerShellSubstrate("linux", { state: "available",
+      rawIpProbe: { rawIp: "blocked", reason: "blocked", evidenceKind: "arrival", reachableTargets: [], udpArrival: "absent" } });
+    expect(getHostShellExecutionPlan().egressProtocolCoverage).toEqual({ dns: "unknown", rawIp: "blocked" });
+    expect(getContainerShellInfo()?.egressProtocolCoverage).toEqual({ dns: "unknown", rawIp: "blocked" });
+    // The hook wrap is not the container, so it never carries the container's measurement.
+    expect(getHostShellExecutionPlan("default", "hook").egressProtocolCoverage.rawIp).toBe("unknown");
   });
 
-  it("starts the relay only on the enabled macOS shell route", async () => {
+  it("starts the relay on enabled POSIX shell routes", async () => {
     try {
       const sandbox = await initializeAsrtSandbox({ allowedDomains: [] }, async () => false);
       expect(sandbox.isCurrent()).toBe(true);
       const lease = openEgressInvocation({ kind: "shell", toolName: "bash", requiresListener: true,
         toolUseId: undefined, context: { approvalSurface: "unavailable", sessionId: undefined, workspaceRoot: undefined } });
       try {
-        if (platform === "darwin") {
-          expect(egressIdentityStrength("shell", { identity: "listener", attributionKey: lease.token })).toBe("shared");
-          const relay = await openEgressRelay(lease.token);
-          await relay.close();
-        } else {
-          await expect(openEgressRelay(lease.token)).rejects.toThrow("the service is not started");
-        }
+        expect(egressIdentityStrength("shell", { identity: "listener", attributionKey: lease.token })).toBe("shared");
+        const relay = await openEgressRelay(lease.token);
+        await relay.close();
       } finally { lease.release(); }
     } finally {
       await resetAsrtSandbox();
@@ -116,7 +129,7 @@ describe("container route call sites", () => {
   it("shares the request builder between boot verification and the POSIX shell launch", () => {
     // The macOS holder launch ranks its rows with the same function, never a copy.
     expect(callers(/\brankPosixContainerRows\b/u, "src/permissions/mxc-posix.ts"))
-      .toEqual(["src/permissions/mxc-macos.ts", "src/permissions/seatbelt-holder-launch.ts"]);
+      .toEqual(["src/permissions/mxc-linux.ts", "src/permissions/mxc-macos.ts", "src/permissions/seatbelt-holder-launch.ts", "src/tools/mxc-posix-shell-launch.ts"]);
     expect(callers(/\bmxc-macos\.[jt]s\b|\bdetectHostMxcMacShellSupport\b/u, "src/permissions/mxc-macos.ts"))
       .toEqual(["src/boot/steps/sandbox-init.ts", "src/permissions/mxc-shell-supervisor-service.ts", "src/tools/mxc-posix-shell-launch.ts"]);
     expect(callers(/\bsetContainerShellSubstrate\s*\(/u, "src/permissions/sandbox-capability.ts"))

@@ -12,6 +12,7 @@ import {
 } from "./seeded-electron.js";
 import { TEST_IDS } from "../../../src/shared/test-ids.js";
 import { writePermissionSettingsFixture } from "../../../src/__tests__/support/permission-settings-fixture.js";
+import { waitForApprovalArming } from "./approval-keyboard.js";
 
 // One host terminal in a workspace pane, with its own pane chat, driven as a person drives it: real keys into a real shell, a real window
 // that is resized, and one approved agent command. The loopback endpoint only supplies the model's tool request and records what the model
@@ -337,7 +338,7 @@ if (process.platform !== "win32") test("a host terminal keeps its output, focus,
     await expect.poll(async () => (await probe(view)).viewportY).toBe(bottom);
     await expect(pane.getByTestId("terminal-sticky-command")).toContainText("seq 1 120");
 
-    // The card shows the exact command above its choices, and the accept key answers it from where the user is.
+    // The card shows the exact command above its choices and handles the accept shortcut locally.
     await view.getByTestId(`sidebar-session-${sideId}`).click();
     const composer = paneChat.getByTestId("composer-textarea");
     // Typed at a person's pace: the agent may type into the terminal only once the user's own keys there have been quiet for a moment.
@@ -361,10 +362,14 @@ if (process.platform !== "win32") test("a host terminal keeps its output, focus,
     expect(cardGeometry).toEqual({ commandInside: true, commandAboveChoices: true, confirmInside: true });
     await expect(card.getByTestId("user-owned-surface-accept-keys")).toHaveText(process.platform === "darwin" ? "⌘↵" : "Ctrl+↵");
     await expect(view.getByTestId("permission-review-status-card").last()).toHaveText("Approval requiredterminal_run · Built-in");
-    // From the composer, where the user's cursor is after asking, without touching the card, it confirms the selected choice.
-    await composer.focus();
+    await waitForApprovalArming();
     await expect(composer).toBeFocused();
-    await composer.press(acceptKey);
+    await view.keyboard.press(acceptKey);
+    await expect(card).toBeVisible();
+    const confirm = card.getByTestId("user-owned-surface-confirm");
+    await confirm.focus();
+    await expect(confirm).toBeFocused();
+    await view.keyboard.press(acceptKey);
     await expect(card).toHaveCount(0, { timeout: 15_000 });
 
     // At a width where the chat floats over the terminal, the agent's strip and its two controls are on screen in the chat.

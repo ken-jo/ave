@@ -59,6 +59,12 @@ export const TOOL_TIMEOUT_POLICY = {
   mxcMacHolderSweepMs: 2_000,
   // At a macOS holder's stop, the tail of its output may drain this long before Ave lets go of its streams.
   mxcMacHolderOutputDrainMs: 1_000,
+  mxcLinuxShellProbeMs: 5_000,
+  mxcLinuxShellProbeConnectionMs: 750,
+  mxcLinuxShellStopMs: 2_000,
+  // The boot canary's raw-IP probe: each target's deadline, and the bound on the whole prober inside the container.
+  mxcLinuxRawIpTargetMs: 3_000,
+  mxcLinuxRawIpProbeMs: 12_000,
   // A holder's own start must report its ready-frame evidence inside this bound, from supervisor start, or it is refused.
   mxcExtensionReadinessMs: 30_000,
   // Share the exact workload-identity handshake budget with the protocol.
@@ -95,10 +101,16 @@ export const TOOL_TIMEOUT_POLICY = {
   windowsSrtPluginSetupBudgetMs: 30_000,
   // A sandboxed Windows plugin child starts and announces its listener.
   windowsPluginChildConnectMs: 30_000,
-  // The child listener outlasts the host's announce and connect deadline.
+  // Spacing between independent container confirmations that ambiguous shell completions trigger; it doubles up to the maximum while no loss is confirmed.
+  windowsContainerConfirmationMinIntervalMs: 60_000,
+  windowsContainerConfirmationMaxIntervalMs: 900_000,
   windowsInferenceChildConnectMs: 30_000,
+  // The child listener outlasts the host's announce and connect deadline.
   windowsInferenceChildAcceptMs: 60_000,
   windowsInferenceChildHandshakeMs: 10_000,
+  windowsInferenceTargetExitMs: 5_000,
+  windowsInferenceRelayStopMs: 10_000,
+  windowsMemoryBuildCancelMs: 10_000,
   pluginStartupDefaultMs: 10_000,
   pluginStartupMaxMs: 60_000,
   // Allow retiring generations to drain existing calls before shutdown aborts their scope.

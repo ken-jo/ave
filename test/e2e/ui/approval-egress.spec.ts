@@ -38,7 +38,7 @@ for (const locale of ["en", "ko"] as const) {
       await expect(dock.getByTestId(TEST_IDS.denyButton)).toHaveText(t("toolApprovalDialog.decisionDeny"));
       await expect(dock.getByTestId(TEST_IDS.allowSessionButton)).toHaveText(t("toolApprovalDialog.decisionAllowSession"));
       await expect(dock.getByTestId(TEST_IDS.approveButton)).toHaveText(t("toolApprovalDialog.allowOnce"));
-      await expect(dock.getByTestId(TEST_IDS.denyButton)).toBeFocused();
+      await expect(dock).toBeFocused();
       // Three decisions and their two dropdown triggers.
       await expect(dock.getByTestId("egress-approval-card").locator("button")).toHaveCount(5);
       await expect(dock.locator('input, textarea, [contenteditable="true"]')).toHaveCount(0);

@@ -6,7 +6,7 @@ import { networkInterfaces, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ContainerRequest } from "@microsoft/mxc-sdk/v1";
 import type { HostResources } from "../main/host-resources.js";
-import type { MacRawIpVerdict, MxcRawIpUdpArrival, SandboxMacContainerShellSupport, SandboxMacContainerShellUnavailableReason } from "../shared/sandbox-capability-info.js";
+import type { MacRawIpVerdict, MxcRawIpUdpArrival, SandboxContainerShellSupport, SandboxContainerShellUnavailableReason } from "../shared/sandbox-capability-info.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { INVOCATION_PROXY_REFUSED_STATUS, openInvocationProxyListener } from "./egress-invocation-listener.js";
 import pins from "./mxc-launcher-pins.json" with { type: "json" };
@@ -116,8 +116,8 @@ interface MacShellProbeDependencies {
   canary(root: string): Promise<CanaryResult>;
 }
 
-async function detectMxcMacShellSupport(deps: MacShellProbeDependencies): Promise<SandboxMacContainerShellSupport> {
-  const unavailable = (reason: SandboxMacContainerShellUnavailableReason): SandboxMacContainerShellSupport =>
+async function detectMxcMacShellSupport(deps: MacShellProbeDependencies): Promise<SandboxContainerShellSupport> {
+  const unavailable = (reason: SandboxContainerShellUnavailableReason): SandboxContainerShellSupport =>
     ({ state: "unavailable", reason });
   if (deps.arch !== "arm64") return unavailable("unsupported-arch");
   if (!deps.libraryExists()) return unavailable("binary-missing");
@@ -131,7 +131,7 @@ async function detectMxcMacShellSupport(deps: MacShellProbeDependencies): Promis
   return result.verdict === "available" ? { state: "available", rawIpProbe: result.rawIpProbe } : unavailable(result.verdict);
 }
 
-export function detectHostMxcMacShellSupport(resources: HostResources, signal?: AbortSignal): Promise<SandboxMacContainerShellSupport> {
+export function detectHostMxcMacShellSupport(resources: HostResources, signal?: AbortSignal): Promise<SandboxContainerShellSupport> {
   signal?.throwIfAborted();
   const location = mxcShellSupervisorLocation(resources);
   return detectMxcMacShellSupport({

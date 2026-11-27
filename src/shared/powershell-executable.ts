@@ -4,6 +4,7 @@ import { win32SystemBinary } from "./windows-system-path.js";
 export interface TrustedPowerShellExecutable {
   readonly executable: string;
   readonly kind: "pwsh" | "windows-powershell";
+  readonly assertStillValid?: () => void;
 }
 
 const POSIX_INSTALLATIONS: Readonly<Partial<Record<NodeJS.Platform, readonly string[]>>> = {

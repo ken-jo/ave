@@ -34,14 +34,14 @@ describe("native extension spawn callers", () => {
 
   it("the sanctioned production caller passes its admission at the spawn boundary", () => {
     const text = readFileSync("src/permissions/confined-child.ts", "utf8");
-    const call = text.slice(text.indexOf("await spawnMxcExtensionProcess(request, {"));
-    expect(call.length).toBeGreaterThan(0);
-    const options = call.slice(0, call.indexOf("\n    });"));
-    expect(options).toContain("beforeSpawn: () => {");
-    expect(options).toContain("consumeMxcExtensionAdmission(admission,");
-    // Nesting is asserted at the spawn boundary through the shared recheck, which both platform arms run.
-    expect(options).toContain('recheck("before native creation");');
-    const recheck = text.slice(text.indexOf("const recheck = (when: string): void => {"));
+    const call = text.split("await spawnMxcExtensionProcess(request, {")[1];
+    const boundary = call?.split("beforeSpawn: () => {")[1]?.split("watchRelease:")[0];
+    expect(boundary).toMatch(/assertNesting\(\);[\s\S]*consumeMxcExtensionAdmission\(admission,/u);
+    // The macOS arm asserts nesting at its launch gate through the shared recheck.
+    const recheckAt = text.indexOf("const recheck = (when: string): void => {");
+    expect(recheckAt).toBeGreaterThan(-1);
+    const recheck = text.slice(recheckAt);
     expect(recheck.slice(0, recheck.indexOf("\n    };"))).toContain("assertNesting();");
+    expect(text.slice(text.indexOf("starting = startSeatbeltHolder(launch, {"))).toContain('recheck("before native creation");');
   });
 });

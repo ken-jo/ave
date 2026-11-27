@@ -25,6 +25,7 @@ import {
 const TREE: Record<string, readonly string[]> = { "/": ["users", "workspace", "tmp"], "/users": ["example"], "/users/example": [".ssh", ".ave", "notes"] };
 const lookups: PosixPolicyLookups = {
   home: "/users/example", foldsCase: true, canonical: path => path, exists: () => true, children: path => TREE[path] ?? [],
+  readable: () => true, directoryIdentity: () => undefined,
 };
 const AVE_HOME = "/users/example/.ave";
 const FLOORS: readonly PolicyFloorRow[] = [

@@ -1,0 +1,279 @@
+import assert from 'node:assert/strict';
+import { createServer, type Server } from 'node:http';
+import { mkdtemp, mkdir, open, readFile, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { SettingsService } from '../../../data/settings-store.js';
+import { MEMORY_EMBEDDING_CONSENT_VERSION, type MemoryEmbeddingConfig } from '../../../shared/memory-embedding-config.js';
+import type { MemoryMapProgress } from '../../../shared/memory-map.js';
+import type { FeatureNamespaceHandle } from '../../storage/feature-namespace.js';
+import { ProviderEmbeddings } from '../provider-embeddings-win32.js';
+import { buildGraph } from '../graph.js';
+import { createMemoryProviderEgress } from '../provider-egress.js';
+import type { MemoryWorkerRunner } from '../worker-client-win32.js';
+import { MemoryMapHost } from '../host-win32.js';
+import { BuildRegistry, type MemoryWorkerExit } from '../build-registry-win32.js';
+import { deferred } from '../../../__tests__/support/deferred.js';
+
+const cleanup: (() => Promise<unknown>)[] = [];
+afterEach(async () => { vi.restoreAllMocks(); vi.unstubAllGlobals(); for (const close of cleanup.splice(0).reverse()) await close(); });
+async function fixture(allowedDomains = ['127.0.0.1'], holdProjection?: (signal: AbortSignal, exit?: MemoryWorkerExit) => Promise<void>) {
+  const requests: { endpoint?: string; model: string; input: string[] }[] = [];
+  let dimensions = 3; let inconsistent = false; let fail = false; let responseWait: Promise<void> | undefined;
+  const key = 'fixture-private-credential';
+  const server: Server = createServer(async (request, response) => {
+    let body = ''; for await (const chunk of request) body += chunk;
+    const parsed = JSON.parse(body) as { model: string; input: string[] };
+    requests.push({ ...parsed, endpoint: request.url }); await responseWait;
+    if (fail) { response.writeHead(400, { 'content-type': 'application/json' }); response.end(JSON.stringify({ error: { message: key, type: 'invalid_request_error' } })); return; }
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ object: 'list', model: parsed.model, data: parsed.input.map((_, index) => ({ object: 'embedding', index, embedding: Array.from({ length: inconsistent && index ? dimensions + 1 : dimensions }, (_, i) => i === 0 ? 2 : 0) })), usage: { prompt_tokens: 1, total_tokens: 1 } }));
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  cleanup.push(() => new Promise<void>((resolve, reject) => { server.close(error => error ? reject(error) : resolve()); server.closeAllConnections(); }));
+  const address = server.address(); if (!address || typeof address === 'string') throw new Error('Missing server address');
+  const baseUrl = `http://127.0.0.1:${address.port}/v1`;
+  let config: MemoryEmbeddingConfig = { source: 'provider', providerId: 'openai-compatible', modelId: 'embed-a' };
+  const consent = () => {
+    const { modelId } = config;
+    assert.ok(modelId !== undefined);
+    config.consent = {
+      version: MEMORY_EMBEDDING_CONSENT_VERSION, providerId: 'openai-compatible', modelId,
+      endpointId: provider.namespace().modelRevision, timestamp: new Date().toISOString(),
+    };
+  };
+  const llm = { vendors: { 'openai-compatible': { baseUrl }, claude: { baseUrl } }, modelListCache: { saved: { vendor: 'openai-compatible', baseUrl, endpoint: `${baseUrl}/models`, models: ['embed-a', 'embed-b'], modelEntries: [{ id: 'embed-a', outputModalities: ['embedding'] }, { id: 'embed-b', outputModalities: ['embedding'] }], fetchedAt: new Date().toISOString() } } };
+  const settings = { get: (name: string) => name === 'memoryEmbedding' ? config : name === 'llm' ? llm : {}, hasStoredSecret: vi.fn(async (name: string) => name === 'llm.apiKey.openai-compatible' || name === 'llm.apiKey.claude'), getSecret: vi.fn(async () => key) } as unknown as SettingsService;
+  const nativeFetch = globalThis.fetch;
+  const chokepoint = vi.fn<typeof fetch>((input, init) => nativeFetch(input, init));
+  vi.stubGlobal('fetch', vi.fn(() => { throw new Error('Ambient fetch is forbidden'); }));
+  const project = vi.fn(buildGraph);
+  const worker: MemoryWorkerRunner = async <T>(folder: string, task: Parameters<MemoryWorkerRunner>[1], signal: AbortSignal, report: Parameters<MemoryWorkerRunner>[3], _admission: Parameters<MemoryWorkerRunner>[4], beginWorker: Parameters<MemoryWorkerRunner>[5]) => {
+    expect(folder).toBe(''); expect(task.kind).toBe('project'); signal.throwIfAborted();
+    if (task.kind !== 'project') throw new Error('Unexpected worker task');
+    const exit = beginWorker?.('projection');
+    try {
+      await holdProjection?.(signal, exit);
+      return await project(task.input, { embed: async () => { throw new Error('Unexpected local embedding'); }, dispose: async () => {} }, report ?? (() => {})) as T;
+    } finally { exit?.confirmed(); }
+  };
+  const audit = vi.fn();
+  const provider = new ProviderEmbeddings(settings, createMemoryProviderEgress(chokepoint, allowedDomains, audit), worker);
+  const root = await mkdtemp(join(tmpdir(), 'memory-provider-')); cleanup.push(() => rm(root, { recursive: true, force: true }));
+  const namespace: FeatureNamespaceHandle = { dir: root, readJson: async (_, fallback) => { try { return JSON.parse(await readFile(join(root, 'snapshot.json'), 'utf8')); } catch { return fallback; } }, writeJson: async (name, value) => writeFile(join(root, name), JSON.stringify(value)), childDir: async name => { await mkdir(join(root, name), { recursive: true }); return join(root, name); }, createFile: name => open(join(root, name), 'wx') };
+  const catalog = { authorizationScopeId: 'scope', excluded: 0, records: Array.from({ length: 2 }, (_, i) => ({ memoryId: `id-${i}`, contentRevision: `r-${i}`, title: `Title ${i}`, text: `Private memory ${i}`, sourceKind: 'user' as const })) };
+  const progress: MemoryMapProgress[] = [];
+  const registry = new BuildRegistry();
+  const host = new MemoryMapHost({ registry, namespace, provider, refreshLocalAdmission: async () => { throw new Error('Local runtime must not load'); }, validatedModelPath: async () => { throw new Error('Local model must not load'); }, onProgress: value => progress.push(value) });
+  return { changeEndpoint: () => {
+    const next = `${baseUrl}/alternate`;
+    llm.vendors['openai-compatible'].baseUrl = next;
+    llm.modelListCache.saved.baseUrl = next;
+    llm.modelListCache.saved.endpoint = `${next}/models`;
+  }, pauseResponse: () => { let release!: () => void; responseWait = new Promise<void>(resolve => { release = resolve; }); return release; }, provider, host, registry, settings, audit, namespace, catalog, requests, chokepoint, progress, project, key, consent, get config() { return config; }, set config(value) { config = value; }, set dimensions(value: number) { dimensions = value; }, set inconsistent(value: boolean) { inconsistent = value; }, set fail(value: boolean) { fail = value; } };
+}
+describe('provider memory embeddings', () => {
+  it('keeps provider projection attached to the build owner until thread exit', async () => {
+    const projected = deferred<MemoryWorkerExit>();
+    const exited = deferred<void>();
+    const f = await fixture(undefined, async (signal, exit) => {
+      assert.ok(exit);
+      projected.resolve(exit);
+      await exited.promise;
+      signal.throwIfAborted();
+    });
+    f.consent();
+    const owner = f.registry.register('provider-build', { scopeId: f.catalog.authorizationScopeId, assertAdmitted: () => {} });
+    const build = f.host.build(() => f.catalog, owner).catch((error: unknown) => error);
+    try {
+      const thread = await Promise.race([projected.promise, build.then(() => { throw new Error('Projection did not start'); })]);
+      const replied = vi.fn();
+      const cancel = f.registry.cancel(owner.id).then(replied);
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(replied).not.toHaveBeenCalled();
+      thread.confirmed();
+      exited.resolve();
+      await cancel;
+      expect(replied).toHaveBeenCalledExactlyOnceWith(null);
+      expect(await build).toMatchObject({ code: 'request-stale' });
+      expect(await f.host.get(() => f.catalog)).toBeNull();
+    } finally {
+      exited.resolve();
+      await build;
+    }
+  });
+
+  it('withholds provider batch progress when consent is withdrawn after embedding', async () => {
+    const f = await fixture();
+    f.consent();
+    const embed = f.provider.embed.bind(f.provider);
+    vi.spyOn(f.provider, 'embed').mockImplementation(async (...args) => {
+      const vectors = await embed(...args);
+      f.config.consent = undefined;
+      return vectors;
+    });
+    await expect(f.host.build(() => f.catalog)).rejects.toMatchObject({ code: 'provider-consent-required' });
+    expect(f.progress).toEqual([]);
+  });
+
+  it('checks the same provider consent again before delivering a completed answer', async () => {
+    const f = await fixture();
+    f.consent();
+    const snapshot = await f.host.build(() => f.catalog);
+    const embed = f.provider.embed.bind(f.provider);
+    vi.spyOn(f.provider, 'embed').mockImplementation(async (...args) => {
+      const vectors = await embed(...args);
+      if (f.config.consent) f.config.consent = { ...f.config.consent, timestamp: '2020-01-01T00:00:00.000Z' };
+      return vectors;
+    });
+    await expect(f.host.retrieve(() => f.catalog, { question: 'Question', filters: {}, snapshotId: snapshot.snapshotId, queryId: 'q' }))
+      .rejects.toMatchObject({ code: 'provider-consent-required' });
+  });
+
+  it('denies a consented provider absent from the host allow-list before sending credentials or text', async () => {
+    const f = await fixture([]);
+    f.consent();
+    await expect(f.provider.embed(f.provider.namespace(), ['Private'], new AbortController().signal))
+      .rejects.toMatchObject({ code: 'provider-route-ineligible' });
+    expect(f.chokepoint).not.toHaveBeenCalled();
+    expect(f.requests).toEqual([]);
+  });
+  it('keeps the transport boundary deny-by-default for unlisted hosts and public cleartext', async () => {
+    const transport = vi.fn();
+    const audit = vi.fn();
+    const egress = createMemoryProviderEgress(transport, ['embeddings.example.com'], audit);
+    for (const [target, reason] of [
+      ['https://sub.embeddings.example.com/v1', 'not-allowlisted'],
+      ['http://embeddings.example.com/v1', 'non-https'],
+    ] as const) {
+      await expect(egress.send(new URL(target), { method: 'POST', body: 'Private' }, () => {}))
+        .rejects.toMatchObject({ code: 'provider-unavailable' });
+      expect(audit).toHaveBeenLastCalledWith({ allowed: false, reason });
+    }
+    expect(transport).not.toHaveBeenCalled();
+  });
+  it('refuses every send without matching current versioned consent', async () => {
+    const f = await fixture(); const selected = f.provider.namespace();
+    f.consent();
+    const valid = f.config.consent;
+    if (!valid) throw new Error('Missing fixture consent');
+    for (const consent of [undefined, { ...valid, providerId: 'other' }, { ...valid, modelId: 'other' }, { ...valid, version: 1 }]) {
+      f.config.consent = consent as MemoryEmbeddingConfig['consent'];
+      await expect(f.provider.embed(selected, ['Private'], new AbortController().signal)).rejects.toThrow('provider-consent-required');
+    }
+    expect(f.chokepoint).not.toHaveBeenCalled(); expect(f.settings.getSecret).not.toHaveBeenCalled(); expect(f.requests).toEqual([]);
+  });
+  it('sends only after consent through the host transport and uses the same namespace for questions', async () => {
+    const f = await fixture(); f.consent(); const snapshot = await f.host.build(() => f.catalog);
+    expect(snapshot.model.namespace).toEqual({ ...f.provider.namespace(), dimensions: 3 });
+    const answer = await f.host.retrieve(() => f.catalog, { question: 'Question', filters: {}, snapshotId: snapshot.snapshotId, queryId: 'q' });
+    expect(answer.matches).toHaveLength(2); expect(f.requests.map(value => value.model)).toEqual(['embed-a', 'embed-a']); expect(f.requests[1].input).toEqual(['Question']); expect(f.chokepoint).toHaveBeenCalledTimes(2);
+    const restarted = new MemoryMapHost({ namespace: f.namespace, provider: f.provider, refreshLocalAdmission: async () => { throw new Error('Local runtime must not load'); }, validatedModelPath: async () => '' });
+    expect(await restarted.get(() => f.catalog)).toEqual(snapshot);
+    expect(JSON.stringify(f.progress)).not.toMatch(/Private|Title|memoryId/);
+  });
+  it('requires renewed consent and discards equal-dimension vectors when the endpoint changes', async () => {
+    const f = await fixture();
+    f.consent();
+    const original = await f.host.build(() => f.catalog);
+    f.changeEndpoint();
+    expect(await f.host.get(() => f.catalog)).toBeNull();
+    await expect(f.host.build(() => f.catalog)).rejects.toMatchObject({ code: 'provider-consent-required' });
+    expect(f.requests).toHaveLength(1);
+    f.consent();
+    const rebuilt = await f.host.build(() => f.catalog);
+    expect(rebuilt.model.namespace.dimensions).toBe(original.model.namespace.dimensions);
+    expect(rebuilt.model.namespace.modelRevision).not.toBe(original.model.namespace.modelRevision);
+    expect(f.requests.map(request => request.endpoint)).toEqual(['/v1/embeddings', '/v1/alternate/embeddings']);
+  });
+  it('invalidates saved snapshot and vectors on a provider model switch', async () => {
+    const f = await fixture(); f.consent(); await f.host.build(() => f.catalog);
+    f.config.modelId = 'embed-b'; f.consent();
+    expect(await f.host.get(() => f.catalog)).toBeNull();
+    expect(await f.namespace.readJson('snapshot.json', {})).toEqual({ cache: {}, snapshot: null });
+    const next = await f.host.build(() => f.catalog); expect(next.model.namespace.modelId).toBe('embed-b'); expect(f.requests[1].model).toBe('embed-b');
+    f.config.source = 'local'; expect(await f.host.get(() => f.catalog)).toBeNull();
+  });
+  it('does not reuse a saved namespace with a different preprocessing revision', async () => {
+    const f = await fixture(); f.consent(); await f.host.build(() => f.catalog);
+    const saved = await f.namespace.readJson<{ snapshot: { model: { namespace: { preprocessingRevision: string } } }; cache: Record<string, number[]> }>('snapshot.json', null as never);
+    saved.snapshot.model.namespace.preprocessingRevision = 'old-preprocessing'; await f.namespace.writeJson('snapshot.json', saved);
+    const rebuilt = await f.host.build(() => f.catalog);
+    expect(rebuilt.model.namespace.preprocessingRevision).toBe('text-l2-v1'); expect(f.requests).toHaveLength(2);
+  });
+  it.each(['deleted memory', 'revoked scope'])('blocks later batches after a %s while the first is in flight', async change => {
+    const f = await fixture();
+    f.consent();
+    const firstRecord = f.catalog.records[0];
+    if (!firstRecord) throw new Error('Missing fixture record');
+    f.catalog.records = Array.from({ length: 33 }, (_, index) => ({
+      ...firstRecord, memoryId: `id-${String(index).padStart(2, '0')}`, text: `Private memory ${index}`,
+    }));
+    let authorized = true;
+    const release = f.pauseResponse();
+    const pending = f.host.build(() => {
+      if (!authorized) return { authorizationScopeId: 'revoked', records: [], excluded: 0 };
+      return f.catalog;
+    }).catch((error: unknown) => error);
+    try {
+      await vi.waitFor(() => expect(f.requests).toHaveLength(1));
+      if (change === 'deleted memory') f.catalog.records = f.catalog.records.filter(value => value.memoryId !== 'id-18');
+      else authorized = false;
+      release();
+      expect(await pending).toMatchObject({ code: 'request-stale' });
+      expect(f.requests.flatMap(value => value.input)).toHaveLength(16);
+      expect(f.requests.flatMap(value => value.input)).not.toContain('Title 0\nPrivate memory 18');
+    } finally { release(); }
+  });
+  it('bounds batches and stops the next batch after opting out', async () => {
+    const f = await fixture(); f.consent(); f.catalog.records = Array.from({ length: 33 }, (_, i) => ({ ...f.catalog.records[0], memoryId: `id-${i}` }));
+    const host = new MemoryMapHost({ registry: f.registry, namespace: f.namespace, provider: f.provider, refreshLocalAdmission: async () => { throw new Error('Local runtime must not load'); }, validatedModelPath: async () => '', onProgress: () => { f.config.source = 'local'; f.registry.stopCurrent('authority'); } });
+    await expect(host.build(() => f.catalog)).rejects.toThrow('request-stale');
+    expect(f.requests).toHaveLength(1); expect(f.requests[0].input).toHaveLength(16);
+    expect(await host.get(() => f.catalog)).toBeNull();
+  });
+  it.each(['modelId', 'timestamp'] as const)('rechecks the consent %s after asynchronous credential resolution before host egress', async field => {
+    const f = await fixture(); f.consent();
+    vi.mocked(f.settings.getSecret).mockImplementation(async () => {
+      const consent = f.config.consent;
+      assert.ok(consent);
+      consent[field] = field === 'timestamp' ? '2020-01-01T00:00:00.000Z' : 'other';
+      return f.key;
+    });
+    await expect(f.provider.embed(f.provider.namespace(), ['Private'], new AbortController().signal)).rejects.toThrow('provider-consent-required');
+    expect(f.chokepoint).not.toHaveBeenCalled(); expect(f.requests).toEqual([]);
+  });
+  it('cancels an in-flight provider request when opting out', async () => {
+    const f = await fixture(); f.consent(); const release = f.pauseResponse();
+    const pending = f.host.build(() => f.catalog).catch((error: unknown) => error);
+    try {
+      await vi.waitFor(() => expect(f.requests).toHaveLength(1));
+      f.provider.suspend(); f.config.source = 'local'; await f.host.invalidate();
+      expect(await pending).toMatchObject({ code: 'request-stale' });
+      expect(f.chokepoint.mock.calls[0][1]?.signal?.aborted).toBe(true);
+      expect(await f.host.get(() => f.catalog)).toBeNull(); expect(f.requests).toHaveLength(1);
+    } finally { release(); }
+  });
+  it('refuses configured providers without embedding support with a stable reason', async () => {
+    const f = await fixture();
+    expect((await f.provider.providers()).find(value => value.id === 'claude')).toMatchObject({ id: 'claude', models: [], reason: 'provider-no-embedding-model' });
+    await expect(f.provider.validate('claude', 'chat-only')).rejects.toThrow('provider-no-embedding-model');
+    f.consent(); await expect(f.provider.embed({ ...f.provider.namespace(), modelId: 'chat-only' }, ['Private'], new AbortController().signal)).rejects.toThrow('provider-consent-required');
+    expect(f.chokepoint).not.toHaveBeenCalled();
+  });
+  it('fails clearly for inconsistent dimensions within a response and against a saved namespace', async () => {
+    const f = await fixture(); f.consent(); f.inconsistent = true;
+    await expect(f.host.build(() => f.catalog)).rejects.toThrow('provider-dimension-mismatch');
+    f.inconsistent = false; const snapshot = await f.host.build(() => f.catalog); f.dimensions = 4;
+    await expect(f.host.retrieve(() => f.catalog, { question: 'Question', filters: {}, snapshotId: snapshot.snapshotId, queryId: 'q' })).rejects.toThrow('provider-dimension-mismatch');
+  });
+  it('removes provider error details and credentials from errors, logs and progress', async () => {
+    const f = await fixture(); f.consent(); f.fail = true;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {}); const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const error = await f.host.build(() => f.catalog).catch((error: unknown) => error);
+    expect(error).toMatchObject({ code: 'provider-embedding-failed', message: 'provider-embedding-failed' });
+    expect(String(error) + JSON.stringify(error) + JSON.stringify(f.progress) + JSON.stringify(warn.mock.calls) + JSON.stringify(errorLog.mock.calls)).not.toContain(f.key);
+    expect((error as Error).cause).toBeUndefined();
+  });
+});

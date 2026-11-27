@@ -1,4 +1,4 @@
-import { normalizeMemoryEmbeddingConfig, type MemoryEmbeddingConfig } from '../shared/memory-embedding-config.js';
+import { normalizeMemoryEmbeddingConfig, normalizeWindowsMemoryEmbeddingConfig, type WindowsMemoryEmbeddingConfig } from '../shared/memory-embedding-config.js';
 import { isSubAgentMaxRounds } from "../shared/subagent-policy.js";
 import { isTelemetryLevel, telemetryLevel, telemetryLevelFlags, type TelemetryLevel } from "../shared/telemetry-policy.js";
 import { isZoomLevel } from "../shared/app-zoom.js";
@@ -13,6 +13,7 @@ import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { writeUtf8FileAtomicSync } from "../lib/atomic-file.js";
+import { commitUnderAdmission } from "../shared/admission-commit.js";
 import { withInstalledStateMutation } from "../main/installed-state-mutation.js";
 import {
   normalizeSidePanelSplitPercent,
@@ -491,6 +492,7 @@ export interface FeatureFlags {
   /** Controls host shells and workspace terminals only; worker confinement and approval policy remain independent.
    * Defaults on for macOS/Linux and off for Windows; unavailable settings activation warns, explicit macOS/Linux activation aborts, and Windows reports filesystem/network confinement only. */
   osToolSandbox?: boolean;
+  sessionIndexingWithoutContainment?: boolean;
   /**
    * Plugin-worker confinement — when `true`, the processes extensions run
    * (plugin workers, out-of-process plugin children, plugin script hooks and
@@ -521,7 +523,7 @@ export interface DiagnosticsSettings {
 }
 
 export interface AppSettings {
-  memoryEmbedding?: MemoryEmbeddingConfig;
+  memoryEmbedding?: WindowsMemoryEmbeddingConfig;
   llm: LLMSettings;
   chat: ChatSettings;
   /** Host-owned P4-5 routing configuration. Secrets remain in SettingsService secret storage. */
@@ -808,6 +810,41 @@ function mainLayoutAsStored(holdsSettings: boolean, storedSystem: unknown, norma
   return normalized === undefined ? { kind: "unknown", reason: "layout-refused" } : { kind: "read", layout: normalized };
 }
 
+/** Carries a change's admission to the step that saves it. */
+export interface SettingsWriteAdmission {
+  /** Stored fields that must change together under this admission. */
+  readonly field: readonly [section: "features" | "memoryEmbedding", name: string, ...names: string[]];
+  /** Checked in the step that writes the file. Anything but true keeps the change out of it. */
+  readonly canCommit: () => boolean;
+}
+
+interface StagedSettingsWrite {
+  admission: SettingsWriteAdmission;
+  apply: (settings: AppSettings) => void;
+  refuse: () => void;
+}
+
+function stageSettingsWrite(admission: SettingsWriteAdmission, value: object, refuse: () => void): StagedSettingsWrite {
+  const [section, ...names] = admission.field;
+  const fields = structuredClone(value) as Record<string, unknown>;
+  return { admission, refuse, apply(settings) {
+    let target = settings[section] as Record<string, unknown> | undefined;
+    for (const name of names) {
+      if (Object.hasOwn(fields, name)) {
+        target ??= (settings[section] = {});
+        target[name] = fields[name];
+      } else {
+        delete target?.[name];
+      }
+    }
+  } };
+}
+
+/** The admission of a change no longer held when its save ran: the field is back to what is on disk. */
+export class SettingsWriteRefusedError extends Error {
+  constructor() { super("The settings change lost its admission before it was saved"); }
+}
+
 export class SettingsService {
   private readonly changeListeners = new Map<keyof AppSettings, Set<() => void>>();
   private providerConfigRevision = 0;
@@ -876,7 +913,7 @@ export class SettingsService {
   /** What the load found of the window layout on disk; later writes do not change it. */
   private readonly mainLayoutAsLoaded: LoadedMainLayout;
   /** Writes whose change is in memory but not yet on disk (see `commit`). */
-  private unsaved: Array<{ resolve: () => void; reject: (err: unknown) => void }> = [];
+  private unsaved: Array<{ resolve: () => void; reject: (err: unknown) => void; staged?: StagedSettingsWrite }> = [];
   private saving = false;
   /** Provider-preset keys left next to an address they were not entered for: their deletion failed and so did the
    * save that put their old address back. This process never hands them out, and deletes them once a save lands again. */
@@ -957,11 +994,18 @@ export class SettingsService {
     return structuredClone(this.settings[key]);
   }
 
-  async set<K extends keyof AppSettings>(key: K, value: AppSettings[K]): Promise<void> {
+  async set<K extends keyof AppSettings>(key: K, value: AppSettings[K], admission?: SettingsWriteAdmission): Promise<void> {
     const persist = async () => {
-      this.settings[key] = value;
-      if (key === "llm" || key === "marketplace") this.providerConfigChanged();
-      await this.commit();
+      let refused = false;
+      if (admission) {
+        if (key !== admission.field[0] || !value || typeof value !== "object") throw new SettingsWriteRefusedError();
+        await this.commit(stageSettingsWrite(admission, value, () => { refused = true; }));
+      } else {
+        this.settings[key] = value;
+        if (key === "llm" || key === "marketplace") this.providerConfigChanged();
+        await this.commit();
+      }
+      if (refused) throw new SettingsWriteRefusedError();
       for (const listener of key === "features" ? [] : this.changeListeners.get(key) ?? []) {
         try { listener(); } catch (error) { log.warn({ error }, "settings change listener failed"); }
       }
@@ -997,16 +1041,16 @@ export class SettingsService {
       // and demanding the whole block would make every such write a read-modify-write the caller could get wrong.
       telemetry?: Partial<TelemetrySettings>;
     },
-    { notifyLlmListeners = false }: { notifyLlmListeners?: boolean } = {},
+    options: { admission?: SettingsWriteAdmission; notifyLlmListeners?: boolean } = {},
   ): Promise<AppSettings> {
     return partial.marketplace
-      ? withInstalledStateMutation(() => this.patchSettings(partial, notifyLlmListeners))
-      : this.patchSettings(partial, notifyLlmListeners);
+      ? withInstalledStateMutation(() => this.patchSettings(partial, options))
+      : this.patchSettings(partial, options);
   }
 
   private async patchSettings(
     partial: Parameters<SettingsService["patch"]>[0],
-    notifyLlmListeners: boolean,
+    { admission, notifyLlmListeners = false }: NonNullable<Parameters<SettingsService["patch"]>[1]>,
   ): Promise<AppSettings> {
     if (partial.chat?.subAgentMaxRounds !== undefined && !isSubAgentMaxRounds(partial.chat.subAgentMaxRounds)) throw new Error("Invalid sub-agent round budget");
     if (partial.telemetry?.level !== undefined && !isTelemetryLevel(partial.telemetry.level)) throw new Error("Invalid telemetry level");
@@ -1345,13 +1389,20 @@ export class SettingsService {
       }
       this.settings.pluginConfigs = { ...this.settings.pluginConfigs, ...sanitized };
     }
+    let refused = false;
+    let staged: StagedSettingsWrite | undefined;
     if (partial.features) {
+      const features = normalizeFeatureFlags(partial.features);
+      if (admission?.field[0] === "features") {
+        staged = stageSettingsWrite(admission, features, () => { refused = true; });
+        for (const name of admission.field.slice(1)) Reflect.deleteProperty(features, name);
+      }
       this.settings.features = {
         ...this.settings.features,
-        ...normalizeFeatureFlags(partial.features),
+        ...features,
       };
     }
-    await this.commitPresetKeyInvalidation(previousSettings, providerPresetSecretInvalidationIds);
+    await this.commitPresetKeyInvalidation(previousSettings, providerPresetSecretInvalidationIds, staged);
     for (const key of ["llm", "permissions", "appearance", "shortcuts", "telemetry"] as const) {
       if (!partial[key]) continue;
       // Interactive settings writers already publish their own guarded updates.
@@ -1360,6 +1411,7 @@ export class SettingsService {
         try { listener(); } catch (error) { log.warn({ error }, "settings change listener failed"); }
       }
     }
+    if (refused) throw new SettingsWriteRefusedError();
     return this.getAll();
   }
 
@@ -1424,9 +1476,10 @@ export class SettingsService {
   private async commitPresetKeyInvalidation(
     previousSettings: AppSettings,
     providerIds: readonly string[],
+    staged?: StagedSettingsWrite,
   ): Promise<void> {
     if (providerIds.length === 0) {
-      await this.commit();
+      await this.commit(staged);
       return;
     }
     const appliedSettings = this.getAll();
@@ -1434,7 +1487,7 @@ export class SettingsService {
     for (const key of keys) this.invalidatingSecretKeys.set(key, (this.invalidatingSecretKeys.get(key) ?? 0) + 1);
     this.secretStatesChanged(keys);
     try {
-      await this.commit();
+      await this.commit(staged);
       await this.deleteMarketplaceProviderPresetSecretsAtomically(
         previousSettings,
         appliedSettings,
@@ -1819,7 +1872,9 @@ export class SettingsService {
         migrationWriteBack = true;
       }
       const result: AppSettings = {
-        memoryEmbedding: normalizeMemoryEmbeddingConfig(parsed.memoryEmbedding),
+        memoryEmbedding: process.platform === "win32"
+          ? normalizeWindowsMemoryEmbeddingConfig(parsed.memoryEmbedding)
+          : normalizeMemoryEmbeddingConfig(parsed.memoryEmbedding),
         llm,
         chat: normalizeChat(parsed.chat),
         a2aRemote: normalizeA2ARemote(parsed.a2aRemote),
@@ -1867,9 +1922,9 @@ export class SettingsService {
 
   /** Save the change the caller just made in memory. A change applies to memory when the call is made, so a read and the write built from it stay atomic. Saves run one at a time, each writing memory as it is when the save starts; changes made while one waits on the file lock go
    * in the next. When a save fails, memory returns to what is on disk and every write not on disk fails with it; the failed save's and the ones made on top of it; so the process never runs on settings that are not on disk, and no write reports success for a change that is gone. */
-  private commit(): Promise<void> {
+  private commit(staged?: StagedSettingsWrite): Promise<void> {
     const done = new Promise<void>((resolve, reject) => {
-      this.unsaved.push({ resolve, reject });
+      this.unsaved.push({ resolve, reject, staged });
     });
     void this.drain();
     return done;
@@ -1881,9 +1936,12 @@ export class SettingsService {
     try {
       while (this.unsaved.length > 0) {
         const batch = this.unsaved.splice(0);
+        // No yield from here to the file write below: an admission is checked in the step that saves its change.
         const snapshot = this.getAll();
         try {
+          const admitted = this.applyAdmittedWrites(batch, snapshot);
           await this.saveSettings(snapshot);
+          for (const write of admitted) write.apply(this.settings);
           const featuresChanged = !isDeepStrictEqual(this.saved.features, snapshot.features);
           this.saved = snapshot;
           if (featuresChanged) {
@@ -1902,6 +1960,32 @@ export class SettingsService {
     } finally {
       this.saving = false;
     }
+  }
+
+  private applyAdmittedWrites(batch: readonly { staged?: StagedSettingsWrite }[], snapshot: AppSettings): StagedSettingsWrite[] {
+    const fields = new Map<string, { latest?: StagedSettingsWrite; earlier: StagedSettingsWrite[] }>();
+    for (const write of batch) {
+      const { staged } = write;
+      if (staged === undefined) continue;
+      const key = staged.admission.field.join(".");
+      const entry = fields.get(key) ?? { latest: undefined, earlier: [] };
+      try {
+        commitUnderAdmission(() => { if (staged.admission.canCommit() !== true) throw new SettingsWriteRefusedError(); }, () => {
+          entry.latest = staged;
+          entry.earlier.push(staged);
+        });
+      } catch {
+        entry.latest = undefined;
+        staged.refuse();
+      }
+      fields.set(key, entry);
+    }
+    const admitted: StagedSettingsWrite[] = [];
+    for (const { latest, earlier } of fields.values()) {
+      if (latest) { latest.apply(snapshot); admitted.push(latest); }
+      else for (const write of earlier) write.refuse();
+    }
+    return admitted;
   }
 
   private async saveSettings(settings: AppSettings): Promise<void> {

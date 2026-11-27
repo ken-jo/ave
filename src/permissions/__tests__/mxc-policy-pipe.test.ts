@@ -1,11 +1,12 @@
 import childProcess from "node:child_process";
 import { dirname, join, resolve } from "node:path";
-import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import type { Duplex } from "node:stream";
 import { randomBytes } from "node:crypto";
 import { once } from "node:events";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { deferred } from "../../__tests__/support/deferred.js";
 import * as helperPath from "../../main/windows-path-kind-launcher.js";
 import * as managedChildren from "../../main/managed-child-processes.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
@@ -28,14 +29,23 @@ beforeEach(() => {
 });
 
 describe.skipIf(process.platform !== "win32")("native policy pipe EOF", () => {
-  for (const probe of [false, true]) it(`reads the full multi-chunk payload to EOF after an existence probe: ${probe}`, async (context) => {
+  for (const { probe, gated } of [
+    { probe: false, gated: false },
+    { probe: true, gated: false },
+    { probe: true, gated: true },
+  ]) it(`reads the full multi-chunk payload to EOF (existence probe: ${probe}, release gate: ${gated})`, async (context) => {
     vi.restoreAllMocks();
     configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
     requireMxcPolicyPipeHelper(context.skip);
     const payload = Buffer.from("policy-".repeat(12_000));
     const pipe = String.raw`\\.\pipe\ave-mxc-${randomBytes(16).toString("hex")}`;
-    const transport = await openMxcPolicyPipe(payload, pipe);
+    const root = gated ? mkdtempSync(join(tmpdir(), "mxc-policy-gate-")) : undefined;
+    let transport: Awaited<ReturnType<typeof openMxcPolicyPipe>> | undefined;
     try {
+      const owned = await openMxcPolicyPipe(payload, pipe, root === undefined ? undefined : {
+        root, signal: new AbortController().signal, assertStillValid: () => {},
+      });
+      transport = owned;
       const result = await new Promise<{ error: Error | null; stdout: string; stderr: string }>((resolveResult) => {
         const child = childProcess.execFile(process.execPath, ["-e", `
           const fs = require("node:fs");
@@ -62,7 +72,7 @@ describe.skipIf(process.platform !== "win32")("native policy pipe EOF", () => {
           windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.mxcRequestTransportMs,
           env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
         }, (error, stdout, stderr) => resolveResult({ error, stdout, stderr }));
-        transport.bindChild(child);
+        owned.bindChild(child);
       });
       expect(result.stderr).toBe("");
       expect(result.error).toBeNull();
@@ -71,7 +81,79 @@ describe.skipIf(process.platform !== "win32")("native policy pipe EOF", () => {
       if (probe) expect(counts[0]).toBe(0);
       else expect(counts[0]).toBeGreaterThan(1);
       expect(counts[1]).toBeGreaterThan(1);
-    } finally { await transport.release(); }
+    } finally {
+      try { await transport?.release(); }
+      finally { if (root !== undefined) rmSync(root, { recursive: true, force: true }); }
+    }
+  });
+  for (const withdraw of ["lifecycle", "proof", "granted proof"] as const) it(`refuses a held native read after ${withdraw} withdrawal`, async (context) => {
+    vi.restoreAllMocks();
+    configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
+    requireMxcPolicyPipeHelper(context.skip);
+    const root = mkdtempSync(join(tmpdir(), "mxc-policy-withdrawal-"));
+    const pipe = String.raw`\\.\pipe\ave-mxc-${randomBytes(16).toString("hex")}`;
+    const controller = new AbortController();
+    let proved = true;
+    const assertStillValid = vi.fn(() => { if (!proved) throw new Error("Launch proof withdrawn"); });
+    const granted = deferred<() => void>();
+    if (withdraw === "granted proof") {
+      const spawn = childProcess.spawn;
+      vi.spyOn(childProcess, "spawn").mockImplementation((...args: Parameters<typeof spawn>) => {
+        const server = spawn(...args);
+        const stdin = server.stdin;
+        if (!stdin || !Array.isArray(args[1]) || args[1][0] !== "--mxc-policy") return server;
+        const write = stdin.write.bind(stdin);
+        vi.spyOn(stdin, "write").mockImplementation((chunk, callback) => {
+          if (!Buffer.isBuffer(chunk) || !chunk.equals(Buffer.from([1]))) return write(chunk, callback);
+          granted.resolve(() => { write(chunk, callback); });
+          return true;
+        });
+        return server;
+      });
+    }
+    let transport: Awaited<ReturnType<typeof openMxcPolicyPipe>> | undefined;
+    let child: childProcess.ChildProcess | undefined;
+    try {
+      const owned = await openMxcPolicyPipe(Buffer.from("held-policy"), pipe, { root, signal: controller.signal, assertStillValid });
+      transport = owned;
+      const done = new Promise<string>((resolveResult) => {
+        child = childProcess.execFile(process.execPath, ["-e", `
+          process.stdin.once("data", () => {
+            const fs = require("node:fs");
+            const fd = fs.openSync(process.argv[1], "r");
+            try {
+              const bytes = Buffer.alloc(32);
+              const size = fs.readSync(fd, bytes, 0, bytes.length, null);
+              process.stdout.write(bytes.subarray(0, size));
+            } finally { fs.closeSync(fd); }
+          });
+        `, pipe], {
+          windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.mxcRequestTransportMs,
+          env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+        }, (_error, stdout) => resolveResult(stdout));
+        owned.bindChild(child);
+      });
+      let before = assertStillValid.mock.calls.length;
+      if (withdraw === "lifecycle") controller.abort();
+      if (withdraw === "proof") proved = false;
+      child?.stdin?.end("read");
+      if (withdraw === "granted proof") {
+        const resume = await Promise.race([granted.promise, done.then(() => { throw new Error("Native receiver never obtained a permit"); })]);
+        before = assertStillValid.mock.calls.length;
+        proved = false;
+        expect(readdirSync(root)).toHaveLength(1);
+        resume();
+      }
+      expect(await done).toBe("");
+      if (withdraw !== "lifecycle") {
+        expect(controller.signal.aborted).toBe(false);
+        expect(assertStillValid.mock.calls.length).toBeGreaterThan(before);
+      }
+    } finally {
+      child?.kill();
+      try { await transport?.release().catch(() => {}); }
+      finally { rmSync(root, { recursive: true, force: true }); }
+    }
   });
 });
 describe.skipIf(process.platform !== "win32")("native held policy delivery", () => {
@@ -136,20 +218,31 @@ describe.skipIf(process.platform !== "win32")("native held policy delivery", () 
   }
 
   it.for([
-    { binary: undefined, otherReaders: false },
-    { binary: fixture, otherReaders: true },
-  ])("serves two exact reads through the real held launcher (other readers: $otherReaders)", async ({ binary, otherReaders }, context) => {
+    { binary: undefined, otherReaders: false, gated: false },
+    { binary: fixture, otherReaders: true, gated: false },
+    { binary: undefined, otherReaders: false, gated: true },
+  ])("serves two exact reads through the real held launcher (other readers: $otherReaders, release gate: $gated)", async ({ binary, otherReaders, gated }, context) => {
     if (binary !== undefined && !existsSync(binary)) context.skip("Build the separate policy reader fixture to test the launcher and sibling PIDs");
     await withHold(async (held) => {
       requireMxcPolicyPipeHelper(context.skip);
       const pipe = PIPE.slice(0, -32) + randomBytes(16).toString("hex");
-      const transport = await openMxcPolicyPipe(Buffer.from(payload), pipe, true);
+      const root = gated ? mkdtempSync(join(tmpdir(), "mxc-held-policy-gate-")) : undefined;
+      const assertStillValid = vi.fn();
+      let transport: Awaited<ReturnType<typeof openMxcPolicyPipe>> | undefined;
       try {
+        const owned = await openMxcPolicyPipe(Buffer.from(payload), pipe, root === undefined ? true : {
+          root, signal: new AbortController().signal, assertStillValid, held: true,
+        });
+        transport = owned;
         const launcher = start(held, reader, pipe, binary);
         const failed = vi.fn();
-        const bindHeldPolicy = transport.bindHeldPolicy;
+        const bindHeldPolicy = owned.bindHeldPolicy;
         if (bindHeldPolicy === undefined) throw new Error("Native held policy binder is unavailable");
-        const bind = vi.fn((pid: number, onFailure: () => void) => bindHeldPolicy(launcher.child, pid, onFailure));
+        let checksAtBinding = 0;
+        const bind = vi.fn(async (pid: number, onFailure: () => void) => {
+          await bindHeldPolicy(launcher.child, pid, onFailure);
+          checksAtBinding = assertStillValid.mock.calls.length;
+        });
         const run = held.bind(launcher.child, { bindReader: bind, onFailure: failed });
         expect(await run.verdict, launcher.errors()).toEqual({ kind: "ok", stopped: false });
         expect(launcher.child.exitCode, launcher.errors()).toBe(0);
@@ -158,7 +251,11 @@ describe.skipIf(process.platform !== "win32")("native held policy delivery", () 
         expect(failed).not.toHaveBeenCalled();
         const reads = JSON.stringify([payload.length, payload.length]);
         expect(launcher.output()).toBe(otherReaders ? `other-readers 0 0\n${reads}` : reads);
-      } finally { await transport.release(); }
+        if (gated) expect(assertStillValid.mock.calls.length - checksAtBinding).toBe(4);
+      } finally {
+        try { await transport?.release(); }
+        finally { if (root !== undefined) rmSync(root, { recursive: true, force: true }); }
+      }
     });
   });
 

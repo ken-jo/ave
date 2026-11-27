@@ -8,6 +8,8 @@ import { setProcessPlatform } from "../../__tests__/support/process-platform.js"
 
 import {
   __resetActiveSandboxCapabilityForTest,
+  __resetContainerShellSubstrateForTest,
+  setContainerShellSubstrate,
   detectSandboxCapability,
   disposableContainerCapability,
   formatSandboxCapabilityForPrompt,
@@ -586,12 +588,30 @@ describe("sandbox-capability — shell sandbox and plugin-worker confinement are
     setProcessPlatform("linux");
     setShellSandboxRequestedAtBoot(true);
     setActiveSandboxCapability(fullAsrt("linux"));
+    // A Linux host shell's sandbox is its container: boot published a live one.
+    setContainerShellSubstrate("linux", { state: "available" });
+    try {
+      expect(isPluginWorkerConfinementRequestedAtBoot()).toBe(false);
+      expect(detectShellSandboxCapability().kind).toBe("asrt");
+      expect(isActiveSandboxShellContained()).toBe(true);
+      expect(getHostShellExecutionPlan()).toMatchObject({ mode: "asrt", requestedSandbox: true, sandboxed: true, substrate: "mxc" });
+      expect(resolveReviewerSandboxCapability("builtin", "bash").kind).toBe("asrt");
+    } finally {
+      __resetContainerShellSubstrateForTest();
+    }
+  });
 
-    expect(isPluginWorkerConfinementRequestedAtBoot()).toBe(false);
-    expect(detectShellSandboxCapability().kind).toBe("asrt");
-    expect(isActiveSandboxShellContained()).toBe(true);
-    expect(getHostShellExecutionPlan()).toMatchObject({ mode: "asrt", requestedSandbox: true });
-    expect(resolveReviewerSandboxCapability("builtin", "bash").kind).toBe("asrt");
+  it("takes the requested-sandbox floor for a Linux host shell when no container is live", () => {
+    setProcessPlatform("linux");
+    setShellSandboxRequestedAtBoot(true);
+    setActiveSandboxCapability(fullAsrt("linux"));
+    // The shell scope is still the one requested: never the disabled-by-setting plan.
+    expect(getHostShellExecutionPlan()).toMatchObject({
+      mode: "plain", requestedSandbox: true, substrate: "none", fallbackReason: "active-sandbox-not-shell-contained",
+      requiresExplicitUserApproval: true,
+    });
+    // Nothing confines the shell, so the reviewer gets no isolation credit for it.
+    expect(resolveReviewerSandboxCapability("builtin", "bash").kind).toBe("none");
   });
 
   it("each seal changes only its own scope", () => {

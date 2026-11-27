@@ -36,6 +36,13 @@ export class MxcCapabilityUnavailableError extends Error {
   }
 }
 
+export class MxcBaseContainmentUnavailableError extends MxcCapabilityUnavailableError {
+  constructor(options?: ErrorOptions) {
+    super("Required base containment is unavailable", options);
+    this.name = "MxcBaseContainmentUnavailableError";
+  }
+}
+
 /** The SDK's koffi instance does not run asynchronous native calls on the stack the shell supervisor configured. */
 export class MxcNativeCallStackError extends MxcCapabilityUnavailableError {
   constructor(message: string, options?: ErrorOptions) {

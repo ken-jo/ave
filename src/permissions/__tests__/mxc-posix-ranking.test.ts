@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import type { ContainerBackend } from "../../shared/container-platform.js";
 import { describe, expect, it } from "vitest";
 import {
@@ -10,6 +11,8 @@ const lookups: PosixPolicyLookups = {
   home: "/users/example", foldsCase: false,
   children: () => [],
   exists: (path) => !path.includes("/missing"),
+  readable: () => true,
+  directoryIdentity: (path) => path.includes("/missing") ? undefined : { device: 1n, inode: 2n },
   canonical: (path) => path.replace(/^\/tmp(?=\/|$)/u, "/private/tmp"),
 };
 
@@ -23,8 +26,8 @@ const model = (floors: PolicyFloorRow[], ...launchGrants: PolicyGrantRow[]) =>
   buildPolicyModel({ floors, launchGrants, userGrants: [], extensionManifests: [] });
 
 describe("POSIX container filesystem ranking", () => {
-  it.each(["bubblewrap", "process-container"] as const)("refuses an unmeasured backend rule for %s", (backend) => {
-    const rank = () => rankPosixContainerRows(model([]), backend, lookups);
+  it("refuses an unmeasured backend rule", () => {
+    const rank = () => rankPosixContainerRows(model([]), "unknown-backend" as ContainerBackend, lookups);
     expect(rank).toThrow(PosixContainerPolicyError);
     expect(rank).toThrow(expect.objectContaining({ code: "backend-unmeasured" }));
   });
@@ -226,8 +229,91 @@ describe("POSIX container filesystem ranking", () => {
     const inner = "/work/private/reopened/secret";
     const policy = model([deny(inner), deny(outer), deny(`${inner}/nested`)],
       read("/work"), read("/work/private/reopened"));
-    const ranked = _rankPosixContainerRowsForTest(policy, "most-specific", lookups);
-    expect(ranked.denied).toEqual([inner, outer]);
+    const ranked = rankPosixContainerRows(policy, "bubblewrap", lookups);
+    expect(ranked).toMatchObject({ readonly: ["/work", "/work/private/reopened"], denied: [inner, outer] });
+  });
+
+  it("gives an equal-path deny precedence for bubblewrap", () => {
+    const ranked = rankPosixContainerRows(model([deny("/work/private")], read("/work"), write("/work/private")), "bubblewrap", lookups);
+    expect(ranked).toMatchObject({ readwrite: [], readonly: ["/work"], denied: ["/work/private"] });
+  });
+
+  it("opens only readable root children outside the private mounts", () => {
+    const rootLookups = {
+      ...lookups,
+      children: () => ["bin", "dev", "proc", "root", "run", "system-link", "sys", "tmp", "usr"],
+      canonical: (path: string) => ({ "/bin": "/usr/bin", "/system-link": "/run/host" })[path] ?? path,
+      readable: (path: string) => path !== "/root",
+    };
+    const ranked = rankPosixContainerRows(model([], read("/")), "bubblewrap", rootLookups);
+    expect(ranked.readonly).toEqual(["/sys", "/tmp", "/usr"]);
+  });
+
+  it("rejects a writable root even when a deny also names it", () => {
+    expect(() => rankPosixContainerRows(model([deny("/")], write("/")), "bubblewrap", lookups))
+      .toThrow(expect.objectContaining({ code: "root-write-grant" }));
+  });
+
+  it("pins each existing folder between a write grant and a protected row", () => {
+    const pins = ["/work/.git", "/work/.ave/nested", "/work/.ave"];
+    const ranked = rankPosixContainerRows(model([
+      protect("/work/.git/hooks"), deny("/work/.ave/nested/hooks"),
+      protect("/work/direct"), deny("/views/upper/lower"),
+    ], write("/work"), read("/views")), "bubblewrap", lookups);
+    expect(ranked.pins).toEqual(pins);
+    expect(ranked.readwrite).toEqual(["/work", ...pins]);
+    expect(ranked.readonly).toContain("/work/.git/hooks");
+    expect(ranked.denied).toContain("/work/.ave/nested/hooks");
+  });
+
+  it("pins each existing folder between nested write roots", () => {
+    const ranked = rankPosixContainerRows(model([protect("/repo/packages/app/.vscode")],
+      write("/repo"), write("/repo/packages/app/nested/inner"), write("/repo/packages/app")), "bubblewrap", lookups);
+    expect(ranked.pins).toEqual(["/repo/packages/app/nested", "/repo/packages"]);
+    expect(ranked.readwrite).toEqual(expect.arrayContaining(["/repo", "/repo/packages/app", "/repo/packages/app/nested/inner"]));
+    const separate = rankPosixContainerRows(model([], write("/repo"), write("/other/deep")), "bubblewrap", lookups);
+    expect(separate.pins).toEqual([]);
+  });
+
+  it("keeps and pins a write floor inside a write grant below a read deny", () => {
+    const ranked = rankPosixContainerRows(model([
+      deny("/work/private"), protect("/work/private/open/.git/hooks"),
+    ], read("/work"), write("/work/private/open")), "bubblewrap", lookups);
+    expect(ranked.pins).toEqual(["/work/private/open/.git"]);
+    expect(ranked.readonly).toContain("/work/private/open/.git/hooks");
+    expect(ranked.denied).toEqual(["/work/private"]);
+  });
+
+  it("pins missing parents and projects absent protected rows as writable-grant masks", () => {
+    const missing = "/work/missing/deep/control";
+    const ranked = rankPosixContainerRows(model([
+      protect(missing), deny("/views/missing/secret"), protect("/work/view/missing/control"),
+    ], write("/work"), read("/views"), read("/work/view")), "bubblewrap", lookups);
+    expect(ranked.readonly).toEqual(["/views", "/work/view"]);
+    expect(ranked.denied).toEqual([missing]);
+    expect(ranked.readwrite).toEqual(["/work", "/work/missing/deep", "/work/missing"]);
+    expect(ranked.placeholders).toEqual([{
+      path: missing, ancestor: "/work", device: 1n, inode: 2n, parents: ["/work/missing", "/work/missing/deep"],
+    }]);
+  });
+
+  it("counts a pin against the container row limit", () => {
+    const leaves = Array.from({ length: 398 }, (_, index) => read(`/read/leaf-${index}`));
+    const path = "/work/.git/hooks";
+    const noPin = { ...lookups, directoryIdentity: () => undefined };
+    const policy = model([protect(path)], write("/work"), ...leaves);
+    expect(rankPosixContainerRows(policy, "bubblewrap", noPin).pins).toEqual([]);
+    expect(() => rankPosixContainerRows(policy, "bubblewrap", lookups))
+      .toThrow(expect.objectContaining({ code: "grant-limit-exceeded" }));
+  });
+
+  it("preserves the Seatbelt lists for a carved read", () => {
+    const policy = model([deny("/work/private", "ave-home")], read("/work"), write("/work/private/allowed"));
+    const { readwrite, readonly, denied } = rankPosixContainerRows(policy, "seatbelt", {
+      ...lookups, children: (path) => path === "/work" ? ["private", "public"] : [],
+    });
+    expect(`${JSON.stringify({ readwrite, readonly, denied }, null, 2)}\n`)
+      .toBe(readFileSync(new URL("./fixtures/seatbelt-ranked-filesystem.json", import.meta.url), "utf8"));
   });
 
   it("refuses an effective deny lost beneath a nearer grant", () => {

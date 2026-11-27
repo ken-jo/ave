@@ -33,7 +33,7 @@ describe.runIf(process.platform === "darwin")("macOS holder route on, holder cap
     await initializeAsrtSandbox({ allowedDomains: [] }, async () => false);
     setActiveSandboxCapability({ platform: "darwin", kind: "asrt", confidence: "verified", reason: "Active sandbox",
       confines: { filesystem: true, process: true, network: true } });
-    setContainerShellSubstrate({ state: "available" });
+    setContainerShellSubstrate("darwin", { state: "available" });
     setMacHolderCapability({ state: "unavailable", reason: "holder-start-failed" });
     setMacExtensionPlan({ platform: "darwin", requestedBackend: "mxc", selectedBackend: "none", readiness: "unavailable", reason: "holder-start-failed", egressIdentity: "shared" } as never);
   });

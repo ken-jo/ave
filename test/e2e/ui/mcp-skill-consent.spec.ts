@@ -6,6 +6,7 @@ import { test, expect } from "./fixtures.js";
 import { setWindowSize } from "./seeded-electron.js";
 import { TEST_IDS } from "../../../src/shared/test-ids.js";
 import { MAIN_BUNDLE_EXTERNALS } from "../../../scripts/lib/main-bundle-externals.mjs";
+import { waitForApprovalArming } from "./approval-keyboard.js";
 
 test.use({ seedViewFixturePlugin: false, seedLocale: "en" });
 
@@ -55,8 +56,12 @@ test("remote skill activation requires the explicit per-skill code-execution con
   const screenshot = testInfo.outputPath("explicit-skill-consent.png");
   await card.screenshot({ path: screenshot });
   await testInfo.attach("explicit-skill-consent", { path: screenshot, contentType: "image/png" });
-  await card.getByTestId(TEST_IDS.denyButton).focus();
-  await card.getByTestId(TEST_IDS.denyButton).press("Enter");
+  await waitForApprovalArming();
+  const deny = card.getByTestId(TEST_IDS.denyButton);
+  await deny.focus();
+  await expect(deny).toBeFocused();
+  await mainWindow.keyboard.press("Enter");
+  await expect(card).toHaveCount(0);
   const readState = () => app.evaluate(() => (globalThis as unknown as { __skillConsentDriver: { state: { complete: boolean; isError: boolean; output: string; reads: number } } }).__skillConsentDriver.state);
   await expect.poll(async () => (await readState()).complete).toBe(true);
   expect((await readState()).isError).toBe(true);
@@ -64,8 +69,11 @@ test("remote skill activation requires the explicit per-skill code-execution con
 
   await app.evaluate(() => (globalThis as unknown as { __skillConsentDriver: { start(): void } }).__skillConsentDriver.start());
   await expect(card).toBeVisible();
-  await card.getByTestId(TEST_IDS.approveButton).focus();
-  await card.getByTestId(TEST_IDS.approveButton).press("Enter");
+  await waitForApprovalArming();
+  const approve = card.getByTestId(TEST_IDS.approveButton);
+  await approve.focus();
+  await expect(approve).toBeFocused();
+  await mainWindow.keyboard.press("Enter");
   await expect.poll(async () => (await readState()).complete).toBe(true);
   const approved = await readState();
   expect(approved.isError).toBe(false);

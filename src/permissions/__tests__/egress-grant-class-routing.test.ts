@@ -34,6 +34,7 @@ vi.mock("../asrt-sandbox.js", async (importOriginal) => ({
 }));
 vi.mock("../mxc-windows.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../mxc-windows.js")>(),
+  getHostWxcExecIdentity: () => "verified-launcher",
   resolveHostWxcExecPath: async () => String.raw`C:\Ave\resources\mxc\x64\wxc-exec.exe`,
 }));
 

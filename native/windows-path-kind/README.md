@@ -408,5 +408,12 @@ helper writes `bound` and closes its response stream. The host waits for this
 complete acknowledgement before authorizing the held launcher to resume the
 reader. Helper stdin remains open for ownership. Both helpers must support the
 held protocol before the reader can start.
+
+With `<gate> --authorize`, the host keeps the payload and sends only its length.
+The helper requests permission to offer the bound pipe to the host, then waits
+for the host to acknowledge the write. The host rechecks its proof and writes
+synchronously through the nonblocking pipe handle. The helper resumes blocking
+mode for the existing flush and EOF handshake. In held mode the delivery frames
+use stderr, so closing stdout still completes the binding acknowledgement.
 Owner EOF, deadline or release closes the server. Rebuild the existing helper
 after changing its source.
