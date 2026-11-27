@@ -2297,7 +2297,7 @@ it.each(["project access is revoked", "the approval settles"])(
           id: requestId, sessionId, category: "tool", toolName, source: "mcp", args: { body },
           reason: "Send report", invocationToolUseId: outputId, abortSignal: invocation.signal, createdAt: Date.now(),
         });
-        await vi.waitFor(() => expect(gate.pendingCount).toBe(1));
+        expect(gate.pendingCount).toBe(1);
         const live: TailnetWorkReviewSnapshot = (await (await read()).json()).snapshot;
         const [card] = live.outputCards ?? [];
         if (!card || !("handle" in card)) throw new Error("Expected a live execution card");

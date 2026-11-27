@@ -773,7 +773,7 @@ it("keeps a B stage and its descendant approval details out of the launching A w
 });
 
 it("a click approves a stage with requested outputs and shows the full request", async () => {
-  const execute = vi.fn(async ({ output }: { output: { id: string } }) => ({ id: output.id, status: "failed" as const, detail: "output-execution-failed" }));
+  const execute = vi.fn(async ({ output }: { output: { id: string } }) => ({ id: output.id, status: "failed" as const, detail: "output-execution-not-dispatched" }));
   const h = await stageRunHarness({ observeRunWork: true, workflow: { outputs: { execute, accept: input => acceptRequestedOutput(input, createHostGit()) } } });
   await h.runThenEnd(async () => {
     const decl = { kind: "send-message", owner: "plugin", ownerId: "delivery", toolName: "send" } as const;
@@ -823,7 +823,10 @@ it("a click approves a stage with requested outputs and shows the full request",
     await expect(handler(WORK_BOARD.decideStage)(event, id, approval, token)).resolves.toMatchObject({ ok: false });
     expect(execute).toHaveBeenCalledTimes(1);
     const view = await handler(WORK_BOARD.get)(event, id);
-    expect(view).toMatchObject({ item: { workflowRun: { stages: [{ outputExecutions: [{ status: "failed", detail: "output-execution-failed" }] }] } } });
+    expect(view).toMatchObject({ item: { workflowRun: { stages: [{
+      outputExecutions: [{ status: "failed", detail: "output-execution-not-dispatched" }],
+      outputRetry: { hash: binding.outputHash, ids: [stage.requestedOutputs?.[0].id] },
+    }] } } });
 
     const retry = { runId: binding.runId, stageId: binding.stageId, attempt: binding.attempt,
       outputHash: binding.outputHash, outputId: stage.requestedOutputs?.[0].id };

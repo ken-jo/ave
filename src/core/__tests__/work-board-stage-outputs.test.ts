@@ -7,6 +7,7 @@ import { EventEmitter } from "node:events";
 import type { WebContents } from "electron";
 import { expect, it, vi } from "vitest";
 import { deferred } from "../../__tests__/support/deferred.js";
+import { within } from "../../__tests__/support/signal-wait.js";
 import { unusedNetworkFetch } from "../../__tests__/support/network-fetch-stubs.js";
 import { makeMockWebContents } from "../../__tests__/test-helpers.js";
 import { governedWorkflowOutput } from "../../boot/steps/workflow-output-invocation.js";
@@ -379,14 +380,19 @@ it("requires a fresh one-shot phone card when retrying a refused output", () => 
   expect(outcome).toMatchObject({ status: "denied" });
   const input = { ...binding, outputId: outcome.id };
   const decider = { kind: "tailnet" as const, controller: outputPhoneController(), authority: page.authority, canDeliver: () => true };
+  const shown = deferred<void>();
+  const requestAndWait = gate.requestAndWait.bind(gate);
+  vi.spyOn(gate, "requestAndWait").mockImplementationOnce(request => {
+    const answer = requestAndWait(request);
+    shown.resolve();
+    return answer;
+  });
   const reserved = await h.engine.retryOutput(itemId, input, decider);
   expect(reserved).toEqual({ ok: true });
   await expect(h.engine.retryOutput(itemId, input, decider)).resolves.toEqual({ ok: false, reason: "not_pending" });
-  const retry = await vi.waitFor(() => {
-    const fresh = gate.listRequestedOutputCards(page).find(entry => "handle" in entry);
-    if (!fresh || !("handle" in fresh)) throw new Error("No new output card");
-    return fresh;
-  });
+  await within(shown.promise, "fresh phone retry card");
+  const retry = gate.listRequestedOutputCards(page).find(entry => "handle" in entry);
+  if (!retry || !("handle" in retry)) throw new Error("No new output card");
   expect(retry.requestId).not.toBe(original.requestId);
   expect(retry.content).toEqual(original.content);
   await expect(gate.answerRequestedOutputCard(original.handle, "allow-once", page)).resolves.toBe("approval-already-resolved");
