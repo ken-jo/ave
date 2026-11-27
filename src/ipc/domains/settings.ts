@@ -457,11 +457,10 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     ) => Promise<SubscriptionRuntimeStatus>,
   ): Promise<SubscriptionRuntimeActionResult> => {
     const result = await runSubscriptionAction(provider, operation);
-    if (result.status) await refreshActiveSubscriptionConnection(provider, result.status.connection === "connected");
     publishSubscriptionRuntimeStatusUpdated(provider);
     return result;
   };
-  const refreshActiveSubscriptionConnection = async (
+  const publishActiveSubscriptionConnection = async (
     provider: SubscriptionRuntimeId,
     connected: boolean,
   ): Promise<void> => {
@@ -470,11 +469,6 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     if (observedSubscriptionConnection?.provider === provider && observedSubscriptionConnection.connected === connected) return;
     const observation = { provider, connected };
     observedSubscriptionConnection = observation;
-    try {
-      await deps.rewireReviewerAgent?.();
-    } catch (err) {
-      log.warn({ err }, "Could not refresh the reviewer after a subscription connection change");
-    }
     await broadcastSettingsSnapshot({ ...deps, isSubscriptionConnected: (candidate) => candidate === provider
       ? Promise.resolve(connected) : deps.isSubscriptionConnected?.(candidate) ?? Promise.resolve(false) },
       () => observedSubscriptionConnection === observation);
@@ -482,7 +476,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
   const stopStatusChangedListener = onSubscriptionRuntimeStatusChanged((provider, connected) => {
     publishSubscriptionRuntimeStatusUpdated(provider);
     if (connected !== undefined) {
-      void refreshActiveSubscriptionConnection(provider, connected).catch((err) => {
+      void publishActiveSubscriptionConnection(provider, connected).catch((err) => {
         log.warn({ err }, "Could not publish the subscription connection change");
       });
     }

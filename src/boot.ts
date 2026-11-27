@@ -817,7 +817,7 @@ export async function bootstrap(
   ctx.isSubscriptionConnected = subscriptionBindings.isSubscriptionConnected;
 
   // Permission policy P4 — reviewer agent + PermissionManager broadcast wiring.
-  await wireReviewerAndPermissions(ctx);
+  registerShutdownHook("subscription-reviewer", await wireReviewerAndPermissions(ctx));
 
   // Permission policy P4 — Layer 6 plugin tool execution surface + delegate.
   await setupPluginToolExecutor(ctx);

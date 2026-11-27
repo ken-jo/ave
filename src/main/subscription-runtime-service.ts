@@ -1290,7 +1290,9 @@ export class SubscriptionRuntimeService {
     if (runtimeId !== "chatgpt-plan" && this.safetyEpochIsCurrent(runtimeId, verificationEpoch)) {
       this.invalidateCachedReads(runtimeId);
       if (isSettledStatus(status)) this.cachedStatuses.set(runtimeId, this.cachedRead(status));
-      this.rememberConnection(status, ++this.statusReadRevision);
+      if (this.rememberConnection(status, ++this.statusReadRevision)) {
+        notifyStatusChanged(runtimeId, status.connection === "connected");
+      }
     }
     return status;
   }
@@ -1692,15 +1694,17 @@ export class SubscriptionRuntimeService {
   // overlaps it is kept: a status read while a logout is still running would otherwise cache the account as connected.
   private async mutating(provider: SubscriptionRuntimeId, mutation: () => Promise<SubscriptionRuntimeStatus>): Promise<SubscriptionRuntimeStatus> {
     this.mutationsInFlight.set(provider, (this.mutationsInFlight.get(provider) ?? 0) + 1);
+    let connectionChange: boolean | undefined;
     try {
       const status = await mutation();
-      this.rememberConnection(status, ++this.statusReadRevision);
+      if (this.rememberConnection(status, ++this.statusReadRevision)) connectionChange = status.connection === "connected";
       return status;
     } finally {
       const remaining = (this.mutationsInFlight.get(provider) ?? 1) - 1;
       if (remaining === 0) this.mutationsInFlight.delete(provider);
       else this.mutationsInFlight.set(provider, remaining);
       this.invalidateCachedReads(provider);
+      if (connectionChange !== undefined) notifyStatusChanged(provider, connectionChange);
     }
   }
 

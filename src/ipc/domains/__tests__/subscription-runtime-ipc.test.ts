@@ -461,7 +461,7 @@ describe("common subscription runtime IPC", () => {
     expect(unsubscribe).toHaveBeenCalledOnce();
   });
 
-  it("publishes each transport connection change to the active model and reviewer once", async () => {
+  it("publishes each transport connection change to the active model once", async () => {
     const actual = await vi.importActual<typeof import("../../../main/subscription-runtime-service.js")>(
       "../../../main/subscription-runtime-service.js",
     );
@@ -488,7 +488,6 @@ describe("common subscription runtime IPC", () => {
     const isSubscriptionConnected = async () => (await service.getStatus(selection.provider, { allowCached: true })).connection === "connected";
     const send = vi.fn();
     deps.getAppWindows = vi.fn(() => [{ isDestroyed: () => false, webContents: { isDestroyed: () => false, send } }]);
-    deps.rewireReviewerAgent.mockImplementation(isSubscriptionConnected);
     const { registerSettingsHandlers } = await import("../settings.js");
     const dispose = registerSettingsHandlers({ ...deps, isSubscriptionConnected } as never);
     try {
@@ -501,20 +500,17 @@ describe("common subscription runtime IPC", () => {
       const older = service.getStatus(selection.provider);
       status = { ...connected, connection: "signed-out" };
       await expect(service.openTextSession(selection)).rejects.toMatchObject({ code: "subscription-chat-unavailable" });
-      await vi.waitFor(() => expect(deps.rewireReviewerAgent).toHaveBeenCalledOnce());
       await vi.waitFor(() => expect(send).toHaveBeenCalledWith(SETTINGS.updated, expect.objectContaining({
         activeChatModel: { kind: "none", reason: "no-connected-provider" },
       })));
       held.resolve(connected);
       await older;
       expect(await isSubscriptionConnected()).toBe(false);
-      await expect(deps.rewireReviewerAgent.mock.results[0]?.value).resolves.toBe(false);
 
       status = connected;
       await invoke("ave:settings:subscription:status", selection.provider, { refresh: true });
       await vi.waitFor(() => expect(send).toHaveBeenCalledWith(SETTINGS.updated, expect.objectContaining({ activeChatModel: selected })));
-      await expect(deps.rewireReviewerAgent.mock.results[1]?.value).resolves.toBe(true);
-      expect(deps.rewireReviewerAgent).toHaveBeenCalledTimes(2);
+      expect(deps.rewireReviewerAgent).not.toHaveBeenCalled();
       expect(send.mock.calls.filter(([channel]) => channel === SETTINGS.updated)).toHaveLength(2);
       expect(send.mock.calls.filter(([channel]) => channel === "ave:settings:subscription:status-updated")).toHaveLength(2);
       expect(currentLlm().activeChatRuntime).toEqual(selection);

@@ -15,6 +15,8 @@ import { VerdictCache } from "../../../permissions/reviewer/verdict-cache.js";
 import { UnavailableRationaleScopeReviewer } from "../../../permissions/reviewer/rationale-scope-reviewer.js";
 import { UnavailableApprovalSentenceSelector } from "../../../permissions/reviewer/approval-sentence-selector.js";
 import type { WireReviewerResult } from "../reviewer-wiring.js";
+import { claimFakeRuntimeDirectories, createSubscriptionRuntimeNamespace } from "../../../__tests__/support/subscription-runtime-namespace.js";
+import { claudeCodeSubscriptionStatus } from "../../../shared/claude-code-subscription.js";
 
 beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 
@@ -175,6 +177,107 @@ describe("wireReviewerAndPermissions subscription runtime", () => {
       await cleanupTmpDir(tempDir);
     }
   });
+});
+
+it("invalidates a cached windowless reviewer verdict on a live disconnect and restores the saved route", async () => {
+  const tempDir = mkdtempSync(join(tmpdir(), "windowless-reviewer-"));
+  vi.resetModules();
+  const resources = await import("../../../main/host-resources.js");
+  resources.configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
+  const cachePath = join(tempDir, "cache.jsonl");
+  const wired: WireReviewerResult[] = [];
+  vi.doMock("electron", () => ({ BrowserWindow: { getAllWindows: () => [] } }));
+  vi.doMock("../reviewer-wiring.js", async importOriginal => {
+    const actual = await importOriginal<typeof import("../reviewer-wiring.js")>();
+    return {
+      ...actual,
+      wireReviewerAgent: (input: Parameters<typeof actual.wireReviewerAgent>[0]) => {
+        const result = actual.wireReviewerAgent({
+          ...input, readSettings: () => ({ mode: "llm", fallbackOnError: "deny" }), verdictCachePath: cachePath,
+        });
+        wired.push(result);
+        return result;
+      },
+    };
+  });
+  const { SubscriptionRuntimeService, onSubscriptionRuntimeStatusChanged } = await import("../../../main/subscription-runtime-service.js");
+  const connected = claudeCodeSubscriptionStatus("ready", "connected", "test");
+  let status = connected;
+  const runtime = await SubscriptionRuntimeService.create(async () => {}, {
+    namespace: createSubscriptionRuntimeNamespace(),
+    claimRuntimeDirectories: claimFakeRuntimeDirectories,
+    claudeCodeClient: { getStatus: async () => status, stop: vi.fn() } as never,
+    codexClient: { stop: vi.fn() } as never,
+    acpRegistry: { stopAll: vi.fn() } as never,
+  });
+  const manager = new PermissionManager(join(tempDir, "permissions.json"));
+  manager.setMode("auto");
+  const selection = { kind: "subscription", provider: "claude-code" } as const;
+  const streamTurn = vi.fn(async function* (): ReturnType<LLMProvider["streamTurn"]> {
+    yield { type: "text_delta", text: '{"level":"low","reason":"The request is consistent."}' };
+    yield { type: "message_complete", stopReason: "end_turn" };
+  });
+  const subscriptionProviderFactory = vi.fn(() => ({ vendor: "claude", streamTurn }));
+  const host = createBootHostFixture();
+  const context = {
+    host, permissionManager: manager, toolRegistry: { setDenyRules: vi.fn() },
+    approvalGate: { setOwnerAwayAutoSkipMinutes: vi.fn() },
+    settingsService: {
+      onChanged: vi.fn(),
+      get: (key: string) => key === "llm" ? {
+        provider: "openai", activeChatRuntime: selection, vendors: { openai: { model: "fixture-model" } },
+      } : {},
+      getSecret: vi.fn(),
+    },
+    singleHopNetworkFetch: host.singleHopNetworkFetch,
+    getMainWindow: () => null, bootAuditLogger: { log: vi.fn(), appendPermissionAuditEntry: vi.fn() }, subscriptionProviderFactory,
+    isSubscriptionConnected: async () => (await runtime.getStatus(selection.provider, { allowCached: true })).connection === "connected",
+  };
+  const dispatch = async (headless: boolean) => {
+    const permission = manager.checkDetailed("network_probe", "builtin", "network", undefined, { sessionId: "windowless", headless });
+    const review = await manager.dispatchReviewer("network_probe", {
+      invocationId: "windowless-review", sessionId: "windowless", source: "builtin", category: "network",
+      pathFields: [], finalInput: { url: "http://localhost:3456" }, executionCwd: tempDir, allowedDirectories: [tempDir],
+      sensitivePathsAdjacent: [], trustOrigin: "llm-tool-arg", permissionDecision: permission,
+    }, undefined, { lane: headless ? "headless" : "foreground-auto" });
+    return { review, result: manager.resolveReviewedPermission(permission, review) };
+  };
+  let dispose: (() => void) | void;
+  let stopListening: (() => void) | undefined;
+  try {
+    const { wireReviewerAndPermissions } = await import("../reviewer-permission-wiring.js");
+    dispose = await wireReviewerAndPermissions(context as never);
+    expect((await dispatch(false)).review.outcome).toBe("fresh");
+    expect((await dispatch(false)).review.outcome).toBe("cache");
+    expect(streamTurn).toHaveBeenCalledOnce();
+    // Observe the gate in the same turn as the host callback, before the queued rewire can complete.
+    let immediate: ReturnType<typeof dispatch> | undefined;
+    stopListening = onSubscriptionRuntimeStatusChanged((_provider, isConnected) => {
+      if (isConnected === false) immediate = dispatch(true);
+    });
+    status = claudeCodeSubscriptionStatus("unverified", "signed-out", "test");
+    await runtime.getStatus(selection.provider);
+    expect(await immediate).toMatchObject({ result: { decision: "deny", reasonCode: "no-approver" } });
+    await vi.waitFor(() => expect(wired.at(-1)?.runtimeMode).toBe("llm-degraded-to-rule"));
+    expect((await dispatch(true)).review.outcome).toBe("unavailable");
+    expect(streamTurn).toHaveBeenCalledOnce();
+
+    status = connected;
+    await runtime.getStatus(selection.provider);
+    await vi.waitFor(() => expect(wired.at(-1)?.runtimeMode).toBe("llm"));
+    expect((await dispatch(true)).result.decision).toBe("allow");
+    expect(subscriptionProviderFactory.mock.calls).toEqual([[selection], [selection]]);
+    expect(context.settingsService.getSecret).not.toHaveBeenCalled();
+  } finally {
+    if (typeof dispose === "function") dispose();
+    stopListening?.();
+    for (const result of wired) await result.cache.flush();
+    await runtime.stop();
+    vi.doUnmock("electron");
+    vi.doUnmock("../reviewer-wiring.js");
+    vi.resetModules();
+    await cleanupTmpDir(tempDir);
+  }
 });
 
 it.each([false, true])("blocks existing reviewer authority before a production catalog failure, custom=%s", async custom => {

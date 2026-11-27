@@ -23,10 +23,18 @@ import type { BootContext } from "../context.js";
 import { createRecentlyDeniedReplayResolver } from "../../permissions/reviewer/recently-denied-replay.js";
 import { errorMessage } from "../../shared/error-message.js";
 import type { SubscriptionRuntimeId } from "../../shared/subscription-runtime.js";
+import { onSubscriptionRuntimeStatusChanged } from "../../main/subscription-runtime-service.js";
+import { UnavailableRationaleScopeReviewer } from "../../permissions/reviewer/rationale-scope-reviewer.js";
+import { UnavailableApprovalSentenceSelector } from "../../permissions/reviewer/approval-sentence-selector.js";
 
 const log = createLogger("ave");
 
-export async function wireReviewerAndPermissions(ctx: BootContext): Promise<void> {
+interface SubscriptionConnectionObservation {
+  provider: SubscriptionRuntimeId;
+  connected: boolean;
+}
+
+export async function wireReviewerAndPermissions(ctx: BootContext): Promise<() => void> {
   const {
     toolRegistry,
     permissionManager,
@@ -143,8 +151,12 @@ export async function wireReviewerAndPermissions(ctx: BootContext): Promise<void
       } : {}),
     };
   };
-  const rewireReviewerAgentNow = async (): Promise<void> => {
-    const reconfiguration = permissionManager.beginReviewerReconfiguration();
+  let currentReconfiguration: object;
+  const rewireReviewerAgentNow = async (
+    reconfiguration: object,
+    observation?: SubscriptionConnectionObservation,
+  ): Promise<void> => {
+    if (currentReconfiguration !== reconfiguration) return;
     // Reapply the read fence on every settings rewire; its generation invalidates verdicts from the prior policy.
     permissionManager.setBlockReadsOutsideWorkingDirectories(
       readPermissionSettings().permissions.blockReadsOutsideWorkingDirectories,
@@ -162,9 +174,12 @@ export async function wireReviewerAndPermissions(ctx: BootContext): Promise<void
     // An unset reviewer model follows chat; resolve again whenever settings change.
     const selectedReviewerModel = judgeSettings.settings.model;
     const activeRuntime = settingsService.get("llm").activeChatRuntime;
-    const connectedSubscription = !selectedReviewerModel && !judgeSettings.modelRejected
-      && activeRuntime?.kind === "subscription" && await isSubscriptionConnected(activeRuntime.provider)
-      ? activeRuntime.provider : undefined;
+    let connectedSubscription: SubscriptionRuntimeId | undefined;
+    if (!selectedReviewerModel && !judgeSettings.modelRejected && activeRuntime?.kind === "subscription") {
+      const connected = observation?.provider === activeRuntime.provider
+        ? observation.connected : await isSubscriptionConnected(activeRuntime.provider);
+      if (connected) connectedSubscription = activeRuntime.provider;
+    }
     const reviewerModelSelection = judgeSettings.modelRejected === true
       ? { label: "configured in Settings", available: false }
       : selectedReviewerModel
@@ -180,6 +195,7 @@ export async function wireReviewerAndPermissions(ctx: BootContext): Promise<void
         ? [stage.model]
         : []),
     ]);
+    if (currentReconfiguration !== reconfiguration) return;
     const reviewerResult = wireReviewerAgent({
       permissionManager,
       networkFetch: singleHopNetworkFetch,
@@ -218,14 +234,40 @@ export async function wireReviewerAndPermissions(ctx: BootContext): Promise<void
     broadcastPermissionConfigChangedFromHost(ctx.host.desktop?.getAppWindows() ?? []);
     permissionManager.completeReviewerReconfiguration(reconfiguration);
   };
-  // Serialized: an overlapping rewire would replace the reconfiguration token the earlier one must complete with.
-  let rewireQueue: Promise<void> = Promise.resolve();
-  const rewireReviewerAgent = (): Promise<void> => {
-    const run = rewireQueue.then(rewireReviewerAgentNow);
-    rewireQueue = run.catch(() => undefined);
+  let latestRewire: Promise<void> = Promise.resolve();
+  const queueReviewerRewire = (observation?: SubscriptionConnectionObservation): Promise<void> => {
+    const reconfiguration = permissionManager.beginReviewerReconfiguration();
+    currentReconfiguration = reconfiguration;
+    const run = latestRewire.catch(() => undefined).then(() => rewireReviewerAgentNow(reconfiguration, observation));
+    latestRewire = run;
     return run;
   };
-  await rewireReviewerAgent();
+  const rewireReviewerAgent = async (): Promise<void> => {
+    let run = queueReviewerRewire();
+    for (;;) {
+      await run;
+      if (run === latestRewire) return;
+      run = latestRewire;
+    }
+  };
+  const stopStatusListener = onSubscriptionRuntimeStatusChanged((provider, connected) => {
+    if (connected === undefined) return;
+    const active = settingsService.get("llm").activeChatRuntime;
+    if (active?.kind !== "subscription" || active.provider !== provider) return;
+    if (!connected) {
+      ctx.rationaleScopeReviewer = new UnavailableRationaleScopeReviewer();
+      ctx.approvalSentenceSelector = new UnavailableApprovalSentenceSelector();
+    }
+    void queueReviewerRewire({ provider, connected }).catch((err) => {
+      log.warn({ err }, "Could not refresh the reviewer after a subscription connection change");
+    });
+  });
+  try {
+    await rewireReviewerAgent();
+  } catch (error) {
+    stopStatusListener();
+    throw error;
+  }
 
   // Install one stable memory-hit broadcaster that resolves the current main window.
   permissionManager.setBroadcastUserApprovalHit((payload) => {
@@ -255,4 +297,5 @@ export async function wireReviewerAndPermissions(ctx: BootContext): Promise<void
   });
 
   ctx.rewireReviewerAgent = rewireReviewerAgent;
+  return stopStatusListener;
 }
