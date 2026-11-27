@@ -252,3 +252,47 @@ describe('memory map view', () => {
     } finally { view?.unmount(); vi.useRealTimers(); }
   });
 });
+
+import { getLocale, setLocale } from "../../../../i18n/runtime.js";
+import type { SkillMemoryGroup, SkillMemoryLesson } from "../../../../shared/skill-memory-types.js";
+
+describe("skill memory control room", () => {
+  it.each([
+    { locale: "en", tab: "Skills", needsReview: "Needs review", apply: "Apply", reject: "Reject", history: "History", undo: "Undo" },
+    { locale: "ko", tab: "스킬", needsReview: "검토 대기", apply: "적용", reject: "거절", history: "이력", undo: "되돌리기" },
+  ] as const)("reviews full lesson text and sends exact decisions in $locale", async labels => {
+    const previous = getLocale();
+    setLocale(labels.locale);
+    try {
+      const { props } = setup();
+      const lesson: SkillMemoryLesson = {
+        id: "candidate", digest: "shown-digest", description: "Build order", body: "First validate the project.\nThen record the build output.",
+        fingerprint: "source", origin: { sessionId: "session", messageId: "message", completionId: "completion", runKind: "scheduled" },
+      };
+      const active = { ...lesson, id: "active", digest: "active-digest", body: "Check the type report.", origin: { ...lesson.origin, runKind: "attended" as const } };
+      const groups: SkillMemoryGroup[] = [{
+        scope: { id: "scope", skill: "review", projectRoot: "/project" },
+        staged: [lesson], active: [active],
+        history: [{ id: "change", action: "activate", actor: "host", before: null, after: active, at: "2026-11-27T00:00:00Z" }],
+      }];
+      const decide = vi.fn(async () => ({ ok: true }));
+      props.api.skillMemory = { list: async () => ({ ok: true, groups }), decide };
+      render(<MemoryView {...props} />);
+      selectTab(labels.tab);
+      expect(await screen.findByRole("heading", { name: labels.needsReview })).toBeTruthy();
+      expect(screen.getByText("First validate the project. Then record the build output.")).toBeTruthy();
+      const click = async (name: string) => {
+        await act(async () => { fireEvent.click(screen.getByRole("button", { name })); });
+      };
+      await click(labels.apply);
+      expect(decide).toHaveBeenLastCalledWith({ scopeId: "scope", action: "apply", lessonId: lesson.id, digest: lesson.digest });
+      await click(labels.reject);
+      expect(decide).toHaveBeenLastCalledWith({ scopeId: "scope", action: "reject", lessonId: lesson.id, digest: lesson.digest });
+      fireEvent.click(screen.getByText(labels.history));
+      await click(labels.undo);
+      expect(decide).toHaveBeenLastCalledWith({ scopeId: "scope", action: "undo", changeId: "change", digest: active.digest });
+    } finally {
+      setLocale(previous);
+    }
+  });
+});
