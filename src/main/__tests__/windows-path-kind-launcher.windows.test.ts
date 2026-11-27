@@ -7,6 +7,7 @@ import { expect, it, vi } from "vitest";
 import { windowsPeImageDigest } from "../../../scripts/lib/windows-path-kind-image-digest.mjs";
 import { heldFileOperations } from "../browser/browser-download-files.js";
 import { configureHostResources } from "../host-resources.js";
+import * as scriptRuntime from "../host-script-runtime.js";
 import {
   queryWindowsSystemDirectory,
   queryWindowsSystemDirectorySync,
@@ -24,6 +25,53 @@ const parentKeys = [
   "HOMEDRIVE", "HOMEPATH", "LOGONSERVER", "PATH", "SYSTEMDRIVE", "SYSTEMROOT",
   "TEMP", "USERDOMAIN", "USERNAME", "USERPROFILE", "WINDIR", "NODE_V8_COVERAGE", "AVE_PARENT_ONLY",
 ];
+
+it.skipIf(process.platform !== "win32")("refuses a substituted workbook helper before spawn", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ave-workbook-helper-"));
+  const launcher = vi.fn();
+  const candidate = windowsPathKindHelperIn(root);
+  const directory = join(root, "skill-scripts");
+  try {
+    mkdirSync(dirname(candidate), { recursive: true });
+    mkdirSync(directory);
+    copyFileSync(windowsPathKindHelperIn(resourcePath), candidate);
+    vi.stubGlobal("__AVE_WINDOWS_PATH_KIND_SHA256__", windowsPeImageDigest(readFileSync(candidate)));
+    writeFileSync(candidate, "substituted fixture");
+    configureHostResources({ resourcePath: root, isPackaged: true });
+    await expect(async () => scriptRuntime.withWindowsWorkbookHelper([join(directory, "edit-xlsx.cjs"), candidate], launcher))
+      .rejects.toThrow("Windows folder classifier does not match this build");
+    expect(launcher).not.toHaveBeenCalled();
+  } finally {
+    vi.unstubAllGlobals();
+    configureHostResources({ resourcePath, isPackaged: true });
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it.skipIf(process.platform !== "win32")("holds the workbook helper and its parents across the awaited launch", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ave-held-workbook-helper-"));
+  const candidate = windowsPathKindHelperIn(root);
+  const directory = join(root, "skill-scripts");
+  const retired = join(root, "retired");
+  try {
+    mkdirSync(dirname(candidate), { recursive: true });
+    mkdirSync(directory);
+    copyFileSync(windowsPathKindHelperIn(resourcePath), candidate);
+    vi.stubGlobal("__AVE_WINDOWS_PATH_KIND_SHA256__", windowsPeImageDigest(readFileSync(candidate)));
+    configureHostResources({ resourcePath: root, isPackaged: true });
+    await scriptRuntime.withWindowsWorkbookHelper([join(directory, "edit-xlsx.cjs"), candidate], async () => {
+      await Promise.resolve();
+      for (const name of [candidate, dirname(candidate)]) {
+        expect(() => renameSync(name, retired)).toThrow(expect.objectContaining({ code: expect.stringMatching(/^(EACCES|EBUSY|EPERM)$/u) }));
+      }
+    });
+    renameSync(candidate, retired);
+  } finally {
+    vi.unstubAllGlobals();
+    configureHostResources({ resourcePath, isPackaged: true });
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 it.skipIf(process.platform !== "win32")("distinguishes a missing pinned executable from a failed open", async () => {
   const resources = mkdtempSync(join(tmpdir(), "ave-missing-helper-"));

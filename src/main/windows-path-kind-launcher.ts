@@ -54,19 +54,29 @@ export function withWindowsPathKindHelper<T>(launch: (helper: string) => T, reso
     throw windowsPathKindHelperUnavailable(`Windows folder classifier pin is missing. ${REPAIR}`);
   }
   if (!pinned()) return launch(resolveWindowsPathKindHelper(resourcePath));
+  // An absolute native binding needs no package resolution in the confined workbook process.
+  const binding = workbook ? resolveWindowsWorkbookLockerBinding(resourcePath, Boolean(packagedWorkbook)) : undefined;
+  const executable = holdBuiltWindowsPathKindHelper(windowsPathKindHelperIn(resourcePath), binding);
+  try {
+    return launch(executable.path);
+  } finally {
+    executable.close();
+  }
+}
+
+export function holdBuiltWindowsPathKindHelper(path: string, binding?: string): ReturnType<typeof lockWindowsExecutable> {
   let executable: ReturnType<typeof lockWindowsExecutable>;
   try {
-    // An absolute native binding needs no package resolution in the confined workbook process.
-    const binding = workbook ? resolveWindowsWorkbookLockerBinding(resourcePath, Boolean(packagedWorkbook)) : undefined;
-    executable = lockWindowsExecutable(windowsPathKindHelperIn(resourcePath), binding);
+    executable = lockWindowsExecutable(path, binding);
   } catch (error) {
     throw helperOpenFailure(error);
   }
   try {
     assertBuiltHelper(executable.bytes);
-    return launch(executable.path);
-  } finally {
+    return executable;
+  } catch (error) {
     executable.close();
+    throw error;
   }
 }
 

@@ -14,7 +14,8 @@ import { beginAgentTerminalObservation, type AgentTerminalObservationInput, type
 import { errorMessage } from "../shared/error-message.js";
 import { redactHomePathsInText } from "../audit/dlp-filter.js";
 import { scrubDiagnosticSecrets } from "../shared/dlp.js";
-import { hostScriptInvocationReadPaths } from "../main/host-script-runtime.js";
+import { hostScriptInvocationReadPaths, withWindowsWorkbookHelper } from "../main/host-script-runtime.js";
+import { isWindowsPathKindHelperUnavailable } from "../main/windows-path-kind-launcher.js";
 import { endConversationTerminalSession } from "../main/terminal/pty-manager.js";
 import { raceWithTimeout } from "../shared/abortable-deadline.js";
 import { win32SystemBinary, windowsSystemRoot } from "../shared/windows-system-path.js";
@@ -3926,6 +3927,12 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
         metadata: { sandboxed: false, isolation: "none" },
       };
     }
+    const runtimeReads = powerShellHostScriptReadPaths(commandAst, input.command);
+    const launchWorkbook = (launch: () => Promise<ToolExecutionResult>) =>
+      withWindowsWorkbookHelper(runtimeReads, launch).catch((error: unknown) => {
+        if (!isWindowsPathKindHelperUnavailable(error)) throw error;
+        return { output: `PowerShell spawn failed: ${errorMessage(error)}`, isError: true };
+      });
     if (hostShellPlan.mode === "asrt") {
       const spawnCwd = hostSpawnAuthorization?.cwdIdentity.realpath ?? resolvedCwd;
       // Namespace-scoped write-jail (owner plugin sandbox root ∪ allowed
@@ -3939,11 +3946,10 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
           ? containerShellAllowedDirectories(spawnCwd, ctx.extraAllowedDirectories)
           : [spawnCwd, ...ctx.extraAllowedDirectories],
       });
-      const runtimeReads = powerShellHostScriptReadPaths(commandAst, input.command);
       const command = runtimeReads.length > 0 ? awaitedHostScriptCommand(input.command, commandAst.commands[0]!) : input.command;
       if (command === null) return { output: "PowerShell command blocked: host script runtime has no parser extent", isError: true };
       if (isWindowsContainerShell(hostShellPlan)) {
-        const checked = await checkedShellResult(() => spawnPowerShellInMxc(
+        const checked = await checkedShellResult(() => launchWorkbook(() => spawnPowerShellInMxc(
           command,
           spawnCwd,
           writePaths,
@@ -3951,12 +3957,12 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
           outputProgress,
           typeof ctx.metadata.toolUseId === "string" ? ctx.metadata.toolUseId : undefined,
           undefined, runtimeReads, verified, boundarySessionOf(ctx), hostSpawnAuthorization, commandReadPaths,
-        ), ctx.verifiedShellCommand, verifiedIdentity, ctx.abortSignal);
+        )), ctx.verifiedShellCommand, verifiedIdentity, ctx.abortSignal);
         const block = sandboxBlockForResult(checked.result);
         if (block !== undefined && block.command !== input.command) attachSandboxBlock(checked.result, issueFilesystemSandboxBlock(input.command, resolvedCwd));
         return checked.result;
       }
-      const checked = await checkedShellResult(() => spawnPowerShellWithSandbox(
+      const checked = await checkedShellResult(() => launchWorkbook(() => spawnPowerShellWithSandbox(
         command,
         spawnCwd,
         writePaths,
@@ -3964,17 +3970,17 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
         outputProgress,
         typeof ctx.metadata.toolUseId === "string" ? ctx.metadata.toolUseId : undefined,
         runtimeReads, verified, boundarySessionOf(ctx), hostSpawnAuthorization, commandReadPaths, hostShellPlan,
-      ), ctx.verifiedShellCommand, verifiedIdentity, ctx.abortSignal);
+      )), ctx.verifiedShellCommand, verifiedIdentity, ctx.abortSignal);
       const block = sandboxBlockForResult(checked.result);
       if (block !== undefined && block.command !== input.command) attachSandboxBlock(checked.result, issueFilesystemSandboxBlock(input.command, resolvedCwd));
       return checked.result;
     }
 
-    const checked = await checkedShellResult(() => spawnPowerShell(
+    const checked = await checkedShellResult(() => launchWorkbook(() => spawnPowerShell(
       input.command, hostSpawnAuthorization?.cwdIdentity.realpath ?? resolvedCwd, input.timeoutSeconds, ctx.abortSignal,
       outputCapture, outputProgress, hostSpawnAuthorization, verified,
       shellObservationSandbox(hostShellPlan, disposableExecution), sessionIdFromContext(ctx),
-    ), ctx.verifiedShellCommand, verifiedIdentity, ctx.abortSignal);
+    )), ctx.verifiedShellCommand, verifiedIdentity, ctx.abortSignal);
     if (checked.refused) return checked.result;
     const plainResult = checked.result;
     if (disposableExecution) return withDisposableExecutionMetadata(plainResult);
