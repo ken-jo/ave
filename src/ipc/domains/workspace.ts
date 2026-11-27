@@ -1172,9 +1172,10 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
       let judged: { scope: { cwd: string; extraAllowed: string[] }; nativeRoots: string[]; folder?: { path: string; root: string } } | "invalid-query" | "folder-not-allowed";
       try {
         judged = withLocalityDecision(() => {
-          const scope = currentScope();
           const roots = computeRoots();
           const nativeRoots = [...new Set(roots.map((root) => root.path))];
+          const [cwd, ...extraAllowed] = nativeRoots;
+          const scope = { cwd, extraAllowed };
           if (rawOptions === undefined) return { scope, nativeRoots };
           const rawFolder = typeof rawOptions === "object" && rawOptions !== null ? (rawOptions as { folder?: unknown }).folder : undefined;
           if (typeof rawFolder !== "string" || !isAbsolutePath(rawFolder)) return "invalid-query";

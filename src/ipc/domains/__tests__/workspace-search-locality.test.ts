@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, parse, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 
@@ -13,6 +13,7 @@ const fixture = vi.hoisted(() => ({
   collectRealFiles: false,
   redirectedFile: undefined as undefined | string,
   query: undefined as undefined | { mock: { calls: unknown[][] } },
+  offWorkspaceWriteDenyPaths: [] as string[],
   atWalk: [] as string[],
   atCollect: [] as string[],
 }));
@@ -33,6 +34,13 @@ vi.mock("../../../main/default-workspace-root.js", async (original) => {
       try { return actual.getDefaultWorkspaceRoot(); }
       finally { cwd.mockRestore(); }
     },
+  };
+});
+vi.mock("../../../main/host-script-runtime.js", async (original) => {
+  const actual = await original<typeof import("../../../main/host-script-runtime.js")>();
+  return {
+    ...actual,
+    hostScriptWriteDenyPaths: () => [...fixture.offWorkspaceWriteDenyPaths, ...actual.hostScriptWriteDenyPaths()],
   };
 });
 vi.mock("../../../permissions/permission-settings-store.js", async (original) => ({
@@ -159,17 +167,21 @@ describe.runIf(process.platform === "win32")("workspace folder search judged onc
     writeFileSync(path, "abc");
     fixture.defaultRoot = join(fixture.cwd, "storedroot");
     fixture.collectRealFiles = true;
+    const workspaceDrive = parse(storedRoot).root.slice(0, 2).toUpperCase();
+    const otherDriveRoot = workspaceDrive === "C:" ? "D:\\" : "C:\\";
+    fixture.offWorkspaceWriteDenyPaths = [join(otherDriveRoot, "example", "dist", "skill-scripts")];
     query.mockClear();
     try {
       const handler = fixture.handlers.get(CHANNELS.workspace.searchFiles);
       expect(await handler?.({ sender: { id: 1 } }, "notes")).toEqual({
         ok: true, truncated: false, matches: [{ path, root: storedRoot, relativePath: "Notes.txt", bytes: 3 }],
       });
-      expect(fixture.atCollect).toHaveLength(1);
+      expect(fixture.atCollect).toEqual([workspaceDrive]);
       expect(fixture.atCollect).toEqual(fixture.atWalk);
     } finally {
       fixture.defaultRoot = fixture.cwd;
       fixture.collectRealFiles = false;
+      fixture.offWorkspaceWriteDenyPaths = [];
     }
   });
 });
