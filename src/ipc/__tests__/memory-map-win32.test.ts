@@ -99,12 +99,15 @@ describe('memory map host boundary', () => {
       };
       queueMicrotask(() => {
         assert.ok(options.lookup);
-        options.lookup(url.hostname, { all: true }, (error, answers) => {
+        const { autoSelectFamily } = options as { autoSelectFamily?: boolean };
+        options.lookup(url.hostname, { all: autoSelectFamily !== false }, (error, answers) => {
           assert.ifError(error);
-          assert.ok(Array.isArray(answers));
-          for (const answer of answers) dial(answer.address);
+          const [first, ...fallback] = Array.isArray(answers) ? answers.map(answer => answer.address) : [answers];
+          assert.ok(first);
+          dial(first);
           request.emit('socket', socket);
           beforeSecure?.();
+          for (const address of fallback) dial(address);
           socket.emit('secureConnect');
         });
       });
@@ -238,6 +241,30 @@ describe('memory map host boundary', () => {
       })).rejects.toBe(revoked);
       expect(dial).toHaveBeenCalledOnce();
       expect(send).not.toHaveBeenCalled();
+    } finally {
+      lookup.mockRestore();
+    }
+  });
+
+  it('prevents an artifact fallback dial when admission is withdrawn after the first attempt', async () => {
+    const revoked = new MemoryMapHostError('local-runtime-unavailable');
+    let admitted = true;
+    const first = { address: '2606:4700:4700::1111', family: 6 };
+    const second = { address: '93.184.216.34', family: 4 };
+    const lookup = vi.spyOn(artifactDns, 'lookup').mockResolvedValue([first, second]);
+    const { dial, send } = mockArtifactHttps([], () => {
+      expect(dial).toHaveBeenCalledExactlyOnceWith(first.address);
+      admitted = false;
+    });
+    try {
+      const download = await artifactDownloader();
+      await expect(download(MODEL_FILES[0].name, new AbortController().signal, () => {
+        if (!admitted) throw revoked;
+      })).rejects.toBe(revoked);
+      expect(dial).toHaveBeenCalledExactlyOnceWith(first.address);
+      expect(send).not.toHaveBeenCalled();
+      expect(state.artifactRequest).toHaveBeenCalledOnce();
+      expect(state.artifactRequest.mock.calls[0]?.[1]).toMatchObject({ autoSelectFamily: false });
     } finally {
       lookup.mockRestore();
     }

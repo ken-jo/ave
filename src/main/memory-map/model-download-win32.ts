@@ -1,6 +1,6 @@
 import { promises as dns, type LookupAddress } from 'node:dns';
-import { request as requestHttps } from 'node:https';
-import { isIP } from 'node:net';
+import { request as requestHttps, type RequestOptions } from 'node:https';
+import { isIP, type TcpSocketConnectOpts } from 'node:net';
 import { Readable } from 'node:stream';
 import { getCACertificates } from 'node:tls';
 import { classifyAddress, fetchAddressCheckedResponse, NetworkGuardError } from '../../core/network-guard.js';
@@ -35,16 +35,19 @@ function requestArtifact(
     // Abort settles even when the destroyed request emits nothing further.
     const onAbort = () => settle(signal.reason);
     signal.addEventListener('abort', onAbort, { once: true });
-    const request = requestHttps(url, {
+    // One dial per hop: fallback attempts would connect without a fresh admission check.
+    const options: RequestOptions & Pick<TcpSocketConnectOpts, 'autoSelectFamily'> = {
       agent: false,
       signal,
       ca: trustedCertificates,
       rejectUnauthorized: true,
-      lookup: (_hostname, options, done) => {
-        if (options.all) done(null, addresses);
+      autoSelectFamily: false,
+      lookup: (_hostname, lookupOptions, done) => {
+        if (lookupOptions.all) done(null, [first]);
         else done(null, first.address, first.family);
       },
-    }, incoming => {
+    };
+    const request = requestHttps(url, options, incoming => {
       try {
         const status = incoming.statusCode ?? 0;
         if (status < 200) {
