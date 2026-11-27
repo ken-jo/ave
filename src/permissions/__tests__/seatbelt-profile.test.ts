@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { rankPosixContainerRows, type PosixPolicyLookups } from "../mxc-posix.js";
 import { buildPolicyModel, policyFloorRow, policyGrantRow, type PolicyModel, type PolicyRow } from "../policy-model.js";
-import { _seatbeltDenyGlobForTest, buildSeatbeltShellProfile, seatbeltProfileAllowsOnlyProxyIpEgress, splitSeatbeltPolicyRows } from "../seatbelt-profile.js";
+import { _seatbeltDenyGlobForTest, buildSeatbeltHolderProfile, buildSeatbeltShellProfile, seatbeltProfileAllowsOnlyProxyIpEgress, splitSeatbeltPolicyRows } from "../seatbelt-profile.js";
 
 const lookups: PosixPolicyLookups = {
   home: "/users/example", foldsCase: true, canonical: path => path,
@@ -187,5 +187,23 @@ describe("Seatbelt structural IP egress evidence", () => {
     ["a Unix-socket filter with a bare third item", (profile: string) => `${profile}\n(allow network-outbound (remote unix-socket any))`, 9000],
   ])("does not hold with %s", (_name, edit, port) => {
     expect(seatbeltProfileAllowsOnlyProxyIpEgress(edit(built()), port)).toBe(false);
+  });
+});
+
+describe("Seatbelt holder profile size", () => {
+  const labels = { holder: "dev.ave.holder.i0.b0.h1", boot: "dev.ave.holder.i0.b0.all", instance: "dev.ave.holder.i0.any" };
+  const withDenies = (count: number) => {
+    const model = buildPolicyModel({
+      userGrants: [], extensionManifests: [],
+      floors: Array.from({ length: count }, (_, index) => policyFloorRow(`/vault/folder-${String(index).padStart(5, "0")}/with/some/depth`, "denied", "secrets", true)),
+      launchGrants: [policyGrantRow("/workspace", "rw", "launch-grant", true)],
+    });
+    const grants = rankPosixContainerRows(splitSeatbeltPolicyRows(model).literalModel, "seatbelt", lookups);
+    return { model, grants, lookups, unixSocketRoots: [], proxyPort: null, labels };
+  };
+
+  it("builds a profile within the bound and refuses one past it by name, before the kernel compiles it", () => {
+    expect(Buffer.byteLength(buildSeatbeltHolderProfile(withDenies(100)))).toBeLessThan(128 * 1024);
+    expect(() => buildSeatbeltHolderProfile(withDenies(3_000))).toThrow(expect.objectContaining({ code: "profile-string-too-long" }));
   });
 });

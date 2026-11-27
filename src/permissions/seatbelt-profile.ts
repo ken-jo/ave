@@ -131,8 +131,13 @@ const RESERVED_PROFILE_TEXT = ["com.microsoft.mxc.run.", "dev.ave.holder."] as c
 /** Every holder label starts with this; `holder-label-sweep.ts` builds the labels under it. */
 export const HOLDER_LABEL_PREFIX = "dev.ave.holder.";
 const HOLDER_LABEL = /^dev\.ave\.holder\.[a-z0-9.]{1,96}$/u;
-/** A holder profile, label included, larger than this is refused before anything is spawned. */
-const SEATBELT_HOLDER_PROFILE_MAX_BYTES = 512 * 1024;
+/**
+ * A holder profile, label included, larger than this is refused before anything is spawned. The kernel's compile time
+ * grows faster than linearly with profile size (probe V-P1, this Mac: 128 KiB 1.2-2.4 s, 256 KiB 5-10 s, 512 KiB
+ * about 20 s), and the start deadline is `mxcMacHolderStartMs`, so a larger bound would turn an oversized policy into
+ * a stalled start instead of naming it. The carve's own limits keep real profiles far below this.
+ */
+const SEATBELT_HOLDER_PROFILE_MAX_BYTES = 128 * 1024;
 
 function checkProfileString(value: string): void {
   if (CONTROL_CHARACTER.test(value)) {
