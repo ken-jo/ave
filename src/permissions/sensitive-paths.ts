@@ -40,7 +40,7 @@ import { hostScriptWriteDenyPaths } from "../main/host-script-runtime.js";
 import { compileSensitivePathGlob } from "./sensitive-path-glob.js";
 import { isWindowsNetworkOrDevicePath, localDriveAlias, modelShellPath, withoutStreamSuffixes } from "../shared/shell-native-path.js";
 import {
-  admitLocalPath, admitLocalRoute, admitRouteAncestor, decisionMemo, type LocalFilesystemFacts, localFs, matcherMemo,
+  admitLocalPath, admitLocalRoute, admitRouteAncestor, decisionMemo, isLocalityFailure, type LocalFilesystemFacts, localFs, matcherMemo,
   type LocalRoute, openLocalityDecision, rethrowLocalityFailure, unprovenLookup, withLocalityDecision,
 } from "../shared/local-path-io.js";
 import { isWindowsPathKindHelperUnavailable } from "../main/windows-path-kind-launcher.js";
@@ -59,10 +59,14 @@ export function protectRuntimeSettingsPath(path: string, resourcePath?: string):
   const lexical = process.platform === "win32" ? foldCanonicalPathSeparators(pathResolve(path)) : pathResolve(path);
   let canonical: string | undefined;
   try {
-    canonical = withLocalityDecision(() => canonicalizePathForMatch(path),
-      process.platform === "win32" && resourcePath !== undefined ? openLocalityDecision(resourcePath) : undefined);
+    canonical = withLocalityDecision(() => {
+      // Only a proven local route names the physical file; a refused one leaves it unknown.
+      if (process.platform === "win32") admitLocalRoute(pathResolve(path), { maxSymlinkHops: MAX_WALK_UP });
+      return canonicalizePathForMatch(path);
+    }, process.platform === "win32" && resourcePath !== undefined ? openLocalityDecision(resourcePath) : undefined);
   } catch (error) {
-    if (process.platform !== "win32" || !isWindowsPathKindHelperUnavailable(error)) throw error;
+    const refusedRoute = !isLocalityFailure(error) && (error as NodeJS.ErrnoException | undefined)?.code === "ENETWORKSHAREPATH";
+    if (process.platform !== "win32" || !isWindowsPathKindHelperUnavailable(error) && !refusedRoute) throw error;
     // The lexical deny still applies. Native writes must wait for a host that can also protect the physical path.
   }
   const targets = new Set<string>();

@@ -12,6 +12,7 @@ const io = vi.hoisted(() => ({
   lockHelper: vi.fn<(path: string) => { path: string; bytes: Buffer; close(): void }>(),
   spawnHelper: vi.fn(),
   lstat: vi.fn(),
+  readlink: vi.fn(),
   realpath: vi.fn(),
   acquireHostInstanceLock: vi.fn(async () => {}),
   sharedBootstrap: vi.fn(),
@@ -35,6 +36,7 @@ vi.mock("node:fs", async (importOriginal) => {
       typeof file === "string" && file.endsWith("ave-path-kind.exe") ? io.helperBytes(file) : Reflect.apply(fs.readFileSync, fs, [file, options])
     ),
     lstatSync: io.lstat,
+    readlinkSync: io.readlink,
     realpathSync: Object.assign(vi.fn(), { native: io.realpath }),
   };
 });
@@ -213,6 +215,39 @@ describe("desktop host resource startup", () => {
     } finally {
       await host.close();
     }
+  });
+
+  it.each(["incomplete", "share"] as const)("denies native writes when the settings route was refused at startup (%s)", async (refusal) => {
+    const { app } = await import("electron");
+    const { createDesktopBootHost } = await import("../../boot/desktop-host-runtime.js");
+    const { canonicalizePathForMatch, isSensitivePath, protectedControlEntryFor } = await import("../../permissions/sensitive-paths.js");
+    const { configureHostResources } = await import("../host-resources.js");
+    Object.defineProperty(app, "isPackaged", { value: true });
+    const junction = "C:\\profile";
+    const lexical = win32.join(junction, "settings.json");
+    const physical = "C:\\physical\\settings.json";
+    let recovered = false;
+    io.lstat.mockImplementation((path: string) => {
+      if (path === junction && refusal === "incomplete" && !recovered) throw Object.assign(new Error("access denied"), { code: "EACCES" });
+      return { isSymbolicLink: () => path === junction };
+    });
+    io.readlink.mockImplementation(() => recovered || refusal === "incomplete" ? win32.dirname(physical) : "\\\\server\\share\\profile");
+    io.realpath.mockImplementation((path: string) => path === lexical ? physical : path);
+    io.lstat.mockClear();
+
+    const host = createDesktopBootHost(PROJECT_ROOT);
+    try {
+      expect(io.lstat).toHaveBeenCalledWith(junction, { throwIfNoEntry: false });
+      recovered = true;
+      configureHostResources({ resourcePath: PACKAGED_RESOURCES, isPackaged: true });
+      expect(canonicalizePathForMatch(lexical)).toBe("c:/physical/settings.json");
+      expect(isSensitivePath(physical, "write")).toBe("runtime-settings-file");
+      expect(protectedControlEntryFor(physical)).toBe("runtime-settings-file");
+    } finally {
+      await host.close();
+    }
+    expect(isSensitivePath(physical, "write")).toBeNull();
+    expect(protectedControlEntryFor(physical)).toBeUndefined();
   });
 
   it("uses separate Node host locality decisions without global resources", async () => {
