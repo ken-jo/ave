@@ -808,6 +808,52 @@ describe("Tailnet observer configuration surface", () => {
   });
 
   it.each([
+    { route: "foreground root", foreground: "root", override: undefined, port: 46_173, target: 46_173, known: true },
+    { route: "empty foreground", foreground: "empty", override: undefined, port: 28_173, target: null, known: true },
+    { route: "malformed foreground", foreground: "invalid", override: undefined, port: 46_173, target: null, known: false },
+    { route: "conflicting foreground and background roots", foreground: "conflict", override: undefined, port: 46_173, target: null, known: false },
+    { route: "foreground root with override", foreground: "root", override: "29999", port: 29_999, target: 46_173, known: true },
+  ])("uses $route as boot port evidence", async ({ foreground, override, port, target, known }) => {
+    const { input, startServer } = options({
+      AVE_TAILNET_OBSERVER: "1",
+      AVE_TAILNET_OBSERVER_AUTHORIZATION: CAPABILITY_ENV,
+      AVE_TAILNET_OBSERVER_PORT: override,
+    });
+    const foregroundWeb = {
+      "desk.example-tailnet.ts.net:443": {
+        Handlers: { "/": { Proxy: "http://127.0.0.1:46173" } },
+      },
+    };
+    const status = foreground === "empty" ? { Foreground: {} }
+      : foreground === "invalid" ? { Foreground: { session: { Web: false } } }
+      : {
+        Foreground: { session: { Web: foregroundWeb } },
+        ...(foreground === "conflict" ? {
+          Web: { "desk.example-tailnet.ts.net:443": { Handlers: { "/": { Proxy: "http://127.0.0.1:28173" } } } },
+        } : {}),
+      };
+    const runCommand = runner({
+      "status --json": { kind: "ran", code: 0, stdout: readyStatus(), stderr: "" },
+      "serve status --json": { kind: "ran", code: 0, stdout: JSON.stringify(status), stderr: "" },
+    });
+    const probeEnvironment = () => probeTailscaleEnvironment({ platform: "linux", runCommand });
+    const log = vi.fn();
+
+    await expect.soft(probeEnvironment()).resolves.toMatchObject({
+      serveStatusKnown: known,
+      serveConfigured: target !== null,
+      serveTargetPort: target,
+    });
+    await expect.soft(maybeStartTailnetObserverServer({
+      ...input, log, dependencies: { ...input.dependencies, probeEnvironment },
+    })).resolves.toEqual({ port });
+    expect.soft(startServer).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ port }));
+    if (override !== undefined) {
+      expect(log).toHaveBeenCalledWith(expect.stringContaining("Serve targets port 46173; the configured listener port is 29999"));
+    }
+  });
+
+  it.each([
     { name: "without editing the port", override: undefined, edit: undefined, savedPort: 46_173, listeningPort: 46_173 },
     { name: "with an explicit port edit", override: undefined, edit: 29_123, savedPort: 29_123, listeningPort: 29_123 },
     { name: "with a port edit under an environment override", override: "46173", edit: 29_123, savedPort: 29_123, listeningPort: 46_173 },

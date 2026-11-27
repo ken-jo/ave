@@ -1003,28 +1003,52 @@ function serveWebHandlers(web: Record<string, unknown>) {
   });
 }
 
-function readServeStatus(raw: unknown, dnsName: string | null): { configured: boolean; targetPort: number | null } | null {
+interface ServeStatus {
+  readonly configured: boolean;
+  readonly targetPort: number | null;
+}
+
+const ABSENT_SERVE_STATUS: ServeStatus = { configured: false, targetPort: null };
+
+function readServeStatus(raw: unknown, dnsName: string | null): ServeStatus | null {
   if (!isRecord(raw)) return null;
-  const absent = { configured: false, targetPort: null };
-  if (raw.Web === undefined) {
-    return Object.keys(raw).every(key => ["TCP", "AllowFunnel", "Foreground", "Services", "ETag"].includes(key)) ? absent : null;
+  const foreground = raw.Foreground === undefined ? {} : raw.Foreground;
+  if (!isRecord(foreground)) return null;
+
+  let status = ABSENT_SERVE_STATUS;
+  for (const config of [raw, ...Object.values(foreground)]) {
+    if (!isRecord(config)) return null;
+    if (!Object.keys(config).every(key => ["Web", "TCP", "AllowFunnel", "Foreground", "Services", "ETag"].includes(key))) {
+      return null;
+    }
+    if (config !== raw && config.Foreground !== undefined) return null;
+    const route = readServeWebStatus(config.Web, dnsName);
+    if (route === null) return null;
+    if (!route.configured) continue;
+    if (status.configured) return null;
+    status = route;
   }
-  if (!isRecord(raw.Web)) return null;
-  const listeners = Object.entries(raw.Web);
-  if (listeners.length === 0) return absent;
+  return status;
+}
+
+function readServeWebStatus(web: unknown, dnsName: string | null): ServeStatus | null {
+  if (web === undefined) return ABSENT_SERVE_STATUS;
+  if (!isRecord(web)) return null;
+  const listeners = Object.entries(web);
+  if (listeners.length === 0) return ABSENT_SERVE_STATUS;
   if (dnsName === null) return null;
 
   const hostPort = dnsName.toLowerCase() + ":443";
   const matching = listeners.filter(([address]) => address.toLowerCase() === hostPort);
   if (matching.length > 1) return null;
   if (matching.length === 0) {
-    return listeners.every(([, listener]) => isRecord(listener) && isRecord(listener.Handlers)) ? absent : null;
+    return listeners.every(([, listener]) => isRecord(listener) && isRecord(listener.Handlers)) ? ABSENT_SERVE_STATUS : null;
   }
 
   const listener = matching[0][1];
   if (!isRecord(listener) || !isRecord(listener.Handlers)) return null;
   const root = listener.Handlers["/"];
-  if (root === undefined) return absent;
+  if (root === undefined) return ABSENT_SERVE_STATUS;
   if (!isRecord(root)) return null;
   if (typeof root.Proxy === "string") {
     let proxy: URL;
