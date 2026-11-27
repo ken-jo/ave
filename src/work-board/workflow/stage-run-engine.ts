@@ -75,7 +75,7 @@ interface LaneHooks {
 
 export interface StageRunEngineDeps {
   /** The board: the row of a run carries its id, its shown status and its final output. Nothing a run is decided from is read here. */
-  store: Pick<WorkBoardStore, "get" | "create" | "remove" | "setRunStatus" | "setRunResult" | "boardChanged" | "rowDeleted" | "clearMissingRun">;
+  store: Pick<WorkBoardStore, "get" | "create" | "remove" | "setRunStatus" | "setRunResult" | "boardChanged" | "rowDeleted" | "clearMissingRun" | "hasCommittedRun">;
   /** Every run-authority field: the pin, the source, the stage runs, the joins, the gates and how the run ended. */
   runs: WorkflowRunState;
   /** The authorised registry root of a project path, or null when the registry does not hold it. */
@@ -292,8 +292,15 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   const notifyItemChanged = (itemId: number): void => notify(() => deps.itemChanged?.(itemId));
   const records = deps.runs;
   const runs = new Map<number, RunState>();
+  // Checked synchronously right before an output handler, a push or an integration starts. The board a commit publishes, before its
+  // listeners run, still names this run, and no Stop or removal is under way; a run no longer live here is admitted by its row alone.
+  function canAdmitRunEffect({ itemId, runId }: RunRef): boolean {
+    const active = runs.get(itemId);
+    return store.hasCommittedRun(itemId, runId) && (active === undefined || active.runId === runId && !active.stopping);
+  }
   const outputApprovalSurfaces = new WeakMap<RunState, Map<string, WebContents>>();
   const outputEffects = createRecordedOutputEffects({ records, outputs: deps.outputs, resolvePinned, resolveProjectRoot: deps.resolveProjectRoot, notifyItemChanged,
+    canAdmitRunEffect,
     scheduledProject: async source => {
       const approved = (await deps.attachments.getAttachment(source.attachmentId))?.approvedScope;
       return approved?.kind === "project" ? approved.projectRoot : approved?.kind === "all" ? undefined : null;
@@ -946,7 +953,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
           const surface = outputApprovalSurfaces.get(state)?.get(effect.stageId);
           if (!stage?.requestedOutputs?.length || !definition || !surface) break;
           const canExecute = () => runs.get(state.itemId) === state && !state.rowGone && !state.lost
-            && !halted(state, effect.stageId) && canShowRun(state) && !surface.isDestroyed();
+            && !halted(state, effect.stageId) && canShowRun(state) && !surface.isDestroyed() && canAdmitRunEffect(state.ref);
           const outputAbort = new AbortController();
           state.outputAbort = outputAbort;
           try {
@@ -961,11 +968,11 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
           break;
         }
         case "integrate": {
-          if (state.integrating.has(effect.joinId)) break;
+          if (state.integrating.has(effect.joinId) || !canAdmitRunEffect(state.ref)) break;
           let complete = true;
           for (const stageId of effect.stageIds) if (!(await sealStage(stageId))) complete = false;
           // A failed seal drops the open join through `seal_failed`; incomplete inputs never reach integration.
-          if (!complete) break;
+          if (!complete || !canAdmitRunEffect(state.ref)) break;
           state.integrating.add(effect.joinId);
           try {
             const merged = await workspace.integrate(state.ref, effect.joinId, effect.stageIds);

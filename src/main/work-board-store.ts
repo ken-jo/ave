@@ -1004,7 +1004,9 @@ export class WorkBoardStore {
   }
 
   async load(): Promise<void> {
-    this.cache = cacheOf(await this.readBoard());
+    const beforeRead = this.cache;
+    const board = await this.readBoard();
+    if (this.cache === beforeRead) this.cache = cacheOf(board);
     this.loaded = true;
     // The run file's row-id floor starts from the first board read: every id it shows. One that cannot take it now gets it with the next new row.
     try { await this.runs.raiseRowIdFloor(this.cache.nextId - 1); }
@@ -1019,8 +1021,14 @@ export class WorkBoardStore {
   async runBoardSnapshot(): Promise<BoardOnDisk | undefined> {
     await this.ensureLoaded();
     await this.resolveUnknownDeletes();
+    return this.refreshBoardSnapshot();
+  }
+
+  private async refreshBoardSnapshot(): Promise<BoardOnDisk | undefined> {
+    const beforeRead = this.cache;
     const snapshot = await readBoardOnDisk(this.filePath);
-    if (snapshot) this.cache = snapshot.board;
+    // A read begun before a commit must not restore the row that commit removed.
+    if (snapshot && this.cache === beforeRead) this.cache = snapshot.board;
     return snapshot;
   }
 
@@ -1100,6 +1108,11 @@ export class WorkBoardStore {
     return { status: "found", itemId: id, item: decorate(cloneItem(item), this.now(), runError) };
   }
 
+  /** Synchronous effect admission against the board published by commit before listeners run. */
+  hasCommittedRun(itemId: number, runId: string): boolean {
+    return this.cache.items.some(item => item.id === itemId && item.runId === runId);
+  }
+
   /** The template run a row names, read from the run file only. A run stored for another row is refused. */
   async getRun(id: number): Promise<WorkflowRunReadResult> {
     await this.ensureLoaded();
@@ -1117,7 +1130,10 @@ export class WorkBoardStore {
   async updateRun(id: number, runId: string, mutate: (run: WorkflowRunRecord) => WorkflowRunRecord | RunEnd | null): Promise<WorkflowRunWriteResult | { status: "board-unread" | "row-lost" | "cause-refused" }> {
     await this.ensureLoaded();
     return withInProcessFileQueue(this.filePath, async () => {
-      const row = (await readBoardOnDisk(this.filePath))?.standing({ itemId: id, runId });
+      const snapshot = await readBoardOnDisk(this.filePath);
+      // Publish a repaired row from the same locked read that authorizes the run update.
+      if (snapshot) this.cache = snapshot.board;
+      const row = snapshot?.standing({ itemId: id, runId });
       if (row === "gone" || row === "moved") return { status: "not-found" };
       if (row === "unnamed" || row === "lost") return { status: "row-lost" };
       if (row !== "named") return { status: "board-unread" };

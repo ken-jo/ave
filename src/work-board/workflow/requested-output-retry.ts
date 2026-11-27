@@ -16,6 +16,7 @@ function sameApprovedStage(stage: WorkItemStageRun | undefined, attempt: number,
 
 export function createRecordedOutputEffects(deps: {
   records: WorkflowRunState; outputs?: RequestedOutputHooks; resolvePinned: (pin: RunRecord["pin"]) => Promise<TemplateVersion>;
+  canAdmitRunEffect: (run: RunRef) => boolean;
   resolveProjectRoot: (root: string) => string | null;
   scheduledProject: (source: Extract<RunRecord["runStartedBy"], { kind: "schedule-attachment" }>) => Promise<string | undefined | null>;
   notifyItemChanged: (id: number) => void;
@@ -82,7 +83,8 @@ export function createRecordedOutputEffects(deps: {
     const stage = reserved.ok && reserved.run.stageRuns.find(row => row.stageId === stageId);
     if (!stage || !selected) return { ok: false, reason };
     const run = { itemId, runId, runKey: `work-board:${itemId}#${runId}`, projectRoot: projectRoot ?? undefined };
-    if (!await execute(record, stage, definition, selected, run, surface, canExecute, new AbortController().signal)) return { ok: false, reason: "run_mismatch" };
+    if (!await execute(record, stage, definition, selected, run, surface, () => canExecute() && deps.canAdmitRunEffect(run),
+      new AbortController().signal)) return { ok: false, reason: "run_mismatch" };
     return { ok: true };
   }
 
