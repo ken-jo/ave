@@ -15,6 +15,7 @@ import {
   getSandboxGeneration,
   getHostShellExecutionPlan,
   setActiveSandboxCapability,
+  setContainerShellSubstrate,
   setShellSandboxRequestedAtBoot,
 } from "../sandbox-capability.js";
 import {
@@ -196,10 +197,13 @@ function issuedPlain() {
   return getHostShellExecutionPlan();
 }
 
+// A contained shell on this host. macOS shells are contained only by the proven container (the boot canary's
+// "available"); ASRT alone does not serve them, so the fixture publishes that substrate there.
 function issuedAsrt(executionMode: "default" | "host" = "default") {
   resetSandbox();
   setShellSandboxRequestedAtBoot(true);
   setActiveSandboxCapability(fullAsrt);
+  if (process.platform === "darwin") setContainerShellSubstrate({ state: "available" });
   return getHostShellExecutionPlan(executionMode);
 }
 
@@ -237,7 +241,9 @@ describe("execution router", () => {
     expect(executionRouteForHostShellPlan(plain)).toBe("host");
     expect(executionRouteForHostShellPlan(blocked)).toBeNull();
 
-    const plan = buildExecutionPlan({ legacyPlan: issuedAsrt(), effect: effect(), capability: capability() });
+    const contained = issuedAsrt();
+    expect(contained).toMatchObject({ mode: "asrt", substrate: process.platform === "darwin" ? "mxc" : "asrt" });
+    const plan = buildExecutionPlan({ legacyPlan: contained, effect: effect(), capability: capability() });
     expect(plan).toMatchObject({ decision: "selected", route: "workspace-sandbox", fallback: "none" });
     const projection = getExecutionPlanAuditProjection(plan);
     expect(projection).not.toBe(plan);
@@ -289,6 +295,31 @@ describe("execution router", () => {
         route: "host",
         fallback: "active-sandbox-not-shell-contained",
       });
+    } finally {
+      setProcessPlatform(platform);
+    }
+  });
+
+  it("confines a macOS shell only through its proven container, never through ASRT alone", () => {
+    // Decision tree, unknown rule U2: confinement requested but not proven for this start asks a present human.
+    const platform = process.platform;
+    try {
+      setProcessPlatform("darwin");
+      resetSandbox();
+      setShellSandboxRequestedAtBoot(true);
+      setActiveSandboxCapability({ ...fullAsrt, platform: "darwin" });
+      setContainerShellSubstrate({ state: "unavailable", reason: "shell-start-failed" });
+      const unproven = getHostShellExecutionPlan();
+      expect(unproven).toMatchObject({ mode: "plain", sandboxed: false, requiresExplicitUserApproval: true, fallbackReason: "active-sandbox-not-shell-contained" });
+      expect(buildHostShellExecutionRouteProjection({
+        legacyPlan: unproven, toolName: "bash", command: "printf ok", cwd: "/workspace", timeoutSeconds: 120, background: false,
+      })).toMatchObject({ decision: "approval-required", route: "host", fallback: "active-sandbox-not-shell-contained" });
+
+      setContainerShellSubstrate({ state: "available" });
+      const proven = getHostShellExecutionPlan();
+      expect(proven).toMatchObject({ mode: "asrt", sandboxed: true, substrate: "mxc", requiresExplicitUserApproval: false, fallbackReason: "none" });
+      expect(buildExecutionPlan({ legacyPlan: proven, effect: effect(), capability: capability() }))
+        .toMatchObject({ decision: "selected", route: "workspace-sandbox", fallback: "none" });
     } finally {
       setProcessPlatform(platform);
     }

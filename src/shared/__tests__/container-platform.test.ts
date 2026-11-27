@@ -1,14 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { containerPlatform, containerTarget, isContainerRouteEnabled } from "../container-platform.js";
+import { containerPlatform, containerTarget, isContainerHolderRouteEnabled, isContainerShellRouteEnabled } from "../container-platform.js";
 
 describe("container platforms", () => {
   it.each([
-    ["win32", "process-container", true, ["x64", "arm64"], "wxc-exec.exe"],
-    ["darwin", "seatbelt", false, ["arm64"], "mxc-exec-mac"],
-    ["linux", "bubblewrap", false, ["x64", "arm64"], "lxc-exec"],
-  ] as const)("describes the backend and current route on %s", (platform, backend, routeEnabled, arches, launcherFile) => {
-    expect(containerPlatform(platform)).toEqual({ backend, routeEnabled, arches, launcherFile });
-    expect(isContainerRouteEnabled(platform)).toBe(routeEnabled);
+    ["win32", "process-container", true, true, ["x64", "arm64"], "wxc-exec.exe"],
+    ["darwin", "seatbelt", true, false, ["arm64"], "mxc-exec-mac"],
+    ["linux", "bubblewrap", false, false, ["x64", "arm64"], "lxc-exec"],
+  ] as const)("describes the backend and current route on %s", (platform, backend, shellRoute, holderRoute, arches, launcherFile) => {
+    expect(containerPlatform(platform)).toEqual({ backend, shellRoute, holderRoute, arches, launcherFile });
+    expect(isContainerShellRouteEnabled(platform)).toBe(shellRoute);
+    expect(isContainerHolderRouteEnabled(platform)).toBe(holderRoute);
   });
 
   it.each([
@@ -26,6 +27,7 @@ describe("container platforms", () => {
 
   it("has no backend or route on an unsupported OS", () => {
     expect(containerPlatform("freebsd")).toBeUndefined();
-    expect(isContainerRouteEnabled("freebsd")).toBe(false);
+    expect(isContainerShellRouteEnabled("freebsd")).toBe(false);
+    expect(isContainerHolderRouteEnabled("freebsd")).toBe(false);
   });
 });

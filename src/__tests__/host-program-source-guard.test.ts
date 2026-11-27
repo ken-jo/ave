@@ -68,6 +68,7 @@ const LAUNCH_FILES = [
   "permissions/mxc-extension-process.ts",
   "permissions/mxc-policy-pipe.ts",
   "permissions/mxc-runtime-root.ts",
+  "permissions/mxc-shell-supervisor-client.ts", // macOS shell supervisor: process.execPath as Node, safe env without loader overrides
   "permissions/mxc-windows.ts",
   "permissions/offline-process-sandbox.ts",
   "permissions/srt-win-integrity.ts",

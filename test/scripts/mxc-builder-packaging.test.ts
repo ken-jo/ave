@@ -12,6 +12,31 @@ import { assertNoPackagedBuildHeaders, assertPackagingStagePaths, copyPackagingD
 const require = createRequire(import.meta.url);
 
 describe("native payload packager integration", () => {
+  it("collects and unpacks the macOS library and addon without the old launcher", () => {
+    const root = process.cwd();
+    const { build } = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8"));
+    const { getNodeModuleFileMatcher, getFileMatchers } = require("app-builder-lib/out/fileMatcher");
+    const expand = (value: string) => value;
+    const collector = { config: build, debugLogger: { isEnabled: false } };
+    const macFilter = getNodeModuleFileMatcher(root, root, expand, build.mac, collector).createFilter();
+    const linuxFilter = getNodeModuleFileMatcher(root, root, expand, build.linux, collector).createFilter();
+    const unpackFilters = getFileMatchers(build, "asarUnpack", root, {
+      defaultSrc: root, globalOutDir: path.join(root, "dist"), macroExpander: expand, customBuildOptions: build.mac,
+    }).map((matcher: { createFilter(): typeof macFilter }) => matcher.createFilter());
+    const library = path.join(root, "node_modules/@microsoft/mxc-sdk/bin/arm64/libmxc_ffi.dylib");
+    const addon = path.join(root, "node_modules/@koromix/koffi-darwin-arm64/darwin_arm64/koffi.node");
+    const linuxInference = path.join(root, "node_modules/onnxruntime-node/bin/napi-v6/linux/arm64/onnxruntime_binding.node");
+    const file = { isDirectory: () => false };
+    expect(macFilter(library, file)).toBe(true);
+    expect(linuxFilter(library, file)).toBe(false);
+    expect(macFilter(linuxInference, file)).toBe(false);
+    expect(unpackFilters.some((filter: typeof macFilter) => filter(library, file))).toBe(true);
+    expect(unpackFilters.some((filter: typeof macFilter) => filter(addon, file))).toBe(true);
+    expect(build.mac.extraResources.map((item: { to: string }) => path.posix.basename(item.to))).not.toContain("mxc-exec-mac");
+    const packagedLibrary = "Ave.app/Contents/Resources/app.asar.unpacked/node_modules/@microsoft/mxc-sdk/bin/arm64/libmxc_ffi.dylib";
+    expect(build.mac.signIgnore.some((pattern: string) => new RegExp(pattern).test(packagedLibrary))).toBe(true);
+  });
+
   it("copies the complete dependency graph and links into independent architecture trees", async () => {
     const root = realpathSync(mkdtempSync(path.join(tmpdir(), "ave-dependency-copy-")));
     try {

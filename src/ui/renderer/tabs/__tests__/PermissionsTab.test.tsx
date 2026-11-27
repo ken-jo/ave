@@ -1995,6 +1995,30 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     expect(screen.queryByTestId("os-sandbox-windows-bash-note")).toBeNull();
   });
 
+  // macOS ships no launcher: mxc-macos.ts checks and loads the pinned shell library in-process, so the copy names the library.
+  it.each([
+    ["available", undefined, "셸 명령은 macOS 샌드박스 컨테이너에서 실행됩니다."],
+    ["unavailable", "unsupported-arch", "Apple Silicon Mac이 필요합니다."],
+    ["unavailable", "binary-missing", "샌드박스 라이브러리가 없습니다. Ave를 다시 설치하세요."],
+    ["unavailable", "launcher-mismatch", "샌드박스 라이브러리를 검증할 수 없습니다. Ave를 다시 설치하세요."],
+    ["unavailable", "runtime-root-unproved", "Ave 전용 샌드박스 런타임 디렉터리를 검증할 수 없습니다."],
+    ["unavailable", "request-rejected", "샌드박스가 셸 정책을 거부했습니다."],
+    ["unavailable", "shell-start-failed", "샌드박스 경계 검증을 통과하지 못했습니다."],
+  ] as const)("reports the macOS container state %s and reason %s", async (state, reason, copy) => {
+    const { ave } = installApiWithWindows();
+    ave.permission.sandboxCapability.mockResolvedValue({
+      platform: "darwin", enabled: true, available: true, kind: "full", reason: "",
+      runtime: { available: true, kind: "full", reason: "" },
+      containerShell: { state, reason, egressProtocolCoverage: { dns: "blocked", rawIp: "blocked" } },
+      confines: { filesystem: true, process: true, network: true },
+    } as never);
+    await act(async () => { render(<PermissionsTab />); });
+    const row = screen.getByTestId("os-sandbox-mac-container");
+    expect(row).toHaveAttribute("data-state", state);
+    expect(row).toHaveTextContent(copy);
+    if (reason !== undefined) expect(row).toHaveTextContent("셸 명령은 실행 전에 승인을 요청합니다.");
+  });
+
   it("does not claim a timeout or an unverified install proves isolation or an unchanged machine", async () => {
     for (const outcome of ["timed-out", "installed-unverified"]) {
       const { outcome: view } = await clickInstall(async () => ({ outcome, ready: false }));

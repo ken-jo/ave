@@ -9,7 +9,7 @@ import { buildPolicyModel, policyFloorRow, policyGrantRow, requiredWriteDenyRow,
 import { srtWriteFloorRow, toSrtConfig } from "./srt-policy-adapter.js";
 import { isMxcReadPattern } from "./mxc-windows.js";
 import { issueFilesystemSandboxBlock, type SandboxBlock } from "../shared/sandbox-block.js";
-import { isContainerRouteEnabled } from "../shared/container-platform.js";
+import { isContainerHolderRouteEnabled, isContainerShellRouteEnabled } from "../shared/container-platform.js";
 import { buildLauncherEnvironment } from "./launcher-environment.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { spawn } from "node:child_process";
@@ -49,7 +49,7 @@ import { isAveHomeReadReallowed } from "./ave-home-read-boundary.js";
 import { isBoundStageWorkspacePath } from "./stage-workspace-binding.js";
 import { canonicalizePathForMatch, caseFoldForMatch, getConfiguredSessionReadPolicy, getRuntimeSensitiveKeyPaths, MAX_WALK_UP, resolvePathForPolicy, SENSITIVE_PATH_ENTRIES, sensitiveEntryOnSandboxFloor } from "./sensitive-paths.js";
 import { hardenLinuxSandboxWrap } from "./linux-sandbox-wrap.js";
-import { assertMacSandboxWrapperSize, hardenMacSandboxGitMetadata, followNamedEntry, macAppOwnedDirectoryWriteRules, macLinkedNameTargetRules, macWriteRootNameRules } from "./macos-sandbox-wrap.js";
+import { assertMacSandboxWrapperSize, hardenMacSandboxGitMetadata, macAppOwnedDirectoryWriteRules, macWriteRootLinkedNameRules, macWriteRootNameRules } from "./macos-sandbox-wrap.js";
 import { onTailnetListenerPortsChanged, tailnetListenerPorts, TAILNET_LOOPBACK_DESTINATION } from "../shared/tailnet-listener-port.js";
 import { isDeepStrictEqual } from "node:util";
 import { prepareSandboxBareRepositoryCleanup } from "./sandbox-bare-repository-cleanup.js";
@@ -60,7 +60,7 @@ import { findHostProgram, hostProgramSearchDirectories } from "../shared/host-pr
 import { t } from "../i18n/index.js";
 import { hostDirectoryFloorPierces } from "../plugins/sandbox-authority.js";
 import { resolvePluginPaths } from "../plugins/plugin-paths.js";
-import { SANDBOX_NAMED_ENTRIES, assertSandboxWritePolicySize, buildMandatorySandboxWritePolicy, compactSandboxWriteDenies, isGrantPathWithin, restrictSandboxGitControlSnapshot, type SandboxGitControlSnapshot, windowsDenyOperandKey } from "./sandbox-write-policy.js";
+import { assertSandboxWritePolicySize, buildMandatorySandboxWritePolicy, compactSandboxWriteDenies, isGrantPathWithin, restrictSandboxGitControlSnapshot, type SandboxGitControlSnapshot, windowsDenyOperandKey } from "./sandbox-write-policy.js";
 export { isGrantPathWithin } from "./sandbox-write-policy.js";
 import { egressInvocationOwner, onEgressInvocationReleased, openEgressInvocation } from "./egress-invocations.js";
 import {
@@ -1361,26 +1361,10 @@ function macWriteRootRules(applied: Partial<FilesystemConfig> | undefined): stri
   // A root may hold `*` or `?`, as a wildcard or as part of a folder's name; the name rules anchor at both readings.
   const roots = (applied?.allowWrite ?? _baseTrustedSettings?.allowWrite ?? [])
     .flatMap(entry => spellings(typeof entry === "string" ? expandLeadingTilde(entry) : entry.path));
-  // Where a named entry is reached through a link, the resolved path and every name on the way are held too. A target that is a
-  // work folder, or holds one, cannot be denied without taking the work folder with it, so that wrap is refused by name.
   const physicalRoots = [...new Set(roots.map(root => canonicalizePathForMatch(root)))];
-  const fold = (path: string): string => path.normalize("NFC").toLowerCase();
-  const targets = new Set<string>();
-  const visited = new Set<string>();
-  for (const root of physicalRoots) for (const entry of SANDBOX_NAMED_ENTRIES) {
-    const followed = followNamedEntry(root, entry);
-    if (!followed.linked) continue;
-    if (physicalRoots.some(held => fold(held) === fold(followed.physical) || fold(held).startsWith(`${fold(followed.physical).replace(/\/$/u, "")}/`))) {
-      throw new Error(t("sandboxPolicy.namedEntryLinksToWriteRoot", { entry }));
-    }
-    targets.add(followed.physical);
-    for (const path of followed.visited) visited.add(path);
-    // The walk starts at the root; where another write root holds this one, the names down to it are part of the walk as well.
-    for (let above = dirname(root); physicalRoots.some(held => above.startsWith(`${held.replace(/\/$/u, "")}/`)); above = dirname(above)) visited.add(above);
-  }
   return [
     macWriteRootNameRules(roots),
-    macLinkedNameTargetRules([...targets], [...visited], physicalRoots),
+    macWriteRootLinkedNameRules(physicalRoots),
     macAppOwnedDirectoryWriteRules([aveHome(), ...appOwnedSandboxPrivateRoots()].flatMap(spellings), roots),
   ].filter(Boolean).join("\n");
 }
@@ -3243,7 +3227,7 @@ async function initializeSandboxRuntime(
     noteAsrtUnixSocketPolicy(config.network.allowAllUnixSockets === true);
     // Every contained Windows route gets its egress from the relay. Its allow list stays empty: each destination goes to the ask callback,
     // and without one the service is not started, so no route opens.
-    if (isContainerRouteEnabled(process.platform) && askCb !== undefined) {
+    if ((isContainerShellRouteEnabled(process.platform) || isContainerHolderRouteEnabled(process.platform)) && askCb !== undefined) {
       startEgressRelayService({ ask: askCb, ...(trustedSettings.upstreamRouter ? { router: trustedSettings.upstreamRouter } : {}) });
     }
     if (SandboxManager === undefined) {

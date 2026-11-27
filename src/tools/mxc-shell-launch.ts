@@ -16,7 +16,7 @@ import {
   rankMxcFilesystem,
   resolveHostWxcExecPath,
 } from "../permissions/mxc-windows.js";
-import { buildPolicyModel, policyFloorRow, policyGrantRow, requiredWriteDenyRow, type PolicyModel } from "../permissions/policy-model.js";
+import { buildPolicyModel, policyFloorRow, policyGrantRow, requiredWriteDenyRow, type PolicyFloorRow, type PolicyModel } from "../permissions/policy-model.js";
 import { requireMxcContainerStartRoot } from "../permissions/mxc-runtime-root.js";
 import { assertIssuedContainerHomeInPlace, heldIssuedContainerHome, isIssuedContainerHome, issuedContainerHome } from "../permissions/sandbox-home-registry.js";
 import { claimMxcWatchedRows, hasWatchedWork, sweepWatchedRows, WatchedQuarantineError } from "../permissions/windows-watched-rows.js";
@@ -54,10 +54,11 @@ export interface MxcShellPolicyLists {
  * The shell's lists as policy rows. The paths are spellings as the shell composed them, and its interface does not say which
  * grant stands behind a root. A path on both deny lists is stated twice; the container adapter reads the two lists differently.
  */
-export function shellPolicyModel(lists: MxcShellPolicyLists): PolicyModel {
+export function shellPolicyModel(lists: MxcShellPolicyLists, literalAndPatternFloors: readonly PolicyFloorRow[] = []): PolicyModel {
   const required = new Set(lists.requiredWriteDenies);
   return buildPolicyModel({
     floors: [
+      ...literalAndPatternFloors,
       ...lists.denyRead.map((path) => policyFloorRow(path, "denied", "read-boundary", false)),
       ...lists.denyWrite.filter(path => !required.has(path)).map((path) => policyFloorRow(path, "ro", "protected-name", false)),
       ...(lists.independentWriteDenies ?? []).map((path) => policyFloorRow(path, "ro", "protected-name", false)),

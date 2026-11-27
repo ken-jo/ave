@@ -1,7 +1,7 @@
 import { type BigIntStats, type Stats, closeSync, constants, fstatSync, lstatSync, openSync, opendirSync, readSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 // Sandbox runtime package types stay here on purpose: this module builds or feeds a package config. They go when the package dependency goes.
-import type { FilesystemConfig, FilesystemPathEntry } from "@anthropic-ai/sandbox-runtime";
+import type { FilesystemPathEntry } from "@anthropic-ai/sandbox-runtime";
 import { normalizeCaseForComparison, stripExtendedPathPrefix } from "./sandbox-path-spelling.js";
 import { settingsFilePath } from "../data/settings-store.js";
 import { AVE_HOME_CONFIGURATION_DIRECTORY, aveHome } from "../shared/ave-home.js";
@@ -17,6 +17,7 @@ import { projectRulesDirectory } from "./rules/project-rule-files.js";
 import { PROTECTED_ROOT_ENTRIES, canonicalizePathForMatch, caseFoldForMatch } from "./sensitive-paths.js";
 import { sandboxQuarantineRoot } from "./sandbox-quarantine.js";
 import { t } from "../i18n/index.js";
+import { policyFloorRow } from "./policy-model.js";
 
 // Git execution controls use recursive platform-specific rules and Linux rescans; exclude .git from this shared floor so objects/refs remain writable without creating absent mountpoints. Keep .gitconfig and .githooks denied.
 export function isSandboxGitMetadataEntry(entry: string): boolean {
@@ -1009,8 +1010,10 @@ export function buildMandatorySandboxWritePolicy(
   userDataDir?: string,
   protectedRoutingPaths: readonly string[] = [],
   inheritedWriteDenies: readonly string[] = [],
-): Pick<FilesystemConfig, "denyWrite"> & {
+  target?: "seatbelt",
+): {
   allowWrite: string[];
+  denyWrite: FilesystemPathEntry[];
   windowsRequiredWriteDenies: readonly string[];
   narrowedWriteRoots: readonly { root: string; reason: "entry-budget" | "path-budget" | "filesystem-access" | "routing-link" }[];
   gitControlSnapshot?: SandboxGitControlSnapshot;
@@ -1021,7 +1024,7 @@ export function buildMandatorySandboxWritePolicy(
     // A marked literal already carries the admitted identity; discovery must retain that canonical path.
     return { original, physical: typeof entry === "string" ? resolvePolicyPath(original, process.cwd()) : original };
   });
-  const rootEntries = process.platform === "linux"
+  const rootEntries = process.platform === "linux" || target === "seatbelt"
     ? [...SANDBOX_PROTECTED_ROOT_ENTRIES, ...SANDBOX_NAMED_ENTRIES]
     : SANDBOX_PROTECTED_ROOT_ENTRIES;
   const rootSpellings = [...new Set(rootSnapshots.flatMap(({ original, physical }) => [original, physical]))];
@@ -1166,7 +1169,7 @@ export function buildMandatorySandboxWritePolicy(
     entries.push(...[...routingPins].map(path => ({ path, literal: true } as const)));
   }
   // Backend globs cover future controls at any depth without denying ordinary object, ref, index and HEAD updates in existing metadata directories.
-  if (process.platform === "darwin") entries.push(...MAC_GIT_CONTROL_GLOBS);
+  if (process.platform === "darwin" && target !== "seatbelt") entries.push(...MAC_GIT_CONTROL_GLOBS);
   // Mandatory loader denies scale with admitted root lengths, not metadata discovery.
   const backendEntries = nativeWriteDenyEntries(entries);
   const backendMandatoryPaths = new Set([...mandatoryPaths].map(nativeWriteDenyPath));
@@ -1179,5 +1182,24 @@ export function buildMandatorySandboxWritePolicy(
       new Map([...rootIdentities].filter(([root]) => !revoked.has(root))),
       new Set([...bareRoots].filter(root => !revoked.has(root))), gitDiscovery, discovered,
     ) } : {}),
+  };
+}
+
+export function buildSeatbeltSandboxWritePolicy(
+  writeRoots: readonly FilesystemPathEntry[],
+  userDataDir?: string,
+  protectedRoutingPaths: readonly string[] = [],
+  inheritedWriteDenies: readonly string[] = [],
+) {
+  if (process.platform !== "darwin") throw new Error("Seatbelt write policy requires macOS");
+  const { allowWrite, denyWrite, narrowedWriteRoots } = buildMandatorySandboxWritePolicy(
+    writeRoots, userDataDir, protectedRoutingPaths, inheritedWriteDenies, "seatbelt",
+  );
+  return {
+    allowWrite,
+    narrowedWriteRoots,
+    literalRows: denyWrite.map(entry =>
+      policyFloorRow(typeof entry === "string" ? entry : entry.path, "ro", "protected-name", true)),
+    patternRows: MAC_GIT_CONTROL_GLOBS.map(path => policyFloorRow(path, "ro", "protected-name", false)),
   };
 }

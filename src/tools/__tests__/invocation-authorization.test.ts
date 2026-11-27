@@ -14,6 +14,7 @@ import { ApprovalGate, IPC_APPROVAL_REQUEST, type ApprovalRequest } from "../../
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import {
   setActiveSandboxCapability,
+  setContainerShellSubstrate,
   setShellSandboxRequestedAtBoot,
   __resetActiveSandboxCapabilityForTest,
   __resetSandboxRequestedAtBootForTest,
@@ -114,6 +115,7 @@ describe("confined shell reviewer invocation", () => {
   it.each(['node -e "process.stdout.write(process.version)"', 'printf "%s" "$(workspace_tool)"'])("reuses scoped review evidence and rechecks changed input: %s", async (command) => {
     vi.stubEnv("AVE_HOME", directory);
     setShellSandboxRequestedAtBoot(true);
+    if (process.platform === "darwin") setContainerShellSubstrate({ state: "available" });
     setActiveSandboxCapability({ kind: "asrt", confidence: "verified", platform: process.platform,
       reason: "confined shell", confines: { filesystem: true, process: true, network: true } });
     const classify = vi.fn((_context: import("../../permissions/reviewer/risk-classifier.js").ToolInvocationContext): { level: "low" | "medium" | "high"; reason: string } => ({ level: "medium", reason: "reviewed command" }));
@@ -167,6 +169,7 @@ describe("shell review requires a risk judgment", () => {
   ])("routes $command with disabled=$disabled and allowed=$allowed", async ({ command, disabled, allowed }) => {
     vi.stubEnv("AVE_HOME", directory);
     setShellSandboxRequestedAtBoot(true);
+    if (process.platform === "darwin") setContainerShellSubstrate({ state: "available" });
     setActiveSandboxCapability({ kind: "asrt", confidence: "verified", platform: process.platform,
       reason: "confined shell", confines: { filesystem: true, process: true, network: true } });
     const manager = new PermissionManager(join(directory, "permissions.json"));

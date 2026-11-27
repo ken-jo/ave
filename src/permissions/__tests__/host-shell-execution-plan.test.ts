@@ -437,19 +437,22 @@ describe("host shell execution plan — Windows MXC substrate", () => {
     expect(getHostShellExecutionPlanCacheIdentity(mxc)).not.toBe(getHostShellExecutionPlanCacheIdentity(asrt));
   });
 
-  it.each(["darwin", "linux"] as const)("accepts a container plan on %s with unknown egress coverage", (platform) => {
+  it.each([
+    ["darwin", { dns: "blocked", rawIp: "blocked" }],
+    ["linux", { dns: "unknown", rawIp: "unknown" }],
+  ] as const)("describes the container egress evidence on %s", (platform, coverage) => {
     expect(buildHostShellExecutionPlan({
       platform, requestedSandbox: true, activeCapability: { ...FULL_ASRT, platform }, shellSubstrate: "mxc",
     })).toMatchObject({
       mode: "asrt", substrate: "mxc", sandboxed: true,
-      egressProtocolCoverage: { dns: "unknown", rawIp: "unknown" },
+      egressProtocolCoverage: coverage,
     });
   });
 
   it.each([
     ["darwin", "host-shell-execution-plan/v4:darwin:asrt"],
     ["linux", "host-shell-execution-plan/v4:linux:asrt"],
-  ] as const)("keeps the default %s route and identity", (platform, identity) => {
+  ] as const)("keeps the %s wrap identity buildable", (platform, identity) => {
     expect(buildHostShellExecutionPlan({
       platform, requestedSandbox: true, activeCapability: { ...FULL_ASRT, platform },
     })).toMatchObject({ identity, mode: "asrt", substrate: "asrt", sandboxed: true });

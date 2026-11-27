@@ -44,11 +44,17 @@ export interface AutoUpdaterDeps {
   setSkippedVersion?: (version: string) => Promise<void> | void;
   // Use the shared running-version source; injection lets tests offer an older feed version.
   getRunningVersion?: () => string;
+  client?: Pick<NodeJS.Process, "platform" | "arch">;
+}
+
+interface UpdateFeed {
+  version: string;
+  files?: Array<{ url: string }>;
 }
 
 // Minimal surface of electron-updater.autoUpdater we rely on.
 export interface UpdaterLike {
-  on(event: "update-available", cb: (info: { version: string }) => void): void;
+  on(event: "update-available", cb: (info: UpdateFeed) => void): void;
   on(event: "update-not-available", cb: (info: { version: string }) => void): void;
   on(event: "download-progress", cb: (p: { percent: number; transferred: number; total: number }) => void): void;
   on(event: "update-downloaded", cb: (info: { version: string }) => void): void;
@@ -94,6 +100,17 @@ function canSelfInstall(): boolean {
 // finishes their work, quits, and follows the guide there since the app can't self-install an unsigned macOS build.
 const UPDATE_GUIDE_URL = "https://ave.agent-connector.ai";
 
+function isClientZip(file: { url: string }, arch: string): boolean {
+  if (arch !== "arm64" && arch !== "x64") return false;
+  const url = URL.parse(file.url, "https://localhost");
+  const filename = url?.pathname.split("/").at(-1)?.toLowerCase();
+  return filename?.match(/-(arm64|x64)(?:-mac)?\.zip$/u)?.[1] === arch;
+}
+
+function feedMatchesClientArch(files: UpdateFeed["files"], platform: NodeJS.Platform, arch: string): boolean {
+  return platform !== "darwin" || files?.some((file) => isClientZip(file, arch)) === true;
+}
+
 export function createAutoUpdater(deps: AutoUpdaterDeps): {
   start: () => void;
   stop: () => void;
@@ -116,8 +133,10 @@ export function createAutoUpdater(deps: AutoUpdaterDeps): {
   let updater: UpdaterLike | null = null;
   let wired = false;
   let lastState: UpdateState = { kind: "idle" };
+  let latestFeed: UpdateFeed | undefined;
   let installInProgress = false;
   let unsubscribeRelaunch: (() => void) | undefined;
+  const { platform, arch } = deps.client ?? process;
 
   const loadUpdater = (): UpdaterLike | null => {
     if (updater) return updater;
@@ -203,6 +222,11 @@ export function createAutoUpdater(deps: AutoUpdaterDeps): {
     // 사용자 명시 클릭 전엔 다운로드 금지 — electron-updater의 default (autoDownload=true) 를 끄지 않으면 checkForUpdates 가 새 버전을 감지한 즉시 ~100MB 를 백그라운드로 받아버린다.
     u.autoDownload = false;
     u.on("update-available", (info) => {
+      latestFeed = info;
+      if (!feedMatchesClientArch(info.files, platform, arch)) {
+        log.info("update v%s has no ZIP for %s", info.version, arch);
+        return;
+      }
       log.info("update-available: v%s", info.version);
       broadcastOrSkip({ kind: "available", version: info.version });
     });
@@ -267,6 +291,13 @@ export function createAutoUpdater(deps: AutoUpdaterDeps): {
     if (!u) return { ok: false, reason: "updater-unavailable" };
     if (lastState.kind !== "available") {
       return { ok: false, reason: `not-available (state=${lastState.kind})` };
+    }
+    if (platform === "darwin") {
+      if (latestFeed?.version !== lastState.version || !feedMatchesClientArch(latestFeed.files, platform, arch)) {
+        return { ok: false, reason: "update-check-failed" };
+      }
+      // The downloader reads this same record and may prefer the hardware architecture on a translated process.
+      latestFeed.files = latestFeed.files?.filter((file) => isClientZip(file, arch));
     }
     if (isSkippedVersion(lastState.version)) {
       broadcast({ kind: "idle" });

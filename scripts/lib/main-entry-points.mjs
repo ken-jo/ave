@@ -9,6 +9,7 @@ export const MAIN_ENTRY_POINTS = Object.freeze({
   "subscription-grok-tool-policy-hook": "src/main/subscription-grok-tool-policy-hook.ts",
   "subscription-tool-mcp-server": "src/main/subscription-tool-mcp-server.ts",
   "mxc-extension-supervisor": "src/permissions/mxc-extension-supervisor.ts",
+  "mxc-shell-supervisor": "src/permissions/mxc-shell-supervisor.ts",
   // A confined plugin child process runs this file directly, so it is its own entry and no module inside main.js.
   "plugin-child-main": "src/plugins/isolation/plugin-child-main.ts",
   "memory-map-worker": "src/main/memory-map/worker-main.ts",

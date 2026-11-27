@@ -1,5 +1,6 @@
 export class MxcIntegrityError extends Error {}
 export interface MxcSdkPins {
+  targets?: { "darwin-arm64"?: { library: { member: string; sha256: string } } };
   sdk: {
     versions: Record<string, string>;
     packages: Record<string, string>;
@@ -13,6 +14,7 @@ export interface MxcSdkPins {
     }>;
     files: Record<string, string>;
     architectures: Record<string, Record<string, string>>;
+    darwinFiles?: Record<string, string>;
   };
 }
 export function verifyMxcSdk(
@@ -21,12 +23,14 @@ export function verifyMxcSdk(
   pins: MxcSdkPins,
   environment?: NodeJS.ProcessEnv,
   strictNativeDirectories?: boolean,
+  platform?: "win32" | "darwin",
+  verifyAddonBytes?: boolean,
 ): { sdkRoot: string; nativeDirectories: string[]; addonPath: string };
 export function verifyMxcSupervisorRuntime(executable: string, resources: string, arch: string): string[];
 
 export function assertMxcSdkInventory(nodeModules: string, pins: MxcSdkPins, arch?: string): void;
 
-export function verifyMxcSdkSource(nodeModules: string, arch: string, pins: MxcSdkPins, environment?: NodeJS.ProcessEnv): ReturnType<typeof verifyMxcSdk>;
+export function verifyMxcSdkSource(nodeModules: string, arch: string, pins: MxcSdkPins, environment?: NodeJS.ProcessEnv, platform?: "win32" | "darwin"): ReturnType<typeof verifyMxcSdk>;
 
 export const SDK_INSTALLATION_AUXILIARIES: ReadonlySet<string>;
 

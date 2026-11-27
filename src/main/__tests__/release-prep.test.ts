@@ -88,6 +88,7 @@ function createTestAutoUpdater(
     isEnabled: () => true,
     updaterFactory: () => updater,
     // Stub signing and guide opening so unsigned runners can exercise self-install; fallback tests override these seams.
+    client: { platform: "linux", arch: "x64" },
     canSelfInstall: () => true,
     openExternal: () => {},
     ...deps,
@@ -109,6 +110,94 @@ function downloadedQuitHandler(updater: UpdaterLike) {
 
 const HOST_RENDERER_URL = "file:///Applications/Ave.app/Contents/Resources/app.asar/dist/src/index.html";
 const PLUGIN_SHELL_URL = "ave-mcp-app://s-66697874757265/proxy.html?t=fixture";
+
+describe("macOS update architecture", () => {
+  const armZip = { url: "Ave-2.0.0-arm64-mac.zip" };
+  const intelZip = { url: "Ave-2.0.0-x64-mac.zip" };
+
+  it.each([
+    ["x64", armZip, "arm64"],
+    ["arm64", intelZip, "x64"],
+    ["arm64", { url: "https://updates.example/arm64-migration/Ave-2.0.0-x64-mac.zip" }, "x64"],
+    ["x64", { url: "x64-migration/Ave-2.0.0-mac-arm64.zip" }, "arm64"],
+  ] as const)("does not offer %s clients a ZIP for %s", async (arch, file, otherArch) => {
+    const window = fakeWindow();
+    const updater = fakeUpdater();
+    const service = createTestAutoUpdater(window.win, updater, {
+      client: { platform: "darwin", arch }, getRunningVersion: () => "1.0.0",
+    });
+    await service.triggerCheck();
+    updater.emit("update-available", {
+      version: "2.0.0", files: [file, { url: `Ave-2.0.0-${arch}.dmg` }],
+    });
+    expect(window.sent).toEqual([]);
+    expect(service._testOnly.getState()).toEqual({ kind: "idle" });
+    await expect(service._testOnly.downloadNow()).resolves.toMatchObject({ ok: false });
+    expect(updater.downloads, otherArch).toBe(0);
+    service.stop();
+  });
+
+  const directoryArmZip = { url: "x64-migration/Ave-2.0.0-mac-arm64.zip" };
+  const directoryIntelZip = { url: "https://updates.example/arm64-migration/Ave-2.0.0-mac-x64.zip" };
+
+  it.each([
+    ["arm64", armZip, intelZip],
+    ["x64", intelZip, armZip],
+    ["arm64", directoryArmZip, directoryIntelZip],
+    ["x64", directoryIntelZip, directoryArmZip],
+  ] as const)(
+    "offers and selects only the client ZIP from a mixed feed on %s",
+    async (arch, expected, other) => {
+      const updater = fakeUpdater();
+      const info = { version: "2.0.0", files: [other, expected] };
+      const { MacUpdater } = createRequire(import.meta.url)("electron-updater/out/MacUpdater.js") as {
+        MacUpdater: { filterFilesForArch<T>(files: T[], isArm64Mac: boolean): T[] };
+      };
+      const download = vi.spyOn(updater, "downloadUpdate").mockImplementation(async () => {
+        // The download reads the same feed record the offer event delivered.
+        expect(info.files).toEqual([expected]);
+        const resolved = info.files.map(info => ({ info, url: new URL(info.url, "https://updates.example") }));
+        expect(MacUpdater.filterFilesForArch(resolved, arch === "arm64")).toEqual(resolved);
+      });
+      const service = createTestAutoUpdater(fakeWindow().win, updater, {
+        client: { platform: "darwin", arch }, getRunningVersion: () => "1.0.0",
+      });
+      await service.triggerCheck();
+      updater.emit("update-available", info);
+      expect(service._testOnly.getState()).toEqual({ kind: "available", version: "2.0.0" });
+      await expect(service._testOnly.downloadNow()).resolves.toEqual({ ok: true });
+      expect(download).toHaveBeenCalledOnce();
+      service.stop();
+    },
+  );
+
+  it("refuses a download when a later incompatible feed leaves an older offer visible", async () => {
+    const updater = fakeUpdater();
+    const service = createTestAutoUpdater(fakeWindow().win, updater, {
+      client: { platform: "darwin", arch: "arm64" }, getRunningVersion: () => "1.0.0",
+    });
+    await service.triggerCheck();
+    updater.emit("update-available", { version: "2.0.0", files: [armZip] });
+    updater.emit("update-available", { version: "2.0.1", files: [intelZip] });
+    expect(service._testOnly.getState()).toEqual({ kind: "available", version: "2.0.0" });
+    await expect(service._testOnly.downloadNow()).resolves.toMatchObject({ ok: false });
+    expect(updater.downloads).toBe(0);
+    service.stop();
+  });
+
+  it.each(["win32", "linux"] as const)("keeps the existing offer and download on %s", async (platform) => {
+    const updater = fakeUpdater();
+    const service = createTestAutoUpdater(fakeWindow().win, updater, {
+      client: { platform, arch: "x64" }, getRunningVersion: () => "1.0.0",
+    });
+    await service.triggerCheck();
+    updater.emit("update-available", { version: "2.0.0" });
+    expect(service._testOnly.getState()).toEqual({ kind: "available", version: "2.0.0" });
+    await expect(service._testOnly.downloadNow()).resolves.toEqual({ ok: true });
+    expect(updater.downloads).toBe(1);
+    service.stop();
+  });
+});
 
 describe("auto-updater", () => {
   afterEach(() => { setAppRelaunchRequested(false); });
@@ -212,6 +301,7 @@ describe("auto-updater", () => {
     let windows: BrowserWindow[] = [firstWin, second.win];
     const u = fakeUpdater();
     const svc = createAutoUpdater({
+      client: { platform: "linux", arch: "x64" },
       getWindows: () => windows,
       getDialogParent: () => windows.at(-1) ?? null,
       auditLogger: fakeAuditLogger().logger,
