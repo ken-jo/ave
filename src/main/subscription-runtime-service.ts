@@ -1372,11 +1372,11 @@ export class SubscriptionRuntimeService {
       return this.currentProjection(runtimeId);
     }
     assertCurrent();
-    if (sample.proven) {
-      this.safelyVerified.add(runtimeId);
-      notifyStatusChanged(runtimeId);
-    }
+    if (sample.proven) this.safelyVerified.add(runtimeId);
+    const state = this.connection(runtimeId);
+    const revision = state.revision;
     const status = this.observeIndependentStatus(runtimeId, start, sample.project());
+    if (sample.proven && state.revision === revision) notifyStatusChanged(runtimeId);
     if (isSettledStatus(status)) {
       this.cachedStatuses.set(runtimeId, this.cachedRead(status));
     }
