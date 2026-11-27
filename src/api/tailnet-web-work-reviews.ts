@@ -144,6 +144,7 @@ export const TAILNET_WORK_REVIEW_SCRIPT = String.raw`
     const recentResults = document.getElementById("work-review-recent-results");
     const outputList = document.getElementById("output-execution-cards");
     const executionCards = new Map();
+    const executionSubmissions = new Map();
     const retryList = document.getElementById("output-retries");
     const retries = new Map();
     const states = new Map();
@@ -182,6 +183,7 @@ export const TAILNET_WORK_REVIEW_SCRIPT = String.raw`
         const id = card.requestId;
         let held = executionCards.get(id);
         if (!card.content) {
+          executionSubmissions.delete(id);
           if (!held) continue;
           visible.add(id);
           const text = card.resolvedBy === "expired" ? workText("outputApprovalExpired")
@@ -191,7 +193,16 @@ export const TAILNET_WORK_REVIEW_SCRIPT = String.raw`
           continue;
         }
         visible.add(id);
-        if (held) { held.handle = card.handle; continue; }
+        const submission = executionSubmissions.get(id);
+        if (submission?.retryable && submission.completedAt !== undefined && snapshotSequence > submission.completedAt) {
+          executionSubmissions.delete(id);
+        }
+        const locked = executionSubmissions.has(id);
+        if (held) {
+          held.handle = card.handle;
+          for (const control of held.controls) control.disabled = locked;
+          continue;
+        }
         const { toolName, ownerId, argsText, target, canonicalTarget, serviceEndpoint } = card.content;
         const node = element("article");
         node.className = "work-review-card work-review-body";
@@ -209,13 +220,16 @@ export const TAILNET_WORK_REVIEW_SCRIPT = String.raw`
         const status = element("p");
         status.setAttribute("role", "status");
         const controls = [];
-        held = { node, title, handle: card.handle };
+        held = { node, title, controls, handle: card.handle };
         for (const [choice, label] of [["allow-once", "toolApprovalDialog.allowOnce"], ["deny-once", "toolApprovalDialog.decisionDeny"]]) {
           const button = element("button", message(label));
           button.type = "button";
+          button.disabled = locked;
           button.dataset.workAction = choice === "allow-once" ? "approve" : "deny";
           button.addEventListener("click", async () => {
             if (!held.handle || button.disabled || revoked || scope !== snapshot.scope || !node.isConnected) return;
+            const submission = { retryable: false, completedAt: undefined };
+            executionSubmissions.set(id, submission);
             for (const control of controls) control.disabled = true;
             status.textContent = workText("submitting");
             try {
@@ -224,9 +238,19 @@ export const TAILNET_WORK_REVIEW_SCRIPT = String.raw`
                 body: JSON.stringify({ id: crypto.randomUUID(), scope, kind: "output-execution-card", input: { handle: held.handle, choice } }),
               });
               const result = await response.json();
-              status.textContent = response.ok && result.ok ? workText("submitted") : refusal(result.error);
-            } catch { status.textContent = workText("submissionUnknown"); }
-            finally { scheduleRefresh(false, 0); }
+              if (response.ok && result.ok) status.textContent = workText("submitted");
+              else {
+                submission.retryable = true;
+                status.textContent = refusal(result.error);
+              }
+            } catch {
+              submission.retryable = true;
+              status.textContent = workText("submissionUnknown");
+            } finally {
+              // A snapshot requested before the POST finished cannot unlock its choices.
+              submission.completedAt = snapshotSequence;
+              scheduleRefresh(false, 0);
+            }
           });
           controls.push(button);
           actions.append(button);
@@ -239,6 +263,11 @@ export const TAILNET_WORK_REVIEW_SCRIPT = String.raw`
         if (visible.has(id)) continue;
         held.node.remove();
         executionCards.delete(id);
+      }
+      for (const [id, submission] of executionSubmissions) {
+        if (!visible.has(id) && submission.completedAt !== undefined && snapshotSequence > submission.completedAt) {
+          executionSubmissions.delete(id);
+        }
       }
     }
     function updateRetries(snapshot) {

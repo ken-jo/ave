@@ -3067,6 +3067,69 @@ describe("phone work reviews", () => {
     } finally { browser.window.close(); }
   });
 
+  it("restores both choices after a refused phone POST and a fresh live offer", async () => {
+    const requestId = crypto.randomUUID();
+    const handle = `${requestId}.${Date.now() + 30_000}.${"a".repeat(64)}`;
+    const refreshedHandle = `${requestId}.${Date.now() + 30_000}.${"b".repeat(64)}`;
+    const content = { toolName: "send_report", ownerId: "reports", argsText: '{"body":"Ready"}' };
+    const refusal = deferred<TailnetWorkDecisionResponse>();
+    const listStarted = deferred<void>();
+    const releaseList = deferred<void>();
+    let currentHandle = handle;
+    let settled = false;
+    const projection = vi.fn(async (): Promise<TailnetOutputSnapshot> => () => ({ outputCards: settled
+      ? [{ requestId, resolvedBy: "tailnet-surface" }]
+      : [{ requestId, handle: currentHandle, content }] }));
+    const answer = vi.fn<() => Promise<TailnetWorkDecisionResponse>>()
+      .mockImplementationOnce(() => refusal.promise)
+      .mockImplementationOnce(async () => {
+        settled = true;
+        return { ok: true, kind: "output-execution-card" };
+      });
+    const { browser, received, waitForDecisions } = await openPhoneReviews([], answer, "en", roles, projection);
+    try {
+      const card = browser.window.document.querySelector("#output-execution-cards article");
+      const allow = card?.querySelector<HTMLButtonElement>("button[data-work-action=approve]");
+      const deny = card?.querySelector<HTMLButtonElement>("button[data-work-action=deny]");
+      if (!allow || !deny) throw new Error("Missing execution card choices");
+      allow.click();
+      await waitForDecisions(1);
+      expect(allow.disabled && deny.disabled).toBe(true);
+
+      projection.mockImplementationOnce(async () => {
+        listStarted.resolve();
+        await releaseList.promise;
+        return () => ({ outputCards: [{ requestId, handle, content }] });
+      });
+      const staleRendered = nextPhoneSnapshot(browser);
+      refreshPhoneReviews(browser);
+      await within(listStarted.promise, "snapshot started while the POST was pending");
+      refusal.resolve({ ok: false, error: "requested-output-card-unavailable" });
+      await waitForPhoneDom(browser, () => {
+        expect(card?.querySelector("[role=status]")?.textContent).toContain("The requested-output review is unavailable");
+      });
+      expect(allow.disabled && deny.disabled).toBe(true);
+      currentHandle = refreshedHandle;
+      releaseList.resolve();
+      await staleRendered;
+      expect(allow.disabled && deny.disabled).toBe(true);
+
+      await nextPhoneSnapshot(browser);
+      expect(allow.disabled).toBe(false);
+      expect(deny.disabled).toBe(false);
+      expect(received).toHaveLength(1);
+      deny.click();
+      await waitForDecisions(2);
+      expect(received[1]).toMatchObject({ kind: "output-execution-card", input: { handle: refreshedHandle, choice: "deny-once" } });
+      await waitForPhoneDom(browser, () => expect(card?.textContent).toContain("Resolved by phone"));
+      expect(card?.querySelector("button, pre")).toBeNull();
+    } finally {
+      refusal.resolve({ ok: false, error: "requested-output-card-unavailable" });
+      releaseList.resolve();
+      browser.window.close();
+    }
+  });
+
   it("renders the destination template, active pin and failure from the paired schedule snapshot", async () => {
     const h = await stageRunHarness();
     await h.runThenEnd(async () => {
