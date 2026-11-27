@@ -46,7 +46,7 @@ function transportFixture(request = createMxcExtensionRequest(), holdStartWrite?
       kill: vi.fn(() => { liveness.end(); events.destroy(); child.emit("close", 1, null); return true; }),
     }) as unknown as ChildProcess;
     service = new Promise<Buffer>((resolve) => liveness.once("data", resolve))
-      .then((key) => serveMxcSupervisor(new MxcExtensionChannel(controls, events, generation, key, "supervisor"), liveness, bootstrap, fatal));
+      .then((key) => serveMxcSupervisor(new MxcExtensionChannel(controls, events, generation, key, "supervisor", "windows-extension"), liveness, bootstrap, fatal));
     void service.then(() => child.emit("close", 0, null), () => child.emit("close", 1, null));
     return child;
   });
@@ -292,13 +292,13 @@ describe("supervisor transport and lifecycle with an injected SDK (unit only)", 
     const f = transportFixture();
     const controls = new PassThrough(), events = new PassThrough(), liveness = new PassThrough();
     const key = Buffer.alloc(32, 7), generation = "a".repeat(64);
-    const host = new MxcExtensionChannel(events, controls, generation, key, "host");
+    const host = new MxcExtensionChannel(events, controls, generation, key, "host", "windows-extension");
     const closePin = vi.fn();
     f.runtime.pinProcess = vi.fn(() => ({ value: "161803", close: closePin }));
     let arrive!: (native: MxcProcess) => void;
     const delayed = action === "channel-eof-before-native" || action === "owner-eof-before-native";
     if (delayed) f.spawn.mockImplementation(() => new Promise((resolve) => { arrive = resolve; }));
-    const service = serveMxcSupervisor(new MxcExtensionChannel(controls, events, generation, key, "supervisor"), liveness, f.bootstrap, f.fatal);
+    const service = serveMxcSupervisor(new MxcExtensionChannel(controls, events, generation, key, "supervisor", "windows-extension"), liveness, f.bootstrap, f.fatal);
     void service.catch(() => {});
     const frames = host.frames();
     try {
@@ -338,8 +338,8 @@ describe("supervisor transport and lifecycle with an injected SDK (unit only)", 
     const f = transportFixture();
     const controls = new PassThrough(), events = new PassThrough(), liveness = new PassThrough();
     const key = Buffer.alloc(32, 7), generation = "a".repeat(64);
-    const host = new MxcExtensionChannel(events, controls, generation, key, "host");
-    const service = serveMxcSupervisor(new MxcExtensionChannel(controls, events, generation, key, "supervisor"), liveness, f.bootstrap, f.fatal);
+    const host = new MxcExtensionChannel(events, controls, generation, key, "host", "windows-extension");
+    const service = serveMxcSupervisor(new MxcExtensionChannel(controls, events, generation, key, "supervisor", "windows-extension"), liveness, f.bootstrap, f.fatal);
     const frames = host.frames();
     try {
       await host.send({ type: "start", request: createMxcExtensionRequest() });
@@ -360,10 +360,10 @@ describe("supervisor transport and lifecycle with an injected SDK (unit only)", 
     const f = transportFixture();
     const controls = new PassThrough(), events = new PassThrough(), liveness = new PassThrough();
     const key = Buffer.alloc(32, 7), generation = "a".repeat(64);
-    const host = new MxcExtensionChannel(events, controls, generation, key, "host");
+    const host = new MxcExtensionChannel(events, controls, generation, key, "host", "windows-extension");
     const closePin = vi.fn();
     f.runtime.pinProcess = vi.fn(() => ({ value: "161803", close: closePin }));
-    const service = serveMxcSupervisor(new MxcExtensionChannel(controls, events, generation, key, "supervisor"), liveness, f.bootstrap, f.fatal);
+    const service = serveMxcSupervisor(new MxcExtensionChannel(controls, events, generation, key, "supervisor", "windows-extension"), liveness, f.bootstrap, f.fatal);
     void service.catch(() => {});
     const frames = host.frames();
     try {
@@ -721,7 +721,7 @@ describe("supervisor transport and lifecycle with an injected SDK (unit only)", 
       const child = Object.assign(new EventEmitter(), { pid: 314159, stdin: controls, stdout: events, stderr: diagnostics,
         stdio: [controls, events, diagnostics, liveness], kill: vi.fn(() => true) }) as unknown as ChildProcess;
       liveness.once("data", (key: Buffer) => {
-        const channel = new MxcExtensionChannel(controls, events, generation, key, "supervisor");
+        const channel = new MxcExtensionChannel(controls, events, generation, key, "supervisor", "windows-extension");
         controls.once("data", () => {
           void (async () => {
             for (const type of types) {

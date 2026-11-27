@@ -9,7 +9,7 @@ async function run(): Promise<void> {
   const [nodeModules, generation] = process.argv.slice(2);
   const liveness = new Socket({ fd: 3, readable: true, writable: false });
   const key = await readMxcSupervisorKey(liveness);
-  const channel = new MxcExtensionChannel(process.stdin, process.stdout, generation, key, "supervisor");
+  const channel = new MxcExtensionChannel(process.stdin, process.stdout, generation, key, "supervisor", "windows-extension");
   // stdout is exclusively the authenticated protocol. Diagnostics never become frames.
   process.stdout.on("error", () => process.exit(1));
   await serveMxcSupervisor(channel, liveness, () => bootstrapMxcSupervisor(nodeModules), () => process.exit(1), true);

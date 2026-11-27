@@ -1,6 +1,6 @@
 import { Readable, Writable } from "node:stream";
 import { finished } from "node:stream/promises";
-import { encodeMxcFrame, MxcFrameDecoder, type MxcStreamFrame } from "./mxc-extension-protocol.js";
+import { encodeMxcFrame, MxcFrameDecoder, type MxcFrameProtocol, type MxcStreamFrame } from "./mxc-extension-protocol.js";
 import { MxcProcessContractError } from "./mxc-extension-errors.js";
 import { commitUnderAdmission } from "../shared/admission-commit.js";
 
@@ -16,8 +16,8 @@ export class MxcExtensionChannel {
   private readonly decoder: MxcFrameDecoder;
 
   constructor(readonly input: Readable, readonly output: Writable, private readonly generation: string,
-    private readonly key: Buffer, private readonly role: "host" | "supervisor") {
-    this.decoder = new MxcFrameDecoder(generation, key, role === "host" ? "supervisor" : "host");
+    private readonly key: Buffer, private readonly role: "host" | "supervisor", private readonly protocol: MxcFrameProtocol = "shell") {
+    this.decoder = new MxcFrameDecoder(generation, key, role === "host" ? "supervisor" : "host", protocol);
   }
 
   /** `admit` runs in the step that writes the frame. Its refusal sends nothing, takes no sequence number and leaves the
@@ -30,7 +30,7 @@ export class MxcExtensionChannel {
       let writing = false;
       const write = (): void => {
         writing = true;
-        const frame = encodeMxcFrame({ ...payload, version: 1, generation: this.generation, sequence: this.sequence++ } as MxcStreamFrame, this.key, this.role);
+        const frame = encodeMxcFrame({ ...payload, version: 1, generation: this.generation, sequence: this.sequence++ } as MxcStreamFrame, this.key, this.role, this.protocol);
         this.output.write(frame, (error) => {
           if (!error) { resolve(); return; }
           this.fail();

@@ -82,7 +82,7 @@ class SupervisedMxcProcess implements OwnedMxcExtensionProcess {
       child.kill();
       throw new MxcProcessContractError("Supervisor requires private standard streams");
     }
-    this.channel = new MxcExtensionChannel(child.stdout, child.stdin, generation, key, "host");
+    this.channel = new MxcExtensionChannel(child.stdout, child.stdin, generation, key, "host", "windows-extension");
     this.liveness = child.stdio[3] as Duplex;
     this.ready = new Promise<void>((resolve, reject) => { this.resolveReady = resolve; this.rejectReady = reject; });
     this.completion = new Promise<ProcessResult>((resolve, reject) => { this.resolveCompletion = resolve; this.rejectCompletion = reject; });

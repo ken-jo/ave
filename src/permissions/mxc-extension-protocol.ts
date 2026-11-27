@@ -23,7 +23,7 @@ export function mxcRequestDigest(request: ContainerRequest): string {
 
 type StreamFrame = { type: "stdin" | "stdout" | "stderr"; data: string };
 type ControlFrame = { type: "stdin-end" | "stop" | "creating" | "spawning" };
-type ReleaseFrame = { type: "spawn-authorized"; releasePath?: string; releaseDigest?: string };
+type WindowsExtensionReleaseFrame = { type: "spawn-authorized"; releasePath?: string; releaseDigest?: string };
 type StoppedFrame = { type: "stopped"; spawnPendingAtCancellation: boolean };
 type NativeCreatedFrame = { type: "native-created"; id: number; processHandle: string };
 type NativeObservedFrame = { type: "native-observed"; id: number };
@@ -37,13 +37,15 @@ type FailureFrame = { type: "error"; message: string } & (
   { code: "contract" | "integrity" | "capability-unavailable" | "cleanup-unverified" | "supervisor-lost"; backendLoss?: "extension" | "common" }
   | { code: "start-refused"; sdkCode?: string }
 );
-export type MxcStreamFrame = (StreamFrame | ControlFrame | ReleaseFrame | StoppedFrame | NativeCreatedFrame | NativeObservedFrame | StartFrame | ReadyFrame | ShellStartFrame | ShellReadyFrame | ExitFrame | FailureFrame) & {
+export type MxcStreamFrame = (StreamFrame | ControlFrame | WindowsExtensionReleaseFrame | StoppedFrame | NativeCreatedFrame | NativeObservedFrame | StartFrame | ReadyFrame | ShellStartFrame | ShellReadyFrame | ExitFrame | FailureFrame) & {
   version: 1;
   generation: string;
   sequence: number;
 };
 
-function validateFrame(value: unknown, generation: string, sequence: number): asserts value is MxcStreamFrame {
+export type MxcFrameProtocol = "shell" | "windows-extension";
+
+function validateFrame(value: unknown, generation: string, sequence: number, protocol: MxcFrameProtocol): asserts value is MxcStreamFrame {
   const fail = (): never => { throw new MxcProcessContractError("Invalid supervisor frame"); };
   if (!value || typeof value !== "object" || Array.isArray(value)) fail();
   if (!/^[a-f0-9]{64}$/.test(generation) || !Number.isSafeInteger(sequence) || sequence < 0) fail();
@@ -58,6 +60,8 @@ function validateFrame(value: unknown, generation: string, sequence: number): as
       break;
     case "stdin-end": case "stop": case "creating": case "spawning": fields = []; break;
     case "spawn-authorized":
+      fields = [];
+      if (protocol !== "windows-extension") break;
       if (frame.releasePath !== undefined || frame.releaseDigest !== undefined) {
         if (typeof frame.releasePath !== "string" || frame.releasePath.length > 32768 || frame.releasePath.includes("\0")
           || typeof frame.releaseDigest !== "string" || !/^[a-f0-9]{64}$/u.test(frame.releaseDigest)) fail();
@@ -116,7 +120,7 @@ function validateFrame(value: unknown, generation: string, sequence: number): as
       if (frame.code === "start-refused") {
         if (Object.hasOwn(frame, "sdkCode") && (typeof frame.sdkCode !== "string" || !/^[a-z_]{1,64}$/.test(frame.sdkCode))) fail();
         fields.push("sdkCode");
-      } else {
+      } else if (protocol === "windows-extension") {
         if (frame.backendLoss !== undefined && frame.backendLoss !== "extension" && frame.backendLoss !== "common") fail();
         fields.push("backendLoss");
       }
@@ -134,8 +138,8 @@ function authenticate(body: Buffer, key: Buffer, direction: ChannelDirection): B
   return createHmac("sha256", key).update(direction).update(body).digest();
 }
 
-export function encodeMxcFrame(frame: MxcStreamFrame, key: Buffer, direction: ChannelDirection): Buffer {
-  validateFrame(frame, frame.generation, frame.sequence);
+export function encodeMxcFrame(frame: MxcStreamFrame, key: Buffer, direction: ChannelDirection, protocol: MxcFrameProtocol = "shell"): Buffer {
+  validateFrame(frame, frame.generation, frame.sequence, protocol);
   const body = Buffer.from(JSON.stringify(frame));
   if (body.length + MAC_BYTES > MXC_FRAME_MAX_BYTES) throw new MxcProcessContractError("Supervisor frame exceeds limit");
   const header = Buffer.alloc(4);
@@ -152,7 +156,8 @@ export class MxcFrameDecoder {
   private sequence = 0;
   private failed = false;
 
-  constructor(private readonly generation: string, private readonly key: Buffer, private readonly direction: ChannelDirection) {
+  constructor(private readonly generation: string, private readonly key: Buffer, private readonly direction: ChannelDirection,
+    private readonly protocol: MxcFrameProtocol = "shell") {
     if (key.length !== MAC_BYTES) throw new MxcProcessContractError("Invalid supervisor channel key");
     if (!/^[a-f0-9]{64}$/.test(generation)) throw new MxcProcessContractError("Invalid supervisor generation");
   }
@@ -182,7 +187,7 @@ export class MxcFrameDecoder {
           throw new MxcProcessContractError("Supervisor authentication failed");
         }
         const frame: unknown = JSON.parse(body.toString("utf8"));
-        validateFrame(frame, this.generation, this.sequence);
+        validateFrame(frame, this.generation, this.sequence, this.protocol);
         this.sequence += 1;
         this.headerBytes = 0;
         this.bodyBytes = 0;
