@@ -1,6 +1,7 @@
 async function runGuardedOwnerOperation<T>(guard: () => void, operation: () => Promise<T>): Promise<T> { guard(); const result = await operation(); guard(); return result; }
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { createServer } from "node:net";
 import { refuseNamespaceFileCreation } from "../../__tests__/support/feature-namespace.js";
 import { DEFAULT_TAILNET_OBSERVER_PORT, TAILNET_OBSERVER_PORT_BLOCKED } from "../../shared/tailnet-observer-config.js";
 import { unavailableSecretEncryption } from "../../__tests__/support/host-runtime.js";
@@ -1010,6 +1011,221 @@ describe("Tailnet observer configuration surface", () => {
 });
 
 // A `tailscale status --json` payload for a node that is up and signed in.
+describe("Tailnet observer port state table", () => {
+  const defaultPort = DEFAULT_TAILNET_OBSERVER_PORT;
+  const legacyPort = 46_173;
+  const overridePort = 29_999;
+  const savedPort = 29_123;
+  interface PortCase {
+    id: string;
+    file: "none" | "on" | "off" | number;
+    route: "foreground" | "background" | "absent" | "failed" | "unavailable" | "unrelated";
+    enable?: boolean;
+    override?: number;
+    priorListener?: boolean;
+    occupied?: number;
+    edit?: number;
+    boot: number | null;
+    draft: number;
+    guided: number | "alternate" | "not-ready" | "forced-off";
+  }
+  const cases: PortCase[] = [
+    { id: "C1 R3 E1 B1", file: "none", route: "absent", boot: null, draft: defaultPort, guided: defaultPort },
+    {
+      id: "C2 R3 B2", file: "none", route: "absent", enable: true, occupied: defaultPort,
+      boot: defaultPort, draft: defaultPort, guided: "alternate",
+    },
+    { id: "C2 R5", file: "none", route: "unrelated", enable: true, boot: defaultPort, draft: defaultPort, guided: defaultPort },
+    { id: "C3 R1", file: "none", route: "foreground", enable: true, boot: legacyPort, draft: legacyPort, guided: legacyPort },
+    { id: "C3 R2 B3", file: "none", route: "background", boot: null, draft: legacyPort, guided: legacyPort },
+    { id: "C4 R4", file: "none", route: "failed", enable: true, boot: legacyPort, draft: legacyPort, guided: legacyPort },
+    { id: "C5 R4", file: "none", route: "failed", boot: null, draft: defaultPort, guided: defaultPort },
+    {
+      id: "C6", file: "none", route: "absent", enable: true, priorListener: true,
+      boot: legacyPort, draft: legacyPort, guided: legacyPort,
+    },
+    { id: "C7", file: "on", route: "absent", boot: legacyPort, draft: legacyPort, guided: legacyPort },
+    { id: "C7 forced OFF", file: "on", route: "absent", enable: false, boot: null, draft: legacyPort, guided: "forced-off" },
+    {
+      id: "C8 with occupied legacy port", file: "off", route: "absent", occupied: legacyPort,
+      boot: null, draft: legacyPort, guided: defaultPort,
+    },
+    {
+      id: "C8 with occupied default", file: "off", route: "absent", occupied: defaultPort,
+      boot: null, draft: legacyPort, guided: "alternate",
+    },
+    { id: "C8 environment ON", file: "off", route: "absent", enable: true, boot: defaultPort, draft: defaultPort, guided: defaultPort },
+    { id: "C9", file: "off", route: "foreground", boot: null, draft: legacyPort, guided: legacyPort },
+    { id: "C9 environment ON", file: "off", route: "background", enable: true, boot: legacyPort, draft: legacyPort, guided: legacyPort },
+    { id: "C10 ready", file: "off", route: "failed", boot: null, draft: legacyPort, guided: defaultPort },
+    { id: "C10 unavailable", file: "off", route: "unavailable", boot: null, draft: legacyPort, guided: "not-ready" },
+    { id: "C10 environment ON", file: "off", route: "failed", enable: true, boot: legacyPort, draft: legacyPort, guided: legacyPort },
+    { id: "C11", file: savedPort, route: "foreground", boot: null, draft: savedPort, guided: savedPort },
+    {
+      id: "C11 B4", file: defaultPort, route: "absent", enable: true, occupied: defaultPort,
+      boot: defaultPort, draft: defaultPort, guided: defaultPort,
+    },
+    {
+      id: "C12", file: "off", route: "absent", enable: true, priorListener: true,
+      boot: legacyPort, draft: legacyPort, guided: legacyPort,
+    },
+    {
+      id: "E2 B4", file: "none", route: "absent", enable: true, override: overridePort, occupied: overridePort,
+      boot: overridePort, draft: defaultPort, guided: defaultPort,
+    },
+    {
+      id: "E3", file: "none", route: "background", enable: true, override: overridePort,
+      boot: overridePort, draft: legacyPort, guided: legacyPort,
+    },
+    {
+      id: "E4", file: "none", route: "absent", enable: true, override: overridePort, edit: overridePort,
+      boot: overridePort, draft: defaultPort, guided: defaultPort,
+    },
+  ];
+
+  it.each(cases.flatMap(row => (["boot", "Settings", "guided setup"] as const).map(entry => ({ ...row, entry }))))(
+    "$id through $entry",
+    async ({ file, route, enable, override, priorListener, occupied, edit, boot, draft, guided, entry }) => {
+      const dir = makeTempDir();
+      const configPath = join(dir, "observer.json");
+      const namespace = {
+        dir, writeJson: vi.fn((name: string, value: unknown) => writeJsonAtomic(dir, name, value)),
+      } as FeatureNamespaceHandle;
+      const legacyFile = file === "on" || file === "off";
+      const initial = file === "none" ? null : {
+        authorization: TAILNET_IDENTITY,
+        ...(file === "on" ? { enabled: true } : {}),
+        ...(typeof file === "number" ? { port: file } : {}),
+      };
+      const original = initial === null ? null : JSON.stringify(initial, null, 4) + "\r\n";
+      if (original !== null) await writeFile(configPath, original);
+      const env: NodeJS.ProcessEnv = {
+        AVE_TAILNET_OBSERVER: enable === undefined ? undefined : enable ? "1" : "0",
+        AVE_TAILNET_OBSERVER_AUTHORIZATION: CAPABILITY_ENV,
+        AVE_TAILNET_OBSERVER_PORT: override?.toString(),
+      };
+      const readConfigFile = () => readTailnetObserverConfigFile(namespace, env);
+      const writeConfigFile = vi.fn((next: TailnetObserverConfigFile) => writeTailnetObserverConfigFile(next, namespace));
+      let currentRoute = priorListener ? "background" : route;
+      const probeEnvironment = () => {
+        const Web = {
+          "desk.example-tailnet.ts.net:443": {
+            Handlers: { "/": { Proxy: "http://127.0.0.1:" + (currentRoute === "unrelated" ? 39_000 : legacyPort) } },
+          },
+        };
+        const serveStatus = currentRoute === "foreground" ? { Foreground: { session: { Web } } }
+          : currentRoute === "background" || currentRoute === "unrelated" ? { Web } : {};
+        return probeTailscaleEnvironment({
+          platform: "linux",
+          runCommand: runner({
+            "status --json": {
+              kind: "ran", code: 0, stderr: "",
+              stdout: readyStatus(currentRoute === "unavailable" ? { BackendState: "Stopped" } : {}),
+            },
+            "serve status --json": {
+              kind: "ran", code: currentRoute === "failed" ? 1 : 0, stdout: JSON.stringify(serveStatus), stderr: "",
+            },
+          }),
+        });
+      };
+      const { input, startServer } = options(env);
+      startServer.mockImplementation(async ({ port }) => {
+        if (port === occupied) throw Object.assign(new Error("listen failed"), { code: "EADDRINUSE" });
+        return { host: "127.0.0.1", port, close: vi.fn(async () => undefined) };
+      });
+      const runServe = vi.fn(async () => ({ ok: true as const }));
+      const settings = createTailnetObserverConfigService({
+        pairedSharingBootstrapFailed: () => false, env, readConfigFile, writeConfigFile, probeEnvironment, runServe,
+        readOwnDeviceAdmission: async () => false,
+      });
+      const assertBind = async (action: Promise<unknown>, port: number | null) => {
+        if (port !== null && port === occupied) {
+          await expect(action).rejects.toThrow(TAILNET_OBSERVER_PORT_BLOCKED);
+          expect(getTailnetObserverRuntimeState().portBlock).toMatchObject({ port, code: "EADDRINUSE" });
+        } else {
+          await action;
+          expect(getTailnetObserverRuntimeState().listeningPort).toBe(port);
+        }
+      };
+      const hint = vi.spyOn(portHints, "getWindowsTailnetPortHint").mockResolvedValue(null);
+      const blocker = createServer();
+      try {
+        if (entry === "guided setup" && guided === "alternate") {
+          await new Promise<void>((resolve, reject) => {
+            blocker.once("error", (error: NodeJS.ErrnoException) => {
+              if (error.code === "EADDRINUSE" || error.code === "EACCES") resolve();
+              else reject(error);
+            });
+            blocker.listen({ host: "127.0.0.1", port: defaultPort, exclusive: true }, resolve);
+          });
+        }
+        await assertBind(maybeStartTailnetObserverServer({
+          ...input,
+          dependencies: { ...input.dependencies, readConfigFile, probeEnvironment },
+          tailnetPairedSharingRuntime: fakeRuntime(fakeStore()),
+        }), boot);
+        if (priorListener) {
+          currentRoute = route;
+          await assertBind(restartTailnetObserverServer(), boot);
+        }
+
+        const snapshot = await settings.snapshot();
+        expect.soft(snapshot.saved.port).toBe(draft);
+        if (file === "on" && enable !== false) {
+          expect(JSON.parse(await readFile(configPath, "utf8"))).toEqual({ ...initial, port: legacyPort });
+        } else if (legacyFile) {
+          expect(await readFile(configPath, "utf8")).toBe(original);
+        }
+        expect(writeConfigFile).not.toHaveBeenCalled();
+        if (entry === "boot") {
+          expect(runServe).not.toHaveBeenCalled();
+          return;
+        }
+        if (entry === "Settings") {
+          const chosen = edit ?? draft;
+          await assertBind(settings.apply({ ...snapshot.saved, enabled: true, port: chosen }), enable === false ? null : override ?? chosen);
+          expect(writeConfigFile).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ port: chosen }));
+          expect(runServe).not.toHaveBeenCalled();
+          return;
+        }
+
+        const result = await settings.guidedSetup();
+        if (guided === "not-ready" || guided === "forced-off") {
+          expect(result).toMatchObject({
+            ok: false, error: guided === "not-ready" ? "tailnet-guided-setup-not-ready" : "tailnet-serve-not-listening",
+          });
+          expect(writeConfigFile).not.toHaveBeenCalled();
+          expect(runServe).not.toHaveBeenCalled();
+          return;
+        }
+        const writtenPort = writeConfigFile.mock.lastCall?.[0].port;
+        if (guided === "alternate") {
+          expect.soft(writtenPort).toEqual(expect.any(Number));
+          expect.soft(writtenPort).not.toBe(defaultPort);
+        } else {
+          expect.soft(writtenPort).toBe(guided);
+        }
+        const runtimePort = override ?? writtenPort;
+        if (runtimePort !== undefined && runtimePort === occupied) {
+          expect(result).toMatchObject({ ok: false, error: TAILNET_OBSERVER_PORT_BLOCKED });
+          expect(getTailnetObserverRuntimeState().portBlock).toMatchObject({ port: runtimePort });
+          expect(runServe).not.toHaveBeenCalled();
+        } else {
+          expect(result).toMatchObject({ ok: true, port: runtimePort });
+          if ((route === "foreground" || route === "background") && runtimePort === legacyPort) {
+            expect(runServe).not.toHaveBeenCalled();
+          } else {
+            expect(runServe).toHaveBeenCalledExactlyOnceWith({ cliPath: "tailscale", port: runtimePort });
+          }
+        }
+      } finally {
+        hint.mockRestore();
+        if (blocker.listening) await new Promise<void>(resolve => blocker.close(() => resolve()));
+      }
+    },
+  );
+});
+
 function readyStatus(overrides: Record<string, unknown> = {}): string {
   return JSON.stringify({
     BackendState: "Running",

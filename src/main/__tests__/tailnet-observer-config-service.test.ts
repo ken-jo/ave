@@ -398,14 +398,14 @@ describe("Tailnet observer configuration service", () => {
     });
 
     it.each((["darwin", "linux", "win32"] as const).flatMap(hostPlatform =>
-      [false, true].map(bootFailed => ({
-        hostPlatform,
-        bootFailed,
-        scenario: bootFailed ? "after an implicit boot bind failure" : "before boot",
-      })),
+      [
+        { hostPlatform, bootFailed: false, legacyOff: false, scenario: "before boot" },
+        { hostPlatform, bootFailed: true, legacyOff: false, scenario: "after an implicit boot bind failure" },
+        { hostPlatform, bootFailed: false, legacyOff: true, scenario: "with a portless OFF file" },
+      ],
     ))(
       "selects and saves a free port on $hostPlatform $scenario",
-      async ({ hostPlatform, bootFailed }) => {
+      async ({ hostPlatform, bootFailed, legacyOff }) => {
         const defaultPort = DEFAULT_TAILNET_OBSERVER_PORT;
         const blocker = createServer();
         await new Promise<void>((resolve, reject) => {
@@ -419,7 +419,7 @@ describe("Tailnet observer configuration service", () => {
         const isWindows = hostPlatform === "win32";
         const excludedRange = vi.spyOn(sandbox, "getWindowsProxyPortRange").mockReturnValue([40_000, 50_000]);
         try {
-          let saved: TailnetObserverConfigFile | null = null;
+          let saved: TailnetObserverConfigFile | null = legacyOff ? { authorization: TAILNET_IDENTITY } : null;
           let listeningPort: number | null = null;
           const writeConfigFile = vi.fn(async (file: TailnetObserverConfigFile) => { saved = file; });
           const runServe = vi.fn(async () => ({ ok: true as const }));

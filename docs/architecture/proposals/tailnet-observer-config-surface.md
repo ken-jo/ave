@@ -182,15 +182,19 @@ the connect button reveals the full form inline, and a configured desktop can
 still reveal it from the status card. An app capability, a hand-picked port, and
 the controller are only reachable there.
 
-**The port rule.** For a fresh configuration, guided setup probes the shared
-default and selects an eligible free port before saving if the default is
-unavailable. The setup result shows the bound port. Established and saved
-ports stay fixed. A saved file without a port inherits 46173 and records that
-port when the observer is enabled or the owner saves Settings. An enabled
-environment-only deployment keeps 46173 when an existing Serve route targets
-it or the route probe is unavailable, unless the environment sets a port
-explicitly. A blocked bind reports its code and port in Settings so the owner
-can choose another port in the manual form.
+**The port rule.** Guided setup probes the shared default and selects an
+eligible free port before saving when there is no explicit saved port or
+established listener. This includes a portless file saved OFF with no
+established route. A portless file saved ON inherits 46173 and records that
+port when effectively enabled. Refreshing Settings and booting while OFF
+leave legacy file bytes intact. An environment-enabled deployment without a
+saved port or enabled legacy file uses the established foreground or
+background Serve target at the current or previous default. An unavailable
+route probe retains the legacy port when there is no established listener.
+An explicit environment port controls the runtime listener. Settings and
+guided setup choose the file port independently of that override. The guided
+result shows the bound port. A blocked bind reports its code and port in
+Settings so the owner can choose another port in the manual form.
 
 **Gate.** The channel is `apply` plus `configureServe` in one press, so it
 carries exactly their gate — host-renderer sender plus a fresh local keyboard

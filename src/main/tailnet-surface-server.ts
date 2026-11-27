@@ -260,10 +260,10 @@ export function resolveTailnetObserverPort(
   if (entryPoint === "boot" && override !== undefined) {
     return { port: parseFixedPort(override), canChoosePort: false };
   }
-  if (file !== null) {
-    const port = file.port === undefined ? LEGACY_TAILNET_OBSERVER_PORT : parseFixedPort(String(file.port));
-    return { port, canChoosePort: false };
+  if (file?.port !== undefined) {
+    return { port: parseFixedPort(String(file.port)), canChoosePort: false };
   }
+  if (file?.enabled === true) return { port: LEGACY_TAILNET_OBSERVER_PORT, canChoosePort: false };
   if (evidence?.establishedPort != null) return { port: evidence.establishedPort, canChoosePort: false };
 
   const environment = evidence?.environment;
@@ -271,7 +271,11 @@ export function resolveTailnetObserverPort(
   if (target === LEGACY_TAILNET_OBSERVER_PORT || target === DEFAULT_TAILNET_OBSERVER_PORT) {
     return { port: target, canChoosePort: false };
   }
-  if (environment?.serveStatusKnown === false && tailnetObserverEnableOverride(env) === true) {
+  const environmentEnabled = tailnetObserverEnableOverride(env) === true;
+  if (environment?.serveStatusKnown === false && environmentEnabled) {
+    return { port: LEGACY_TAILNET_OBSERVER_PORT, canChoosePort: false };
+  }
+  if (file !== null && entryPoint === "settings" && !environmentEnabled) {
     return { port: LEGACY_TAILNET_OBSERVER_PORT, canChoosePort: false };
   }
   return { port: DEFAULT_TAILNET_OBSERVER_PORT, canChoosePort: entryPoint === "guided-setup" };
@@ -350,10 +354,10 @@ export async function readTailnetObserverConfigFile(
   const path = join(namespace.dir, TAILNET_OBSERVER_CONFIG_FILE);
   return withInProcessFileQueue(path, async () => {
     const file = await readObserverConfigAtPath(path);
-    if (file === null || file.port !== undefined) return file;
+    if (file?.enabled !== true || file.port !== undefined || tailnetObserverEnableOverride(env) === false) return file;
 
-    const migrated = Object.freeze({ ...file, port: LEGACY_TAILNET_OBSERVER_PORT });
-    if (!(tailnetObserverEnableOverride(env) ?? file.enabled)) return migrated;
+    const { port } = resolveTailnetObserverPort(file, env, undefined, "settings");
+    const migrated = Object.freeze({ ...file, port });
     try {
       await namespace.writeJson(TAILNET_OBSERVER_CONFIG_FILE, migrated);
     } catch {
@@ -672,7 +676,7 @@ async function startForBoot(
   const resolved = dependencies(options.dependencies, options.env);
   const env = options.env ?? process.env;
   const file = await resolved.readConfigFile();
-  const environment = file === null && tailnetObserverEnableOverride(env) === true
+  const environment = file?.port === undefined && file?.enabled !== true && tailnetObserverEnableOverride(env) === true
     ? await resolved.probeEnvironment()
     : undefined;
   const { config, provenance } = resolveFromLayers(file, env, { environment, establishedPort });
