@@ -1,6 +1,7 @@
 // Reviewer relaxation requires live OS isolation; none forbids intent-only downgrades from MEDIUM/HIGH to LOW. Inactive gates publish verified none; audit stores the resulting verdict rather than the full capability (docs/architecture/permission-policy-design.md).
 
-import { assertSandboxWindowsExtensionPlan, egressProtocolCoverageFor } from "../shared/sandbox-capability-info.js";
+import { assertSandboxWindowsExtensionPlan, containerEgressProtocolCoverage, egressProtocolCoverageFor } from "../shared/sandbox-capability-info.js";
+import { isContainerShellRouteEnabled } from "../shared/container-platform.js";
 import { getAveHomePrivacyFailure, isAveHomePrivacyApprovable, isAveHomePrivacyVerifiedAtBoot } from "../shared/ave-home.js";
 import { windowsDenyUnenforceableAtBoot } from "./admitted-obligation.js";
 import { t } from "../i18n/index.js";
@@ -8,6 +9,8 @@ import type { ToolCategory, ToolSource } from "../tools/types.js";
 import type {
   SandboxBootOutcome,
   SandboxConfinement,
+  SandboxMacContainerShellInfo,
+  SandboxMacContainerShellSupport,
   SandboxWindowsSubstrateInfo,
   SandboxWindowsExtensionPlan,
 } from "../shared/sandbox-capability-info.js";
@@ -250,11 +253,38 @@ export function getWindowsExtensionBackendPlan(): SandboxWindowsExtensionPlan | 
   return _windowsSubstrate?.extensionPlan;
 }
 
+let _containerShellSubstrate: SandboxMacContainerShellSupport | undefined;
+const MAC_CONTAINER_SHELL_CAPABILITY: SandboxCapability = Object.freeze({
+  kind: "asrt", platform: "darwin", confidence: "verified", reason: "macOS container shell verified",
+  confines: Object.freeze({ filesystem: true, process: true, network: true }),
+});
+
+export function setContainerShellSubstrate(support: SandboxMacContainerShellSupport): void {
+  _containerShellSubstrate = Object.freeze({ ...support });
+  _sandboxGeneration += 1;
+  notifySandboxStatusChanged();
+}
+
 // The capability of a Bash/PowerShell tool command launched in an MXC container, or undefined when that route is not live: MXC carries the shells this boot, the shell sandbox was requested, and the process-wide ASRT runtime (whose proxy the containers reach) is still published.
 export function detectMxcShellCapability(): SandboxCapability | undefined {
-  if (_mxcShellCapability === undefined || !_shellSandboxRequestedAtBoot) return undefined;
-  if (_activeCapability?.kind !== "asrt") return undefined;
+  if (!_shellSandboxRequestedAtBoot || _activeCapability?.kind !== "asrt") return undefined;
+  if (process.platform === "darwin" && isContainerShellRouteEnabled("darwin")) {
+    return _containerShellSubstrate?.state === "available" ? MAC_CONTAINER_SHELL_CAPABILITY : undefined;
+  }
   return _mxcShellCapability;
+}
+
+// @internal — test teardown only.
+export function __resetContainerShellSubstrateForTest(): void {
+  if (_containerShellSubstrate !== undefined) _sandboxGeneration += 1;
+  _containerShellSubstrate = undefined;
+}
+
+export function getMacContainerShellInfo(): SandboxMacContainerShellInfo | undefined {
+  if (process.platform !== "darwin" || !isShellSandboxRequestedAtBoot() || _containerShellSubstrate === undefined) return undefined;
+  const support = _containerShellSubstrate.state === "available" && detectMxcShellCapability() === undefined
+    ? { state: "unavailable", reason: "shell-start-failed" } as const : _containerShellSubstrate;
+  return { ...support, egressProtocolCoverage: containerEgressProtocolCoverage("seatbelt") };
 }
 
 // Windows: no sandbox HOME can be made this run (the container runtime root is unproved, or its HOME parent was replaced).
@@ -347,15 +377,20 @@ export function detectPluginWorkerSandboxCapability(): SandboxCapability {
   };
 }
 // Resolve the boot-sealed shell plan from the capability that applies to the selected child.
-export function getHostShellExecutionPlan(executionMode: HostShellExecutionRequest = "default"): HostShellExecutionPlan {
+export function getHostShellExecutionPlan(
+  executionMode: HostShellExecutionRequest = "default",
+  consumer: "shell" | "hook" = "shell",
+): HostShellExecutionPlan {
   const generation = getSandboxGeneration();
-  const mxc = detectMxcShellCapability();
+  const darwin = process.platform === "darwin";
+  const selectsMacContainer = darwin && consumer === "shell" && isContainerShellRouteEnabled("darwin");
+  const mxc = darwin && consumer === "hook" ? undefined : detectMxcShellCapability();
   const privacyFailure = getAveHomePrivacyFailure();
   const plan = buildHostShellExecutionPlan({
     platform: process.platform,
     requestedSandbox: isShellSandboxRequestedAtBoot(),
     activeCapability: mxc ?? detectShellSandboxCapability(),
-    shellSubstrate: mxc === undefined ? "asrt" : "mxc",
+    shellSubstrate: mxc !== undefined ? "mxc" : selectsMacContainer ? "none" : "asrt",
     executionMode,
     unavailableCauses: _bootOutcome?.causes,
     unavailableSandboxRequiresAsk: privacyFailure !== undefined || windowsDenyUnenforceableAtBoot() !== undefined,

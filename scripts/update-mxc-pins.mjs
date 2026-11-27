@@ -97,7 +97,7 @@ export async function generateMxcPins({ projectRoot = PROJECT_ROOT, pins, allowD
   try {
     // Preserve reviewed archive trust anchors while discovering native observations.
     // The staging helper checks both archive SHA512 and the existing addon byte pins.
-    for (const arch of ["x64", "arm64"]) {
+    for (const arch of ["x64", "arm64", ...Object.hasOwn(original.targets, "darwin-arm64") ? ["darwin-arm64"] : []]) {
       const addon = original.sdk.addons[arch];
       if (!addon || typeof addon.tarballSha512Base64 !== "string" || !addon.tarballSha512Base64) {
         throw new Error(`Missing reviewed addon archive integrity: ${arch}`);
@@ -114,6 +114,11 @@ export async function generateMxcPins({ projectRoot = PROJECT_ROOT, pins, allowD
       }
       entries.add(addonPrefix + "package.json");
       discoverCode(addonModules, addon.package, entries);
+      if (arch === "darwin-arm64") {
+        entries.add(`${addonPrefix}darwin_arm64/koffi.node`);
+        result.sdk.darwinFiles = Object.fromEntries([...entries].sort().map((relative) => [relative, observe(addonModules, relative)]));
+        continue;
+      }
       discoverNativeFiles(addonModules, addonPrefix + `win32_${arch}`, entries, new Set([".node", ".dll"]));
       discoverNativeFiles(modules, `node-pty/prebuilds/win32-${arch}`, entries, new Set([".node", ".dll", ".exe"]));
       if (sdkRoot) {

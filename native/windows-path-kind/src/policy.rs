@@ -34,6 +34,7 @@ struct Delivery {
 
 struct Authorization {
     gate: Vec<u16>,
+    output: u32,
     replies: Mutex<Receiver<u8>>,
 }
 
@@ -43,10 +44,10 @@ impl Authorization {
             return Err(0);
         };
         check(unsafe { SetNamedPipeHandleState(pipe, &PIPE_NOWAIT, null(), null()) })?;
-        let stdout = unsafe { GetStdHandle(STDOUT) };
+        let output = unsafe { GetStdHandle(self.output) };
         if !may_offer_pipe(
             || {
-                write_all(stdout, b"authorize\n").is_ok()
+                write_all(output, b"authorize\n").is_ok()
                     && received(&replies, PERMITTED, delivery.remaining())
             },
             || unsafe { GetFileAttributesW(self.gate.as_ptr()) },
@@ -56,7 +57,7 @@ impl Authorization {
             return Err(0);
         }
         let offer = format!("deliver {:x} {}\n", pipe as usize, delivery.deadline);
-        write_all(stdout, offer.as_bytes())?;
+        write_all(output, offer.as_bytes())?;
         if !received(&replies, WRITTEN, delivery.remaining()) {
             return Err(0);
         }
@@ -92,7 +93,7 @@ fn read_u32() -> Result<u32, u32> {
     Ok(u32::from_le_bytes(bytes))
 }
 
-fn watch_owner(delivery: &Delivery, authorization: Option<SyncSender<u8>>) {
+fn watch_owner(delivery: &Delivery, acknowledge: bool, authorization: Option<SyncSender<u8>>) {
     let Ok(pid) = read_u32() else {
         return;
     };
@@ -109,6 +110,12 @@ fn watch_owner(delivery: &Delivery, authorization: Option<SyncSender<u8>>) {
         return;
     }
     delivery.signal(&delivery.bound);
+    if acknowledge {
+        let output = unsafe { GetStdHandle(STDOUT) };
+        if write(output, b"bound\n") != Ok(6) || unsafe { CloseHandle(output) } == 0 {
+            return delivery.fail();
+        }
+    }
     if let Some(authorization) = authorization {
         let mut reply = [0];
         while read_exact(input(), &mut reply).is_ok() && matches!(reply[0], PERMITTED | WRITTEN) {
@@ -226,7 +233,7 @@ fn event() -> Handle {
     unsafe { Handle::from_raw(CreateEventW(null_mut(), 1, 0, null())) }.unwrap_or_else(|_| exit(1))
 }
 
-pub fn run(args: &[Vec<u16>]) -> u8 {
+pub fn run(args: &[Vec<u16>], acknowledge: bool) -> u8 {
     let (name, milliseconds, gate) = match args {
         [name, milliseconds] => (name, milliseconds, None),
         [name, milliseconds, gate, authorize] if *authorize == ascii("--authorize") => {
@@ -298,7 +305,11 @@ pub fn run(args: &[Vec<u16>]) -> u8 {
         Some(gate) => {
             let (send, receive) = sync_channel(0);
             (
-                Some(Authorization { gate, replies: Mutex::new(receive) }),
+                Some(Authorization {
+                    gate,
+                    output: if acknowledge { STDERR } else { STDOUT },
+                    replies: Mutex::new(receive),
+                }),
                 Some(send),
             )
         }
@@ -315,9 +326,12 @@ pub fn run(args: &[Vec<u16>]) -> u8 {
         authorization,
         policy,
     });
+    if acknowledge && write(unsafe { GetStdHandle(STDOUT) }, b"held-v1\n") != Ok(8) {
+        exit(1);
+    }
     let owner_delivery = Arc::clone(&delivery);
     let owner = thread::Builder::new()
-        .spawn(move || watch_owner(&owner_delivery, replies))
+        .spawn(move || watch_owner(&owner_delivery, acknowledge, replies))
         .unwrap_or_else(|_| exit(1));
     let workers: Vec<_> = pipes
         .iter()
@@ -329,7 +343,7 @@ pub fn run(args: &[Vec<u16>]) -> u8 {
                 .unwrap_or_else(|_| exit(1))
         })
         .collect();
-    if write(unsafe { GetStdHandle(STDOUT) }, b"ready\n") != Ok(6) {
+    if !acknowledge && write(unsafe { GetStdHandle(STDOUT) }, b"ready\n") != Ok(6) {
         exit(1);
     }
     let waits = [delivery.done.raw(), owner.as_raw_handle()];
@@ -384,6 +398,6 @@ mod tests {
 
     #[test]
     fn policy_pipe_rejects_extra_arguments() {
-        assert_eq!(run(&[ascii(PIPE_PREFIX), ascii("1000"), vec![], vec![]]), 2);
+        assert_eq!(run(&[ascii(PIPE_PREFIX), ascii("1000"), vec![], vec![]], false), 2);
     }
 }

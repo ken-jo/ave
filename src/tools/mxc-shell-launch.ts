@@ -1,7 +1,6 @@
 // Prepare invocation-scoped container launch resources. The invocation's lifecycle closes the proxy only after the launcher and its job
 // have exited, so a surviving process can never reach a port reused by another invocation.
 import { win32 as winPath } from "node:path";
-import type { ChildProcess } from "node:child_process";
 import { windowsSystemRoot } from "../shared/windows-system-path.js";
 import { admitWindowsReparse, pinWindowsPaths, windowsObjectKey, windowsPathKey, type WindowsPathFacts } from "../shared/windows-path-facts.js";
 
@@ -19,24 +18,23 @@ import {
   MxcLauncherIntegrityError,
   type MxcRankedPath,
   openMxcRequestTransport,
+  type MxcRequestTransport,
   rankMxcFilesystem,
   resolveHostWxcExecPath,
 } from "../permissions/mxc-windows.js";
-import { buildPolicyModel, policyFloorRow, policyGrantRow, requiredWriteDenyRow, type PolicyModel } from "../permissions/policy-model.js";
+import { buildPolicyModel, policyFloorRow, policyGrantRow, requiredWriteDenyRow, type PolicyFloorRow, type PolicyModel } from "../permissions/policy-model.js";
 import { requireMxcContainerStartRoot } from "../permissions/mxc-runtime-root.js";
 import { assertIssuedContainerHomeInPlace, heldIssuedContainerHome, isIssuedContainerHome, issuedContainerHome } from "../permissions/sandbox-home-registry.js";
 import { claimMxcWatchedRows, hasWatchedWork, sweepWatchedRows, WatchedQuarantineError } from "../permissions/windows-watched-rows.js";
 import type { ContainedShellLifecycle } from "./contained-shell-lifecycle.js";
 
-export interface MxcShellLaunch {
+export interface MxcShellLaunch extends Pick<MxcRequestTransport, "bindChild" | "bindHeldPolicy"> {
   /** `wxc-exec.exe` followed by its arguments; spawn with `shell: false`. */
   readonly argv: readonly string[];
   readonly proxyPort: number;
   readonly watchedNotice?: string | undefined;
   /** Admit connections after the final shell admission checks, immediately before spawn. */
   activate(): WindowsBackendObservation;
-  /** Bind policy delivery immediately after spawning the launcher. */
-  bindChild(child: ChildProcess): void;
 }
 
 /** A shell command's policy as the lists the shell composes. */
@@ -62,10 +60,11 @@ export interface MxcShellPolicyLists {
  * The shell's lists as policy rows. The paths are spellings as the shell composed them, and its interface does not say which
  * grant stands behind a root. A path on both deny lists is stated twice; the container adapter reads the two lists differently.
  */
-export function shellPolicyModel(lists: MxcShellPolicyLists): PolicyModel {
+export function shellPolicyModel(lists: MxcShellPolicyLists, literalAndPatternFloors: readonly PolicyFloorRow[] = []): PolicyModel {
   const required = new Set(lists.requiredWriteDenies);
   return buildPolicyModel({
     floors: [
+      ...literalAndPatternFloors,
       ...lists.denyRead.map((path) => policyFloorRow(path, "denied", "read-boundary", false)),
       ...lists.denyWrite.filter(path => !required.has(path)).map((path) => policyFloorRow(path, "ro", "protected-name", false)),
       ...(lists.independentWriteDenies ?? []).map((path) => policyFloorRow(path, "ro", "protected-name", false)),
@@ -95,6 +94,7 @@ export interface PrepareMxcShellLaunchInput {
   /** The child's secret-stripped environment. */
   readonly env: Readonly<Record<string, string>>;
   readonly timeoutMs: number;
+  readonly directoryHeld?: boolean;
   readonly exists: (path: string) => boolean;
   readonly assertCommand?: () => void;
   readonly assertDelivery?: () => void;
@@ -260,6 +260,7 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
   });
   const transport = await openMxcRequestTransport(request, wxcExec, {
     root: runtimeRoot, signal: lifecycle.signal,
+    held: input.directoryHeld === true,
     assertStillValid: () => {
       assertDispatch();
       if (active) input.assertDelivery?.();
@@ -288,6 +289,7 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
     if (notices.length > 0) watchedNotice = notices.join("\n");
     if (failure !== undefined) throw failure;
   });
+  const bindHeldPolicy = transport.bindHeldPolicy;
   return {
     argv: [wxcExec, ...transport.args],
     proxyPort: listener.port,
@@ -304,5 +306,11 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
       if (!active) throw new Error("Container shell launch must be active before binding a child");
       transport.bindChild(child);
     },
+    ...(bindHeldPolicy !== undefined && {
+      bindHeldPolicy: (launcher, readerPid, onFailure) => {
+        if (!active) throw new Error("Container shell launch must be active before binding a child");
+        return bindHeldPolicy(launcher, readerPid, onFailure);
+      },
+    }),
   };
 }

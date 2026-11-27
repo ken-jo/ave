@@ -51,7 +51,7 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--target") target = argv[++i];
-    else if (arg === "--current") target = currentMxcTarget();
+    else if (arg === "--current") target = process.platform === "darwin" ? null : currentMxcTarget();
     else if (arg === "--tarball" && argv[i + 1]) tarball = argv[++i];
     else throw new Error(`fetch-mxc: unknown or incomplete argument ${arg}`);
   }
@@ -115,7 +115,8 @@ export async function stageMxcSdkAddon({ arch, tarball, projectRoot = PROJECT_RO
   const modules = path.join(projectRoot, "node_modules");
   const target = path.join(modules, ...pin.package.split("/"));
   const prefix = pin.package + "/";
-  const files = Object.entries(PINS.sdk.architectures[arch]).filter(([name]) => name.startsWith(prefix));
+  const files = Object.entries(arch === "darwin-arm64" ? PINS.sdk.darwinFiles : PINS.sdk.architectures[arch])
+    .filter(([name]) => name.startsWith(prefix));
   const verify = async (directory) => {
     for (const [name, expected] of files) {
       if (sha256(await readFile(path.join(directory, name.slice(prefix.length)))) !== expected) {

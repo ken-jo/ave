@@ -26,6 +26,7 @@ export function createMxcNativeProcess() {
   const accesses: string[] = [];
   const native = {
     id: 42,
+    warnings: [] as string[],
     get standardInput() { accesses.push("stdin"); return stdin; },
     get standardOutput() { accesses.push("stdout"); return stdout; },
     get standardError() { accesses.push("stderr"); return stderr; },

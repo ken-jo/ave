@@ -31,11 +31,42 @@ function isUnavailableMetadata(metadata: string): boolean {
 
 describe("stage workspace session contract", () => {
   it("every sandboxed shell composes its boundary snapshot for the calling session", () => {
-    expect(shellTools.match(/createAveHomeBoundarySnapshot\(/gu)).toHaveLength(3);
+    // Four routes, one snapshot each: the bash wrap, the PowerShell wrap, the Windows PowerShell container, and the macOS
+    // container runner shared by bash and PowerShell. The macOS runner returns before either wrap takes its snapshot.
+    expect(shellTools.match(/createAveHomeBoundarySnapshot\(/gu)).toHaveLength(4);
     expect(shellTools.match(/const boundarySnapshot = createAveHomeBoundarySnapshot\(sessionId\);/gu)).toHaveLength(3);
+    const posixRunner = shellTools.slice(shellTools.indexOf("async function runPosixContainerShell("), shellTools.indexOf("export async function spawnWithSandbox("));
+    expect(posixRunner.match(/createAveHomeBoundarySnapshot\(/gu)).toEqual(["createAveHomeBoundarySnapshot("]);
+    expect(posixRunner).toContain("const boundary = createAveHomeBoundarySnapshot(input.sessionId);");
+    expect(posixRunner).toContain("const launch = await boundary.run(() => prepareMxcPosixShellLaunch({");
+    for (const [start, end] of [["export async function spawnWithSandbox(", "async function spawnWithTimeout("], ["async function spawnPowerShellWithSandbox(", "async function spawnPowerShellInMxc("]] as const) {
+      const route = shellTools.slice(shellTools.indexOf(start), shellTools.indexOf(end));
+      const call = route.indexOf("return await runPosixContainerShell({");
+      expect(call).toBeGreaterThan(-1);
+      expect(route.slice(call, route.indexOf("});", call))).toMatch(/\bsessionId\b/u);
+      expect(call).toBeLessThan(route.indexOf("const boundarySnapshot = createAveHomeBoundarySnapshot(sessionId);"));
+    }
     expect(bashSection.match(/boundarySessionOf\(ctx\)/gu)).toHaveLength(1);
     expect(powershellSection.match(/boundarySessionOf\(ctx\)/gu)).toHaveLength(3);
     expect(powershellSection).toContain("launch = await boundarySnapshot.run(() => prepareMxcShellLaunch({");
+  });
+});
+
+describe("macOS container spawn directory contract", () => {
+  it("checks the approved directory just before the supervisor starts, for both callers", () => {
+    const posixRunner = shellTools.slice(shellTools.indexOf("async function runPosixContainerShell("), shellTools.indexOf("export async function spawnWithSandbox("));
+    const check = posixRunner.indexOf("assertHostShellSpawnDirectory(input.spawnAuthorization);");
+    const start = posixRunner.indexOf("launch.start(label)");
+    expect(check).toBeGreaterThan(-1);
+    expect(start).toBeGreaterThan(check);
+    expect(posixRunner.slice(check, start)).not.toMatch(/\bawait\b/u);
+    expect(posixRunner.match(/assertHostShellSpawnDirectory\(/gu)).toHaveLength(1);
+    for (const [start, end] of [["export async function spawnWithSandbox(", "async function spawnWithTimeout("], ["async function spawnPowerShellWithSandbox(", "async function spawnPowerShellInMxc("]] as const) {
+      const route = shellTools.slice(shellTools.indexOf(start), shellTools.indexOf(end));
+      const call = route.indexOf("return await runPosixContainerShell({");
+      expect(call).toBeGreaterThan(-1);
+      expect(route.slice(call, route.indexOf("});", call))).toMatch(/\bspawnAuthorization\b/u);
+    }
   });
 });
 

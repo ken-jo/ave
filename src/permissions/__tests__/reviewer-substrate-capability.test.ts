@@ -7,9 +7,13 @@ import {
   isWeakSandbox,
   resolveReviewerSandboxCapability,
   setActiveSandboxCapability,
+  setContainerShellSubstrate,
   setShellSandboxRequestedAtBoot,
   type SandboxCapability,
 } from "../sandbox-capability.js";
+import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
+
+const HOST_PLATFORM = process.platform;
 import {
   LlmRiskClassifier,
   type LlmReviewerProvider,
@@ -25,20 +29,59 @@ describe("resolveReviewerSandboxCapability — execution-substrate awareness", (
   });
 
   it("returns the genuine asrt capability for the ASRT-wrapped host-shell tools when the gate is ON", () => {
-    setShellSandboxRequestedAtBoot(true);
-    setActiveSandboxCapability({
-      kind: "asrt",
-      confidence: "verified",
-      platform: "darwin",
-      reason: "ASRT (Seatbelt) active — fs+process+network contained",
-      confines: { filesystem: true, process: true, network: true },
-    });
+    // Linux shells run inside ASRT itself.
+    try {
+      setProcessPlatform("linux");
+      setShellSandboxRequestedAtBoot(true);
+      setActiveSandboxCapability({
+        kind: "asrt",
+        confidence: "verified",
+        platform: "linux",
+        reason: "ASRT (bwrap) active — fs+process+network contained",
+        confines: { filesystem: true, process: true, network: true },
+      });
 
-    for (const toolName of ["bash", "powershell"]) {
-      const cap = resolveReviewerSandboxCapability("builtin", toolName);
-      expect(cap.kind).toBe("asrt");
-      // The host-shell substrate genuinely runs wrapped → NOT weak → reviewer may relax for these calls.
-      expect(isWeakSandbox(cap)).toBe(false);
+      for (const toolName of ["bash", "powershell"]) {
+        const cap = resolveReviewerSandboxCapability("builtin", toolName);
+        expect(cap.kind).toBe("asrt");
+        // The host-shell substrate genuinely runs wrapped → NOT weak → reviewer may relax for these calls.
+        expect(isWeakSandbox(cap)).toBe(false);
+      }
+    } finally {
+      setProcessPlatform(HOST_PLATFORM);
+    }
+  });
+
+  it("relaxes macOS host-shell tools only once the boot canary proves the shell container", () => {
+    // macOS shells are not run under ASRT: only the proven container contains them. Until it is proven the shell plan is
+    // the unproven-confinement floor (decision tree, unknown rule U2), which the reviewer must see as weak.
+    try {
+      setProcessPlatform("darwin");
+      setShellSandboxRequestedAtBoot(true);
+      setActiveSandboxCapability({
+        kind: "asrt",
+        confidence: "verified",
+        platform: "darwin",
+        reason: "ASRT (Seatbelt) active — fs+process+network contained",
+        confines: { filesystem: true, process: true, network: true },
+      });
+      setContainerShellSubstrate({ state: "unavailable", reason: "shell-start-failed" });
+      for (const toolName of ["bash", "powershell"]) {
+        const cap = resolveReviewerSandboxCapability("builtin", toolName);
+        expect(cap.kind).toBe("none");
+        expect(isWeakSandbox(cap)).toBe(true);
+      }
+
+      setContainerShellSubstrate({ state: "available" });
+      for (const toolName of ["bash", "powershell"]) {
+        const cap = resolveReviewerSandboxCapability("builtin", toolName);
+        expect(cap).toMatchObject({ kind: "asrt", platform: "darwin", reason: "macOS container shell verified" });
+        expect(cap.confines).toEqual({ filesystem: true, process: true, network: true });
+        expect(isWeakSandbox(cap)).toBe(false);
+      }
+    } finally {
+      setContainerShellSubstrate({ state: "unavailable", reason: "shell-start-failed" });
+      setProcessPlatform(HOST_PLATFORM);
     }
   });
 
@@ -172,31 +215,42 @@ describe("substrate-aware capability — end-to-end reviewer prompt + downgrade 
     expect(userPrompt).not.toContain("executionSandbox=asrt");
   });
 
-  it("an ASRT-wrapped host bash tool presents executionSandbox=asrt to the reviewer when the gate is ON", async () => {
-    setShellSandboxRequestedAtBoot(true);
-    setActiveSandboxCapability({
-      kind: "asrt",
-      confidence: "verified",
-      platform: "linux",
-      reason: "ASRT (bwrap) active",
-      confines: { filesystem: true, process: true, network: true },
-    });
+  it.each([
+    ["Linux ASRT", "linux", "ASRT (bwrap) active"],
+    ["the proven macOS container", "darwin", "ASRT (Seatbelt) active"],
+  ] as const)("a host bash tool contained by %s presents executionSandbox=asrt to the reviewer when the gate is ON", async (_name, platform, reason) => {
+    try {
+      setProcessPlatform(platform);
+      setShellSandboxRequestedAtBoot(true);
+      setActiveSandboxCapability({
+        kind: "asrt",
+        confidence: "verified",
+        platform,
+        reason,
+        confines: { filesystem: true, process: true, network: true },
+      });
+      // macOS shells are contained by the container the boot canary proved, not by ASRT.
+      if (platform === "darwin") setContainerShellSubstrate({ state: "available" });
 
-    const { provider, complete } = capturingProvider();
-    const classifier = new LlmRiskClassifier(provider, "gpt-4o-mini");
-    await classifier.classify(
-      ctx({
-        toolName: "bash",
-        source: "builtin",
-        category: "shell",
-        finalInput: { command: "make build" },
-        sandboxCapability: resolveReviewerSandboxCapability("builtin", "bash"),
-        conversationContext: { recentUserMessage: "please build the project for me" },
-      }),
-    );
-    const userPrompt = complete.mock.calls[0]![0].userPrompt as string;
-    // The genuinely-wrapped host-shell substrate earns the asrt report.
-    expect(userPrompt).toContain("executionSandbox=asrt");
+      const { provider, complete } = capturingProvider();
+      const classifier = new LlmRiskClassifier(provider, "gpt-4o-mini");
+      await classifier.classify(
+        ctx({
+          toolName: "bash",
+          source: "builtin",
+          category: "shell",
+          finalInput: { command: "make build" },
+          sandboxCapability: resolveReviewerSandboxCapability("builtin", "bash"),
+          conversationContext: { recentUserMessage: "please build the project for me" },
+        }),
+      );
+      const userPrompt = complete.mock.calls[0]?.[0].userPrompt as string;
+      // The genuinely-wrapped host-shell substrate earns the asrt report.
+      expect(userPrompt).toContain("executionSandbox=asrt");
+    } finally {
+      if (platform === "darwin") setContainerShellSubstrate({ state: "unavailable", reason: "shell-start-failed" });
+      setProcessPlatform(HOST_PLATFORM);
+    }
   });
 
   it("the weak-sandbox no-downgrade guard fires for the plugin substrate (rule MEDIUM not downgraded to LOW)", async () => {

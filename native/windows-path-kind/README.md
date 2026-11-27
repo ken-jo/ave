@@ -382,10 +382,20 @@ open for ownership. The helper retains a process handle and checks each
 connection's kernel-reported PID before serving the policy. Rejected clients
 receive no bytes and consume no reads. An atomic budget of two accepted
 connections accommodates an existence check followed by the policy read.
+
+`--mxc-policy-held-v1 <pipe> <timeout-ms>` uses the same length, policy and
+four-byte PID frames. It announces `held-v1` in place of `ready`. After opening
+and retaining the exact live reader process and publishing the binding, the
+helper writes `bound` and closes its response stream. The host waits for this
+complete acknowledgement before authorizing the held launcher to resume the
+reader. Helper stdin remains open for ownership. Both helpers must support the
+held protocol before the reader can start.
+
 With `<gate> --authorize`, the host keeps the payload and sends only its length.
 The helper requests permission to offer the bound pipe to the host, then waits
 for the host to acknowledge the write. The host rechecks its proof and writes
-synchronously through the nonblocking pipe handle.
-The helper resumes blocking mode for the existing flush and EOF handshake.
+synchronously through the nonblocking pipe handle. The helper resumes blocking
+mode for the existing flush and EOF handshake. In held mode the delivery frames
+use stderr, so closing stdout still completes the binding acknowledgement.
 Owner EOF, deadline or release closes the server. Rebuild the existing helper
 after changing its source.

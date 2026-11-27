@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PermissionManager } from "../permission-manager.js";
 import { ApprovalGate, type ApprovalRequest } from "../approval-gate.js";
-import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, getHostShellExecutionPlan, setActiveSandboxCapability, setShellSandboxRequestedAtBoot } from "../sandbox-capability.js";
+import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, getHostShellExecutionPlan, setActiveSandboxCapability, setContainerShellSubstrate, setShellSandboxRequestedAtBoot } from "../sandbox-capability.js";
 import { approvalCacheKeyIdentity, canonicalStringify, captureApprovalWorkingDirectory, lookupApproval, recordApproval, __resetSessionStoreForTest } from "../user-approval-store.js";
 import { runWithToolExecutionCwd } from "../../tools/execution-context.js";
 import { ToolExecutor } from "../../tools/executor.js";
@@ -49,6 +49,8 @@ beforeEach(() => {
   manager.setMode("default");
   setShellSandboxRequestedAtBoot(true);
   setActiveSandboxCapability({ kind: "asrt", confidence: "verified", platform: process.platform, reason: "fixture full shell containment", confines: { filesystem: true, process: true, network: true } });
+  // Full shell containment on macOS is the published container shell; the wrap alone leaves shells on the no-confinement floor.
+  if (process.platform === "darwin") setContainerShellSubstrate({ state: "available" });
 });
 afterEach(async () => {
   await Promise.all(auditLoggers.splice(0).map((logger) => logger.close()));

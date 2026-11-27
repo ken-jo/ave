@@ -489,6 +489,7 @@ describe("sandboxCapability shell status (the permission card's checkbox)", () =
     capability.__resetActiveSandboxCapabilityForTest();
     capability.__resetSandboxRequestedAtBootForTest();
     capability.__resetSandboxBootOutcomeForTest();
+    capability.__resetContainerShellSubstrateForTest();
     vi.unstubAllEnvs();
   });
 
@@ -535,22 +536,49 @@ describe("sandboxCapability shell status (the permission card's checkbox)", () =
     expect((await readShell({ osToolSandbox: true })).state).toBe("pending-on");
   });
 
-  it("is on when the shell plan runs shells under ASRT", async () => {
-    setProcessPlatform("darwin");
+  async function bootAsrt(platform: "darwin" | "linux") {
+    setProcessPlatform(platform);
     const capability = await import("../../../permissions/sandbox-capability.js");
     capability.setShellSandboxRequestedAtBoot(true);
     capability.setActiveSandboxCapability({
       kind: "asrt",
       confidence: "verified",
-      platform: "darwin",
-      reason: "ASRT (Seatbelt) active",
+      platform,
+      reason: "ASRT active",
       confines: { filesystem: true, process: true, network: true },
     });
     capability.setSandboxBootOutcome({
       action: "activate", reason: "deps-present", onSignal: "default-settings", dependencyErrors: [], causes: [],
     });
+    return capability;
+  }
+
+  // Linux has no container shell route (container-platform.ts), so its shells still run under the ASRT wrap.
+  it("is on when the shell plan runs Linux shells under ASRT", async () => {
+    await bootAsrt("linux");
     expect(await readShell({ osToolSandbox: true })).toEqual({
       state: "on", setting: true, envForced: false, causes: [],
+    });
+  });
+
+  // macOS Bash and PowerShell run only in the verified shell container; the ASRT wrap is left to hooks, extensions
+  // and the terminal (architecture.md "macOS agent shells in containers"; getHostShellExecutionPlan selects "none" without it).
+  it("is on when the verified macOS container carries shells", async () => {
+    const capability = await bootAsrt("darwin");
+    capability.setContainerShellSubstrate({ state: "available" });
+    expect(await readShell({ osToolSandbox: true })).toEqual({
+      state: "on", setting: true, envForced: false, causes: [],
+    });
+  });
+
+  it.each([
+    ["never verified", undefined],
+    ["failed its boundary check", { state: "unavailable", reason: "shell-start-failed" }],
+  ] as const)("does not count the ASRT wrap as shell containment on macOS when the container %s", async (_label, support) => {
+    const capability = await bootAsrt("darwin");
+    if (support !== undefined) capability.setContainerShellSubstrate(support);
+    expect(await readShell({ osToolSandbox: true })).toEqual({
+      state: "unavailable", setting: true, envForced: false, causes: ["shell-not-contained"],
     });
   });
 

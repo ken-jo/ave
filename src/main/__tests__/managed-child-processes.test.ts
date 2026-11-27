@@ -63,6 +63,20 @@ afterEach(() => {
 const itPosix = process.platform === "win32" ? it.skip : it;
 
 describe("managed child process tracking", () => {
+  it.each([false, true])("asks an owned supervisor to stop during shutdown, draining=%s", async (draining) => {
+    Object.defineProperty(process, "platform", { value: "darwin" });
+    const child = Object.assign(makeChild(), { pid: 4001 });
+    const ordinary = Object.assign(makeChild(), { pid: 4002 });
+    const cooperativeStop = vi.fn();
+    trackManagedChildProcess(child, { cooperativeStop });
+    trackManagedChildProcess(ordinary);
+    if (draining) await forceKillAndDrainManagedChildProcesses("test", 1);
+    else forceKillManagedChildProcesses("test");
+    expect(cooperativeStop).toHaveBeenCalledOnce();
+    expect(child.kill).not.toHaveBeenCalled();
+    expect(ordinary.kill).toHaveBeenCalledWith("SIGKILL");
+  });
+
   it("stops protected plugins on each reaper loss and refuses their launch until the timer restores protection", () => {
     Object.defineProperty(process, "platform", { value: "linux" });
     vi.useFakeTimers();

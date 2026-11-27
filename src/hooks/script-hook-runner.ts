@@ -113,7 +113,7 @@ function hashCommandArgv(command: string[]): string {
 
 function isHookShellPlanCurrent(plan: HostShellExecutionPlan): boolean {
   if (!isIssuedHostShellExecutionPlan(plan)) return false;
-  const current = getHostShellExecutionPlan(plan.executionRequest);
+  const current = getHostShellExecutionPlan(plan.executionRequest, "hook");
   return getHostShellExecutionPlanCacheIdentity(getHostShellExecutionPlanAuditProjection(plan))
     === getHostShellExecutionPlanCacheIdentity(getHostShellExecutionPlanAuditProjection(current));
 }
@@ -358,7 +358,7 @@ export async function runOneHookScript(
   // Bundled hooks require the worker-confinement gate; user hooks use the host-shell plan under which they were admitted, or its live plan.
   const sandboxEnabled = confinement
     ? isPluginWorkerConfinementActive()
-    : (admittedPlan ?? getHostShellExecutionPlan()).mode === "asrt";
+    : (admittedPlan ?? getHostShellExecutionPlan("default", "hook")).mode === "asrt";
   // Only host-recorded, reviewed file dependencies inside this hook directory can pierce its read floor.
   const userScriptReads = (runnable.fileDependencies ?? [])
     .map((file) => resolve(canonicalizePathForMatch(resolve(cwd, file))))

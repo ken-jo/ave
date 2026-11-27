@@ -27,6 +27,7 @@ const roots: string[] = [];
 const OLD = new Date("2026-01-01T00:00:00Z");
 const NEW = new Date("2026-02-01T00:00:00Z");
 const LAUNCHER = windowsJobLauncherPath("x64");
+const POLICY_READER_FIXTURE = join(dirname(LAUNCHER), "ave-job-policy-reader-test.exe");
 const PATH_KIND = join("resources", "windows-path-kind", "x64", "ave-path-kind.exe");
 const HOLD_FIXTURE = join("resources", "windows-path-kind", "x64", "ave-path-kind-hold-fixture.exe");
 const RECEIPT = windowsPathKindReceiptPath("x64");
@@ -103,6 +104,7 @@ function fixtureRoot({ launcher }: { launcher?: Date } = {}): string {
   writeFileSync(join(root, "rust-toolchain.toml"), PIN);
   stagePathKind(root);
   if (launcher) write(root, LAUNCHER, launcher);
+  write(root, POLICY_READER_FIXTURE, new Date("2026-04-01T00:00:00Z"));
   return root;
 }
 
@@ -189,6 +191,21 @@ describe("windowsJobLauncherState", () => {
 });
 
 describe("prepareWindowsJob", () => {
+  it.each(["missing", "stale"] as const)("builds a %s policy reader fixture during normal test preparation", (state) => {
+    const root = fixtureRoot({ launcher: NEW });
+    if (state === "stale") write(root, POLICY_READER_FIXTURE, new Date("2025-12-01T00:00:00Z"));
+    else rmSync(join(root, POLICY_READER_FIXTURE));
+    const calls: string[][] = [];
+    const build = (command: string, args: string[]) => {
+      calls.push([command, ...args]);
+      write(root, POLICY_READER_FIXTURE, new Date());
+      return { status: 0 };
+    };
+    prepareWindowsJob({ root, platform: "win32", arch: "x64", findBuildTools: () => true, runSync: build,
+      buildPathKind: () => stagePathKind(root), log: () => {} });
+    expect(calls).toEqual([["bun.exe", "run", "build:windows-job", "-Arch", "x64", "-PolicyReaderFixture"]]);
+  });
+
   it("builds a missing launcher through build:windows-job for the host architecture", () => {
     const root = fixtureRoot();
     const calls: string[][] = [];
@@ -198,7 +215,8 @@ describe("prepareWindowsJob", () => {
     });
     expect(found.state).toBe("missing");
     expect(calls).toEqual([["bun.exe", "run", "build:windows-job", "-Arch", "x64"]]);
-    expect(lines).toEqual([`[windows-job] building ${LAUNCHER} (missing)`, `[windows-path-kind] building ${PATH_KIND} (fresh build)`]);
+    expect(lines).toEqual([`[windows-job] building ${LAUNCHER} (missing)`, `[windows-job] up to date: ${POLICY_READER_FIXTURE}`,
+      `[windows-path-kind] building ${PATH_KIND} (fresh build)`]);
   });
 
   it("rebuilds a stale launcher and names the newer source", () => {
@@ -208,7 +226,8 @@ describe("prepareWindowsJob", () => {
     const lines: string[] = [];
     prepareWindowsJob({ root, platform: "win32", arch: "x64", findBuildTools: () => true, runSync: buildStub(root, calls), buildPathKind: () => stagePathKind(root), log: (line) => lines.push(line) });
     expect(calls).toHaveLength(1);
-    expect(lines).toEqual([`[windows-job] building ${LAUNCHER} (older than ${join("native", "windows-job", "launcher.cpp")})`, `[windows-path-kind] building ${PATH_KIND} (fresh build)`]);
+    expect(lines).toEqual([`[windows-job] building ${LAUNCHER} (older than ${join("native", "windows-job", "launcher.cpp")})`,
+      `[windows-job] up to date: ${POLICY_READER_FIXTURE}`, `[windows-path-kind] building ${PATH_KIND} (fresh build)`]);
   });
 
   it("skips a fresh launcher without looking for the build tools", () => {
@@ -221,7 +240,8 @@ describe("prepareWindowsJob", () => {
     });
     expect(found.state).toBe("fresh");
     expect(calls).toEqual([]);
-    expect(lines).toEqual([`[windows-job] up to date: ${LAUNCHER}`, `[windows-path-kind] building ${PATH_KIND} (fresh build)`]);
+    expect(lines).toEqual([`[windows-job] up to date: ${LAUNCHER}`, `[windows-job] up to date: ${POLICY_READER_FIXTURE}`,
+      `[windows-path-kind] building ${PATH_KIND} (fresh build)`]);
   });
 
   it.each(["valid", "missing digest", "substituted binary", "substituted receipt", "missing fixture digest", "substituted fixture", "changed source"] as const)("prepares a shard with a %s path helper input", (input) => {
@@ -501,7 +521,7 @@ describe("Windows CI path helper restore", () => {
     const holdFixture = readFileSync(join(root, HOLD_FIXTURE));
     const { TARGETS } = createRequire(import.meta.url)("../../scripts/lib/srt-win-integrity.cjs") as { TARGETS: Record<string, unknown> };
     const vendor = "node_modules/@anthropic-ai/sandbox-runtime/vendor/srt-win";
-    for (const file of [LAUNCHER, queryFailure, ...Object.keys(TARGETS).flatMap(arch => ["upstream-srt-win.exe", "srt-win.exe", "build-receipt.json"]
+    for (const file of [LAUNCHER, queryFailure, POLICY_READER_FIXTURE, ...Object.keys(TARGETS).flatMap(arch => ["upstream-srt-win.exe", "srt-win.exe", "build-receipt.json"]
       .map(name => join(vendor, arch, name))), ...["js", "json"].map(extension => `src/permissions/generated/srt-win-build-receipts.${extension}`)]) {
       write(inputs, file, OLD);
     }

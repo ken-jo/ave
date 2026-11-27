@@ -44,6 +44,10 @@ export const TOOL_TIMEOUT_POLICY = {
   gitRepositoryInspectionMs: 30_000,
   // Bound policy delivery even when the container launcher never connects.
   mxcRequestTransportMs: 15_000,
+  // The canary uses a short native request deadline before the shell watchdog.
+  mxcMacShellProbeMs: 5_000,
+  mxcMacShellStopMs: 12_000,
+  mxcMacShellOutputDrainMs: 1_000,
   // A holder's own start must report its ready-frame evidence inside this bound, from supervisor start, or it is refused.
   mxcExtensionReadinessMs: 30_000,
   // Share the exact workload-identity handshake budget with the protocol.
@@ -80,11 +84,11 @@ export const TOOL_TIMEOUT_POLICY = {
   windowsSrtPluginSetupBudgetMs: 30_000,
   // A sandboxed Windows plugin child starts and announces its listener.
   windowsPluginChildConnectMs: 30_000,
-  // The child listener outlasts the host's announce and connect deadline.
   // Spacing between independent container confirmations that ambiguous shell completions trigger; it doubles up to the maximum while no loss is confirmed.
   windowsContainerConfirmationMinIntervalMs: 60_000,
   windowsContainerConfirmationMaxIntervalMs: 900_000,
   windowsInferenceChildConnectMs: 30_000,
+  // The child listener outlasts the host's announce and connect deadline.
   windowsInferenceChildAcceptMs: 60_000,
   windowsInferenceChildHandshakeMs: 10_000,
   pluginStartupDefaultMs: 10_000,

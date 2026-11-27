@@ -26,7 +26,7 @@ import { withCodeCheckpoint } from "../../memory/code-checkpoints.js";
 import { mcpToolToTool } from "../../mcp/mcp-tool-adapter.js";
 import { PermissionTestResources } from "../../permissions/__tests__/test-resources.js";
 import { getHostShellExecutionPlanAuditProjection } from "../../permissions/host-shell-execution-plan.js";
-import { getHostShellExecutionPlan, setShellSandboxRequestedAtBoot, setActiveSandboxCapability, __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest } from "../../permissions/sandbox-capability.js";
+import { getHostShellExecutionPlan, setShellSandboxRequestedAtBoot, setActiveSandboxCapability, setContainerShellSubstrate, __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest } from "../../permissions/sandbox-capability.js";
 import { caseFoldForMatch, foldCanonicalPathSeparators, isAdmissionDeniedPath, allowKeyMaterialInspectionUnder } from "../../permissions/sensitive-paths.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { buildApprovalScopeOptions } from "../../permissions/approval-scope-options.js";
@@ -71,6 +71,8 @@ beforeEach(async () => {
   __resetSessionStoreForTest();
   __resetActiveSandboxCapabilityForTest();
   __resetSandboxRequestedAtBootForTest();
+  // A container shell published by an earlier test must not carry over; each test that confines shells publishes it.
+  if (process.platform === "darwin") setContainerShellSubstrate({ state: "unavailable", reason: "shell-start-failed" });
   audit = new AuditLogger(join(root, "audit"));
   manager = new PermissionManager(join(root, "permissions.json"));
   registry = new ToolRegistry();
@@ -301,6 +303,8 @@ describe("native invocation permission evidence", () => {
       setShellSandboxRequestedAtBoot(true);
       setActiveSandboxCapability({ kind: "asrt", confidence: "verified", platform: process.platform,
         reason: "Fixture confinement", confines: { filesystem: true, process: true, network: true } });
+      // Shell confinement on macOS is the published container shell; the wrap alone leaves shells on the no-confinement floor.
+      if (process.platform === "darwin") setContainerShellSubstrate({ state: "available" });
     }
     const tool = new BashTool();
     let childEnvironment: Readonly<Record<string, string | undefined>> | undefined;
@@ -561,6 +565,7 @@ describe("native invocation permission evidence", () => {
     setShellSandboxRequestedAtBoot(true);
     setActiveSandboxCapability({ kind: "asrt", confidence: "verified", platform: process.platform,
       reason: "Changed fixture confinement", confines: { filesystem: true, process: true, network: true } });
+    if (process.platform === "darwin") setContainerShellSubstrate({ state: "available" });
     const [result] = await run(executor(), tool.name, input, { headless: true });
     expect(result).toMatchObject({ is_error: true, content: expect.stringContaining("do not retry") });
     expect(execute).not.toHaveBeenCalled();

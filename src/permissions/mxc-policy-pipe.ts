@@ -82,15 +82,23 @@ class PolicyHelperTerminationError extends Error {
   }
 }
 
-export async function openMxcPolicyPipe(bytes: Buffer, pipe: string, admission?: {
-  root: string; signal: AbortSignal; assertStillValid: () => void;
-}): Promise<{
+interface MxcPolicyAdmission {
+  root: string;
+  signal: AbortSignal;
+  assertStillValid: () => void;
+  held?: boolean;
+}
+
+export async function openMxcPolicyPipe(bytes: Buffer, pipe: string, options?: boolean | MxcPolicyAdmission): Promise<{
   bindChild(child: childProcess.ChildProcess): void;
+  bindHeldPolicy?(launcher: childProcess.ChildProcess, readerPid: number, onFailure: () => void): Promise<void>;
   release(): Promise<void>;
 }> {
   if (!bytes.length || bytes.length > MAX_POLICY_BYTES) throw new Error("Windows sandbox policy frame length is invalid");
   if (!/^\\\\\.\\pipe\\ave-mxc-[a-f0-9]{32}$/u.test(pipe)) throw new Error("Windows sandbox policy pipe name is invalid");
   assertManagedChildProcessAdmissionOpen("mxc:policy");
+  const admission = typeof options === "object" ? options : undefined;
+  const held = options === true || admission?.held === true;
   const header = Buffer.alloc(4);
   header.writeUInt32LE(bytes.length);
   const frame = Buffer.concat([header, bytes]);
@@ -103,12 +111,13 @@ export async function openMxcPolicyPipe(bytes: Buffer, pipe: string, admission?:
   let server: childProcess.ChildProcessWithoutNullStreams;
   try {
     server = withWindowsPathKindHelper(helper => commitUnderAdmission(assertLive, () => childProcess.spawn(helper,
-      ["--mxc-policy", pipe, String(TOOL_TIMEOUT_POLICY.mxcRequestTransportMs), ...(gate ? [gate.path, "--authorize"] : [])], {
+      [held ? "--mxc-policy-held-v1" : "--mxc-policy", pipe, String(TOOL_TIMEOUT_POLICY.mxcRequestTransportMs), ...(gate ? [gate.path, "--authorize"] : [])], {
         cwd: dirname(helper), windowsHide: true, shell: false, stdio: ["pipe", "pipe", "pipe"],
       })));
   } catch (error) { gate?.revoke(); throw error; }
   let stopTracking: ReturnType<typeof trackManagedChildProcess> | undefined;
   let bound: childProcess.ChildProcess | undefined;
+  let boundReaderPid: number | undefined;
   let closed = false;
   let exited = false;
   let released = false;
@@ -118,6 +127,9 @@ export async function openMxcPolicyPipe(bytes: Buffer, pipe: string, admission?:
   let failing = false;
   let failure: Error | undefined;
   let rejectReady: (error: Error) => void = () => {};
+  let pendingBind: { resolve(): void; reject(error: Error): void } | undefined;
+  let acknowledged = false;
+  let stopHeld: (() => void) | undefined;
   let resolveClosed: () => void;
   const completion = new Promise<void>((resolve) => { resolveClosed = resolve; });
   let releasePromise: Promise<void> | undefined;
@@ -128,6 +140,8 @@ export async function openMxcPolicyPipe(bytes: Buffer, pipe: string, admission?:
   const release = (): Promise<void> => {
     if (releasePromise) return releasePromise;
     released = true;
+    pendingBind?.reject(failure ?? new Error("Windows sandbox policy binding was released"));
+    pendingBind = undefined;
     clearTimeout(timer);
     admission?.signal.removeEventListener("abort", revoke);
     cleanup(() => gate?.revoke());
@@ -160,7 +174,8 @@ export async function openMxcPolicyPipe(bytes: Buffer, pipe: string, admission?:
     recordFailure(error);
     if (failing) return;
     failing = true;
-    if (bound?.exitCode === null && bound.signalCode === null) cleanup(() => bound?.kill());
+    if (stopHeld !== undefined) cleanup(stopHeld);
+    else if (bound?.exitCode === null && bound.signalCode === null) cleanup(() => bound?.kill());
     void release().then(() => { rejectReady(recordFailure(error)); }, (releaseError) => { rejectReady(recordFailure(releaseError)); });
   };
   const revoke = () => {
@@ -179,58 +194,87 @@ export async function openMxcPolicyPipe(bytes: Buffer, pipe: string, admission?:
     try { stopTracking?.(); } catch (error) { recordFailure(error); }
     finally { resolveClosed(); }
     if (failure) fail(failure);
-    else if (!released && (!ready || code !== 0)) fail(new Error("Windows sandbox policy helper failed; rebuild the Windows native assets"));
+    else if (!released && (!ready || (held && !acknowledged) || code !== 0)) fail(new Error("Windows sandbox policy helper failed; rebuild the Windows native assets"));
   });
   try {
     await new Promise<void>((resolve, reject) => {
       rejectReady = reject;
       let response = Buffer.alloc(0);
+      let delivery = Buffer.alloc(0);
+      const invalidResponse = () => new Error("Windows sandbox policy helper sent an invalid response");
+      const incompleteResponse = () => new Error("Windows sandbox policy helper sent an incomplete response");
+      const readDelivery = (chunk: Buffer): void => {
+        if (released) return;
+        if (delivery.length + chunk.length > 64) { fail(invalidResponse()); return; }
+        delivery = Buffer.concat([delivery, chunk]);
+        for (let end = delivery.indexOf(0x0a); end >= 0; end = delivery.indexOf(0x0a)) {
+          try {
+            const line = decodeWindowsNativeReply(delivery.subarray(0, end + 1));
+            delivery = delivery.subarray(end + 1);
+            if (!gate || boundReaderPid === undefined || (held && !acknowledged)) throw invalidResponse();
+            if (line === "authorize\n" && !awaitingDelivery && authorizations < 2) {
+              authorizations += 1;
+              awaitingDelivery = true;
+              commitUnderAdmission(assertLive, () => { server.stdin.write(Buffer.from([1])); });
+              continue;
+            }
+            const offer = /^deliver ([1-9a-f][0-9a-f]{0,15}) ([1-9][0-9]{0,19})\n$/u.exec(line);
+            if (!awaitingDelivery || !offer || server.pid === undefined) throw invalidResponse();
+            writePolicyUnderAdmission(frame.subarray(header.length), gate.path, server.pid, boundReaderPid,
+              BigInt(`0x${offer[1]}`), BigInt(offer[2]), assertLive);
+            awaitingDelivery = false;
+            server.stdin.write(Buffer.from([2]));
+          } catch (error) { fail(error); return; }
+        }
+      };
+      const finishDelivery = () => {
+        if (!released && (delivery.length > 0 || awaitingDelivery)) fail(incompleteResponse());
+      };
       server.stdout.on("data", (chunk: Buffer) => {
         if (released) return;
-        if (response.length + chunk.length > 64) {
-          void fail(new Error("Windows sandbox policy helper sent an invalid response"));
+        if (ready && gate && !held) { readDelivery(chunk); return; }
+        if (acknowledged || response.length + chunk.length > 64) {
+          fail(invalidResponse());
           return;
         }
         response = Buffer.concat([response, chunk]);
-        for (let end = response.indexOf(0x0a); end >= 0; end = response.indexOf(0x0a)) {
-          let line: string;
-          try { line = decodeWindowsNativeReply(response.subarray(0, end + 1)); }
-          catch (cause) {
-            fail(new Error("Windows sandbox policy helper sent invalid UTF-8", { cause }));
-            return;
-          }
-          response = response.subarray(end + 1);
-          if (!ready && line === "ready\n") {
+        if (!response.includes(0x0a)) return;
+        try {
+          const frame = decodeWindowsNativeReply(response);
+          if (!ready && frame === (held ? "held-v1\n" : "ready\n")) {
             ready = true;
+            if (held) response = Buffer.alloc(0);
             resolve();
-          } else if (ready && gate && bound && line === "authorize\n" && !awaitingDelivery && authorizations < 2) {
-            authorizations += 1;
-            awaitingDelivery = true;
-            try { commitUnderAdmission(assertLive, () => { server.stdin.write(Buffer.from([1])); }); }
-            catch (error) { fail(error); return; }
-          } else {
-            const offer = /^deliver ([1-9a-f][0-9a-f]{0,15}) ([1-9][0-9]{0,19})\n$/u.exec(line);
-            if (!awaitingDelivery || !gate || !offer || server.pid === undefined || bound?.pid === undefined) {
-              fail(new Error("Windows sandbox policy helper sent an invalid response"));
-              return;
-            }
-            try {
-              writePolicyUnderAdmission(frame.subarray(header.length), gate.path, server.pid, bound.pid,
-                BigInt(`0x${offer[1]}`), BigInt(offer[2]), assertLive);
-              awaitingDelivery = false;
-              server.stdin.write(Buffer.from([2]));
-            } catch (error) { fail(error); return; }
-          }
+          } else if (held && pendingBind !== undefined && frame === "bound\n") {
+            acknowledged = true;
+            response = Buffer.alloc(0);
+          } else fail(invalidResponse());
+        } catch (cause) {
+          void fail(new Error("Windows sandbox policy helper sent invalid UTF-8", { cause }));
         }
       });
+      if (held) server.stdout.on("error", fail);
       server.stdout.once("end", () => {
-        if (!released && (!ready || response.length > 0)) fail(new Error("Windows sandbox policy helper sent an incomplete response"));
+        if (!ready || (held && !released && !acknowledged)) {
+          fail(incompleteResponse());
+        } else if (!released && acknowledged) {
+          try {
+            assertLive();
+            pendingBind?.resolve();
+            pendingBind = undefined;
+          } catch (error) { fail(error); }
+        }
+        if (!held) finishDelivery();
       });
       try {
         stopTracking = trackManagedChildProcess(server, { killProcessGroup: false, label: "mxc:policy" });
         if (typeof stopTracking !== "function") throw new Error("Windows sandbox policy tracking disposer is invalid");
-        server.stderr.resume();
-        server.stdin.write(gate ? frame.subarray(0, header.length) : frame);
+        if (held && gate) {
+          server.stderr.on("data", readDelivery);
+          server.stderr.on("error", fail);
+          server.stderr.once("end", finishDelivery);
+        } else server.stderr.resume();
+        server.stdin.write(gate ? header : frame);
       } catch (error) {
         recordFailure(error);
         cleanup(() => retainUnterminatedChildProcess(server, "mxc:policy"));
@@ -238,21 +282,37 @@ export async function openMxcPolicyPipe(bytes: Buffer, pipe: string, admission?:
       }
     });
     if (failure) throw failure;
+    const bind = (owner: childProcess.ChildProcess, readerPid: number | undefined): void => {
+      if (bound !== undefined) throw new Error("Windows sandbox policy client is already bound");
+      bound = owner;
+      owner.once("error", () => { void release().catch(fail); });
+      owner.once("close", () => { void release().catch(fail); });
+      if (readerPid === undefined || !Number.isInteger(readerPid) || readerPid <= 0 || readerPid > 0xffff_ffff || closed || released) {
+        fail(new Error("Windows sandbox policy client did not start"));
+        return;
+      }
+      const pid = Buffer.alloc(4);
+      pid.writeUInt32LE(readerPid);
+      boundReaderPid = readerPid;
+      try { commitUnderAdmission(assertLive, () => { server.stdin.write(pid); }); }
+      catch (error) { fail(error); }
+    };
     return {
-      bindChild: (child) => {
-        if (bound !== undefined) throw new Error("Windows sandbox policy client is already bound");
-        bound = child;
-        child.once("error", () => { void release().catch(fail); });
-        child.once("close", () => { void release().catch(fail); });
-        if (child.pid === undefined || !Number.isInteger(child.pid) || child.pid <= 0 || child.pid > 0xffff_ffff || closed || released) {
-          void fail(new Error("Windows sandbox policy client did not start"));
-          return;
-        }
-        const pid = Buffer.alloc(4);
-        pid.writeUInt32LE(child.pid);
-        try { commitUnderAdmission(assertLive, () => { server.stdin.write(pid); }); }
-        catch (error) { fail(error); }
+      bindChild(child) {
+        if (held) throw new Error("Windows sandbox policy requires a held reader");
+        bind(child, child.pid);
       },
+      ...(held && {
+        bindHeldPolicy(launcher: childProcess.ChildProcess, readerPid: number, onFailure: () => void) {
+          if (bound !== undefined) throw new Error("Windows sandbox policy client is already bound");
+          if (released || closed) throw failure ?? new Error("Windows sandbox policy helper is unavailable");
+          stopHeld = onFailure;
+          return new Promise<void>((resolve, reject) => {
+            pendingBind = { resolve, reject };
+            try { bind(launcher, readerPid); } catch (error) { fail(error); }
+          });
+        },
+      }),
       release,
     };
   } catch (error) {

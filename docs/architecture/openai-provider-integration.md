@@ -95,7 +95,7 @@ catchable bootstrap failure exits with status 126. A rejected syscall can
 instead terminate the child with another nonzero status or signal; both are
 start failures.
 
-The desktop's [minimum macOS version](../../package.json#L366) is 13. On that
+The desktop's [minimum macOS version](../../package.json#L456) is 15. On that
 supported system range, Ave starts the absolute artifact path directly through
 `posix_spawn`, avoiding replacement of an extra host runtime process. The current
 embedded runtime uses libuv 1.52.1; its [explicit-path spawn route](https://github.com/libuv/libuv/blob/v1.52.1/src/unix/process.c#L704-L712)

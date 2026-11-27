@@ -1,4 +1,4 @@
-import { win32 as winPath } from "node:path";
+import { isAbsolute, win32 as winPath } from "node:path";
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import type { ContainerRequest } from "@microsoft/mxc-sdk/v1";
 import { canonicalStringify } from "../shared/canonical-json.js";
@@ -28,11 +28,16 @@ type StoppedFrame = { type: "stopped"; spawnPendingAtCancellation: boolean };
 type NativeCreatedFrame = { type: "native-created"; id: number; processHandle: string };
 type NativeObservedFrame = { type: "native-observed"; id: number };
 type StartFrame = { type: "start"; request: ContainerRequest };
+type ShellStartFrame = { type: "shell-start"; requestPath: string; requestSha256: string };
+type ShellReadyFrame = { type: "shell-ready"; id: number };
 type ReadyFrame = { type: "ready"; id: number; nodeVersion: string; nativeModules: string[]; nativeModuleCount: number; nativeModulesTruncated: boolean; ownerHandle: string;
   requestDigest: string; startEvidence: MxcExtensionStartEvidence };
 type ExitFrame = { type: "exit"; exitCode: number; timedOut: boolean };
-type FailureFrame = { type: "error"; code: "contract" | "integrity" | "capability-unavailable" | "cleanup-unverified" | "supervisor-lost"; message: string; backendLoss?: "extension" | "common" };
-export type MxcStreamFrame = (StreamFrame | ControlFrame | ReleaseFrame | StoppedFrame | NativeCreatedFrame | NativeObservedFrame | StartFrame | ReadyFrame | ExitFrame | FailureFrame) & {
+type FailureFrame = { type: "error"; message: string } & (
+  { code: "contract" | "integrity" | "capability-unavailable" | "cleanup-unverified" | "supervisor-lost"; backendLoss?: "extension" | "common" }
+  | { code: "start-refused"; sdkCode?: string }
+);
+export type MxcStreamFrame = (StreamFrame | ControlFrame | ReleaseFrame | StoppedFrame | NativeCreatedFrame | NativeObservedFrame | StartFrame | ReadyFrame | ShellStartFrame | ShellReadyFrame | ExitFrame | FailureFrame) & {
   version: 1;
   generation: string;
   sequence: number;
@@ -75,6 +80,16 @@ function validateFrame(value: unknown, generation: string, sequence: number): as
       fields = ["spawnPendingAtCancellation"];
       break;
     case "start": assertMxcExtensionRequest(frame.request); fields = ["request"]; break;
+    case "shell-start":
+      if (typeof frame.requestPath !== "string" || frame.requestPath.length > 32768
+        || !isAbsolute(frame.requestPath) || frame.requestPath.includes("\0")
+        || typeof frame.requestSha256 !== "string" || !/^[a-f0-9]{64}$/.test(frame.requestSha256)) fail();
+      fields = ["requestPath", "requestSha256"];
+      break;
+    case "shell-ready":
+      if (!Number.isSafeInteger(frame.id) || (frame.id as number) <= 0 || (frame.id as number) > 0xffffffff) fail();
+      fields = ["id"];
+      break;
     case "ready":
       if (!Number.isSafeInteger(frame.id) || (frame.id as number) <= 0 || typeof frame.nodeVersion !== "string" || frame.nodeVersion.length > 64
         || !Array.isArray(frame.nativeModules) || frame.nativeModules.length > 256
@@ -95,10 +110,16 @@ function validateFrame(value: unknown, generation: string, sequence: number): as
       fields = ["exitCode", "timedOut"];
       break;
     case "error":
-      if (!["contract", "integrity", "capability-unavailable", "cleanup-unverified", "supervisor-lost"].includes(String(frame.code))
+      if (!["contract", "integrity", "capability-unavailable", "cleanup-unverified", "supervisor-lost", "start-refused"].includes(String(frame.code))
         || typeof frame.message !== "string" || frame.message.length > 1024) fail();
-      if (frame.backendLoss !== undefined && frame.backendLoss !== "extension" && frame.backendLoss !== "common") fail();
-      fields = ["code", "message", "backendLoss"];
+      fields = ["code", "message"];
+      if (frame.code === "start-refused") {
+        if (Object.hasOwn(frame, "sdkCode") && (typeof frame.sdkCode !== "string" || !/^[a-z_]{1,64}$/.test(frame.sdkCode))) fail();
+        fields.push("sdkCode");
+      } else {
+        if (frame.backendLoss !== undefined && frame.backendLoss !== "extension" && frame.backendLoss !== "common") fail();
+        fields.push("backendLoss");
+      }
       break;
     default: return fail();
   }

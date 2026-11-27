@@ -1187,11 +1187,12 @@ export function mxcRequestArgs(request: MxcContainerRequest, launcher: string, p
 export interface MxcRequestTransport {
   readonly args: readonly string[];
   bindChild(child: ChildProcess): void;
+  bindHeldPolicy?(launcher: ChildProcess, readerPid: number, onFailure: () => void): Promise<void>;
   release(): Promise<void>;
 }
 
 export async function openMxcRequestTransport(request: MxcContainerRequest, launcher: string,
-  admission?: Parameters<typeof openMxcPolicyPipe>[2]): Promise<MxcRequestTransport> {
+  options?: Parameters<typeof openMxcPolicyPipe>[2]): Promise<MxcRequestTransport> {
   const json = serializeMxcRequest(request);
   const inline = base64RequestArgs(json);
   const length = windowsCommandLineLength(launcher, inline);
@@ -1205,7 +1206,9 @@ export async function openMxcRequestTransport(request: MxcContainerRequest, laun
     throw policyTooLarge(length, limit);
   }
   try {
-    return { args, ...await (admission ? openMxcPolicyPipe(Buffer.from(json, "utf8"), pipe, admission) : openMxcPolicyPipe(Buffer.from(json, "utf8"), pipe)) };
+    const bytes = Buffer.from(json, "utf8");
+    const delivery = options ? await openMxcPolicyPipe(bytes, pipe, options) : await openMxcPolicyPipe(bytes, pipe);
+    return { args, ...delivery };
   } catch (error) {
     // The cause is read only by whoever reports the failure, after its resources are released.
     throw new Error("Windows sandbox policy pipe could not be opened", { cause: error });

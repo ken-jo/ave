@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 import { configureHostResources } from "../../main/host-resources.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { assertSandboxWritePolicySize, buildMandatorySandboxWritePolicy, compactSandboxWriteDenies, findNonRepositoryWriteRoots, isGrantPathWithin, isSandboxGitMetadataEntry, SANDBOX_GIT_SCAN_DEPTH, snapshotSandboxGitControls } from "../sandbox-write-policy.js";
+import { assertSandboxWritePolicySize, buildMandatorySandboxWritePolicy, buildSeatbeltSandboxWritePolicy, compactSandboxWriteDenies, findNonRepositoryWriteRoots, isGrantPathWithin, isSandboxGitMetadataEntry, SANDBOX_GIT_SCAN_DEPTH, snapshotSandboxGitControls } from "../sandbox-write-policy.js";
 import { getLocale, setLocale, t } from "../../i18n/index.js";
 import { PROTECTED_ROOT_ENTRIES } from "../sensitive-paths.js";
 import { buildPerCommandSandboxCustomConfig, buildSandboxConfig, getDefaultSensitiveWriteDenyPaths } from "../asrt-sandbox.js";
@@ -80,6 +80,24 @@ describe("mandatory sandbox control-file writes", () => {
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
     rmSync(root, { recursive: true, force: true });
+  });
+
+  it("projects the mandatory macOS floor as literal names and recursive patterns", () => {
+    const project = join(root, "project");
+    mkdirSync(project);
+    const policy = withPlatform("darwin", () => buildSeatbeltSandboxWritePolicy([project]));
+    const names = policy.literalRows.map(row => row.path);
+    for (const entry of [".vscode", ".idea", ".husky", ".cargo", ".devcontainer", ".yarn", ".mvn", ".config/git",
+      ".bashrc", ".zshrc", ".zprofile", ".profile", ".envrc", ".gitconfig", ".npmrc", ".mcp.json",
+      ".agents", ".ave/commands", ".ave/hooks"]) {
+      expect(names).toContain(join(project, entry).replaceAll(sep, "/"));
+    }
+    expect(names).not.toContain(join(project, ".claude").replaceAll(sep, "/"));
+    expect(policy.patternRows).toEqual(expect.arrayContaining([
+      { path: "/**/.[gG][iI][tT]/[hH][oO][oO][kK][sS]", access: "ro", reason: "protected-name", literal: false },
+    ]));
+    expect(policy.literalRows.every(row => row.literal)).toBe(true);
+    expect(policy.patternRows.every(row => !row.literal)).toBe(true);
   });
 
   const loaderEntries = [".bash_profile", ".githooks", ".pre-commit-config.yaml", "lefthook.yml", ".idea/workspace.xml", ".envrc", ".mise.toml", "mise.toml", ".tool-versions", ".npmrc", ".yarnrc.yml", "bunfig.toml", ".husky"];

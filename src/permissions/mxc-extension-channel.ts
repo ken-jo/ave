@@ -4,7 +4,7 @@ import { encodeMxcFrame, MxcFrameDecoder, type MxcStreamFrame } from "./mxc-exte
 import { MxcProcessContractError } from "./mxc-extension-errors.js";
 import { commitUnderAdmission } from "../shared/admission-commit.js";
 
-type FramePayload = MxcStreamFrame extends infer Frame ? Frame extends MxcStreamFrame ? Omit<Frame, "version" | "generation" | "sequence"> : never : never;
+export type MxcFramePayload = MxcStreamFrame extends infer Frame ? Frame extends MxcStreamFrame ? Omit<Frame, "version" | "generation" | "sequence"> : never : never;
 
 /** A single sequential reader and a bounded, backpressured writer on private inherited pipes. */
 export class MxcExtensionChannel {
@@ -22,7 +22,7 @@ export class MxcExtensionChannel {
 
   /** `admit` runs in the step that writes the frame. Its refusal sends nothing, takes no sequence number and leaves the
    * channel open for the frames that end the process. */
-  send(payload: FramePayload, admit?: () => void): Promise<void> {
+  send(payload: MxcFramePayload, admit?: () => void): Promise<void> {
     if (this.pending >= 4 || this.closed || this.output.destroyed) return Promise.reject(new MxcProcessContractError("Supervisor send is not available"));
     this.pending += 1;
     const sent = this.tail.then(() => new Promise<void>((resolve, reject) => {

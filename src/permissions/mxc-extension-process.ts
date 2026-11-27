@@ -12,6 +12,7 @@ import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { observeWindowsBackend, reportWindowsBackendLoss } from "./windows-confinement-evidence.js";
 import { assertMxcExtensionRequest } from "./mxc-extension-request.js";
 import { MxcExtensionChannel } from "./mxc-extension-channel.js";
+import { isMxcSupervisorLoaderOverride } from "./mxc-supervisor-transport.js";
 import { MXC_STREAM_CHUNK_BYTES, type MxcExtensionStartRecord } from "./mxc-extension-protocol.js";
 import { MxcIntegrityError } from "../../scripts/lib/mxc-sdk-integrity.mjs";
 import { MxcCapabilityUnavailableError, MxcProcessCleanupError, MxcProcessContractError, MxcSupervisorLostError } from "./mxc-extension-errors.js";
@@ -187,7 +188,7 @@ class SupervisedMxcProcess implements OwnedMxcExtensionProcess {
         this.observe({ type: "stopped", spawnPendingAtCancellation: frame.spawnPendingAtCancellation });
       } else if (frame.type === "error") {
         this.failureReceipt = true;
-        if (frame.backendLoss) reportWindowsBackendLoss(this.backendObservations[frame.backendLoss]);
+        if (frame.code !== "start-refused" && frame.backendLoss) reportWindowsBackendLoss(this.backendObservations[frame.backendLoss]);
         if (frame.code === "cleanup-unverified") throw new MxcProcessCleanupError(frame.message);
         if (frame.code === "integrity") throw new MxcIntegrityError(frame.message);
         if (frame.code === "capability-unavailable") throw new MxcCapabilityUnavailableError(frame.message);
@@ -339,7 +340,7 @@ export function mxcSupervisorEnvironment(base: Readonly<Record<string, string>> 
   let systemRoot: string | undefined, path = "";
   for (const [key, value] of Object.entries(base)) {
     const name = key.toUpperCase();
-    if (name.startsWith("MXC_") || name === "NODE_OPTIONS" || name === "NODE_PATH" || name === "LOCALAPPDATA") continue;
+    if (isMxcSupervisorLoaderOverride(name) || name === "LOCALAPPDATA") continue;
     if (name === "PATH") { path = value; continue; }
     if (name === "SYSTEMROOT") systemRoot = value;
     env[key] = value;

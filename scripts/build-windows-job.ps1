@@ -1,8 +1,8 @@
 # Builds the Windows job launcher and its optional failure fixtures.
-param([string]$Arch = "x64", [switch]$FailureFixture, [switch]$QueryFailureFixture, [switch]$ToolchainIdentity)
+param([string]$Arch = "x64", [switch]$FailureFixture, [switch]$QueryFailureFixture, [switch]$PolicyReaderFixture, [switch]$ToolchainIdentity)
 $ErrorActionPreference = "Stop"
 if ($Arch -notin @("x64", "arm64")) { throw "Unsupported job launcher architecture: $Arch" }
-if ($FailureFixture -and $QueryFailureFixture) { throw "Build one failure fixture at a time" }
+if (@($FailureFixture, $QueryFailureFixture, $PolicyReaderFixture).Where({ $_ }).Count -gt 1) { throw "Build one fixture at a time" }
 $root = Split-Path $PSScriptRoot -Parent
 $out = Join-Path $root "resources/windows-job/$Arch"
 $vswhere = "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe"
@@ -11,7 +11,7 @@ $installation = & $vswhere -latest -products '*' -requires Microsoft.VisualStudi
 if (!$installation) { throw "Windows job launcher requires the C++ build tools" }
 $devcmd = Join-Path $installation "Common7/Tools/VsDevCmd.bat"
 $source = Join-Path $root "native/windows-job/launcher.cpp"
-$name = if ($FailureFixture) { "ave-job-failure.exe" } elseif ($QueryFailureFixture) { "ave-job-query-failure.exe" } else { "ave-job.exe" }
+$name = if ($FailureFixture) { "ave-job-failure.exe" } elseif ($QueryFailureFixture) { "ave-job-query-failure.exe" } elseif ($PolicyReaderFixture) { "ave-job-policy-reader-test.exe" } else { "ave-job.exe" }
 $object = "launcher.obj"
 # Import the compiler environment without passing checkout paths through cmd.
 # UTF-16 preserves environment values containing non-ASCII user/profile paths.
@@ -44,6 +44,7 @@ New-Item -ItemType Directory -Force $out | Out-Null
 $compilerArgs = @("/nologo", "/std:c++17", "/O2", "/MT", "/W4", "/WX", "/EHsc")
 if ($FailureFixture) { $compilerArgs += "/DAVE_TEST_INVALID_JOB" }
 if ($QueryFailureFixture) { $compilerArgs += "/DAVE_TEST_UNQUERYABLE_JOB" }
+if ($PolicyReaderFixture) { $compilerArgs += "/DAVE_TEST_POLICY_READER" }
 $compilerArgs += @($source, "/Fo:$out/$object", "/Fe:$out/$name", "/link", "/INCREMENTAL:NO", "/Brepro")
 # Direct argument passing preserves Unicode, spaces, and literal percent signs.
 & cl.exe @compilerArgs

@@ -233,7 +233,7 @@ export type EgressIdentityStrength = "kernel-channel" | "shared";
 
 /** Protocol coverage is independent of proxy endpoint scoping and identity. */
 export interface EgressProtocolCoverage {
-  readonly dns: "host-resolver" | "brokered" | "unknown";
+  readonly dns: "host-resolver" | "brokered" | "blocked" | "unknown";
   readonly rawIp: "unknown" | "blocked";
 }
 
@@ -244,8 +244,11 @@ export function egressProtocolCoverageFor(substrate: "mxc" | "asrt" | "srt-win" 
   return substrate === "mxc" ? MXC_EGRESS_PROTOCOL_COVERAGE : UNKNOWN_EGRESS_PROTOCOL_COVERAGE;
 }
 
+const SEATBELT_EGRESS_PROTOCOL_COVERAGE: EgressProtocolCoverage = Object.freeze({ dns: "blocked", rawIp: "blocked" });
+
 export function containerEgressProtocolCoverage(backend: ContainerBackend): EgressProtocolCoverage {
-  return backend === "process-container" ? MXC_EGRESS_PROTOCOL_COVERAGE : UNKNOWN_EGRESS_PROTOCOL_COVERAGE;
+  if (backend === "process-container") return MXC_EGRESS_PROTOCOL_COVERAGE;
+  return backend === "seatbelt" ? SEATBELT_EGRESS_PROTOCOL_COVERAGE : UNKNOWN_EGRESS_PROTOCOL_COVERAGE;
 }
 
 /** The scopes an egress grant can be given. A shell tool call's card offers Deny plus once, session, project, always (owner 2026-10-25, five-choice network card); a workspace terminal
@@ -262,7 +265,7 @@ export function maxEgressGrantScope(strength: EgressIdentityStrength): EgressGra
 const MXC_UNAVAILABLE_REASONS = {
   "not-windows": true, "unsupported-arch": true, "binary-missing": true, "probe-failed": true,
   "container-unavailable": true, "request-rejected": true,
-  /** Installed launcher integrity does not match its pin. */
+  /** The installed native launcher or shell library could not be verified against its pin. */
   "launcher-mismatch": true,
   "powershell-start-failed": true,
   /** An interactive runtime start has not been established. */
@@ -271,6 +274,18 @@ const MXC_UNAVAILABLE_REASONS = {
   "runtime-root-unproved": true,
 } as const;
 export type SandboxMxcUnavailableReason = keyof typeof MXC_UNAVAILABLE_REASONS;
+
+export type SandboxMacContainerShellUnavailableReason = Extract<SandboxMxcUnavailableReason,
+  "unsupported-arch" | "binary-missing" | "launcher-mismatch" | "runtime-root-unproved" | "request-rejected"
+> | "shell-start-failed";
+
+export type SandboxMacContainerShellSupport =
+  | { readonly state: "available" }
+  | { readonly state: "unavailable"; readonly reason: SandboxMacContainerShellUnavailableReason };
+
+export type SandboxMacContainerShellInfo = SandboxMacContainerShellSupport & {
+  readonly egressProtocolCoverage: EgressProtocolCoverage;
+};
 
 /** A plan is selection evidence, never proof that a particular process has started. */
 export interface SandboxWindowsExtensionPlan {
@@ -397,6 +412,8 @@ export interface SandboxCapabilityInfo {
   boot?: SandboxBootOutcomeView | null;
   /** Windows: which substrate carries shells and extensions this boot, and how strongly their egress is attributed. `null` off Windows, and on Windows when boot never ran the gate. */
   windowsSubstrate?: SandboxWindowsSubstrateInfo | null;
+  /** Boot verification for the macOS shell container. */
+  containerShell?: SandboxMacContainerShellInfo;
   /** Windows: no sandboxed process can start this run because the container runtime root is unproved; set whatever the sandbox setting. */
   sandboxHomesUnavailable?: boolean;
   /** The shell sandbox as the chat input's permission card shows it. */

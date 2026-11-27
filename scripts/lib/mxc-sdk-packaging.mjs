@@ -26,18 +26,18 @@ export function finalizePackagedMxcSdk(resources, arch, executable) {
   recordMxcSupervisorRuntime(resources, arch, executable);
 }
 
-export function assertPackagedMxcSdk(resources, arch) {
+export function assertPackagedMxcSdk(resources, arch, platform = "win32", verifyAddonBytes = false) {
   return withPackagingPayload(() => {
     const modules = path.join(resources, "app.asar.unpacked", "node_modules");
-    if (existsSync(path.join(modules, "node-pty", "third_party"))) throw new Error("Unexpected packaged PTY source-build payload");
-    const verified = verifyMxcSdk(modules, arch, PINS, {}, true);
-    assertMxcSdkAddonArchitecture(modules, arch);
+    if (platform === "win32" && existsSync(path.join(modules, "node-pty", "third_party"))) throw new Error("Unexpected packaged PTY source-build payload");
+    const verified = verifyMxcSdk(modules, arch, PINS, {}, true, platform, verifyAddonBytes);
+    assertMxcSdkAddonArchitecture(modules, arch, platform);
     if (existsSync(path.join(verified.sdkRoot, "node_modules", ".bin"))) throw new Error("Unexpected packaged SDK command shims");
     const bin = path.join(verified.sdkRoot, "bin");
     for (const entry of readdirSync(bin)) {
       if (entry !== arch) throw new Error(`Unexpected packaged SDK architecture: ${entry}`);
     }
-    const allowed = new Set(["mxc_ffi.dll", "wslcsdk.dll"]);
+    const allowed = new Set(platform === "darwin" ? [path.basename(PINS.targets["darwin-arm64"].library.member)] : ["mxc_ffi.dll", "wslcsdk.dll"]);
     for (const entry of readdirSync(path.join(bin, arch))) {
       if (!allowed.has(entry)) throw new Error(`Unexpected packaged SDK backend: ${entry}`);
     }
@@ -49,7 +49,7 @@ export function assertPackagedMxcSdk(resources, arch) {
   });
 }
 
-export function prunePackagedMxcSdk(resources, arch) {
+export function prunePackagedMxcSdk(resources, arch, platform = "win32") {
   return withPackagingPayload(() => {
     assertMutationTreesSafe(resources, [
       "app.asar.unpacked/node_modules/@koromix",
@@ -57,22 +57,27 @@ export function prunePackagedMxcSdk(resources, arch) {
       "app.asar.unpacked/node_modules/node-pty",
     ], PTY_SOURCE_BUILD_DIRECTORIES.map((name) => `app.asar.unpacked/node_modules/node-pty/${name}`));
     const modules = path.join(resources, "app.asar.unpacked", "node_modules");
-    pruneMxcSdkAddonArchitectures(modules, arch);
+    pruneMxcSdkAddonArchitectures(modules, arch, platform);
     rmSync(path.join(modules, "@microsoft", "mxc-sdk", "node_modules", ".bin"), { recursive: true, force: true });
     const bin = path.join(resources, "app.asar.unpacked", "node_modules", "@microsoft", "mxc-sdk", "bin");
     for (const entry of readdirSync(bin)) {
       if (["x64", "arm64"].includes(entry) && entry !== arch) rmSync(path.join(bin, entry), { recursive: true, force: true });
     }
     const directory = path.join(bin, arch);
+    const darwinLibrary = path.basename(PINS.targets["darwin-arm64"].library.member);
     for (const entry of readdirSync(directory)) {
-      if (SDK_INSTALLATION_AUXILIARIES.has(entry) || ["dotnet", "_manifest"].includes(entry)) rmSync(path.join(directory, entry), { recursive: true, force: true });
+      if (platform === "darwin" && entry === darwinLibrary) continue;
+      const foreignLibrary = platform === "darwin" && ["mxc_ffi.dll", "wslcsdk.dll"].includes(entry);
+      if (foreignLibrary || SDK_INSTALLATION_AUXILIARIES.has(entry) || ["dotnet", "_manifest"].includes(entry)) rmSync(path.join(directory, entry), { recursive: true, force: true });
     }
-    const addon = path.join(resources, "app.asar.unpacked", "node_modules", "@koromix", `koffi-win32-${arch}`, `win32_${arch}`);
-    for (const entry of readdirSync(addon)) {
-      if (/\.(lib|exp)$/i.test(entry)) rmSync(path.join(addon, entry));
+    if (platform === "win32") {
+      const addon = path.join(modules, "@koromix", `koffi-win32-${arch}`, `win32_${arch}`);
+      for (const entry of readdirSync(addon)) {
+        if (/\.(lib|exp)$/i.test(entry)) rmSync(path.join(addon, entry));
+      }
+      pruneMxcPtyBuildPayloads(modules, arch);
     }
-    pruneMxcPtyBuildPayloads(modules, arch);
-    assertPackagedMxcSdk(resources, arch);
+    assertPackagedMxcSdk(resources, arch, platform, true);
   });
 }
 
@@ -93,21 +98,28 @@ export function recordMxcSupervisorRuntime(resources, arch, executable) {
 
 // Staging is idempotent in the checkout. Package output must contain only the
 // selected target even after sequential cross-architecture builds.
-export function pruneMxcSdkAddonArchitectures(modules, arch) {
+export function pruneMxcSdkAddonArchitectures(modules, arch, platform = "win32") {
   return withPackagingPayload(() => {
     if (!["x64", "arm64"].includes(arch)) throw new Error("Unsupported SDK addon architecture");
     assertMutationTreesSafe(modules, ["@koromix"]);
     const scope = path.join(modules, "@koromix");
     for (const name of readdirSync(scope)) {
-      if (name.startsWith("koffi-win32-") && name !== `koffi-win32-${arch}`) rmSync(path.join(scope, name), { recursive: true, force: true });
+      if (name.startsWith(`koffi-${platform}-`) && name !== `koffi-${platform}-${arch}`) rmSync(path.join(scope, name), { recursive: true, force: true });
     }
-    assertMxcSdkAddonArchitecture(modules, arch);
+    assertMxcSdkAddonArchitecture(modules, arch, platform);
   });
 }
 
-function assertMxcSdkAddonArchitecture(modules, arch) {
-  const names = readdirSync(path.join(modules, "@koromix")).filter((name) => name.startsWith("koffi-win32-"));
-  if (names.length !== 1 || names[0] !== `koffi-win32-${arch}`) throw new Error("Unexpected packaged SDK addon architecture");
+function assertMxcSdkAddonArchitecture(modules, arch, platform) {
+  const names = readdirSync(path.join(modules, "@koromix")).filter((name) => name.startsWith(`koffi-${platform}-`));
+  if (names.length !== 1 || names[0] !== `koffi-${platform}-${arch}`) throw new Error("Unexpected packaged SDK addon architecture");
+}
+
+export function assertPackagedMxcMacLibrary(resources) {
+  const { member, sha256 } = PINS.targets["darwin-arm64"].library;
+  const file = path.join(resources, "app.asar.unpacked", "node_modules", PINS.package, member);
+  if (realpathSync(file) !== path.resolve(file) || !lstatSync(file).isFile()) throw new Error("Packaged native library path redirected");
+  if (createHash("sha256").update(readFileSync(file)).digest("hex") !== sha256) throw new Error("Packaged native library hash mismatch");
 }
 
 export function assertMxcSupervisorFuse(config) {
