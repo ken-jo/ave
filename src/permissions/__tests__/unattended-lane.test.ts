@@ -6,7 +6,7 @@ import { decidePermission, type PermissionDecisionRequest } from "../decision-pi
 import { PermissionManager, type ReviewerDispatchResult } from "../permission-manager.js";
 import { endRunSession, registerRunSession } from "../run-grants.js";
 import type { ToolEffectEvidence } from "../tool-effect-evidence.js";
-import { endUnattendedStage, onUnattendedDenied, registerUnattendedStage, unattendedLaneHooks, type UnattendedStageEntry } from "../unattended-lane-registry.js";
+import { endUnattendedStage, onUnattendedDenied, registerUnattendedStage, type UnattendedStageEntry } from "../unattended-lane-registry.js";
 import { decideUnattended, type UnattendedDenyCode, UNATTENDED_DENY_MESSAGE } from "../unattended-lane.js";
 
 const workspaceRoot = resolve("stage-workspace");
@@ -222,17 +222,15 @@ describe("unattended permission decisions", () => {
     }
   });
 
-  it("fails closed for a linked stage until it has isolation proof", () => {
+  it("fails closed for a registered stage without isolation proof", () => {
     const sessionId = "linked-stage";
     const manager = new PermissionManager();
     const check = () => manager.checkDetailed("read_file", "builtin", "read", undefined, { sessionId });
-    unattendedLaneHooks.sessionLinked({
-      sessionId, runKey: entry.runKey, stageId: entry.stageId, envelope: entry.envelope, workspaceRoot,
-    });
+    registerUnattendedStage(sessionId, { ...entry, isolation: { proven: false } });
     try {
       expect(check().reasonCode).toBe("isolation-unproven");
     } finally {
-      unattendedLaneHooks.sessionEnded(sessionId);
+      endUnattendedStage(sessionId);
     }
     expect(check().decision).toBe("allow");
   });

@@ -72,9 +72,8 @@ export function reportUnattendedDenial({ sessionId, code, call }: UnattendedDeni
 }
 
 export const unattendedLaneHooks = {
-  sessionLinked: ({ sessionId, ...entry }) => {
-    registerUnattendedStage(sessionId, { ...entry, isolation: { proven: false } });
-  },
+  // The schedule's interim policy stays in effect until admission can prove isolation.
+  sessionLinked: () => {},
   sessionEnded: endUnattendedStage,
   onDenied: onUnattendedDenied,
 } satisfies Omit<LaneHooks, "admit">;
