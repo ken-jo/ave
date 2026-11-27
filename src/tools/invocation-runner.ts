@@ -28,6 +28,7 @@ import { resolveHostShellWorkingDirectory } from "../permissions/host-shell-exec
 import { randomUUID } from "node:crypto";
 import { isStagedTurnSource } from "../shared/staged-origins.js";
 import { admitLocalRoute, localFs, rethrowLocalityFailure, withLocalityDecision } from "../shared/local-path-io.js";
+import { localDriveAlias } from "../shared/shell-native-path.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
 import type { Tool } from "./base.js";
 import type { HookRunner } from "../hooks/hook-runner.js";
@@ -1611,7 +1612,9 @@ async function runToolInvocationAttempt(
         // A share, device or mapped path still needs a policy decision. Only a proven local route can issue a seal.
         if (isEdit || !(error instanceof Error) || !("code" in error) || error.code !== "ENETWORKSHAREPATH" ||
             ("incomplete" in error && error.incomplete === true)) throw error;
-        return { target: resolvedTarget(resolvePathForPolicy(filePath)), observation: undefined };
+        const reached = localDriveAlias(filePath) !== undefined ? resolvePathForPolicy(filePath)
+          : "reached" in error && typeof error.reached === "string" ? error.reached : filePath;
+        return { target: resolvedTarget(reached), observation: undefined };
       }
       // The lexical and physical readings of parent traversal must also agree on the object.
       const evidence = [...seen.values()].filter(target => target.path === runtimePath);
