@@ -177,7 +177,6 @@ export const ERROR_MESSAGE_KEYS: Record<SubscriptionProviderErrorCode, string> =
   "subscription-chat-unavailable": "subscriptionProvidersSection.errorChatUnavailable",
   "subscription-model-not-supported": "formatIpcError.subscriptionModelNotSupported",
   "subscription-operation-failed": "subscriptionProvidersSection.errorOperationFailed",
-  "subscription-status-superseded": "subscriptionProvidersSection.errorOperationFailed",
 };
 
 /** Device codes are the sole transient authentication value this renderer may display. Reject values that look like URLs,

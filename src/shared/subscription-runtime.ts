@@ -128,11 +128,10 @@ export function isSubscriptionRuntimeId(value: unknown): value is SubscriptionRu
     && (SUBSCRIPTION_RUNTIME_IDS as readonly string[]).includes(value);
 }
 
-/** Safe host projection invalidation. */
+/** Invalidation events carry only a revision; re-read safe status without exposing URLs, paths, credentials, or provider output. */
 export interface SubscriptionRuntimeStatusUpdatedEvent {
   readonly provider: SubscriptionRuntimeId;
   readonly revision: number;
-  readonly connected?: boolean;
 }
 
 export function isSubscriptionRuntimeStatusUpdatedEvent(
@@ -143,8 +142,7 @@ export function isSubscriptionRuntimeStatusUpdatedEvent(
   }
   const payload = value as Record<string, unknown>;
   const keys = Object.keys(payload);
-  return (keys.length === 2 || (keys.length === 3
-    && Object.hasOwn(payload, "connected") && typeof payload.connected === "boolean"))
+  return keys.length === 2
     && Object.prototype.hasOwnProperty.call(payload, "provider")
     && Object.prototype.hasOwnProperty.call(payload, "revision")
     && isSubscriptionRuntimeId(payload.provider)
@@ -500,7 +498,6 @@ export type SubscriptionRuntimeNotice =
 
 /** Never include verification URLs, access tokens, raw CLI output, or executable paths in renderer status. */
 export interface SubscriptionRuntimeStatus {
-  readonly revision?: number;
   readonly planUsage?: SubscriptionPlanUsage;
   provider: SubscriptionRuntimeId;
   runtime: SubscriptionRuntimeState;
@@ -538,7 +535,6 @@ export type SubscriptionRuntimeErrorCode =
   | "subscription-logout-not-supported"
   | "subscription-chat-unavailable"
   | "subscription-model-not-supported"
-  | "subscription-status-superseded"
   | "subscription-operation-failed";
 
 export type SubscriptionRuntimeActionResult =

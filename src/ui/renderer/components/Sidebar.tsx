@@ -1065,9 +1065,7 @@ export function Sidebar({
   const settingsNeedsApiKey = hasApiKey === false && !runtimeUnavailable && !runtimePending;
   const settingsHandlers = viewRowHandlers("settings", { open: onOpenSettings });
   const settingsLabel = t(BUILTIN_LABEL_KEYS.settings);
-  const settingsNote = subscriptionRuntimePolicy?.connectionMissing
-    ? t("llmTab.modelPlaceholderNoProvider")
-    : runtimePending
+  const settingsNote = runtimePending
     ? t("subscriptionProvidersSection.statusChecking")
     : runtimeUnavailable
       ? t("formatIpcError.subscriptionChatUnavailable")

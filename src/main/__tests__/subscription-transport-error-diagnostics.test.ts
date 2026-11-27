@@ -1,20 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
-  isDefinitiveSubscriptionAuthError,
   projectSubscriptionTransportErrorDiagnostics,
   projectedSubscriptionTransportDiagnosticsFromError,
   subscriptionTransportFailure,
 } from "../subscription-transport-error-diagnostics.js";
 
 describe("subscription transport error diagnostics", () => {
-  it("recognizes structured authentication loss without classifying transient or model errors", () => {
-    expect(isDefinitiveSubscriptionAuthError({ data: { httpStatus: 401 } })).toBe(true);
-    expect(isDefinitiveSubscriptionAuthError({ error: { code: "invalid_client" } })).toBe(true);
-    expect(isDefinitiveSubscriptionAuthError("authentication_failed")).toBe(true);
-    expect(isDefinitiveSubscriptionAuthError({ data: { httpStatus: 503 } })).toBe(false);
-    expect(isDefinitiveSubscriptionAuthError({ message: "model token limit" })).toBe(false);
-  });
-
   it("preserves a host RPC operation through repeated safe projection", () => {
     const projected = subscriptionTransportFailure({
       phase: "rpc-timeout", kind: "timeout", operation: "turn/start",

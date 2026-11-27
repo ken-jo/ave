@@ -19,9 +19,7 @@ import type { ReasoningLevel } from "./ReasoningSlider.js";
 import { getApi } from "../api-client.js";
 import { isIpcErrorResult } from "../types.js";
 import { modelCardChoices, type ModelCardChoice } from "../hooks/use-settings.js";
-import type { AveApi } from "../types.js";
-import { canUseLlmVendorWithoutApiKey, getLlmVendorSettings, type LLMVendor } from "../../../shared/llm-vendor-defaults.js";
-import { marketplaceProviderPresetSecretId } from "../../../shared/marketplace-package-assets.js";
+import type { AppSettings } from "../types.js";
 import type { RolePreset } from "../../../data/role-presets.js";
 import type { UserKeyboardIntentSnapshot } from "../../../shared/chat-origin.js";
 import type { McpPromptEntry } from "./slash-picker-data.js";
@@ -760,82 +758,50 @@ function ModelQuickPicker({
   const chipRef = useRef<HTMLButtonElement>(null);
   const openedByChipRef = useRef(false);
   const [choices, setChoices] = useState<ModelCardChoice[]>([]);
-  const choicesRef = useRef<ModelCardChoice[]>([]);
   const billingId = useId();
   const [anyPinned, setAnyPinned] = useState(true);
   const runtimeRef = useRef<string>("api");
-  const { level, levelLabels, currentLabel, custom, apply } = useReasoningLevel({ enabled: enableThinking, onToggle: onToggleThinking });
   const setPickerOpen = (next: boolean) => {
-    choicesRef.current = [];
-    setChoices([]);
-    setAnyPinned(true);
+    if (!next) setChoices([]);
     setOpen(next);
   };
+  const { level, levelLabels, currentLabel, custom, apply } = useReasoningLevel({ enabled: enableThinking, onToggle: onToggleThinking });
 
   // Read on open and follow the broadcast while open: a pin added in Settings, or a pick made in another tile, shows up without reopening.
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
-    let revision = 0;
-    const api = getApi();
-    const take = (settings: Awaited<ReturnType<AveApi["getSettings"]>>) => {
+    let updated = false;
+    const take = (settings: AppSettings, activeChatModel = settings.activeChatModel) => {
       if (cancelled) return;
-      const request = ++revision;
-      const { llm, activeChatModel } = settings;
-      const nextChoices = modelCardChoices(llm, activeChatModel);
-      setAnyPinned((llm.pinnedModels ?? []).length > 0);
-      runtimeRef.current = llm.activeChatRuntime?.kind ?? "api";
-      const vendors = new Set(nextChoices.flatMap((choice) => choice.kind === "api" ? [choice.vendor] : []));
-      const connectedVendors = new Set<LLMVendor>();
-      const publishChoices = () => {
-        const visible = nextChoices.filter((choice) => choice.kind === "subscription" || connectedVendors.has(choice.vendor));
-        choicesRef.current = visible;
-        setChoices(visible);
-      };
-      for (const vendor of vendors) {
-        if (activeChatModel?.kind === "api" && activeChatModel.vendor === vendor) {
-          connectedVendors.add(vendor);
-          continue;
-        }
-        if (vendor === "vertex-ai") {
-          if (settings.vertexProjectConfigured) connectedVendors.add(vendor);
-          continue;
-        }
-        const block = getLlmVendorSettings(llm.vendors, vendor);
-        const presetId = vendor === "openai-compatible" ? llm.marketplaceProviderPresetId : undefined;
-        if (presetId) {
-          const preset = settings.marketplace?.installedProviderPresets?.find((entry) => entry.providerId === presetId);
-          if (!preset) continue;
-          if (preset.requiresApiKey === false && preset.baseUrl.trim()) {
-            connectedVendors.add(vendor);
-            continue;
-          }
-        } else if (canUseLlmVendorWithoutApiKey(vendor, block)) {
-          connectedVendors.add(vendor);
-          continue;
-        }
-        const credential = presetId ? marketplaceProviderPresetSecretId(presetId) : vendor;
-        void api.hasApiKey(credential).then((connected) => {
-          if (connected !== true || cancelled || revision !== request) return;
-          connectedVendors.add(vendor);
-          publishChoices();
-        }).catch(() => {});
-      }
-      publishChoices();
+      const nextChoices = modelCardChoices(settings.llm, activeChatModel);
+      setChoices(nextChoices);
+      setAnyPinned((settings.llm.pinnedModels ?? []).length > 0);
+      runtimeRef.current = settings.llm.activeChatRuntime?.kind ?? "api";
     };
-    void api.getSettings().then((settings) => {
-      if (revision === 0) return take(settings);
-    }).catch(() => { /* card stays as it was */ });
-    const unsubscribe = api.onSettingsUpdated(take);
+    const api = getApi();
+    const unsubscribe = api.onSettingsUpdated((settings) => {
+      updated = true;
+      take(settings);
+    });
+    void api.getSettings().then(async (settings) => {
+      if (updated || cancelled) return;
+      const active = settings.activeChatModel;
+      if (active?.kind !== "subscription") {
+        take(settings);
+        return;
+      }
+      take(settings, { kind: "none", reason: "no-connected-provider" });
+      const result = await api.subscriptionRuntimeStatus(active.provider, { refresh: true });
+      if (!updated && result.ok && result.status.provider === active.provider && result.status.connection === "connected") {
+        take(settings);
+      }
+    }).catch(() => {});
     return () => { cancelled = true; unsubscribe(); };
   }, [open]);
 
   const pick = async (choice: Extract<ModelCardChoice, { kind: "api" }>) => {
-    const currentChoice = choicesRef.current.find((candidate) =>
-      candidate.kind === "api" && candidate.vendor === choice.vendor && candidate.modelId === choice.modelId,
-    );
-    if (!currentChoice) return;
-    if (currentChoice.current) {
+    if (choice.current) {
       setPickerOpen(false);
       return;
     }

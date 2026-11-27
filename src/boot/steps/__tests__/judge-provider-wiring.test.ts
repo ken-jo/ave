@@ -94,7 +94,6 @@ describe("judge configured provider wiring", () => {
         approvalGate: { setOwnerAwayAutoSkipMinutes: vi.fn() },
         settingsService, llmFetch: unusedNetworkFetch, singleHopNetworkFetch: unusedNetworkFetch,
         getMainWindow: () => null, bootAuditLogger: { log: vi.fn() },
-        isSubscriptionConnected: vi.fn(async () => true),
         subscriptionProviderFactory: vi.fn(() => provider),
       };
       const writeSettings = (judge: unknown) => writeFileSync(settingsPath, JSON.stringify({ permissions: { judge } }));
@@ -168,16 +167,6 @@ describe("judge configured provider wiring", () => {
       await rewire();
       expect(lastJudge().settings.chain).toEqual([]);
       expect(lastJudge().chainRejected).toBeUndefined();
-      expect(lastReviewer().readActiveLlm()).toEqual({ provider: "subscription:codex", model: "chat-model" });
-      expect(context.isSubscriptionConnected).toHaveBeenLastCalledWith("codex");
-      expect(lastReviewer().streamProviderFor("subscription:codex")).toBe(provider);
-
-      context.subscriptionProviderFactory.mockClear();
-      context.isSubscriptionConnected.mockResolvedValue(false);
-      await rewire();
-      expect(lastReviewer().streamProviderFor("subscription:codex")).toBeNull();
-      expect(context.subscriptionProviderFactory).not.toHaveBeenCalled();
-
       writeFileSync(settingsPath, "{");
       await rewire();
       expect(lastJudge().settingsUnreadable).toBe(true);

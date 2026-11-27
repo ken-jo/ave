@@ -21,7 +21,6 @@ import { fakeAppSettings } from "../../../../../test/renderer/fake-app-settings.
 import { t } from "../../../../i18n/runtime.js";
 import { ApprovalSurfaceProvider, type ApprovalSurfaceContextValue } from "../../hooks/use-approval.js";
 import { HOME_FOLDER_REFUSED } from "../../../../shared/permissions-events.js";
-import { deferred } from "../../../../__tests__/support/deferred.js";
 
 const mockPreset: RolePreset = { id: "default", name: "기본", systemPromptAdd: "", isDefault: true };
 const codingPreset: RolePreset = { id: "coding", name: "코딩", systemPromptAdd: "Code carefully." };
@@ -30,8 +29,9 @@ const codingPreset: RolePreset = { id: "coding", name: "코딩", systemPromptAdd
 const getSettings = vi.fn();
 const updateSettings = vi.fn();
 const hasApiKey = vi.fn(async () => false);
-const onSettingsUpdated = vi.fn(() => () => {});
+const onSettingsUpdated = vi.fn((_listener: (settings: ReturnType<typeof fakeAppSettings>) => void) => () => {});
 const subscriptionUseApiForChat = vi.fn(async () => ({ ok: true }));
+const subscriptionRuntimeStatus = vi.fn(async (provider: string) => ({ ok: true, status: { provider, connection: "connected" } }));
 // The permission card persists through the same two calls Settings → Permissions makes.
 const setMode = vi.fn();
 const reviewerDispatch = vi.fn();
@@ -63,6 +63,7 @@ vi.mock("../../api-client.js", () => ({
     updateSettings,
     onSettingsUpdated,
     subscriptionUseApiForChat,
+    subscriptionRuntimeStatus,
     hasApiKey,
   }),
 }));
@@ -637,7 +638,6 @@ describe("model card (status-row model cell)", () => {
       vendors: { openai: { model: "gpt-5.4" } },
     } });
     getSettings.mockResolvedValue(settings);
-    hasApiKey.mockResolvedValueOnce(true);
     updateSettings.mockImplementation(async (patch: { llm?: LLMSettingsPatch }) => {
       settings.llm = mergeLlmPatch(settings.llm, patch.llm ?? {}, settings.marketplace.installedProviderPresets);
       return settings;
@@ -653,7 +653,6 @@ describe("model card (status-row model cell)", () => {
 
   /** Settings where two models are pinned and offered, and one pinned id is offered by nothing. */
   const settingsWithPins = () => ({
-    activeChatModel: { kind: "api", vendor: "openai-compatible", model: "qwen3.8-27b-gguf" },
     llm: {
       provider: "openai-compatible",
       activeChatRuntime: { kind: "api" },
@@ -811,71 +810,37 @@ describe("model card (status-row model cell)", () => {
     expect(subscriptionUseApiForChat).not.toHaveBeenCalled();
   });
 
-  it("applies a cross-window model change while credentials are pending and drops stale credential replies", async () => {
-    const settings = settingsWithPins();
-    const previous = {
-      ...settings,
-      llm: {
-        ...settings.llm,
-        pinnedModels: [...settings.llm.pinnedModels, "example-alternative", "example-ready-pin"],
-        modelListCache: {
-          ...settings.llm.modelListCache,
-          openai: { vendor: "openai", models: ["example-alternative"] },
-          claude: { vendor: "claude", models: ["example-ready-pin"] },
-        },
-      },
-    };
-    getSettings.mockResolvedValue(previous);
-    hasApiKey.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
-    const { getByTestId, findByTestId, queryByTestId } = renderBar();
-    fireEvent.click(getByTestId("iab-status-model"));
-    const alternativeId = "model-quick-picker-option:openai:example-alternative";
-    await findByTestId(alternativeId);
-    const card = getByTestId("model-quick-picker");
-    const checked = () => card.querySelector("[role='option'][aria-selected='true']");
-    const oldModel = "qwen3.8-27b-gguf";
-    const newModel = "qwen3.8-27b-nvfp4";
-    expect(checked()).toHaveTextContent(oldModel);
-    const [push] = onSettingsUpdated.mock.lastCall as unknown as [(settings: typeof previous) => void];
-    const olderCredential = deferred<boolean>();
-    const latestCredential = deferred<boolean>();
-    hasApiKey
-      .mockReturnValueOnce(olderCredential.promise).mockResolvedValueOnce(true)
-      .mockReturnValueOnce(latestCredential.promise).mockResolvedValueOnce(false);
-    const next = {
-      ...previous,
-      activeChatModel: { ...previous.activeChatModel, model: newModel },
-      llm: {
-        ...previous.llm,
-        vendors: {
-          ...previous.llm.vendors,
-          "openai-compatible": { ...previous.llm.vendors["openai-compatible"], model: newModel },
-        },
-      },
-    };
-    act(() => push(next));
-    expect(checked()).toHaveTextContent(newModel);
-    expect(queryByTestId(alternativeId)).toBeNull();
-    expect(await findByTestId("model-quick-picker-option:claude:example-ready-pin")).toBeEnabled();
+  it("checks current status before showing a saved subscription when opening the picker", async () => {
+    const llm = { activeChatRuntime: { kind: "subscription", provider: "codex", model: "example-model" } } as const;
+    getSettings.mockResolvedValue(fakeAppSettings({ llm, activeChatModel: { ...llm.activeChatRuntime } }));
+    subscriptionRuntimeStatus.mockResolvedValueOnce({ ok: true, status: { provider: "codex", connection: "signed-out" } });
+    const view = renderBar();
+    await act(async () => { fireEvent.click(view.getByTestId("iab-status-model")); });
+    expect(view.queryByTestId("model-quick-picker-option:codex")).toBeNull();
+    expect(subscriptionRuntimeStatus).toHaveBeenLastCalledWith("codex", { refresh: true });
+  });
 
-    act(() => push(next));
-    await act(async () => olderCredential.resolve(true));
-    expect(queryByTestId(alternativeId)).toBeNull();
-    expect(checked()).toHaveTextContent(newModel);
-
-    await act(async () => {
-      fireEvent.click(getByTestId(`model-quick-picker-option:openai-compatible:${oldModel}`));
-    });
-    expect(updateSettings).toHaveBeenCalledWith({
-      llm: { provider: "openai-compatible", vendors: { "openai-compatible": { model: oldModel } } },
-    });
-    await act(async () => latestCredential.resolve(true));
-    expect(queryByTestId("model-quick-picker")).toBeNull();
+  it("drops a disconnected subscription from an open picker and adds it back after sign-in", async () => {
+    const llm = { activeChatRuntime: { kind: "subscription", provider: "codex", model: "example-model" } } as const;
+    const connected = fakeAppSettings({ llm, activeChatModel: { ...llm.activeChatRuntime } });
+    const signedOut = fakeAppSettings({ llm, activeChatModel: { kind: "none", reason: "no-connected-provider" } });
+    getSettings.mockResolvedValue(connected);
+    const view = renderBar();
+    fireEvent.click(view.getByTestId("iab-status-model"));
+    const row = "model-quick-picker-option:codex";
+    expect(await view.findByTestId(row)).toHaveTextContent("example-model");
+    const update = onSettingsUpdated.mock.lastCall?.[0];
+    if (!update) throw new Error("Missing settings listener");
+    act(() => update(signedOut));
+    expect(view.queryByTestId(row)).toBeNull();
+    act(() => update(connected));
+    expect(await view.findByTestId(row)).toHaveTextContent("example-model");
   });
 
   it("also leaves a subscription runtime for the API path when a pin is chosen", async () => {
     getSettings.mockResolvedValue({
       ...settingsWithPins(),
+      activeChatModel: { kind: "subscription", provider: "codex", model: null },
       llm: { ...settingsWithPins().llm, activeChatRuntime: { kind: "subscription", provider: "codex" } },
     });
     const { getByTestId, findByTestId } = renderBar({ onOpenModelSettings: vi.fn() });
@@ -896,59 +861,11 @@ describe("model card (status-row model cell)", () => {
     await waitFor(() => expect(subscriptionUseApiForChat).toHaveBeenCalledTimes(1));
   });
 
-  it("omits disconnected routes and retains connected alternatives in the picker", async () => {
-    const settings = settingsWithPins();
-    getSettings.mockResolvedValue({
-      ...settings,
-      llm: {
-        ...settings.llm,
-        activeChatRuntime: { kind: "subscription", provider: "codex", model: "example-model" },
-        pinnedModels: [...settings.llm.pinnedModels, "example-api-model"],
-        modelListCache: {
-          ...settings.llm.modelListCache,
-          "openai": { vendor: "openai", models: ["example-api-model"] },
-        },
-      },
-      activeChatModel: { kind: "none", reason: "no-connected-provider" },
-    });
-    const { getByTestId, findByTestId } = renderBar({ onOpenModelSettings: vi.fn() });
-    fireEvent.click(getByTestId("iab-status-model"));
-    const card = await findByTestId("model-quick-picker");
-    await waitFor(() => expect(card.querySelectorAll("[role='option']")).toHaveLength(2));
-    expect(card.querySelector("[aria-selected='true']")).toBeNull();
-    expect(card).not.toHaveTextContent("example-model");
-    expect(card).not.toHaveTextContent("example-api-model");
-    expect(hasApiKey).toHaveBeenCalledWith("openai");
-  });
-
-  it.each([true, false])("filters the pinned project-authenticated alternative using the host verdict (%s)", async (available) => {
-    const settings = settingsWithPins();
-    const model = "example-project-model";
-    getSettings.mockResolvedValue({
-      ...settings,
-      vertexProjectConfigured: available,
-      llm: {
-        ...settings.llm,
-        pinnedModels: [...(settings.llm.pinnedModels ?? []), model],
-        modelListCache: {
-          ...settings.llm.modelListCache,
-          "vertex-ai": { vendor: "vertex-ai", models: [model] },
-        },
-      },
-    });
-    const { getByTestId, findByTestId } = renderBar({ onOpenModelSettings: vi.fn() });
-    fireEvent.click(getByTestId("iab-status-model"));
-    const card = await findByTestId("model-quick-picker");
-    await waitFor(() => expect(card.querySelectorAll("[role='option']")).toHaveLength(available ? 3 : 2));
-    expect(card.textContent?.includes(model)).toBe(available);
-    expect(card.querySelector("[aria-selected='true']")?.textContent).toContain("qwen3.8-27b-gguf");
-  });
-
-  it("checks the saved model when its subscription provider is connected", async () => {
+  it("checks the subscription provider — not an API model — while a subscription runtime is active", async () => {
     getSettings.mockResolvedValue({
       ...settingsWithPins(),
-      llm: { ...settingsWithPins().llm, activeChatRuntime: { kind: "subscription", provider: "codex", model: "example-model" } },
-      activeChatModel: { kind: "subscription", provider: "codex", model: "example-model" },
+      activeChatModel: { kind: "subscription", provider: "codex", model: null },
+      llm: { ...settingsWithPins().llm, activeChatRuntime: { kind: "subscription", provider: "codex" } },
     });
     const { getByTestId, findByTestId } = renderBar({ onOpenModelSettings: vi.fn() });
     fireEvent.click(getByTestId("iab-status-model"));
@@ -957,7 +874,6 @@ describe("model card (status-row model cell)", () => {
     const checked = card.querySelectorAll("[role='option'][aria-selected='true']");
     expect(checked).toHaveLength(1);
     expect(checked[0]?.querySelector("button")?.getAttribute("data-testid")).toBe("model-quick-picker-option:codex");
-    expect(checked[0]).toHaveTextContent("example-model");
     // The plan's brand, never the runtime's own name.
     expect(checked[0]?.textContent).toContain("ChatGPT");
     expect(checked[0]?.textContent).not.toContain("Codex");
@@ -974,8 +890,8 @@ describe("model card (status-row model cell)", () => {
   it("disables the subscription row — it is a marker, not a pick, and stays out of the tab order", async () => {
     getSettings.mockResolvedValue({
       ...settingsWithPins(),
-      llm: { ...settingsWithPins().llm, activeChatRuntime: { kind: "subscription", provider: "codex" } },
       activeChatModel: { kind: "subscription", provider: "codex", model: null },
+      llm: { ...settingsWithPins().llm, activeChatRuntime: { kind: "subscription", provider: "codex" } },
     });
     const { getByTestId, findByTestId } = renderBar({ onOpenModelSettings: vi.fn() });
     fireEvent.click(getByTestId("iab-status-model"));
@@ -995,8 +911,8 @@ describe("model card (status-row model cell)", () => {
   it("shows only subscription billing on the card without querying API credentials", async () => {
     getSettings.mockResolvedValue({
       ...settingsWithPins(),
-      llm: { ...settingsWithPins().llm, activeChatRuntime: { kind: "subscription", provider: "claude-code" } },
       activeChatModel: { kind: "subscription", provider: "claude-code", model: null },
+      llm: { ...settingsWithPins().llm, activeChatRuntime: { kind: "subscription", provider: "claude-code" } },
     });
     hasApiKey.mockClear();
     const view = renderBar();
@@ -1013,8 +929,8 @@ describe("model card (status-row model cell)", () => {
   it("names the subscription provider in the primary column when the runtime has no model of its own", async () => {
     getSettings.mockResolvedValue({
       ...settingsWithPins(),
-      llm: { ...settingsWithPins().llm, activeChatRuntime: { kind: "subscription", provider: "kimi-code" } },
       activeChatModel: { kind: "subscription", provider: "kimi-code", model: null },
+      llm: { ...settingsWithPins().llm, activeChatRuntime: { kind: "subscription", provider: "kimi-code" } },
     });
     const { getByTestId, findByTestId } = renderBar({ onOpenModelSettings: vi.fn() });
     fireEvent.click(getByTestId("iab-status-model"));
@@ -1035,8 +951,8 @@ describe("model card (status-row model cell)", () => {
   it("labels an unchosen subscription model as the CLI default", async () => {
     getSettings.mockResolvedValue({
       ...settingsWithPins(),
-      llm: { ...settingsWithPins().llm, activeChatRuntime: { kind: "subscription", provider: "claude-code" } },
       activeChatModel: { kind: "subscription", provider: "claude-code", model: null },
+      llm: { ...settingsWithPins().llm, activeChatRuntime: { kind: "subscription", provider: "claude-code" } },
     });
     const { getByTestId, findByTestId } = renderBar({ onOpenModelSettings: vi.fn() });
     fireEvent.click(getByTestId("iab-status-model"));
@@ -1355,11 +1271,6 @@ describe("localized configured route billing accessibility", () => {
       ["keyless preset", "keyless-fixture", "keyless"],
       ["keyed preset", "keyed-fixture", "api-key"],
     ] as const)(`describes %s in ${locale}`, async (_label, presetId, kind) => {
-      const settings = fakeAppSettings({ llm: {
-        provider: "openai-compatible",
-        vendors: { "openai-compatible": { model: "qwen3.8-27b-nvfp4", baseUrl: "http://llm.example.test/v1" } },
-      } });
-      getSettings.mockResolvedValue(settings);
       const { getLocale, setLocale } = await import("../../../../i18n/runtime.js");
       const { loadLocaleMessages } = await import("../../../../i18n/messages/index.js");
       const previousLocale = getLocale();

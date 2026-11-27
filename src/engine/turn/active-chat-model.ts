@@ -15,10 +15,6 @@ import { secretKeyFor } from "../llm/provider-factory.js";
 export type ActiveChatModelSettingsReader = Pick<SettingsService, "get" | "hasStoredSecret">;
 export type SubscriptionConnectionReader = (provider: SubscriptionRuntimeId) => Promise<boolean>;
 
-export function isVertexProjectConfigured(project: string | null | undefined, env: NodeJS.ProcessEnv = process.env): boolean {
-  return Boolean(project || env.GOOGLE_CLOUD_PROJECT || env.GCLOUD_PROJECT);
-}
-
 /** Check credential presence without decrypting on settings broadcasts. */
 async function activeApiRouteConnected(
   settingsService: ActiveChatModelSettingsReader,
@@ -38,7 +34,7 @@ async function activeApiRouteConnected(
   }
   if (vendor === "vertex-ai") {
     // Native project authentication requires a project rather than an API key.
-    return isVertexProjectConfigured(block.vertexProject, env);
+    return Boolean(block.vertexProject || env.GOOGLE_CLOUD_PROJECT || env.GCLOUD_PROJECT);
   }
   if (canUseLlmVendorWithoutApiKey(vendor, block)) return true;
   return await settingsService.hasStoredSecret(secretKeyFor(vendor));

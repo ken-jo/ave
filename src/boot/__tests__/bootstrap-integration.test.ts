@@ -1036,7 +1036,7 @@ describe("bootstrap() integration lock", () => {
 
   it("stops its own timers and watchers through the shutdown coordinator, not its own listeners", () => {
     // Interactive boot must wire both teardown paths without adding application listeners.
-    expect(h.captured["shutdownHooks"]).toEqual(["subscription-reviewer", "watcher-telemetry", "diff-cache"]);
+    expect(h.captured["shutdownHooks"]).toEqual(["watcher-telemetry", "diff-cache"]);
     expect(h.captured["appEvents"]).toBeUndefined();
   });
 
@@ -1136,7 +1136,6 @@ describe("bootstrap() headless launch opens no discretionary service connection"
   it("adds no `before-quit` listener of its own, and Node never reports a leak", () => {
     // One-shot stderr exposes listener leaks; unordered teardown hooks must share the main process listener.
     expect((h.captured["shutdownHooks"] as string[])).toEqual([
-      "subscription-reviewer",
       "watcher-telemetry",
       "diff-cache",
     ]);

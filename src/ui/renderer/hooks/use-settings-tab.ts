@@ -3,13 +3,11 @@ import type { AveApi } from "../types.js";
 import { normalizeSettingsTab, type SettingsTab } from "../../../shared/settings-tabs.js";
 import { usePrefersReducedMotion } from "./use-prefers-reduced-motion.js";
 
-export type SettingsNavigationOrigin = "provider-setup";
-
 export interface UseSettingsTabResult {
   /** Which settings page the inline panel is on. */
   settingsTab: SettingsTab;
-  /** Set the page. Provider setup is temporary. */
-  setSettingsTab: (tab: string, origin?: SettingsNavigationOrigin) => void;
+  /** Set it — persists immediately, as a durable setting. */
+  setSettingsTab: (tab: string) => void;
   /**
    * How many times THIS hook has applied the stored page. Monotonic, and read
    * the same way as `useActiveView.restoresApplied`: the tab is the other half
@@ -35,7 +33,6 @@ export function useSettingsTab(api: AveApi): UseSettingsTabResult {
   // A ref, not state: this setter stands in for a `useState` setter at call sites whose dep arrays omit it, so its identity
   // must never change.
   const hydratedRef = useRef(false);
-  const setupRedirectedRef = useRef(false);
   const [restoresApplied, setRestoresApplied] = useState(0);
 
   useEffect(() => {
@@ -43,7 +40,7 @@ export function useSettingsTab(api: AveApi): UseSettingsTabResult {
     void api
       .getSettings()
       .then((settings) => {
-        if (cancelled || setupRedirectedRef.current) return;
+        if (cancelled) return;
         const stored = settings?.system?.settingsTab;
         if (stored === undefined) return;
         setSettingsTabState(normalizeSettingsTab(stored));
@@ -61,14 +58,11 @@ export function useSettingsTab(api: AveApi): UseSettingsTabResult {
   }, [api]);
 
   const setSettingsTab = useCallback(
-    (tab: string, origin?: SettingsNavigationOrigin) => {
+    (tab: string) => {
       const normalized = normalizeSettingsTab(tab);
       setSettingsTabState(normalized);
-      if (origin === "provider-setup") {
-        setupRedirectedRef.current = true;
-        return;
-      }
-      if (!hydratedRef.current && !setupRedirectedRef.current) return;
+      // Guard against persisting the seed back before the initial read resolves.
+      if (!hydratedRef.current) return;
       void api.updateSettings({ system: { settingsTab: normalized } });
     },
     [api],

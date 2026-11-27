@@ -15,11 +15,8 @@ import type { SubscriptionImageAttachmentLimits } from "../shared/subscription-r
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import {
   ACP_SUBSCRIPTION_RUNTIME_MANIFESTS,
-  isAcpAuthenticationError,
   resolveAcpSubscriptionExecutable,
   sanitizedAcpSubscriptionEnvironment,
-  supportsAcpAuthenticationMethod,
-  type AcpConnectionLoss,
   type AcpSubscriptionRuntimeManifest,
 } from "./acp-subscription-runtime-client.js";
 import {
@@ -174,7 +171,6 @@ export interface AcpSubscriptionSessionClientOptions {
   mcpServers?: readonly AcpSubscriptionMcpServerConfig[];
   // Main-only callback for a rejected reverse RPC request. It never receives params.
   onHostRequest?: (request: AcpSubscriptionHostRequestObservation) => void | Promise<void>;
-  onConnectionLost?: (connection: AcpConnectionLoss) => void;
   onPlanUsage?: (windows: readonly SubscriptionPlanUsageWindow[]) => void;
   // Test seam; production uses the managed-child registry.
   spawn?: SpawnAcpRuntime;
@@ -310,6 +306,13 @@ function boundedString(value: unknown, maxLength: number): string | null {
 function isRpcId(value: unknown): value is RpcId {
   return (typeof value === "number" && Number.isInteger(value))
     || (typeof value === "string" && boundedString(value, MAX_RPC_ID_LENGTH) !== null);
+}
+
+function authenticationRequired(error: unknown): boolean {
+  if (!isRecord(error)) return false;
+  if (error.code === -32_000 || error.code === -32_001) return true;
+  const message = typeof error.message === "string" ? error.message.toLowerCase() : "";
+  return /auth(?:entication)?|login|credential|token/.test(message);
 }
 
 function promptStopReason(value: unknown): AcpSubscriptionPromptStopReason | null {
@@ -501,12 +504,11 @@ export class AcpSubscriptionSessionClient {
     if (this.stopped) throw new AcpSubscriptionSessionError("acp-session-stopped");
     if (this.child && this.sessionId) return;
     if (!this.startPromise) {
-      const start = this.startTransport().catch(async (error: unknown) => {
+      this.startPromise = this.startTransport().catch(async (error: unknown) => {
         const normalized = this.normalizeStartError(error);
-        if (this.startPromise === start) await this.abortTransport(normalized);
+        await this.abortTransport(normalized);
         throw normalized;
       });
-      this.startPromise = start;
     }
     await this.startPromise;
   }
@@ -517,7 +519,6 @@ export class AcpSubscriptionSessionClient {
       executable = await this.resolveExecutable(this.options.executablePath);
       await this.requireRuntimeDirectories();
     } catch (error) {
-      if (!this.stopped) this.options.onConnectionLost?.("unknown");
       if (error instanceof AcpSubscriptionSessionError) throw error;
       throw new AcpSubscriptionSessionError("acp-session-start-failed");
     }
@@ -540,11 +541,9 @@ export class AcpSubscriptionSessionClient {
         detached: this.platform !== "win32",
       });
     } catch {
-      if (!this.stopped) this.options.onConnectionLost?.("unknown");
       throw new AcpSubscriptionSessionError("acp-session-start-failed");
     }
     if (!child.stdin || !child.stdout) {
-      if (!this.stopped) this.options.onConnectionLost?.("unknown");
       await forceKillManagedChildProcess(child, "acp subscription session missing stdio pipes");
       throw new AcpSubscriptionSessionError("acp-session-start-failed");
     }
@@ -562,6 +561,7 @@ export class AcpSubscriptionSessionClient {
       clientInfo: { name: "ave", version: this.clientVersion },
     });
     this.promptCapabilities = acpSubscriptionPromptCapabilitiesFromInitialize(initialize);
+    this.assertAuthenticationMethod(initialize);
     try {
       await this.request("authenticate", this.manifest.authenticateParams);
     } catch (error) {
@@ -660,6 +660,7 @@ export class AcpSubscriptionSessionClient {
 
   private attachTransport(child: ChildProcess): void {
     const abort = (code: AcpSubscriptionSessionErrorCode): void => {
+      reader.close();
       this.abortTransport(new AcpSubscriptionSessionError(code), child);
     };
     const reader = new JsonLineReader({
@@ -673,14 +674,11 @@ export class AcpSubscriptionSessionClient {
     child.stdout?.on("data", (chunk: Buffer | string) => reader.write(chunk));
     child.stdout?.once("error", () => abort("acp-session-transport-closed"));
     child.stdin?.once("error", () => abort("acp-session-transport-closed"));
-    child.stdout?.once("end", () => abort("acp-session-transport-closed"));
-    child.stdin?.once("close", () => abort("acp-session-transport-closed"));
     // Drain but never retain or log third-party stderr: it can contain OAuth URLs, device codes, account names, and provider diagnostics.
     child.stderr?.on("data", () => undefined);
     child.stderr?.once("error", () => abort("acp-session-transport-closed"));
     child.once("error", () => abort("acp-session-transport-closed"));
     child.once("exit", () => abort("acp-session-transport-closed"));
-    child.once("close", () => abort("acp-session-transport-closed"));
   }
 
   private request(method: ProviderRpcOperation, params: Record<string, unknown>): Promise<unknown> {
@@ -777,28 +775,16 @@ export class AcpSubscriptionSessionClient {
       const pending = this.pending.take(message.id);
       if (!pending) return;
       if (message.error !== undefined) {
-        const authLost = isAcpAuthenticationError(message.error);
         const providerError = pending.method === "session/prompt"
           ? projectSubscriptionTransportErrorDiagnostics(message.error)
           : undefined;
-        const error = providerError
+        pending.reject(providerError
           ? new AcpSubscriptionSessionError("acp-session-operation-failed", providerError)
-          : new AcpRemoteRpcError(authLost);
-        if (authLost) this.abortTransport(error, undefined, "signed-out");
-        pending.reject(error);
+          : new AcpRemoteRpcError(authenticationRequired(message.error)));
       } else if (Object.prototype.hasOwnProperty.call(message, "result")) {
-        const authMethod = this.manifest.requiresAuthenticationMethod;
-        if (pending.method === "initialize" && (!authMethod || !supportsAcpAuthenticationMethod(message.result, authMethod))) {
-          const error = new AcpSubscriptionSessionError("acp-session-authentication-required");
-          this.abortTransport(error, undefined, "signed-out");
-          pending.reject(error);
-          return;
-        }
         pending.resolve(message.result);
       } else {
-        const error = new AcpSubscriptionSessionError("acp-session-invalid-response");
-        this.abortTransport(error);
-        pending.reject(error);
+        pending.reject(new AcpSubscriptionSessionError("acp-session-invalid-response"));
       }
       return;
     }
@@ -932,7 +918,7 @@ export class AcpSubscriptionSessionClient {
       return;
     }
     active.cancelTimer = setTimeout(() => {
-      if (this.activePrompt === active) this.abortTransport(error, undefined, null);
+      if (this.activePrompt === active) this.abortTransport(error);
     }, this.abortGraceMs);
     active.cancelTimer.unref?.();
   }
@@ -957,6 +943,18 @@ export class AcpSubscriptionSessionClient {
     };
   }
 
+  private assertAuthenticationMethod(initialize: unknown): void {
+    const root = isRecord(initialize) ? initialize : null;
+    const methods = Array.isArray(root?.authMethods) ? root.authMethods : [];
+    const requiredMethod = this.manifest.requiresAuthenticationMethod;
+    if (!requiredMethod) throw new AcpSubscriptionSessionError("acp-session-authentication-required");
+    const supported = methods.some((method) => {
+      if (!isRecord(method)) return false;
+      return method.id === requiredMethod || method.methodId === requiredMethod;
+    });
+    if (!supported) throw new AcpSubscriptionSessionError("acp-session-authentication-required");
+  }
+
   private normalizeStartError(error: unknown): AcpSubscriptionSessionError {
     if (error instanceof AcpSubscriptionSessionError) return error;
     if (error instanceof AcpRemoteRpcError && error.authenticationRequired) {
@@ -972,15 +970,10 @@ export class AcpSubscriptionSessionClient {
     }
   }
 
-  private abortTransport(
-    error: Error,
-    expectedChild?: ChildProcess,
-    loss: AcpConnectionLoss | null = "unknown",
-  ): void | Promise<void> {
+  private abortTransport(error: Error, expectedChild?: ChildProcess): void | Promise<void> {
     const child = this.child;
     if (expectedChild && child !== expectedChild) return;
     this.child = null;
-    if (child && !this.stopped && loss) this.options.onConnectionLost?.(loss);
     this.stdoutReader?.close();
     this.stdoutReader = null;
     this.sessionId = null;

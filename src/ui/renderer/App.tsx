@@ -87,7 +87,7 @@ import { Button } from "../../components/ui/button.js";
 import { MessageSquareText, PanelLeftOpen } from "lucide-react";
 import { SIDEBAR_WIDTH_PREF, usePanelWidth } from "./hooks/use-panel-width.js";
 import { useActiveView } from "./hooks/use-active-view.js";
-import { type SettingsNavigationOrigin, useSettingsTab } from "./hooks/use-settings-tab.js";
+import { useSettingsTab } from "./hooks/use-settings-tab.js";
 import { useProjectPreferences } from "./hooks/use-project-preferences.js";
 import { useRoutineOverlay } from "./hooks/use-routine-overlay.js";
 import { isSuggestionsSession, sessionDisplayTitle } from "../../shared/suggestions-session.js";
@@ -1385,7 +1385,6 @@ export function App() {
   const apiUsageProjectionAvailable = settingsLoaded && !subscriptionRuntimeSelected;
   const effectiveLlmReady = useMemo(
     () => {
-      if (subscriptionRuntimePolicy.connectionMissing) return false;
       // Subscription readiness alone authorizes sending; pending or failed selections must not fall back to stale API keys.
       if (subscriptionRuntimeSelected) return subscriptionChatReady === true;
       // A removed provider keeps API chat unavailable until the user selects a replacement.
@@ -1394,7 +1393,7 @@ export function App() {
         ? (chatReadyWithoutApiKey ? true : null)
         : effectiveHasApiKey || chatReadyWithoutApiKey;
     },
-    [effectiveHasApiKey, chatReadyWithoutApiKey, subscriptionChatReady, subscriptionRuntimeSelected, retiredLlmProvider, subscriptionRuntimePolicy.connectionMissing],
+    [effectiveHasApiKey, chatReadyWithoutApiKey, subscriptionChatReady, subscriptionRuntimeSelected, retiredLlmProvider],
   );
   const subscriptionUnavailableProvider = subscriptionRuntimePolicy.unavailableProvider;
   const subscriptionPendingProvider = subscriptionRuntimePolicy.pendingProvider;
@@ -1590,9 +1589,9 @@ export function App() {
   }, [api]);
 
   // Settings remains inline at every width; reselecting it changes the tab without remounting.
-  const onOpenSettings = useCallback((tab = "llm", origin?: SettingsNavigationOrigin) => {
-    setSettingsTab(normalizeSettingsTab(tab), origin);
-    setActiveView("settings", origin);
+  const onOpenSettings = useCallback((tab = "llm") => {
+    setSettingsTab(normalizeSettingsTab(tab));
+    setActiveView("settings");
   }, []);
   // Updates install only through marketplace review.
   const reviewMarketplaceUpdates = useCallback((updates: PackageUpdateView[]) => {

@@ -1,8 +1,6 @@
 import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { win32SystemBinary, windowsSystemRoot } from "../shared/windows-system-path.js";
-import { executableEvidenceKey, type SubscriptionAccountVerdict, type SubscriptionEvidenceSink } from "./subscription-connection-evidence.js";
-import { codexAccountVerdict } from "./codex-app-server-client.js";
 import { verifyCodexExecutableArtifact, type CodexExecutableArtifact } from "./codex-executable-artifact.js";
 import { spawnCodexNative } from "./codex-native-spawn.js";
 import { lstatSync, promises as fs } from "node:fs";
@@ -12,7 +10,6 @@ import type { SubscriptionPlanUsageUpdate } from "../shared/subscription-plan-us
 import { parseCodexPlanUsage } from "./subscription-plan-usage-parsers.js";
 import { MAX_SUBSCRIPTION_RUNTIME_MODEL_ID_LENGTH, isSubscriptionToolDescription } from "../shared/subscription-runtime.js";
 import {
-  isDefinitiveSubscriptionAuthError,
   projectSubscriptionTransportErrorDiagnostics,
   subscriptionTransportFailure,
   type SubscriptionTransportDiagnosticError,
@@ -138,9 +135,7 @@ export function attachCodexStdioTransport(
   };
   child.stdout.on("data", (chunk: Buffer | string) => reader.write(chunk));
   child.stdout.once("error", () => abort("codex-operation-failed", subscriptionTransportFailure({ phase: "stdout-read", kind: "process" })));
-  child.stdout.once("end", () => abort("codex-operation-failed", subscriptionTransportFailure({ phase: "stdout-read", kind: "process" })));
   child.stdin.once("error", () => abort("codex-operation-failed", subscriptionTransportFailure({ phase: "stdin-write", kind: "process" })));
-  child.stdin.once("close", () => abort("codex-operation-failed", subscriptionTransportFailure({ phase: "stdin-write", kind: "process" })));
   child.stderr?.on("data", () => {});
   child.stderr?.once("error", () => abort("codex-operation-failed", subscriptionTransportFailure({ phase: "stderr-read", kind: "process" })));
   child.once("error", () => abort("codex-runtime-start-failed", subscriptionTransportFailure({
@@ -221,7 +216,6 @@ export type CodexConversationDynamicToolHandler = (
 // Every thread runs in the host-created blank workspace with network access disabled. Native Codex command, file, and permission paths remain denied;
 // only explicitly declared Ave dynamic tools can cross this boundary.
 export interface CodexConversationRuntimeOptions {
-  connectionEvidence?: SubscriptionEvidenceSink;
   onPlanUsage?: (windows: readonly SubscriptionPlanUsageUpdate[]) => void;
   // Existing isolated Codex home owned by the main process.
   runtimeHome: string;
@@ -256,7 +250,6 @@ type CodexConversationTurnStatus = "completed" | "interrupted" | "failed";
 
 interface PendingTurnCompletion {
   readonly status: CodexConversationTurnStatus;
-  readonly authLost: boolean;
   readonly providerError?: SubscriptionTransportDiagnosticError["providerError"];
 }
 
@@ -682,11 +675,6 @@ function projectTurnTokenUsage(
 // A reusable App Server conversation transport for subscription-backed Codex chat. It intentionally exposes only Ave-governed dynamic tools, never
 // project-native tools, approval grants, raw reverse-RPC payloads, or arbitrary App Server methods.
 export class CodexConversationRuntime {
-  private readonly connectionEvidence?: SubscriptionEvidenceSink;
-  private artifact: string | null = null;
-  private readonly accountReceipts = new Map<number, (verdict: SubscriptionAccountVerdict) => boolean>();
-  private initialized = false;
-  private startGeneration = 0;
   private readonly onPlanUsage: CodexConversationRuntimeOptions["onPlanUsage"];
   private readonly resolveRuntime: () => Promise<CodexExecutableArtifact>;
   private readonly spawn: CodexSpawnAppServer;
@@ -710,7 +698,6 @@ export class CodexConversationRuntime {
   constructor(options: CodexConversationRuntimeOptions) {
     this.onPlanUsage = options.onPlanUsage;
     this.resolveRuntime = options.resolveRuntime;
-    this.connectionEvidence = options.connectionEvidence;
     this.spawn = options.spawn
       ?? ((command, args, options_) => spawnCodexAppServer(command, args, options_, "codex-conversation-runtime"));
     this.clientVersion = options.clientVersion ?? getAveAppVersion();
@@ -733,15 +720,15 @@ export class CodexConversationRuntime {
   // billable thread or turn. The live transport is retained so a later startTurn can reuse the verified child.
   async verifyIsolation(): Promise<void> {
     await this.ensureStarted();
-    const child = this.child;
     try {
       const result = await this.request("account/read", { refreshToken: false });
-      if (codexAccountVerdict(result).kind !== "connected") {
+      const account = isCodexJsonRecord(result) && isCodexJsonRecord(result.account) ? result.account : null;
+      if (account?.type !== "chatgpt") {
         throw new CodexConversationRuntimeError("codex-operation-failed");
       }
     } catch (error) {
       const normalized = this.asRuntimeError(error);
-      this.abortTransport(normalized, child ?? undefined, false);
+      this.abortTransport(normalized);
       throw normalized;
     }
   }
@@ -820,8 +807,7 @@ export class CodexConversationRuntime {
 
   // Safely closes the isolated transport and force-kills its managed child if needed.
   stop(): void | Promise<void> {
-    this.startGeneration += 1;
-    return this.abortTransport(new CodexConversationRuntimeError("codex-operation-failed"), undefined, false);
+    return this.abortTransport(new CodexConversationRuntimeError("codex-operation-failed"));
   }
 
   async shutdown(): Promise<void> {
@@ -962,24 +948,23 @@ export class CodexConversationRuntime {
   }
 
   private async ensureStarted(): Promise<void> {
-    if (this.initialized && this.child && !this.child.killed && this.child.exitCode === null) return;
+    if (this.child && !this.child.killed && this.child.exitCode === null) return;
     if (!this.startPromise) {
-      const generation = ++this.startGeneration;
-      this.startPromise = this.start(generation).catch((error) => {
+      this.startPromise = this.start().catch((error) => {
         const normalized = this.asRuntimeError(error, "codex-runtime-start-failed");
-        if (generation === this.startGeneration) this.closeTransport(normalized);
+        this.startPromise = null;
+        this.closeTransport(normalized);
         throw normalized;
       });
     }
     await this.startPromise;
   }
 
-  private async start(generation: number): Promise<void> {
+  private async start(): Promise<void> {
     let runtime: CodexExecutableArtifact;
     try {
       runtime = await this.resolveRuntime();
     } catch (error) {
-      if (generation === this.startGeneration) this.connectionEvidence?.({ kind: "transport-lost", source: this });
       if (error instanceof CodexConversationRuntimeError) throw error;
       throw new CodexConversationRuntimeError("codex-runtime-unavailable");
     }
@@ -994,10 +979,8 @@ export class CodexConversationRuntime {
     try {
       await verifyCodexExecutableArtifact(runtime);
     } catch {
-      if (generation === this.startGeneration) this.connectionEvidence?.({ kind: "transport-lost", source: this });
       throw new CodexConversationRuntimeError("codex-runtime-unavailable");
     }
-    if (generation !== this.startGeneration) throw new CodexConversationRuntimeError("codex-operation-failed");
     try {
       child = this.spawn(
         runtime.executable,
@@ -1011,21 +994,14 @@ export class CodexConversationRuntime {
         },
       );
     } catch {
-      this.connectionEvidence?.({ kind: "transport-lost", source: this });
       throw new CodexConversationRuntimeError("codex-runtime-start-failed", subscriptionTransportFailure({ phase: "process-start", kind: "process" }));
     }
     if (!hasCodexStdioStreams(child)) {
-      this.connectionEvidence?.({ kind: "transport-lost", source: child });
       await forceKillManagedChildProcess(child, "codex conversation missing transport streams");
       throw new CodexConversationRuntimeError("codex-runtime-start-failed");
     }
 
-    if (generation !== this.startGeneration) {
-      await forceKillManagedChildProcess(child, "conversation start superseded");
-      throw new CodexConversationRuntimeError("codex-operation-failed");
-    }
     this.child = child;
-    this.artifact = executableEvidenceKey(runtime);
     this.transportReader = attachCodexStdioTransport(
       child,
       (message) => {
@@ -1058,13 +1034,11 @@ export class CodexConversationRuntime {
             `Windows sandbox readiness: ${boundedStatus}`);
         }
       }
-      if (this.child !== child || generation !== this.startGeneration) throw new CodexConversationRuntimeError("codex-operation-failed");
-      this.initialized = true;
     } catch (cause) {
       const error = new CodexConversationRuntimeError("codex-runtime-start-failed",
         cause instanceof CodexConversationRuntimeError ? cause.providerError : undefined,
         cause instanceof CodexConversationRuntimeError ? cause.detail : undefined);
-      this.abortTransport(error, child, false);
+      this.abortTransport(error, child);
       throw error;
     }
   }
@@ -1150,7 +1124,7 @@ export class CodexConversationRuntime {
     const completion = active.pendingCompletionByTurnId.get(turnId);
     active.pendingCompletionByTurnId.clear();
     if (completion) {
-      this.resolveTurnCompletion(active, turnId, completion.status, completion.providerError, completion.authLost);
+      this.resolveTurnCompletion(active, turnId, completion.status, completion.providerError);
     }
   }
 
@@ -1184,10 +1158,6 @@ export class CodexConversationRuntime {
       timeoutError: () => error,
       onTimeout: () => this.abortTransport(error, child),
     });
-    if (method === "account/read") {
-      const receipt = this.connectionEvidence?.({ kind: "read", source: child, artifact: this.artifact, version: null });
-      if (receipt) this.accountReceipts.set(id, receipt);
-    }
     this.writeMessage(payload, child);
     return pending.promise;
   }
@@ -1240,12 +1210,6 @@ export class CodexConversationRuntime {
     if (typeof message.id === "number" && Number.isInteger(message.id)) {
       const pending = this.pendingRequests.take(message.id);
       if (!pending) return;
-      const receipt = this.accountReceipts.get(message.id);
-      this.accountReceipts.delete(message.id);
-      const authLost = isDefinitiveSubscriptionAuthError(message.error);
-      if (receipt) receipt(message.error === undefined ? codexAccountVerdict(message.result)
-        : { kind: authLost ? "signed-out" : "unavailable" });
-      else if (authLost) this.connectionEvidence?.({ kind: "sign-out", source: child });
       if (message.error !== undefined) {
         pending.reject(new CodexConversationRuntimeError(
           "codex-operation-failed",
@@ -1258,7 +1222,7 @@ export class CodexConversationRuntime {
       }
       return;
     }
-    if (typeof message.method === "string") this.handleNotification(message.method, message.params, child);
+    if (typeof message.method === "string") this.handleNotification(message.method, message.params);
   }
 
   private handleServerRequest(
@@ -1442,17 +1406,9 @@ export class CodexConversationRuntime {
     };
   }
 
-  private handleNotification(method: string, params: unknown, child: ChildProcess): void {
+  private handleNotification(method: string, params: unknown): void {
     const payload = isCodexJsonRecord(params) ? params : null;
     if (!payload) return;
-    if (method === "account/updated") {
-      if (payload.authMode === null || payload.authMode === "apiKey") {
-        this.connectionEvidence?.({ kind: "sign-out", source: child });
-      } else if (this.initialized && payload.authMode === "chatgpt") {
-        this.connectionEvidence?.({ kind: "advertisement", source: child });
-      }
-      return;
-    }
     if (method === "account/rateLimits/updated") {
       const updates = parseCodexPlanUsage(payload);
       if (updates.length > 0) this.invokeCallback(this.onPlanUsage, updates);
@@ -1591,7 +1547,6 @@ export class CodexConversationRuntime {
 
     const status = projectTurnStatus(turn?.status);
     const providerError = status === "failed" ? projectSubscriptionTransportErrorDiagnostics(turn, "turn-completion") : undefined;
-    const authLost = status === "failed" && isDefinitiveSubscriptionAuthError(turn);
     // A terminal notification cannot establish identity: resumed/forked threads may replay historic completions before this request's turn/start reply.
     if (active.authoritativeTurnId === null) {
       // The first terminal status wins, matching immediate post-response semantics and preventing a replayed duplicate from changing it.
@@ -1602,11 +1557,11 @@ export class CodexConversationRuntime {
         this.abortTransport(new CodexConversationRuntimeError("codex-operation-failed"));
         return;
       }
-      active.pendingCompletionByTurnId.set(turnId, { status, authLost, ...(providerError ? { providerError } : {}) });
+      active.pendingCompletionByTurnId.set(turnId, { status, ...(providerError ? { providerError } : {}) });
       return;
     }
     if (active.authoritativeTurnId !== turnId) return;
-    this.resolveTurnCompletion(active, turnId, status, providerError, authLost);
+    this.resolveTurnCompletion(active, turnId, status, providerError);
   }
 
   private resolveTurnCompletion(
@@ -1614,9 +1569,7 @@ export class CodexConversationRuntime {
     turnId: string,
     status: CodexConversationTurnStatus,
     providerError: SubscriptionTransportDiagnosticError["providerError"] | undefined,
-    authLost: boolean,
   ): void {
-    if (authLost && this.child) this.connectionEvidence?.({ kind: "sign-out", source: this.child });
     const result: CodexConversationTurnResult = {
       threadId: active.threadId,
       turnId,
@@ -1659,10 +1612,9 @@ export class CodexConversationRuntime {
     }
   }
 
-  private abortTransport(error: CodexConversationRuntimeError, expectedChild?: ChildProcess, unexpected = true): void | Promise<void> {
+  private abortTransport(error: CodexConversationRuntimeError, expectedChild?: ChildProcess): void | Promise<void> {
     const child = this.child;
     if (expectedChild && child !== expectedChild) return;
-    if (child) this.connectionEvidence?.({ kind: unexpected ? "transport-lost" : "retired", source: child });
     this.closeTransport(error, child);
     if (child) this.termination = forceKillManagedChildProcess(child, "codex conversation transport closed");
     return this.termination;
@@ -1671,9 +1623,6 @@ export class CodexConversationRuntime {
   private closeTransport(error: CodexConversationRuntimeError, expectedChild?: ChildProcess | null): void {
     if (expectedChild && this.child !== expectedChild) return;
     this.child = null;
-    this.initialized = false;
-    this.startGeneration += 1;
-    this.accountReceipts.clear();
     this.transportReader?.close();
     this.transportReader = null;
     this.startPromise = null;

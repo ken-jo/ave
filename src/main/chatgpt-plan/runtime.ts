@@ -105,13 +105,6 @@ export class ChatGptPlanRuntime {
     this.fetch = planFetch;
   }
 
-  onConnectionLost(listener: () => void): void {
-    this.session.connectionLost = () => {
-      this.forgetCatalog();
-      listener();
-    };
-  }
-
   /**
    * Project the session for the renderer. A sign-in whose grant lacks plan
    * usage is not a usable connection: it shows as signed out so "Continue
@@ -136,11 +129,17 @@ export class ChatGptPlanRuntime {
     return this.getStatus();
   }
 
-  async startLogin(onCompleted?: () => void): Promise<SubscriptionRuntimeStatus> {
+  async startLogin(): Promise<SubscriptionRuntimeStatus> {
     this.forgetCatalog();
     return stable(async () => {
-      const { completion } = await this.session.startSignIn();
-      void completion.then(() => onCompleted?.()).catch(() => undefined);
+      let requestConsent = false;
+      try {
+        requestConsent = (await this.session.status()).planUsage === "disabled";
+      } catch {
+        throw new ChatGptPlanRuntimeError("subscription-operation-failed");
+      }
+      // The completion settles after the browser returns; the renderer polls the pending status meanwhile.
+      await this.session.startSignIn(requestConsent ? { requestConsent: true } : {});
       return this.getStatus();
     });
   }

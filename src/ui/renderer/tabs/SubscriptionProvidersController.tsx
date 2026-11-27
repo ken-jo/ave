@@ -108,7 +108,7 @@ function projectStatus(
     pendingDeviceCode: status.pendingDeviceCode,
     pendingLoginMethod: status.pendingLogin,
     canOpenLoginBrowser: status.canOpenVerificationUrl,
-    models: state.models,
+    models: status.connection === "connected" ? state.models : [],
     capabilities: status.capabilities,
     version: status.version,
     errorCode: state.errorCode,
@@ -131,15 +131,11 @@ export function useSubscriptionProviders(api: AveApi) {
   const mutationRevisionByProviderRef = useRef(initialProviderRevisionMap());
   const activeMutationRevisionByProviderRef = useRef(initialProviderRevisionMap());
   /** Which providers have had their catalogue asked for since they connected. */
-  const hostSnapshotRevisionRef = useRef(0);
-  const hostRevisionByProviderRef = useRef(new Map<SubscriptionRuntimeId, number>());
   const modelsRequestedByProviderRef = useRef(initialProviderFlagMap());
   const activeRuntimeRef = useRef<ActiveChatRuntime>({ kind: "api" });
   const chatSelectionBusyRef = useRef(false);
 
   const applySettings = useCallback((settings: AppSettings) => {
-    if (settings.subscriptionRevision < hostSnapshotRevisionRef.current) return;
-    hostSnapshotRevisionRef.current = Math.max(hostSnapshotRevisionRef.current, settings.subscriptionRevision);
     const nextRuntime = activeRuntimeFromSettings(settings);
     const runtimeChanged = !sameActiveRuntime(activeRuntimeRef.current, nextRuntime);
     activeRuntimeRef.current = nextRuntime;
@@ -172,8 +168,7 @@ export function useSubscriptionProviders(api: AveApi) {
       result = safeFailure();
     }
     setStates((current) => {
-      if (statusRevisionByProviderRef.current[provider] !== revision
-        || (result.status?.revision !== undefined && result.status.revision < (hostRevisionByProviderRef.current.get(provider) ?? 0))) return current;
+      if (statusRevisionByProviderRef.current[provider] !== revision) return current;
       return {
         ...current,
         [provider]: {
@@ -181,6 +176,7 @@ export function useSubscriptionProviders(api: AveApi) {
           ...(result.status
             ? { status: result.status }
             : !result.ok ? { status: null } : {}),
+          ...(result.status?.connection !== "connected" ? { models: [] } : {}),
           errorCode: result.ok ? null : result.error,
           statusRefreshPending: false,
         },
@@ -215,8 +211,7 @@ export function useSubscriptionProviders(api: AveApi) {
     activeMutationRevisionByProviderRef.current[provider] = 0;
     setStates((current) => {
       if (mutationRevisionByProviderRef.current[provider] !== mutationRevision) return current;
-      const statusCurrent = statusRevisionByProviderRef.current[provider] === statusRevision
-        && (result.status?.revision ?? Number.MAX_SAFE_INTEGER) >= (hostRevisionByProviderRef.current.get(provider) ?? 0);
+      const statusCurrent = statusRevisionByProviderRef.current[provider] === statusRevision;
       return {
         ...current,
         [provider]: {
@@ -224,6 +219,7 @@ export function useSubscriptionProviders(api: AveApi) {
           ...(statusCurrent && result.status
             ? { status: result.status }
             : statusCurrent && !result.ok ? { status: null } : {}),
+          ...(statusCurrent && result.status?.connection !== "connected" ? { models: [] } : {}),
           errorCode: result.ok ? null : result.error,
           busyAction: null,
           ...(statusCurrent ? { statusRefreshPending: false } : {}),
@@ -284,8 +280,8 @@ export function useSubscriptionProviders(api: AveApi) {
     setStates((current) => {
       const previous = current[provider];
       if (mutationRevisionByProviderRef.current[provider] !== mutationRevision) return current;
-      if (statusRevisionByProviderRef.current[provider] !== statusRevision
-        || (result.status?.revision ?? Number.MAX_SAFE_INTEGER) < (hostRevisionByProviderRef.current.get(provider) ?? 0)) {
+      if (statusRevisionByProviderRef.current[provider] !== statusRevision) {
+        modelsRequestedByProviderRef.current[provider] = false;
         return {
           ...current,
           [provider]: { ...previous, busyAction: null },
@@ -313,7 +309,7 @@ export function useSubscriptionProviders(api: AveApi) {
         [provider]: {
           ...previous,
           status: result.status,
-          models,
+          models: result.status.connection === "connected" ? models : [],
           errorCode: null,
           busyAction: null,
           statusRefreshPending: false,
@@ -334,7 +330,6 @@ export function useSubscriptionProviders(api: AveApi) {
   useEffect(() => {
     if (inEditor) return;
     const unsubscribe = api.onSettingsUpdated((settings) => {
-      if (settings.subscriptionRevision < hostSnapshotRevisionRef.current) return;
       settingsRevisionRef.current += 1;
       applySettings(settings);
     });
@@ -345,16 +340,7 @@ export function useSubscriptionProviders(api: AveApi) {
     for (const provider of PROVIDER_IDS) void refreshStatus(provider);
   }, [refreshStatus]);
 
-  useEffect(() => api.onSubscriptionRuntimeStatusUpdated(({ provider, revision, connected }) => {
-    if (revision <= (hostRevisionByProviderRef.current.get(provider) ?? -1)) return;
-    hostRevisionByProviderRef.current.set(provider, revision);
-    if (activeRuntimeRef.current.kind === "subscription" && activeRuntimeRef.current.provider === provider) {
-      hostSnapshotRevisionRef.current = Math.max(hostSnapshotRevisionRef.current, revision);
-    }
-    if (connected === false) {
-      modelsRequestedByProviderRef.current[provider] = false;
-      setStates((current) => ({ ...current, [provider]: { ...current[provider], status: null, models: [] } }));
-    }
+  useEffect(() => api.onSubscriptionRuntimeStatusUpdated(({ provider }) => {
     // A different settings window or an external completion changed a safe status projection. Refresh only that provider card.
     void refreshStatus(provider);
   }), [api, refreshStatus]);

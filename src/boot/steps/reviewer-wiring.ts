@@ -91,7 +91,6 @@ export interface WireReviewerDeps {
   selectedModel?: { label: string; available: boolean };
   /** A null provider means unconfigured; wiring must fail closed. */
   streamProviderFor?: (vendor: string) => LLMProvider | null;
-  subscriptionScope?: string;
   /** Test-only cache path override. */
   verdictCachePath?: string;
   /** Optional display-history store; retained across reviewer rewiring. */
@@ -244,7 +243,6 @@ export function wireReviewerAgent(deps: WireReviewerDeps): WireReviewerResult {
     ...(unavailableReason !== undefined ? { unavailableReason } : {}),
     cacheScope: {
       // Partition by runtime mode so healed model review cannot reuse verdicts produced by degraded rules.
-      ...(deps.subscriptionScope ? { subscriptionScope: deps.subscriptionScope } : {}),
       mode: runtimeMode,
       provider: effectiveSettings.provider,
       model: effectiveSettings.model,

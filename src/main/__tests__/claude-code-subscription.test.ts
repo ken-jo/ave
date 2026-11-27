@@ -1,4 +1,3 @@
-import { subscriptionAccountFixture } from "../../__tests__/support/subscription-account-fixture.js";
 import { describe, expect, it, vi } from "vitest";
 import {
   isClaudeCodeSubscriptionProviderId,
@@ -115,11 +114,11 @@ describe("claude-code subscription contract", () => {
 
   it.each(["ready", "unverified"] as const)("drops chat trust when a verified account signs out (%s)", async (runtime) => {
     let status = claudeCodeSubscriptionStatus("ready", "connected", "2.1.0");
-    const client = subscriptionAccountFixture({
+    const client = {
       getStatus: vi.fn(async () => status),
       verify: vi.fn(async () => status),
       stop: vi.fn(async () => undefined),
-    }) as unknown as ClaudeCodeSubscriptionClient;
+    } as unknown as ClaudeCodeSubscriptionClient;
     const service = await SubscriptionRuntimeService.create(async () => undefined, {
       namespace: namespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories,
       codexClient: fakeCodexClient(),
@@ -139,7 +138,7 @@ describe("claude-code subscription contract", () => {
   });
 
   it("projects connected Claude Code status only after verify", async () => {
-    const claudeCodeClient = subscriptionAccountFixture({
+    const claudeCodeClient = {
       getStatus: vi.fn(async () => claudeCodeSubscriptionStatus("ready", "connected", "2.1.0")),
       verify: vi.fn(async () => claudeCodeSubscriptionStatus("ready", "connected", "2.1.0")),
       getRuntimePaths: vi.fn(() => ({
@@ -148,7 +147,7 @@ describe("claude-code subscription contract", () => {
         runtimeTempDir: "C:\\isolated\\claude-tmp",
       })),
       stop: vi.fn(async () => undefined),
-    }) as unknown as ClaudeCodeSubscriptionClient;
+    } as unknown as ClaudeCodeSubscriptionClient;
     const registry = {
       stopAll: vi.fn(async () => undefined),
     } as unknown as AcpSubscriptionRuntimeRegistry;
@@ -169,7 +168,7 @@ describe("claude-code subscription contract", () => {
 });
 
 function connectedClaudeClient(): ClaudeCodeSubscriptionClient {
-  return subscriptionAccountFixture({
+  return {
     getStatus: vi.fn(async () => claudeCodeSubscriptionStatus("ready", "connected", "2.1.0")),
     verify: vi.fn(async () => claudeCodeSubscriptionStatus("ready", "connected", "2.1.0")),
     verifiedRuntime: vi.fn(async () => ({
@@ -182,7 +181,7 @@ function connectedClaudeClient(): ClaudeCodeSubscriptionClient {
       runtimeTempDir: "/isolated/claude-tmp",
     })),
     stop: vi.fn(async () => undefined),
-  }) as unknown as ClaudeCodeSubscriptionClient;
+  } as unknown as ClaudeCodeSubscriptionClient;
 }
 
 async function claudeService() {

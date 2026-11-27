@@ -65,25 +65,6 @@ function fixture() {
 beforeEach(() => vi.clearAllMocks());
 
 describe("system subagent routes", () => {
-  it("cannot build the follow-chat reviewer route without a connected subscription", () => {
-    const { deps, settings } = fixture();
-    const provider = { vendor: "openai-compatible", streamTurn } as LLMProvider;
-    deps.subscriptionProviderFactory.mockReturnValue(provider);
-    const vendor = "subscription:claude-code";
-    const connection = { subscriptionConnected: () => false };
-    const disconnected = createSystemSubagentProviderPlan({ ...deps, ...connection }, vendor);
-    expect(disconnected?.isConnected(null)).toBe(false);
-    expect(disconnected?.build(null)).toBeNull();
-    expect(deps.subscriptionProviderFactory).not.toHaveBeenCalled();
-    expect(createSystemSubagentProviderPlan({ ...deps, ...connection }, "openai-compatible")).toBeNull();
-
-    connection.subscriptionConnected = () => true;
-    const connected = createSystemSubagentProviderPlan({ ...deps, ...connection }, vendor);
-    expect(connected?.isConnected(null)).toBe(true);
-    expect(connected?.build(null)).toBe(provider);
-    expect(deps.subscriptionProviderFactory).toHaveBeenCalledWith(settings.llm.activeChatRuntime);
-  });
-
   it("calls a configured provider independently of the active subscription", async () => {
     const { deps, settings, selection } = fixture();
     const selected = selection("summary-a");

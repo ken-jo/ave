@@ -198,14 +198,12 @@ function subscriptionFailure(
   if (
     failure instanceof SubscriptionRuntimeServiceError
     && (failure.code === "subscription-chat-unavailable" || failure.code === "subscription-model-not-supported"
-      || failure.code === "subscription-status-superseded"
       || failure.code === "subscription-runtime-native-required" || failure.code === "subscription-runtime-unauthenticated"
       || failure.code === "subscription-runtime-release-metadata-unavailable")
   ) {
     return {
       type: "error",
-      error: failure.code === "subscription-chat-unavailable" || failure.code === "subscription-status-superseded"
-        ? SUBSCRIPTION_CHAT_UNAVAILABLE : failure.code,
+      error: failure.code === "subscription-chat-unavailable" ? SUBSCRIPTION_CHAT_UNAVAILABLE : failure.code,
       classification: "subscription-chat-unavailable",
       providerError: {
         origin: "unknown",

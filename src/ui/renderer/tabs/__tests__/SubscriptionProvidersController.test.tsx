@@ -163,44 +163,29 @@ afterEach(() => {
 });
 
 describe("SubscriptionProvidersController", () => {
-  it("polls while a device login is owned and clears its controls after retirement and a failed refresh", async () => {
-    const { api } = controllerApi();
-    let retired = false;
-    let emitStatusUpdated: ((event: SubscriptionRuntimeStatusUpdatedEvent) => void) | undefined;
-    api.onSubscriptionRuntimeStatusUpdated = (listener) => {
-      emitStatusUpdated = listener;
-      return () => {};
-    };
-    const subscriptionRuntimeStatus = vi.fn(async (provider: SubscriptionRuntimeId): Promise<SubscriptionRuntimeActionResult> => {
-      if (provider !== "codex") return { ok: true, status: connectedStatus(provider) };
-      const status = signedOutStatus(provider);
-      return retired
-        ? { ok: false, error: "subscription-operation-failed", status: { ...status, revision: 1 } }
-        : { ok: true, status: { ...status, pendingLogin: "device-code", pendingDeviceCode: "Q7KD-9P2M" } };
-    });
-    api.subscriptionRuntimeStatus = subscriptionRuntimeStatus;
-    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
-    try {
-      await act(async () => { render(<SubscriptionProvidersController api={api} />); });
-      const accountReads = () => subscriptionRuntimeStatus.mock.calls.filter(([provider]) => provider === "codex");
-      expect(accountReads()).toHaveLength(1);
-      for (let poll = 0; poll < 2; poll++) {
-        await act(async () => { await vi.advanceTimersByTimeAsync(3_000); });
-        expect(accountReads()).toHaveLength(poll + 2);
-        expect(screen.getByTestId("subscription-provider:codex:device-code")).toHaveTextContent("Q7KD-9P2M");
-        expect(screen.getByTestId("subscription-provider:codex:cancel-login")).toBeVisible();
-        expect(screen.getByTestId("subscription-state:codex")).toHaveTextContent("signed-out");
-      }
-      retired = true;
-      await act(async () => emitStatusUpdated?.({ provider: "codex", revision: 1, connected: false }));
-      expect(accountReads()).toHaveLength(4);
-      expect(screen.queryByTestId("subscription-provider:codex:device-code")).toBeNull();
-      expect(screen.queryByTestId("subscription-provider:codex:cancel-login")).toBeNull();
-      await act(async () => { await vi.advanceTimersByTimeAsync(6_000); });
-      expect(accountReads()).toHaveLength(4);
-    } finally {
-      vi.useRealTimers();
-    }
+  it("removes the previous catalogue on disconnect and waits for a fresh catalogue on reconnect", async () => {
+    const { api, subscriptionRuntimeStatus, subscriptionListModels } = controllerApi();
+    let update: ((event: SubscriptionRuntimeStatusUpdatedEvent) => void) | undefined;
+    api.onSubscriptionRuntimeStatusUpdated = (listener) => { update = listener; return () => {}; };
+    render(<SubscriptionProvidersController api={api} />);
+    const row = "subscription-chooser:codex:gpt-5.6-codex";
+    await screen.findByTestId(row);
+    if (!update) throw new Error("Missing subscription status listener");
+
+    subscriptionRuntimeStatus.mockResolvedValueOnce({ ok: true, status: signedOutStatus("codex") });
+    act(() => update?.({ provider: "codex", revision: 1 }));
+    await waitFor(() => expect(screen.getByTestId("subscription-state:codex")).toHaveTextContent("signed-out"));
+    expect(screen.queryByTestId(row)).toBeNull();
+
+    const fresh = deferred<Awaited<ReturnType<typeof subscriptionListModels>>>();
+    subscriptionListModels.mockReturnValueOnce(fresh.promise);
+    act(() => update?.({ provider: "codex", revision: 2 }));
+    await waitFor(() => expect(screen.getByTestId("subscription-state:codex")).toHaveTextContent("connected"));
+    expect(screen.queryByTestId(row)).toBeNull();
+    await act(async () => fresh.resolve({
+      ok: true, status: connectedStatus("codex"), models: [{ id: "example-fresh", displayName: "Fresh", isDefault: false }],
+    }));
+    expect(await screen.findByTestId("subscription-chooser:codex:example-fresh")).toBeVisible();
   });
 
   it("projects quota reports through status invalidations and clears them on sign-out", async () => {

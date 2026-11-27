@@ -1,6 +1,4 @@
-import { executableEvidenceKey, type SubscriptionAccountVerdict, type SubscriptionEvidenceSink } from "./subscription-connection-evidence.js";
 import type { ChildProcess } from "node:child_process";
-import { createHash } from "node:crypto";
 import { OAuthLoginAttempt, type OpenOAuthLogin } from "./oauth-login.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import {
@@ -33,7 +31,6 @@ import { JsonRpcPendingRequests } from "../lib/json-rpc-pending-request.js";
 import { CodexUserRuntimeError, type CodexResolvedRuntime } from "./codex-user-runtime.js";
 import { verifyCodexExecutableArtifact } from "./codex-executable-artifact.js";
 import { parseCodexPlanUsage } from "./subscription-plan-usage-parsers.js";
-import { isDefinitiveSubscriptionAuthError } from "./subscription-transport-error-diagnostics.js";
 import type { SubscriptionPlanUsageUpdate } from "../shared/subscription-plan-usage.js";
 
 const MAX_MODEL_COUNT = 100;
@@ -76,7 +73,6 @@ interface PendingLogin {
   loginId: string;
   method: CodexSubscriptionLoginMethod;
   deviceCode: string | null;
-  windowCancellation?: "requested" | "login-succeeded";
 }
 
 function validateRuntimeDirectory(runtimeHome: string): string {
@@ -135,13 +131,6 @@ function runtimeResolutionError(error: unknown): CodexAppServerError {
 // Main-process adapter for the stable App Server account APIs. The server owns browser callbacks, credential persistence, and token refresh. This client
 // intentionally never reads Codex auth files or token values.
 export class CodexAppServerClient {
-  connectionEvidence?: SubscriptionEvidenceSink;
-  private readonly accountReceipts = new Map<number, (verdict: SubscriptionAccountVerdict) => boolean>();
-  private artifact: string | null = null;
-  private liveVersion: string | null = null;
-  private readonly acceptedAccountReplies = new WeakSet<object>();
-  private initialized = false;
-  private startGeneration = 0;
   private readonly onPlanUsage: CodexAppServerClientOptions["onPlanUsage"];
   private readonly openAuthorizationUrl: OpenOAuthLogin;
   private readonly resolveRuntime: () => Promise<CodexResolvedRuntime>;
@@ -157,14 +146,12 @@ export class CodexAppServerClient {
   private readonly pendingRequests = new JsonRpcPendingRequests();
   private transportReader: JsonLineReader | null = null;
   private accountStatus: CodexSubscriptionStatus = blankStatus("ready");
-  private accountRevisionValue = 0;
   private planUsageGeneration = 0;
   private planUsageRead: { readonly generation: number; readonly promise: Promise<void> } | null = null;
   private pendingLogin: PendingLogin | null = null;
   private completedLoginError: CodexAppServerErrorCode | null = null;
 
   private loginLock: Promise<void> = Promise.resolve();
-  private loginEpoch = 0;
   constructor(options: CodexAppServerClientOptions) {
     this.onPlanUsage = options.onPlanUsage;
     this.openAuthorizationUrl = options.openAuthorizationUrl;
@@ -179,35 +166,22 @@ export class CodexAppServerClient {
     this.runtimeTempDir = options.runtimeTempDir ?? options.runtimeHome;
   }
 
-  getStatus(refreshPlanUsage = true): Promise<CodexSubscriptionStatus> {
-    return this.readStatus(refreshPlanUsage);
-  }
-
-  private async readStatus(refreshPlanUsage: boolean, purpose: "status" | "cancel-cleanup" = "status"): Promise<CodexSubscriptionStatus> {
-    const preparation = this.connectionEvidence?.({ kind: "read", source: this, artifact: this.artifact, version: this.lastKnownVersion() });
+  async getStatus(refreshPlanUsage = true): Promise<CodexSubscriptionStatus> {
     try {
-      await this.ensureAccountRuntime();
+      await this.ensureStarted();
     } catch (error) {
+      // No CLI is a state the settings card explains, not a failure.
       if (error instanceof CodexAppServerError && error.code === "codex-runtime-not-configured") {
-        preparation?.({ kind: "unavailable", runtime: "not-configured" });
         return this.currentStatus();
       }
-      preparation?.({ kind: "unavailable" });
       throw error;
     }
-    const accountRevision = this.accountRevisionValue;
-    const pendingLogin = this.pendingLogin;
     const result = await this.request("account/read", { refreshToken: false });
-    if (accountRevision !== this.accountRevisionValue || ((!isCodexJsonRecord(result) || !this.acceptedAccountReplies.has(result)) && this.connectionEvidence)) {
-      if (purpose === "cancel-cleanup" && codexAccountVerdict(result).kind !== "unavailable") return this.currentStatus();
-      throw new CodexAppServerError("codex-operation-failed");
-    }
     this.accountStatus = this.projectAccountStatus(result);
     if (this.accountStatus.connection === "connected") {
-      if (pendingLogin === this.pendingLogin) {
-        if (!pendingLogin?.windowCancellation) this.retireLogin(pendingLogin);
-        this.completedLoginError = null;
-      }
+      this.pendingLogin?.window.finish();
+      this.pendingLogin = null;
+      this.completedLoginError = null;
       if (this.onPlanUsage && refreshPlanUsage) {
         this.refreshPlanUsage();
       }
@@ -232,12 +206,9 @@ export class CodexAppServerClient {
     this.planUsageGeneration += 1;
   }
 
-  async startBrowserLogin(assertCurrent?: () => void): Promise<CodexSubscriptionStatus> {
-    const epoch = this.loginEpoch;
+  async startBrowserLogin(): Promise<CodexSubscriptionStatus> {
     return this.withLoginLock(async () => {
-      this.assertLoginPreparation(epoch, assertCurrent);
       await this.ensureStarted();
-      this.assertLoginPreparation(epoch, assertCurrent);
       this.assertNoPendingLogin();
       this.invalidatePlanUsage();
       this.completedLoginError = null;
@@ -252,18 +223,15 @@ export class CodexAppServerClient {
       if (response?.type !== "chatgpt" || !loginId || !authUrl) {
         throw new CodexAppServerError("codex-login-failed");
       }
-      this.assertLoginPreparation(epoch, assertCurrent);
-      this.beginLogin(authUrl, { loginId, method: "browser", deviceCode: null, window: new OAuthLoginAttempt() });
+      this.pendingLogin = { loginId, method: "browser", deviceCode: null, window: new OAuthLoginAttempt() };
+      this.openLoginWindow(authUrl, this.pendingLogin);
       return this.currentStatus();
     });
   }
 
-  async startDeviceCodeLogin(assertCurrent?: () => void): Promise<{ status: CodexSubscriptionStatus; userCode: string }> {
-    const epoch = this.loginEpoch;
+  async startDeviceCodeLogin(): Promise<{ status: CodexSubscriptionStatus; userCode: string }> {
     return this.withLoginLock(async () => {
-      this.assertLoginPreparation(epoch, assertCurrent);
       await this.ensureStarted();
-      this.assertLoginPreparation(epoch, assertCurrent);
       this.assertNoPendingLogin();
       this.invalidatePlanUsage();
       this.completedLoginError = null;
@@ -277,8 +245,8 @@ export class CodexAppServerClient {
       if (response?.type !== "chatgptDeviceCode" || !loginId || !verificationUrl || !userCode) {
         throw new CodexAppServerError("codex-login-failed");
       }
-      this.assertLoginPreparation(epoch, assertCurrent);
-      this.beginLogin(verificationUrl, { loginId, method: "device-code", deviceCode: userCode, window: new OAuthLoginAttempt() });
+      this.pendingLogin = { loginId, method: "device-code", deviceCode: userCode, window: new OAuthLoginAttempt() };
+      this.openLoginWindow(verificationUrl, this.pendingLogin);
       return { status: this.currentStatus(), userCode };
     });
   }
@@ -287,24 +255,28 @@ export class CodexAppServerClient {
     return this.withLoginLock(async () => {
       await this.ensureStarted();
       const pending = this.pendingLogin;
-      if (!pending) return this.readStatus(true, "cancel-cleanup");
+      if (!pending) return this.getStatus();
       try {
         await this.request("account/login/cancel", { loginId: pending.loginId });
       } finally {
-        this.retireLogin(pending);
+        pending.window.finish();
+        if (this.pendingLogin?.loginId === pending.loginId) this.pendingLogin = null;
       }
       return this.currentStatus();
     });
   }
 
   async logout(): Promise<CodexSubscriptionStatus> {
-    this.loginEpoch += 1;
-    this.retireLogin(this.pendingLogin);
     return this.withLoginLock(async () => {
       await this.ensureStarted();
       this.invalidatePlanUsage();
+      // Do not leave an abandoned login attempt blocking future sign-ins when the server rejects logout. The account projection remains unchanged until the
+      // parameterless logout request succeeds.
+      this.pendingLogin?.window.finish();
+      this.pendingLogin = null;
       this.completedLoginError = null;
       await this.request("account/logout");
+      this.accountStatus = blankStatus("ready");
       return this.currentStatus();
     });
   }
@@ -345,15 +317,14 @@ export class CodexAppServerClient {
   }
 
   stop(): void {
-    this.loginEpoch += 1;
-    this.startGeneration += 1;
-    this.abortTransport(new CodexAppServerError("codex-operation-failed"), undefined, false);
+    this.abortTransport(new CodexAppServerError("codex-operation-failed"));
   }
 
   private currentStatus(): CodexSubscriptionStatus {
-    const visibleLogin = this.pendingLogin?.windowCancellation ? null : this.pendingLogin;
-    const pendingLogin = visibleLogin?.method ?? null;
-    const pendingDeviceCode = visibleLogin?.deviceCode ?? null;
+    const pendingLogin = this.pendingLogin?.method ?? null;
+    const pendingDeviceCode = pendingLogin === "device-code"
+      ? this.pendingLogin?.deviceCode ?? null
+      : null;
     const connection: CodexSubscriptionConnectionState = this.accountStatus.connection === "connected"
       ? "connected"
       : pendingLogin
@@ -370,12 +341,13 @@ export class CodexAppServerClient {
   }
 
   private projectAccountStatus(result: unknown): CodexSubscriptionStatus {
-    const verdict = codexAccountVerdict(result);
-    if (verdict.kind === "connected") {
+    const root = isCodexJsonRecord(result) ? result : null;
+    const account = root && isCodexJsonRecord(root.account) ? root.account : null;
+    if (account?.type === "chatgpt") {
       return {
         runtime: "ready",
         connection: "connected",
-        planType: verdict.planType ?? null,
+        planType: boundedString(account.planType, MAX_PLAN_TYPE_LENGTH),
         pendingLogin: null,
         pendingDeviceCode: null,
         version: null,
@@ -384,37 +356,10 @@ export class CodexAppServerClient {
     return blankStatus("ready");
   }
 
-  private async ensureAccountRuntime(): Promise<void> {
-    const child = this.initialized ? this.child : null;
-    if (!child) return this.ensureStarted();
-    let runtime: CodexResolvedRuntime;
-    try {
-      runtime = await this.resolveRuntime();
-    } catch (error) {
-      if (this.child === child) {
-        const failure = runtimeResolutionError(error);
-        const runtime = failure.code === "codex-runtime-not-configured" ? "not-configured" : "unavailable";
-        this.connectionEvidence?.({ kind: "artifact", source: child, artifact: null, version: this.lastKnownVersion(), runtime });
-        this.abortTransport(failure, child, false);
-        this.accountStatus = blankStatus(runtime);
-        throw failure;
-      }
-      throw new CodexAppServerError("codex-operation-failed");
-    }
-    if (this.child !== child) throw new CodexAppServerError("codex-operation-failed");
-    const artifact = executableEvidenceKey(runtime);
-    if (artifact === this.artifact) return;
-    this.connectionEvidence?.({ kind: "artifact", source: child, artifact, version: runtime.version });
-    this.abortTransport(new CodexAppServerError("codex-operation-failed"), child, false);
-    await this.ensureStarted(runtime);
-  }
-
-  private async ensureStarted(resolved?: CodexResolvedRuntime): Promise<void> {
-    if (this.initialized && this.child && !this.child.killed) return;
+  private async ensureStarted(): Promise<void> {
+    if (this.child && !this.child.killed) return;
     if (!this.startPromise) {
-      const generation = ++this.startGeneration;
-      this.startPromise = this.start(generation, resolved).catch((error) => {
-        if (generation !== this.startGeneration) throw error;
+      this.startPromise = this.start().catch((error) => {
         // A resolution failure set the runtime state; closing the transport must not reset it.
         const runtime = this.accountStatus.runtime;
         this.startPromise = null;
@@ -428,19 +373,17 @@ export class CodexAppServerClient {
     await this.startPromise;
   }
 
-  private async start(generation: number, resolved?: CodexResolvedRuntime): Promise<void> {
+  private async start(): Promise<void> {
     let runtime: CodexResolvedRuntime;
     try {
-      runtime = resolved ?? await this.resolveRuntime();
+      runtime = await this.resolveRuntime();
     } catch (error) {
       const resolutionError = runtimeResolutionError(error);
-      if (generation !== this.startGeneration) throw resolutionError;
       this.accountStatus = blankStatus(
         resolutionError.code === "codex-runtime-not-configured" ? "not-configured" : "unavailable",
       );
       throw resolutionError;
     }
-    if (generation !== this.startGeneration) throw new CodexAppServerError("codex-operation-failed");
     this.accountStatus = blankStatus("ready");
 
     // Parent IPC owns secure namespace creation; validate the ready paths here before passing them to the third-party runtime.
@@ -452,11 +395,9 @@ export class CodexAppServerClient {
     try {
       await verifyCodexExecutableArtifact(runtime);
     } catch {
-      if (generation === this.startGeneration) this.connectionEvidence?.({ kind: "transport-lost", source: this });
       this.accountStatus = blankStatus("unavailable");
       throw new CodexAppServerError("codex-runtime-invalid-executable");
     }
-    if (generation !== this.startGeneration) throw new CodexAppServerError("codex-operation-failed");
     try {
       child = this.spawn(
         runtime.executable,
@@ -470,11 +411,9 @@ export class CodexAppServerClient {
         },
       );
     } catch {
-      this.connectionEvidence?.({ kind: "transport-lost", source: this });
       throw new CodexAppServerError("codex-runtime-start-failed");
     }
     if (!hasCodexStdioStreams(child)) {
-      this.connectionEvidence?.({ kind: "transport-lost", source: child });
       try {
         child.kill();
       } catch {
@@ -503,11 +442,6 @@ export class CodexAppServerClient {
       });
       this.notify("initialized", {});
       await initialized;
-      if (this.child !== child || generation !== this.startGeneration) throw new CodexAppServerError("codex-operation-failed");
-      this.initialized = true;
-      this.artifact = executableEvidenceKey(runtime);
-      this.liveVersion = runtime.version;
-      this.connectionEvidence?.({ kind: "artifact", source: child, artifact: this.artifact, version: runtime.version });
       this.accountStatus = blankStatus("ready");
     } catch {
       const error = new CodexAppServerError("codex-runtime-start-failed");
@@ -535,17 +469,13 @@ export class CodexAppServerClient {
     }
   }
 
-  private assertLoginPreparation(epoch: number, assertCurrent?: () => void): void {
-    assertCurrent?.();
-    if (epoch !== this.loginEpoch) throw new CodexAppServerError("codex-login-failed");
-  }
-
-  private retireLogin(pending: PendingLogin | null, completed = false): void {
-    if (!pending || this.pendingLogin !== pending) return;
-    this.pendingLogin = null;
-    pending.window.finish();
-    if (!pending.windowCancellation) {
-      this.connectionEvidence?.({ kind: "login-retired", attempt: pending.window, completed });
+  private async cancelPendingLoginQuietly(loginId: string): Promise<void> {
+    try {
+      await this.request("account/login/cancel", { loginId });
+    } catch {
+      // Browser launch already failed. Avoid leaking a secondary transport error.
+    } finally {
+      if (this.pendingLogin?.loginId === loginId) this.pendingLogin = null;
     }
   }
 
@@ -574,10 +504,6 @@ export class CodexAppServerClient {
         if (method !== "account/rateLimits/read") this.abortTransport(error, child);
       },
     });
-    if (method === "account/read") {
-      const receipt = this.connectionEvidence?.({ kind: "read", source: child, artifact: this.artifact, version: this.liveVersion });
-      if (receipt) this.accountReceipts.set(id, receipt);
-    }
     try {
       stdin.write(`${payload}\n`);
     } catch {
@@ -618,27 +544,6 @@ export class CodexAppServerClient {
     if (typeof message.id === "number" && Number.isInteger(message.id)) {
       const pending = this.pendingRequests.take(message.id);
       if (!pending) return;
-      const receipt = this.accountReceipts.get(message.id);
-      this.accountReceipts.delete(message.id);
-      const authLost = isDefinitiveSubscriptionAuthError(message.error);
-      if (receipt) {
-        const verdict = message.error === undefined ? codexAccountVerdict(message.result)
-          : { kind: authLost ? "signed-out" : "unavailable" } as const;
-        if (receipt(verdict) && isCodexJsonRecord(message.result)) this.acceptedAccountReplies.add(message.result);
-      } else if (authLost) {
-        this.accountStatus = blankStatus("ready");
-        this.connectionEvidence?.({ kind: "sign-out", source: child });
-        this.publishAccountChange();
-      }
-      if (pending.method === "account/logout" && message.error === undefined) {
-        if (!Object.hasOwn(message, "result")) {
-          pending.reject(new CodexAppServerError("codex-operation-failed"));
-          return;
-        }
-        this.accountStatus = blankStatus("ready");
-        this.publishAccountChange();
-        this.connectionEvidence?.({ kind: "logout", source: child });
-      }
       if (message.error !== undefined) {
         pending.reject(new CodexAppServerError("codex-operation-failed"));
       } else {
@@ -647,7 +552,7 @@ export class CodexAppServerClient {
       return;
     }
     if (typeof message.method !== "string") return;
-    if (this.initialized) this.handleNotification(message.method, message.params, child);
+    this.handleNotification(message.method, message.params);
   }
 
   private notifyServerRequestError(id: CodexAppServerRequestId, child: ChildProcess): void {
@@ -661,7 +566,7 @@ export class CodexAppServerClient {
       this.abortTransport(new CodexAppServerError("codex-operation-failed"), child);
     }
   }
-  private handleNotification(method: string, params: unknown, child: ChildProcess): void {
+  private handleNotification(method: string, params: unknown): void {
     const payload = isCodexJsonRecord(params) ? params : null;
     if (method === "account/rateLimits/updated") {
       if (this.accountStatus.connection === "connected") this.publishPlanUsage(params, false);
@@ -669,29 +574,32 @@ export class CodexAppServerClient {
     }
     if (method === "account/updated" && payload) {
       this.invalidatePlanUsage();
-      const advertisedConnected = payload.authMode === "chatgpt";
-      if (advertisedConnected) this.completedLoginError = null;
-      this.accountStatus = blankStatus("ready");
-      this.publishAccountChange();
-      if (advertisedConnected || payload.authMode === null || payload.authMode === "apiKey") {
-        this.connectionEvidence?.({ kind: advertisedConnected ? "advertisement" : "sign-out", source: child });
+      if (payload.authMode === "chatgpt") {
+        this.pendingLogin?.window.finish();
+        this.pendingLogin = null;
+        this.completedLoginError = null;
+        this.accountStatus = {
+          runtime: "ready",
+          connection: "connected",
+          planType: boundedString(payload.planType, MAX_PLAN_TYPE_LENGTH),
+          pendingLogin: null,
+          pendingDeviceCode: null,
+          version: null,
+        };
+      } else {
+        this.pendingLogin?.window.finish();
+        this.pendingLogin = null;
+        this.accountStatus = blankStatus("ready");
       }
       return;
     }
     if (method === "account/login/completed" && payload) {
       const loginId = boundedString(payload.loginId, 128);
-      const pending = this.pendingLogin;
-      if (!loginId || pending?.loginId !== loginId) return;
-      if (pending.windowCancellation) {
-        if (pending.windowCancellation === "requested" && payload.success === true) {
-          pending.windowCancellation = "login-succeeded";
-          this.completedLoginError = null;
-          this.connectionEvidence?.({ kind: "login-completed", source: child });
-        }
-        return;
+      if (loginId && this.pendingLogin?.loginId === loginId) this.pendingLogin.window.finish();
+      if (loginId && this.pendingLogin?.loginId === loginId && payload.success !== true) {
+        this.pendingLogin = null;
+        this.completedLoginError = "codex-login-failed";
       }
-      if (payload.success !== true) this.completedLoginError = "codex-login-failed";
-      this.retireLogin(pending, payload.success === true);
     }
   }
 
@@ -732,18 +640,13 @@ export class CodexAppServerClient {
     this.publishPlanUsage(null);
   }
 
-  private publishAccountChange(): void {
-    this.accountRevisionValue += 1;
-  }
-
   private abortTransport(
     error: CodexAppServerError,
     expectedChild?: ChildProcess,
-    unexpected = true,
   ): void {
     const child = this.child;
     if (expectedChild && child !== expectedChild) return;
-    this.closeTransport(error, child, unexpected);
+    this.closeTransport(error, child);
     if (child && !child.killed) {
       try {
         child.kill();
@@ -756,63 +659,25 @@ export class CodexAppServerClient {
   private closeTransport(
     error: CodexAppServerError,
     expectedChild?: ChildProcess | null,
-    unexpected = true,
   ): void {
     if (expectedChild && this.child !== expectedChild) return;
-    const retired = this.child;
-    this.initialized = false;
-    if (retired) this.startGeneration += 1;
     this.invalidatePlanUsage();
     this.child = null;
     this.transportReader?.close();
     this.transportReader = null;
     this.startPromise = null;
-    const pending = this.pendingLogin;
+    this.pendingLogin?.window.finish();
+    this.pendingLogin = null;
     this.accountStatus = blankStatus("ready");
     this.completedLoginError = null;
-    if (retired) {
-      this.publishAccountChange();
-      this.connectionEvidence?.({ kind: unexpected ? "transport-lost" : "retired", source: retired });
-    }
-    this.retireLogin(pending);
-    this.accountReceipts.clear();
     this.pendingRequests.rejectAll(error);
   }
 
-  private beginLogin(url: string, pending: PendingLogin): void {
-    this.pendingLogin = pending;
-    this.connectionEvidence?.({
-      kind: "login-started", attempt: pending.window, method: pending.method,
-      deviceCode: pending.deviceCode, version: this.lastKnownVersion(),
-    });
+  private openLoginWindow(url: string, pending: PendingLogin): void {
     pending.window.open(url, this.openAuthorizationUrl, TOOL_TIMEOUT_POLICY.approvalGateUserWaitMs, () => {
       if (this.pendingLogin !== pending) return;
       this.completedLoginError = "codex-login-failed";
-      pending.windowCancellation = "requested";
-      void this.withLoginLock(async () => {
-        if (this.pendingLogin !== pending) return;
-        try {
-          await this.request("account/login/cancel", { loginId: pending.loginId });
-        } finally {
-          this.retireLogin(pending);
-        }
-      }).catch(() => undefined);
-      this.connectionEvidence?.({ kind: "login-retired", attempt: pending.window });
+      void this.cancelPendingLoginQuietly(pending.loginId);
     });
   }
-}
-
-export function codexAccountVerdict(result: unknown): SubscriptionAccountVerdict {
-  if (!isCodexJsonRecord(result)) return { kind: "unavailable" };
-  if (result.account === null) return { kind: "signed-out" };
-  if (!isCodexJsonRecord(result.account)) return { kind: "unavailable" };
-  const account = result.account;
-  if (account.type === "apiKey") return { kind: "signed-out" };
-  if (account.type !== "chatgpt") return { kind: "unavailable" };
-  const email = boundedString(account.email, 320);
-  return {
-    kind: "connected",
-    ...(email ? { accountKey: createHash("sha256").update(email).digest("hex") } : {}),
-    planType: boundedString(account.planType, MAX_PLAN_TYPE_LENGTH),
-  };
 }

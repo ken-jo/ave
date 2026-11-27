@@ -1,13 +1,11 @@
-import { subscriptionAccountFixture } from "../../__tests__/support/subscription-account-fixture.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { deferred } from "../../__tests__/support/deferred.js";
 import type { AcpSubscriptionStatus } from "../../shared/acp-subscription.js";
 import type { CodexSubscriptionStatus } from "../../shared/codex-subscription.js";
 import type { CodexAppServerClient } from "../codex-app-server-client.js";
 import { claudeCodeSubscriptionStatus, type ClaudeCodeSubscriptionStatus } from "../../shared/claude-code-subscription.js";
-import type { SubscriptionEvidenceSink } from "../subscription-connection-evidence.js";
 import type { ClaudeCodeSubscriptionClient } from "../claude-code-subscription-client.js";
-import { onSubscriptionRuntimeStatusChanged, SubscriptionRuntimeService, type AcpSubscriptionRuntimeRegistry } from "../subscription-runtime-service.js";
+import { SubscriptionRuntimeService, type AcpSubscriptionRuntimeRegistry } from "../subscription-runtime-service.js";
 import { claimFakeRuntimeDirectories, createSubscriptionRuntimeNamespace as namespace } from "../../__tests__/support/subscription-runtime-namespace.js";
 
 const CODEX_CONNECTED: CodexSubscriptionStatus = {
@@ -37,8 +35,6 @@ function claudeClient(initial = claudeCodeSubscriptionStatus("ready", "connected
   const client = {
     getStatus: vi.fn(async () => status),
     getCachedStatus: vi.fn(() => status),
-    startBrowserLogin: vi.fn(async () => status),
-    cancelLogin: vi.fn(async () => status),
     verify: vi.fn(async () => status),
     logout: vi.fn(async () => {
       status = claudeCodeSubscriptionStatus("unverified", "signed-out", "2.1.0");
@@ -72,9 +68,9 @@ async function service(options: {
   return SubscriptionRuntimeService.create(async () => undefined, {
     namespace: namespace(),
     claimRuntimeDirectories: claimFakeRuntimeDirectories,
-    codexClient: subscriptionAccountFixture(options.codex ?? codexClient()) as unknown as CodexAppServerClient,
+    codexClient: (options.codex ?? codexClient()) as unknown as CodexAppServerClient,
     acpRegistry: { stopAll: vi.fn(async () => undefined), ...options.acpRegistry } as unknown as AcpSubscriptionRuntimeRegistry,
-    claudeCodeClient: subscriptionAccountFixture(options.claude ?? claudeClient().client) as unknown as ClaudeCodeSubscriptionClient,
+    claudeCodeClient: (options.claude ?? claudeClient().client) as unknown as ClaudeCodeSubscriptionClient,
   });
 }
 
@@ -86,41 +82,6 @@ describe("SubscriptionRuntimeService settings read cache", () => {
   afterEach(() => {
     vi.useRealTimers();
   });
-
-  it.each(["failed sign-in", "permanently unavailable probe", "recovery within the budget"] as const)(
-    "bounds host confirmation after %s", async (scenario) => {
-      vi.useRealTimers();
-      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-      const signedOut = claudeCodeSubscriptionStatus("unverified", "signed-out", "2.1.0");
-      const { client } = claudeClient(signedOut);
-      let evidence: SubscriptionEvidenceSink | undefined;
-      Object.defineProperty(client, "connectionEvidence", { get: () => evidence, set: (sink: SubscriptionEvidenceSink) => { evidence = sink; } });
-      const runtime = await service({ claude: client });
-      try {
-        await expect(runtime.getStatus("claude-code")).resolves.toMatchObject({ connection: "signed-out" });
-        client.getStatus.mockReset().mockRejectedValue(new Error("Runtime probe unavailable"));
-        if (scenario === "failed sign-in") {
-          client.startBrowserLogin.mockRejectedValueOnce(new Error("Executable unavailable"));
-          await expect(runtime.startLogin("claude-code", "browser")).rejects.toThrow();
-        } else {
-          evidence?.({ kind: "advertisement", source: client });
-        }
-        if (scenario === "recovery within the budget") {
-          await vi.advanceTimersByTimeAsync(750);
-          const ready = claudeCodeSubscriptionStatus("ready", "connected", "2.1.0");
-          client.getStatus.mockResolvedValueOnce(ready);
-        }
-        await vi.advanceTimersByTimeAsync(120_000);
-        const recovered = scenario === "recovery within the budget";
-        expect(client.getStatus).toHaveBeenCalledTimes(recovered ? 4 : scenario === "failed sign-in" ? 2 : 7);
-        await expect(runtime.getCachedStatus("claude-code")).resolves.toMatchObject({
-          connection: recovered ? "connected" : scenario === "failed sign-in" ? "signed-out" : "unknown",
-        });
-      } finally {
-        await runtime.stop();
-      }
-    },
-  );
 
   it("lists Claude Code models from the status the settings card just read", async () => {
     const { client } = claudeClient();
@@ -148,8 +109,8 @@ describe("SubscriptionRuntimeService settings read cache", () => {
     const runtime = await service({ claude: client });
     try {
       const logout = runtime.logout("claude-code");
-      // The raw CLI still reads as connected, so the outstanding mutation must prevent that reply from reaching the caller.
-      await expect(runtime.getStatus("claude-code", { allowCached: true })).resolves.toMatchObject({ connection: "unknown", capabilities: { chat: false } });
+      // The card refreshes while the CLI is still signing out: the account still reads as connected.
+      expect((await runtime.getStatus("claude-code", { allowCached: true })).connection).toBe("connected");
       gate.resolve();
       await logout;
       expect((await runtime.getStatus("claude-code", { allowCached: true })).connection).toBe("signed-out");
@@ -158,7 +119,7 @@ describe("SubscriptionRuntimeService settings read cache", () => {
     }
   });
 
-  it("returns signed out for a held ready read that completes after logout", async () => {
+  it("keeps no status read that began during a logout and ended after it", async () => {
     const { client, setStatus } = claudeClient();
     const logoutGate = deferred<void>();
     const readGate = deferred<void>();
@@ -170,185 +131,19 @@ describe("SubscriptionRuntimeService settings read cache", () => {
     });
     const runtime = await service({ claude: client });
     try {
+      const logout = runtime.logout("claude-code");
       client.getStatus.mockImplementationOnce(async () => {
         const connected = claudeCodeSubscriptionStatus("ready", "connected", "2.1.0");
         await readGate.promise;
         return connected;
       });
       const read = runtime.getStatus("claude-code", { allowCached: true });
-      const logout = runtime.logout("claude-code");
       logoutGate.resolve();
       await logout;
       readGate.resolve();
-      await expect(read).resolves.toMatchObject({ connection: "signed-out", capabilities: { chat: false } });
+      expect((await read).connection).toBe("connected");
       expect((await runtime.getStatus("claude-code", { allowCached: true })).connection).toBe("signed-out");
     } finally {
-      await runtime.stop();
-    }
-  });
-
-  it.each([false, true])("orders overlapping account reads with newest completion first=%s", async (newestFirst) => {
-    const { client, setStatus } = claudeClient();
-    const runtime = await service({ claude: client });
-    const changed = vi.fn();
-    const unsubscribe = onSubscriptionRuntimeStatusChanged(changed);
-    try {
-      await runtime.verify("claude-code");
-      changed.mockClear();
-      const disconnected = deferred<ClaudeCodeSubscriptionStatus>();
-      const reconnected = deferred<ClaudeCodeSubscriptionStatus>();
-      client.getStatus.mockImplementationOnce(() => disconnected.promise).mockImplementationOnce(() => reconnected.promise);
-      const earlier = runtime.getStatus("claude-code");
-      const later = runtime.getStatus("claude-code");
-      const signedOut = claudeCodeSubscriptionStatus("unverified", "signed-out", "2.1.0");
-      const signedIn = claudeCodeSubscriptionStatus("ready", "connected", "2.2.0");
-      if (newestFirst) {
-        reconnected.resolve(signedIn);
-        await expect(later).resolves.toMatchObject({ connection: "connected" });
-        disconnected.resolve(signedOut);
-        await expect(earlier).resolves.toMatchObject({ connection: "signed-out", capabilities: { chat: false } });
-        expect(changed.mock.calls.map(([provider, connected]) => [provider, connected])).toEqual([["claude-code", false]]);
-        setStatus(signedIn);
-        await expect(runtime.getStatus("claude-code")).resolves.toMatchObject({ connection: "connected", capabilities: { chat: false } });
-      } else {
-        disconnected.resolve(signedOut);
-        await expect(earlier).resolves.toMatchObject({ connection: "signed-out", capabilities: { chat: false } });
-        reconnected.resolve(signedIn);
-        await expect(later).resolves.toMatchObject({ connection: "signed-out", capabilities: { chat: false } });
-        expect(changed.mock.calls.map(([provider, connected]) => [provider, connected])).toEqual([["claude-code", false]]);
-        setStatus(signedIn);
-        await expect(runtime.getStatus("claude-code")).resolves.toMatchObject({ connection: "connected", capabilities: { chat: false } });
-        expect(changed.mock.calls.map(([provider, connected]) => [provider, connected])).toEqual([["claude-code", false], ["claude-code", true]]);
-      }
-      const sampleCount = client.getStatus.mock.calls.length;
-      expect(await runtime.getStatus("claude-code", { allowCached: true })).toMatchObject({ connection: "connected", version: "2.2.0" });
-      expect(client.getStatus).toHaveBeenCalledTimes(sampleCount);
-    } finally {
-      unsubscribe();
-      await runtime.stop();
-    }
-  });
-
-  it("keeps the disconnect latched through login cleanup", async () => {
-    const { client, setStatus } = claudeClient();
-    const runtime = await service({ claude: client });
-    const changed = vi.fn();
-    const unsubscribe = onSubscriptionRuntimeStatusChanged(changed);
-    try {
-      await runtime.getStatus("claude-code");
-      changed.mockClear();
-      await runtime.logout("claude-code");
-      setStatus(claudeCodeSubscriptionStatus("ready", "connected", "2.1.0"));
-      await expect(runtime.cancelLogin("claude-code")).resolves.toMatchObject({ connection: "signed-out" });
-      await expect(runtime.getCachedStatus("claude-code")).resolves.toMatchObject({ connection: "signed-out" });
-      expect(changed.mock.calls.map(([provider, connected]) => [provider, connected])).toEqual([["claude-code", false], ["claude-code", false]]);
-      await expect(runtime.getStatus("claude-code")).resolves.toMatchObject({ connection: "connected" });
-      expect(changed.mock.calls.map(([provider, connected]) => [provider, connected])).toEqual([["claude-code", false], ["claude-code", false], ["claude-code", true]]);
-    } finally {
-      unsubscribe();
-      await runtime.stop();
-    }
-  });
-
-  it.each(["failed probe", "login cleanup"] as const)("latches a held disconnect after a subsequent %s", async (operation) => {
-    const { client } = claudeClient();
-    const runtime = await service({ claude: client });
-    const changed = vi.fn();
-    const unsubscribe = onSubscriptionRuntimeStatusChanged(changed);
-    const disconnected = deferred<ClaudeCodeSubscriptionStatus>();
-    const connected = deferred<ClaudeCodeSubscriptionStatus>();
-    try {
-      const ready = await client.getStatus();
-      await runtime.getStatus("claude-code");
-      client.getStatus.mockImplementationOnce(() => disconnected.promise);
-      const earlier = runtime.getStatus("claude-code");
-      if (operation === "failed probe") {
-        client.getStatus.mockRejectedValueOnce(new Error("Probe failed"));
-        await expect(runtime.getStatus("claude-code")).rejects.toMatchObject({ code: "subscription-operation-failed" });
-      } else {
-        await runtime.cancelLogin("claude-code");
-      }
-      changed.mockClear();
-      client.getStatus.mockImplementationOnce(() => connected.promise);
-      const later = runtime.getStatus("claude-code");
-      disconnected.resolve(claudeCodeSubscriptionStatus("unverified", "signed-out", "2.1.0"));
-      const disconnect = await earlier;
-      connected.resolve(ready);
-      const stale = await later;
-      expect(disconnect.connection).toBe("signed-out");
-      expect(stale.connection).toBe("signed-out");
-      expect(changed.mock.calls.map(([provider, connected]) => [provider, connected])).toEqual([["claude-code", false]]);
-      await expect(runtime.getStatus("claude-code")).resolves.toMatchObject({ connection: "connected" });
-    } finally {
-      unsubscribe();
-      await runtime.stop();
-    }
-  });
-
-  it("returns the winning disconnect for an earlier ready sample", async () => {
-    const { client, setStatus } = claudeClient();
-    const runtime = await service({ claude: client });
-    try {
-      await runtime.verify("claude-code");
-      const held = deferred<ClaudeCodeSubscriptionStatus>();
-      client.getStatus.mockImplementationOnce(() => held.promise);
-      const earlier = runtime.getStatus("claude-code");
-      setStatus(claudeCodeSubscriptionStatus("unverified", "signed-out", "2.1.0"));
-      await expect(runtime.getStatus("claude-code")).resolves.toMatchObject({ connection: "signed-out" });
-      held.resolve(claudeCodeSubscriptionStatus("ready", "connected", "2.1.0"));
-      await expect(earlier).resolves.toMatchObject({ connection: "signed-out", capabilities: { chat: false } });
-    } finally {
-      await runtime.stop();
-    }
-  });
-
-  it("revokes proof and cached availability on a failed live probe", async () => {
-    const { client } = claudeClient();
-    const runtime = await service({ claude: client });
-    const changed = vi.fn();
-    const unsubscribe = onSubscriptionRuntimeStatusChanged(changed);
-    try {
-      await runtime.verify("claude-code");
-      changed.mockClear();
-      client.getStatus.mockRejectedValueOnce(new Error("Probe failed"));
-      await expect(runtime.getStatus("claude-code")).rejects.toMatchObject({ code: "subscription-operation-failed" });
-      expect(changed.mock.calls.map(([provider, connected]) => [provider, connected])).toEqual([["claude-code", false]]);
-      await expect(runtime.getCachedStatus("claude-code")).resolves.toMatchObject({
-        runtime: "unavailable", connection: "unknown", capabilities: { chat: false },
-      });
-      await expect(runtime.getStatus("claude-code", { allowCached: true })).resolves.toMatchObject({
-        connection: "connected", capabilities: { chat: false },
-      });
-      expect(changed.mock.calls.map(([provider, connected]) => [provider, connected])).toEqual([["claude-code", false], ["claude-code", true]]);
-    } finally {
-      unsubscribe();
-      await runtime.stop();
-    }
-  });
-
-  it("ignores a failed older probe after a newer live sample was accepted", async () => {
-    const { client } = claudeClient();
-    const runtime = await service({ claude: client });
-    const changed = vi.fn();
-    const unsubscribe = onSubscriptionRuntimeStatusChanged(changed);
-    try {
-      await runtime.verify("claude-code");
-      changed.mockClear();
-      const held = deferred<void>();
-      client.getStatus.mockImplementationOnce(async () => {
-        await held.promise;
-        throw new Error("Earlier probe failed");
-      });
-      const earlier = runtime.getStatus("claude-code");
-      await expect(runtime.getStatus("claude-code")).resolves.toMatchObject({ capabilities: { chat: true } });
-      held.resolve();
-      await expect(earlier).resolves.toMatchObject({ connection: "connected", capabilities: { chat: true } });
-      expect(changed).not.toHaveBeenCalled();
-      await expect(runtime.getStatus("claude-code", { allowCached: true })).resolves.toMatchObject({
-        capabilities: { chat: true },
-      });
-    } finally {
-      unsubscribe();
       await runtime.stop();
     }
   });
@@ -423,7 +218,7 @@ describe("SubscriptionRuntimeService settings read cache", () => {
       const stale = runtime.getStatus("claude-code", { allowCached: true });
       await runtime.verify("claude-code");
       pending.resolve(claudeCodeSubscriptionStatus("ready", "connected", "2.0.0"));
-      await expect(stale).resolves.toMatchObject({ version: "2.1.0", capabilities: { chat: true } });
+      await stale;
       expect((await runtime.getStatus("claude-code", { allowCached: true })).version).toBe("2.1.0");
     } finally {
       await runtime.stop();

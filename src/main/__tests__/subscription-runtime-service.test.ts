@@ -1,4 +1,3 @@
-import { subscriptionAccountFixture } from "../../__tests__/support/subscription-account-fixture.js";
 import { deferred } from "../../__tests__/support/deferred.js";
 import { describe, expect, it, vi } from "vitest";
 import type { StreamEvent, ToolSchema } from "../../engine/llm/types.js";
@@ -96,12 +95,12 @@ it("projects account quota updates through cached status and clears them at sign
     expect((await service.getStatus("codex", { allowCached: true })).planUsage).toBeUndefined();
     publish([{ id: "codex:primary", usedPercent: 20, resetsAt: start + 3_600_000 }]);
     await service.getStatus("codex", { allowCached: true });
-    expect(Object.getPrototypeOf(client).getStatus).toHaveBeenLastCalledWith(false);
+    expect(client.getStatus).toHaveBeenLastCalledWith(false);
     clock.mockReturnValue(start + 60_000);
     publish([{ id: "codex:primary", usedPercent: 40, resetsAt: start + 3_600_000 }]);
     expect((await service.getStatus("codex", { allowCached: true })).planUsage?.windows[0])
       .toMatchObject({ usedPercent: 40, projectedLimitAt: start + 240_000 });
-    expect(announcements).toEqual(["codex", "codex", "codex"]);
+    expect(announcements).toEqual(["codex", "codex"]);
     publish([{ id: "codex:secondary", usedPercent: 20, resetsAt: start + 3_600_000 }]);
     clock.mockReturnValue(start + 120_000);
     publish([{ id: "codex:secondary", usedPercent: 40, resetsAt: start + 3_600_000 }]);
@@ -122,7 +121,7 @@ it("projects account quota updates through cached status and clears them at sign
 });
 
 function fakeCodexClient(): CodexAppServerClient {
-  return subscriptionAccountFixture({
+  return {
     invalidatePlanUsageReads: vi.fn(),
     getStatus: vi.fn(async () => CODEX_CONNECTED),
     getCachedStatus: vi.fn(() => CODEX_CONNECTED),
@@ -131,7 +130,7 @@ function fakeCodexClient(): CodexAppServerClient {
       models: [],
     })),
     stop: vi.fn(),
-  }) as unknown as CodexAppServerClient;
+  } as unknown as CodexAppServerClient;
 }
 
 function isolationRuntime(): CodexConversationRuntime {
@@ -448,40 +447,12 @@ describe("SubscriptionRuntimeService", () => {
     await service.chooseExecutable("kimi-code", "C:\\approved\\kimi.exe");
     resolveVerification(KIMI_CONNECTED);
 
-    await expect(verifying).rejects.toMatchObject({ code: "subscription-status-superseded" });
+    await expect(verifying).resolves.toMatchObject({
+      capabilities: { chat: false },
+    });
     await expect(service.getStatus("kimi-code")).resolves.toMatchObject({
       capabilities: { chat: false },
     });
-  });
-
-  it.each([false, true])("orders ACP proof after a passive status read (executable lost: %s)", async (lost) => {
-    const preparation = deferred<void>();
-    const preparing = deferred<void>();
-    const registry = {
-      getStatus: vi.fn(async (_provider, onExecutableLost?: () => void): Promise<AcpSubscriptionStatus> => {
-        if (lost) onExecutableLost?.();
-        return { ...KIMI_CONNECTED, runtime: lost ? "unavailable" : "unverified", connection: "unknown" };
-      }),
-      verify: vi.fn(async () => {
-        preparing.resolve();
-        await preparation.promise;
-        return KIMI_CONNECTED;
-      }),
-      stopAll: vi.fn(async () => undefined),
-    } as unknown as AcpSubscriptionRuntimeRegistry;
-    const service = await runtimeService(registry);
-    const verification = service.verify("kimi-code").catch((error: unknown) => error);
-    try {
-      await preparing.promise;
-      await expect(service.getStatus("kimi-code")).resolves.toMatchObject({ capabilities: { chat: false } });
-      preparation.resolve();
-      await expect(verification).resolves.toMatchObject(lost
-        ? { code: "subscription-status-superseded" }
-        : { connection: "connected", capabilities: { chat: true } });
-    } finally {
-      preparation.resolve();
-      await service.stop();
-    }
   });
 
   it("stops a raw ACP session that resolves after an executable mutation", async () => {
@@ -564,12 +535,12 @@ describe("SubscriptionRuntimeService", () => {
       status: CODEX_CONNECTED,
       models: [{ id: "current-model", displayName: "Current model", isDefault: true }],
     }));
-    const codexClient = subscriptionAccountFixture({
+    const codexClient = {
       getStatus: vi.fn(async () => CODEX_CONNECTED),
       getCachedStatus: vi.fn(() => CODEX_CONNECTED),
       listModels,
       stop: vi.fn(),
-    }) as unknown as CodexAppServerClient;
+    } as unknown as CodexAppServerClient;
     const registry = { stopAll: vi.fn(async () => undefined) } as unknown as AcpSubscriptionRuntimeRegistry;
     const service = await SubscriptionRuntimeService.create(async () => undefined, { claudeCodeReleaseFetch: RELEASE_FETCH,
       namespace: namespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories,
@@ -616,12 +587,12 @@ describe("SubscriptionRuntimeService", () => {
         { id: "profile-model", displayName: "Profile", isDefault: false },
       ],
     }));
-    const codexClient = subscriptionAccountFixture({
+    const codexClient = {
       getStatus: vi.fn(async () => CODEX_CONNECTED),
       getCachedStatus: vi.fn(() => CODEX_CONNECTED),
       listModels,
       stop: vi.fn(),
-    }) as unknown as CodexAppServerClient;
+    } as unknown as CodexAppServerClient;
     const verificationRuntime = isolationRuntime();
     const createTextRuntime = (): CodexConversationRuntime => ({
       startTurn: vi.fn(async (input: StartTurnInput, callbacks: TurnCallbacks) => {

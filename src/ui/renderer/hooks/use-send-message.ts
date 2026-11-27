@@ -1,4 +1,3 @@
-import type { SettingsNavigationOrigin } from "./use-settings-tab.js";
 import {
   useCallback,
   useRef,
@@ -93,7 +92,7 @@ export interface UseSendMessageDeps {
   subscriptionRuntimePolicy: Settings["subscriptionRuntimePolicy"];
   /** False until the active runtime selection has been read from settings. */
   settingsReady?: boolean;
-  onOpenSettings: (tab?: string, origin?: SettingsNavigationOrigin) => void;
+  onOpenSettings: (tab?: string) => void;
   setQuestion: Dispatch<SetStateAction<string>>;
   /** Tile-owned forward-ref cycle bridge. This hook WRITES it (`handleAskRef.current = handleAsk`) each render so the tile's
    * MCP-prompt path can read the latest handleAsk. Do NOT inline-break the cycle — the ref is the seam. */
@@ -255,19 +254,19 @@ export function useSendMessage(deps: UseSendMessageDeps): UseSendMessageResult {
       }
       // No connected provider means no model: the draft stays put and the user lands where a provider is added.
       if (activeChatModel?.kind === "none") {
-        onOpenSettings("llm", "provider-setup");
+        onOpenSettings("llm");
         notifyRefused();
         return;
       }
       // Once a subscription runtime is selected its verified chat capability is the only send gate. A stored API key belongs to
       // the inactive runtime and must never make this path sendable while login/verification is pending.
       if (subscriptionRuntimePolicy.subscriptionSelected && subscriptionRuntimePolicy.chatReady !== true) {
-        onOpenSettings("llm", "provider-setup");
+        onOpenSettings("llm");
         notifyRefused();
         return;
       }
       if (!subscriptionRuntimePolicy.subscriptionSelected && !llmReadyWithoutApiKey && !(await checkApiKey())) {
-        onOpenSettings("llm", "provider-setup");
+        onOpenSettings("llm");
         notifyRefused();
         return;
       }

@@ -185,7 +185,6 @@ export function useSettings(api: AveApi): UseSettingsResult {
   // extraction).
   const isMountedRef = useRef(true);
   const snapshotRevisionRef = useRef(0);
-  const hostRevisionRef = useRef(0);
   const activeSubscriptionRuntimeRef = useRef<SubscriptionChatRuntimeSelection | null>(null);
   const subscriptionStatusRequestRef = useRef(0);
   const subscriptionStatusRevisionByProviderRef = useRef(new Map<string, number>());
@@ -198,8 +197,7 @@ export function useSettings(api: AveApi): UseSettingsResult {
 
   const applySettingsSnapshot = useCallback(
     (settings: Awaited<ReturnType<AveApi["getSettings"]>>) => {
-      if (!isMountedRef.current || settings.subscriptionRevision < hostRevisionRef.current) return;
-      hostRevisionRef.current = Math.max(hostRevisionRef.current, settings.subscriptionRevision);
+      if (!isMountedRef.current) return;
       const provider = narrowLlmVendor(settings.llm.provider);
       const block = getLlmVendorSettings(settings.llm.vendors, provider);
       setLlmVendor(provider);
@@ -290,7 +288,6 @@ export function useSettings(api: AveApi): UseSettingsResult {
   // registration. The revision guard prevents a slow initial read from overwriting a newer broadcast snapshot.
   useEffect(() => {
     const unsubscribe = api.onSettingsUpdated((settings) => {
-      if (settings.subscriptionRevision < hostRevisionRef.current) return;
       snapshotRevisionRef.current += 1;
       applySettingsSnapshot(settings);
     });
@@ -313,11 +310,6 @@ export function useSettings(api: AveApi): UseSettingsResult {
         subscriptionStatusRevisionByProviderRef.current.get(event.provider) ?? 0;
       if (event.revision <= previousRevision) return;
       subscriptionStatusRevisionByProviderRef.current.set(event.provider, event.revision);
-      hostRevisionRef.current = Math.max(hostRevisionRef.current, event.revision);
-      if (event.connected === false) {
-        setActiveChatModel((model) => model?.kind === "subscription" && model.provider === event.provider
-          ? { kind: "none", reason: "no-connected-provider" } : model);
-      }
       // Invalidate synchronously before React schedules the re-probe. A status response that was already in flight must not put
       // stale capabilities back after logout, login, verification, or a runtime reconfiguration.
       subscriptionStatusRequestRef.current += 1;
@@ -328,15 +320,6 @@ export function useSettings(api: AveApi): UseSettingsResult {
   }, [api]);
 
   useEffect(() => {
-    const handleFocus = () => {
-      const provider = activeSubscriptionRuntimeRef.current?.provider;
-      if (provider) void api.subscriptionRuntimeStatus(provider, { refresh: true }).catch(() => {});
-    };
-    window.addEventListener("focus", handleFocus);
-    return () => window.removeEventListener("focus", handleFocus);
-  }, [api]);
-
-  useEffect(() => {
     if (!activeSubscriptionRuntime) {
       subscriptionStatusRequestRef.current += 1;
       setSubscriptionRuntimeCapabilities(null);
@@ -344,31 +327,32 @@ export function useSettings(api: AveApi): UseSettingsResult {
       return;
     }
 
-    const requestId = ++subscriptionStatusRequestRef.current;
+    const provider = activeSubscriptionRuntime.provider;
     setSubscriptionRuntimeCapabilities(null);
     setSubscriptionRuntimeProvableOnUse(false);
-    void api.subscriptionRuntimeStatus(activeSubscriptionRuntime.provider)
-      .then((result) => {
-        if (!isMountedRef.current || requestId !== subscriptionStatusRequestRef.current) return;
-        if (result.status?.revision !== undefined && result.status.revision < (subscriptionStatusRevisionByProviderRef.current.get(activeSubscriptionRuntime.provider) ?? 0)) return;
-        if (
-          result.ok !== true
-          || result.status.provider !== activeSubscriptionRuntime.provider
-        ) {
-          setSubscriptionRuntimeCapabilities(DEFAULT_SUBSCRIPTION_RUNTIME_CAPABILITIES);
-          return;
-        }
-        setSubscriptionRuntimeProvableOnUse(result.status.connection === "connected"
-          && (result.status.runtime === "ready" || (result.status.provider === "claude-code" && result.status.runtime === "unverified")));
-        setSubscriptionRuntimeCapabilities(
-          result.status.capabilities ?? DEFAULT_SUBSCRIPTION_RUNTIME_CAPABILITIES,
-        );
-      })
-      .catch(() => {
-        if (isMountedRef.current && requestId === subscriptionStatusRequestRef.current) {
-          setSubscriptionRuntimeCapabilities(DEFAULT_SUBSCRIPTION_RUNTIME_CAPABILITIES);
-        }
-      });
+    let poll: number | undefined;
+    const readStatus = async (refresh = false): Promise<void> => {
+      window.clearTimeout(poll);
+      const request = ++subscriptionStatusRequestRef.current;
+      const result = await (refresh
+        ? api.subscriptionRuntimeStatus(provider, { refresh: true })
+        : api.subscriptionRuntimeStatus(provider)).catch(() => null);
+      if (!isMountedRef.current || request !== subscriptionStatusRequestRef.current) return;
+      const status = result?.ok && result.status.provider === provider ? result.status : null;
+      if (status?.connection === "pending" || status?.pendingLogin != null) {
+        poll = window.setTimeout(() => void readStatus(), 3_000);
+      }
+      setSubscriptionRuntimeProvableOnUse(status?.runtime === "ready" && status.connection === "connected");
+      setSubscriptionRuntimeCapabilities(status?.capabilities ?? DEFAULT_SUBSCRIPTION_RUNTIME_CAPABILITIES);
+    };
+    const handleFocus = () => void readStatus(true);
+    void readStatus();
+    window.addEventListener("focus", handleFocus);
+    return () => {
+      window.clearTimeout(poll);
+      window.removeEventListener("focus", handleFocus);
+      subscriptionStatusRequestRef.current += 1;
+    };
   }, [api, activeSubscriptionRuntime, subscriptionStatusRevision]);
 
   const toggleThinking = useCallback(
@@ -413,9 +397,8 @@ export function useSettings(api: AveApi): UseSettingsResult {
       settingsLoaded,
       capabilities: subscriptionRuntimeCapabilities,
       provableOnUse: subscriptionRuntimeProvableOnUse,
-      connectionMissing: activeChatModel?.kind === "none" && activeChatModel.reason === "no-connected-provider",
     }),
-    [activeSubscriptionRuntime, settingsLoaded, subscriptionRuntimeCapabilities, subscriptionRuntimeProvableOnUse, activeChatModel],
+    [activeSubscriptionRuntime, settingsLoaded, subscriptionRuntimeCapabilities, subscriptionRuntimeProvableOnUse],
   );
 
   return {
@@ -507,9 +490,9 @@ export function modelCardChoices(llm: AppSettings["llm"], activeChatModel: Activ
   for (const modelId of getVendorOption(active).modelOptions) {
     offer(active, modelId);
   }
-  const followsApi = llm.activeChatRuntime?.kind !== "subscription";
-  const apiModelCurrent = followsApi && !llm.retiredProvider && activeChatModel?.kind === "api"
-    && activeChatModel.vendor === active && activeChatModel.model === currentModel;
+  // A saved subscription keeps the stored API choice unchecked, even when the subscription is disconnected.
+  const activeRuntime = llm.activeChatRuntime;
+  const subscription = activeRuntime?.kind === "subscription" ? activeRuntime : null;
   const choices: ModelCardChoice[] = [];
   for (const modelId of pinned) {
     for (const vendor of offered.get(modelId) ?? []) {
@@ -519,18 +502,20 @@ export function modelCardChoices(llm: AppSettings["llm"], activeChatModel: Activ
         vendor,
         vendorLabel: getVendorOption(vendor).label,
         modelId,
-        current: apiModelCurrent && vendor === active && modelId === currentModel,
+        // A pinned API model can equal the vendor/model the settings still hold for the API path even while a subscription runtime
+        // is what the chat is actually on — that stale match is not "current".
+        current: subscription === null && !llm.retiredProvider && vendor === active && modelId === currentModel,
       });
     }
   }
   // A retired vendor leaves its configured model as an unselected candidate; a retired model is not offered at all.
-  if (followsApi && currentModel && !retired(active, currentModel) && !choices.some((choice) =>
+  if (subscription === null && currentModel && !retired(active, currentModel) && !choices.some((choice) =>
     choice.kind === "api" && choice.vendor === active && choice.modelId === currentModel
   )) {
-    choices.unshift({ kind: "api", vendor: active, vendorLabel: getVendorOption(active).label, modelId: currentModel, current: apiModelCurrent });
+    choices.unshift({ kind: "api", vendor: active, vendorLabel: getVendorOption(active).label, modelId: currentModel, current: !llm.retiredProvider });
   }
-  if (activeChatModel?.kind === "subscription" && llm.activeChatRuntime?.kind === "subscription"
-    && isSubscriptionRuntimeId(activeChatModel.provider) && activeChatModel.provider === llm.activeChatRuntime.provider) {
+  if (activeChatModel?.kind === "subscription" && activeChatModel.provider === subscription?.provider
+    && isSubscriptionRuntimeId(activeChatModel.provider)) {
     choices.unshift({
       kind: "subscription",
       provider: activeChatModel.provider,

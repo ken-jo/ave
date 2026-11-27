@@ -1,14 +1,6 @@
 /** A template run end to end over a real board and template store: which stages spawn, from which version, under which authority. */
-import { makeConversationLoopSettings } from "../../engine/__tests__/conversation-loop-test-helpers.js";
-import { makeSubagentLoopDeps } from "../../engine/__tests__/support/subagent-loop-fixtures.js";
-import { SubAgentRunner } from "../../engine/subagent-runner.js";
-import { MemoryManager } from "../../memory/memory-manager.js";
-import { configureHostResources } from "../../main/host-resources.js";
-import { boardParentToolRegistry } from "../../work-board/__tests__/board-test-fixtures.js";
-import type { LLMProvider } from "../../engine/llm/types.js";
-import type { SubscriptionChatRuntimeSelection } from "../../shared/subscription-runtime.js";
 import { readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { expect, it, vi } from "vitest";
 import { boardRunState, isAwaitingStageReview } from "../../work-board/workflow/run-state.js";
 import { autoStageOf, stageOf } from "../../work-board/workflow/__tests__/stage-fixtures.js";
@@ -46,55 +38,6 @@ async function withHarness(run: (h: Harness) => Promise<void>, opts: Parameters<
 const auto = autoStageOf;
 const A = "/projects/a";
 const B = "/projects/b";
-
-it("refuses a disconnected follow-chat stage before model dispatch and uses the saved model after reconnect", async () => {
-  configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
-  const selection = { kind: "subscription", provider: "codex", model: "saved-model" } as const;
-  let connected = false;
-  const streamTurn = vi.fn<LLMProvider["streamTurn"]>(async function* () {
-    yield { type: "text_delta", text: "Stage response" };
-    yield { type: "message_complete", stopReason: "end_turn" };
-  });
-  const subscriptionProviderFactory = vi.fn((runtime: SubscriptionChatRuntimeSelection): LLMProvider =>
-    ({ vendor: "openai", subscriptionRuntime: runtime, streamTurn }));
-  const settingsService = makeConversationLoopSettings(false);
-  const baseGet = settingsService.get;
-  vi.spyOn(settingsService, "get").mockImplementation((key) => key === "llm"
-    ? { ...baseGet("llm"), activeChatRuntime: selection } : baseGet(key));
-  const h = await stageRunHarness({
-    observeRunWork: true,
-    runner: (dir) => {
-      const registry = boardParentToolRegistry();
-      return new SubAgentRunner({
-        parentDeps: makeSubagentLoopDeps(registry, {
-          settingsService, subscriptionProviderFactory, isSubscriptionConnected: async () => connected,
-        }),
-        toolRegistry: registry,
-        subAgentMemoryManager: new MemoryManager({ aveDir: join(dir, "children") }),
-      });
-    },
-  });
-  await h.runThenEnd(async () => {
-    const version = await h.confirm([stageOf("a")]);
-    const disconnected = await h.addItem(version);
-    await h.start(disconnected, h.local(version));
-    expect(streamTurn).not.toHaveBeenCalled();
-    expect(subscriptionProviderFactory).not.toHaveBeenCalled();
-    await h.untilStage(disconnected, "a", "failed");
-    expect(await h.stageRun(disconnected, "a")).toMatchObject({
-      status: "failed", failure: "error",
-    });
-    expect(h.events).toContainEqual(expect.objectContaining({
-      phase: "stage_failed", message: expect.stringContaining("LLM provider not configured"),
-    }));
-
-    connected = true;
-    const reconnected = await h.addItem(version);
-    await expect(h.start(reconnected, h.local(version))).resolves.toMatchObject({ status: "awaiting_approval" });
-    expect(subscriptionProviderFactory).toHaveBeenCalledWith(selection);
-    expect(streamTurn).toHaveBeenCalledWith(expect.objectContaining({ model: selection.model }));
-  });
-});
 
 it("spawns only the pinned version's stages with the stage's tool scope", () => withHarness(async (h) => {
   const version = await h.confirm([stageOf("a"), stageOf("b", { inputs: ["a"], toolScope: "all" })]);

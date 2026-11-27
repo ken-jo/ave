@@ -17,7 +17,6 @@ import { supportsVision } from "../../../engine/llm/vendor-capabilities.js";
 export interface SubscriptionRuntimeUiPolicy {
   readonly activeSubscriptionRuntime: SubscriptionChatRuntimeSelection | null;
   readonly subscriptionSelected: boolean;
-  readonly connectionMissing: boolean;
   readonly provider: SubscriptionRuntimeId | undefined;
   /** Null means the selected runtime's safe status is still being checked. */
   readonly chatReady: boolean | null;
@@ -47,7 +46,6 @@ export interface SubscriptionRuntimeUiPolicyInput {
   readonly capabilities: SubscriptionRuntimeCapabilities | null;
   /** Connected and ready but not proven since this launch: main proves it on the first turn and refuses the turn if that fails. */
   readonly provableOnUse?: boolean;
-  readonly connectionMissing?: boolean;
 }
 
 /** IPC responses are still an external boundary from the renderer's perspective. Do not turn a truthy object, float, or
@@ -108,12 +106,11 @@ export function selectSubscriptionRuntimeUiPolicy({
   settingsLoaded,
   capabilities,
   provableOnUse = false,
-  connectionMissing = false,
 }: SubscriptionRuntimeUiPolicyInput): SubscriptionRuntimeUiPolicy {
   const subscriptionSelected = activeSubscriptionRuntime !== null;
   const provider = activeSubscriptionRuntime?.provider;
   const statusPending = subscriptionSelected && capabilities === null;
-  const chatReady = subscriptionSelected && !connectionMissing
+  const chatReady = subscriptionSelected
     ? statusPending
       ? null
       : capabilities?.chat === true || provableOnUse
@@ -147,7 +144,6 @@ export function selectSubscriptionRuntimeUiPolicy({
   return {
     activeSubscriptionRuntime,
     subscriptionSelected,
-    connectionMissing,
     provider,
     chatReady,
     imagesReady,

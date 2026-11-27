@@ -17,8 +17,6 @@ import { codexExecutableArtifactFixture, NATIVE_LOCATION_WAIT, normalizeFixtureA
 import { createPrivateDirectory } from "../codex-executable-location.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { deferred } from "../../__tests__/support/deferred.js";
-import { requiredFixture } from "../../__tests__/support/required-fixture.js";
-import type { SubscriptionConnectionEvidence } from "../subscription-connection-evidence.js";
 
 vi.mock("node:child_process", async (importOriginal) =>
   (await import("../../__tests__/support/native-executable.js")).fakeFixtureAcl(await importOriginal()));
@@ -203,52 +201,6 @@ describe("CodexAppServerClient", () => {
     expect(harness.server.requests.filter((request) => request.method === "account/rateLimits/read")).toHaveLength(1);
   });
 
-  it.each(["same account", "disconnected", "logged out", "different account"] as const)(
-    "settles a first-turn isolation proof after a later observation of %s",
-    async (scenario) => {
-      const held = deferred<void>();
-      const started = deferred<void>();
-      let email: string | null = "alice@example.test";
-      const harness = await createHarness((request) => {
-        if (request.method === "account/read") return { account: email && { type: "chatgpt", email, planType: "plus" } };
-        if (request.method === "account/logout") { email = null; return {}; }
-        return standardInitialize(request);
-      });
-      const service = await SubscriptionRuntimeService.create(async () => undefined, {
-        namespace: createSubscriptionRuntimeNamespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories,
-        claudeCodeReleaseFetch: async () => { throw new Error("Unexpected release request"); },
-        acpRegistry: { stopAll: async () => {} } as unknown as AcpSubscriptionRuntimeRegistry,
-        codexClient: harness.client,
-        createCodexConversationRuntime: () => ({
-          verifyIsolation: async () => { started.resolve(); await held.promise; },
-          stop: vi.fn(),
-        }) as unknown as CodexConversationRuntime,
-      });
-      try {
-        const turn = service.openTextSession({ kind: "subscription", provider: "codex" });
-        void turn.catch(() => {});
-        await started.promise;
-        if (scenario === "disconnected") email = null;
-        if (scenario === "different account") email = "bob@example.test";
-        const status = await (scenario === "logged out" ? service.logout("codex") : service.getStatus("codex"));
-        expect(status.capabilities.chat).toBe(false);
-        held.resolve();
-        if (scenario === "same account") {
-          const session = await turn;
-          expect(session.provider).toBe("codex");
-          await session.stop();
-          expect((await service.getStatus("codex", { allowCached: true })).capabilities.chat).toBe(true);
-        } else {
-          await expect(turn).rejects.toMatchObject({ code: "subscription-status-superseded" });
-          expect((await service.getStatus("codex", { allowCached: true })).capabilities.chat).toBe(false);
-        }
-      } finally {
-        held.resolve();
-        await service.stop();
-      }
-    },
-  );
-
   it("keeps the authenticated transport usable after an optional quota timeout", async () => {
     const requested = deferred<RpcRequest>();
     const harness = await createHarness((request) => {
@@ -368,11 +320,8 @@ describe("CodexAppServerClient", () => {
       rateLimits: { limitId: "codex", primary: { usedPercent: 80, resetsAt: 1730947200 } },
     } })}\n`);
     await new Promise<void>((resolve) => setImmediate(resolve));
-    expect(harness.client.getCachedStatus().connection).toBe("signed-out");
+    expect(harness.client.getCachedStatus().connection).toBe(authMode === null ? "signed-out" : "connected");
     expect(onPlanUsage).not.toHaveBeenCalled();
-    if (authMode === "chatgpt") {
-      await expect(harness.client.getStatus(false)).resolves.toMatchObject({ connection: "connected", planType: "plus" });
-    }
   });
 
   it("reads reported quota for a connected account and consumes account updates", async () => {
@@ -422,14 +371,11 @@ describe("CodexAppServerClient", () => {
     const harness = await createHarness(standardInitialize, {
       resolveRuntime: async () => { throw new CodexUserRuntimeError("codex-runtime-not-installed"); },
     });
-    const verdict = vi.fn(() => true);
-    harness.client.connectionEvidence = () => verdict;
     await expect(harness.client.getStatus()).resolves.toMatchObject({
       runtime: "not-configured",
       connection: "signed-out",
       version: null,
     });
-    expect(verdict).toHaveBeenCalledExactlyOnceWith({ kind: "unavailable", runtime: "not-configured" });
     await expect(harness.client.startBrowserLogin()).rejects.toMatchObject({ code: "codex-runtime-not-configured" });
     expect(harness.spawnCalls).toHaveLength(0);
   });
@@ -610,33 +556,6 @@ describe("CodexAppServerClient", () => {
     });
   });
 
-  it.each([false, true])("keeps overlapping account reads behind the owned initialize response, stop=%s", async (stopDuringInitialize) => {
-    const harness = await createHarness((request) => {
-      if (request.method === "initialize") return DEFER_RESPONSE;
-      if (request.method === "account/read") return { account: null };
-      throw new Error("Unexpected request");
-    });
-    const first = harness.client.getStatus();
-    void first.catch(() => undefined);
-    await vi.waitFor(() => expect(harness.server.requests).toHaveLength(2), NATIVE_LOCATION_WAIT);
-    const second = harness.client.getStatus();
-    void second.catch(() => undefined);
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    expect(harness.server.requests.map(({ method }) => method)).toEqual(["initialize", "initialized"]);
-    const initialize = harness.server.requests[0];
-    if (stopDuringInitialize) harness.client.stop();
-    harness.server.stdout.write(`${JSON.stringify({ id: initialize?.id, result: {} })}\n`);
-    if (stopDuringInitialize) {
-      await expect(first).rejects.toMatchObject({ code: "codex-runtime-start-failed" });
-      await expect(second).rejects.toMatchObject({ code: "codex-runtime-start-failed" });
-      expect(harness.server.requests).toHaveLength(2);
-    } else {
-      await expect(first).resolves.toMatchObject({ connection: "signed-out" });
-      await expect(second).resolves.toMatchObject({ connection: "signed-out" });
-    }
-    expect(harness.spawnCalls).toHaveLength(1);
-  });
-
   it("opens only a trusted browser login URL and returns a URL-free pending status", async () => {
     const authUrl = "https://auth.openai.com/authorize?state=browser-only-state";
     const harness = await createHarness((request) => {
@@ -690,39 +609,6 @@ describe("CodexAppServerClient", () => {
     await vi.waitFor(() => expect(harness.server.requests).toContainEqual(expect.objectContaining({ method: "account/login/cancel" })));
     await expect(harness.client.getStatus()).rejects.toMatchObject({ code: "codex-login-failed" });
     await expect(login.completion).resolves.toBeUndefined();
-  });
-
-  it("admits a successor after an older window cancellation finishes", async () => {
-    const harness = await createHarness((request) => {
-      if (request.method === "initialize") return standardInitialize(request);
-      if (request.method === "account/login/start") {
-        return { type: "chatgpt", loginId: "reused-login", authUrl: "https://auth.openai.com/authorize" };
-      }
-      if (request.method === "account/login/cancel") return DEFER_RESPONSE;
-      throw new Error("Unexpected login request");
-    });
-    const records = vi.fn<(evidence: SubscriptionConnectionEvidence) => undefined>(() => undefined);
-    harness.client.connectionEvidence = records;
-    await harness.client.startBrowserLogin();
-    const first = harness.openAuthorizationUrl.mock.calls[0][1] as import("../oauth-login.js").OAuthLoginOptions;
-    first.onCancel();
-    expect(harness.client.getCachedStatus().pendingLogin).toBeNull();
-    await vi.waitFor(() => expect(harness.server.requests).toContainEqual(expect.objectContaining({ method: "account/login/cancel" })));
-    const cancel = requiredFixture(harness.server.requests.find(({ method }) => method === "account/login/cancel"));
-
-    const successor = harness.client.startBrowserLogin();
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    expect(harness.server.requests.filter(({ method }) => method === "account/login/start")).toHaveLength(1);
-    harness.server.stdout.write(`${JSON.stringify({ id: cancel.id, result: {} })}\n`);
-    await successor;
-    expect(harness.spawnCalls).toHaveLength(1);
-    expect(harness.client.getCachedStatus().pendingLogin).toBe("browser");
-    const attempts = records.mock.calls.map(([evidence]) => evidence).filter(
-      (evidence) => evidence.kind === "login-started" || evidence.kind === "login-retired",
-    );
-    expect(attempts.map(({ kind }) => kind)).toEqual(["login-started", "login-retired", "login-started"]);
-    expect(attempts[1]?.attempt).toBe(attempts[0]?.attempt);
-    expect(attempts[2]?.attempt).not.toBe(attempts[0]?.attempt);
   });
 
   it("rejects an untrusted login URL without opening it", async () => {
@@ -784,39 +670,6 @@ describe("CodexAppServerClient", () => {
     expect(projected).not.toContain("main-process-only");
     expect(projected).not.toContain("chatgpt.com/device");
   });
-  it("keeps the pending device code through repeated signed-out account polls", async () => {
-    const harness = await createHarness((request) => {
-      if (request.method === "account/read") return { account: null };
-      if (request.method === "account/login/start") return {
-        type: "chatgptDeviceCode", loginId: "device-login", verificationUrl: "https://chatgpt.com/device", userCode: "ABCD-EFGH",
-      };
-      if (request.method === "account/login/cancel") return {};
-      return standardInitialize(request);
-    });
-    const service = await SubscriptionRuntimeService.create(async () => undefined, {
-      namespace: createSubscriptionRuntimeNamespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories,
-      claudeCodeReleaseFetch: async () => { throw new Error("Unexpected release request"); },
-      acpRegistry: { stopAll: async () => {} } as unknown as AcpSubscriptionRuntimeRegistry,
-      codexClient: harness.client,
-    });
-    try {
-      const pending = { pendingLogin: "device-code", pendingDeviceCode: "ABCD-EFGH", capabilities: { chat: false } };
-      await expect(service.startLogin("codex", "device-code")).resolves.toMatchObject(pending);
-      await vi.waitFor(() => expect(harness.server.requests.some(({ method }) => method === "account/read")).toBe(true));
-      const readCount = harness.server.requests.filter(({ method }) => method === "account/read").length;
-      for (let poll = 0; poll < 2; poll++) {
-        await expect(service.getStatus("codex")).resolves.toMatchObject({ ...pending, connection: "signed-out" });
-        await expect(service.getCachedStatus("codex")).resolves.toMatchObject(pending);
-      }
-      expect(harness.server.requests.filter(({ method }) => method === "account/read")).toHaveLength(readCount + 2);
-      await expect(service.cancelLogin("codex")).resolves.toMatchObject({
-        pendingLogin: null, pendingDeviceCode: null, capabilities: { chat: false },
-      });
-    } finally {
-      await service.stop();
-    }
-  });
-
   it("clears the volatile device code when sign-in is cancelled", async () => {
     const harness = await createHarness((request) => {
       if (request.method === "initialize") return standardInitialize(request);
@@ -848,57 +701,6 @@ describe("CodexAppServerClient", () => {
       method: "account/login/cancel",
       params: { loginId: "device-login" },
     }));
-  });
-
-  it("treats cancel after successful login as cleanup and waits for a settled account read", async () => {
-    let connected = false;
-    let holdReads = false;
-    const accountReads: RpcRequest[] = [];
-    const harness = await createHarness((request) => {
-      if (request.method === "account/read") {
-        if (holdReads) {
-          accountReads.push(request);
-          return DEFER_RESPONSE;
-        }
-        return { account: connected ? { type: "chatgpt", planType: "plus" } : null };
-      }
-      if (request.method === "account/login/start") return {
-        type: "chatgptDeviceCode", loginId: "device-login", verificationUrl: "https://chatgpt.com/device", userCode: "ABCD-EFGH",
-      };
-      return standardInitialize(request);
-    });
-    const service = await SubscriptionRuntimeService.create(async () => undefined, {
-      namespace: createSubscriptionRuntimeNamespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories,
-      claudeCodeReleaseFetch: async () => { throw new Error("Unexpected release request"); },
-      acpRegistry: { stopAll: async () => {} } as unknown as AcpSubscriptionRuntimeRegistry,
-      codexClient: harness.client,
-    });
-    try {
-      await expect(service.startLogin("codex", "device-code")).resolves.toMatchObject({ pendingLogin: "device-code" });
-      await vi.waitFor(() => expect(harness.server.requests.some(({ method }) => method === "account/read")).toBe(true));
-      connected = true;
-      harness.server.stdout.write(`${JSON.stringify({
-        method: "account/login/completed", params: { loginId: "device-login", success: true },
-      })}\n`);
-      holdReads = true;
-      const replyConnected = (request: RpcRequest) => harness.server.stdout.write(`${JSON.stringify({
-        id: request.id, result: { account: { type: "chatgpt", planType: "plus" } },
-      })}\n`);
-      const cancelled = expect(service.cancelLogin("codex")).resolves.toMatchObject({
-        connection: "unknown", pendingLogin: null, pendingDeviceCode: null, capabilities: { chat: false },
-      });
-      void cancelled.catch(() => undefined);
-      await vi.waitFor(() => expect(accountReads).toHaveLength(1));
-      replyConnected(requiredFixture(accountReads[0]));
-      await cancelled;
-      expect(harness.server.requests.some(({ method }) => method === "account/login/cancel")).toBe(false);
-      await vi.waitFor(() => expect(accountReads).toHaveLength(2));
-      await expect(service.getCachedStatus("codex")).resolves.toMatchObject({ connection: "unknown" });
-      replyConnected(requiredFixture(accountReads[1]));
-      await vi.waitFor(async () => expect(await service.getCachedStatus("codex")).toMatchObject({ connection: "connected" }));
-    } finally {
-      await service.stop();
-    }
   });
 
   it("reports an asynchronous login failure without leaking App Server detail", async () => {

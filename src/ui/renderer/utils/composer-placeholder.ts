@@ -12,11 +12,9 @@ export function computeComposerPlaceholder(opts: {
   streaming: boolean;
   /** Absent on a surface that has no suggested-replies feed (the side chat). */
   suggestedReplies?: SuggestedRepliesSnapshot;
-  connectionMissing?: boolean;
   subscriptionPending?: boolean;
   subscriptionUnavailable?: boolean;
 }): string {
-  if (opts.connectionMissing) return t("llmTab.modelPlaceholderNoProvider");
   if (opts.subscriptionPending) return t("subscriptionProvidersSection.statusChecking");
   if (opts.subscriptionUnavailable) return t("formatIpcError.subscriptionChatUnavailable");
   if (opts.hasApiKey === false) return t("composerPlaceholder.apiKeyMissing");

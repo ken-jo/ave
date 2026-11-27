@@ -123,7 +123,7 @@ export function createSubscriptionChatLoopBindings(input: {
     isSubscriptionConnected: async (provider: SubscriptionRuntimeId) => {
       try {
         const runtime = await getSubscriptionRuntimeService(openAuthorizationUrl, { audit });
-        return await runtime.isConnected(provider);
+        return (await runtime.getStatus(provider, { allowCached: true })).connection === "connected";
       } catch {
         return false;
       }
@@ -227,7 +227,6 @@ export async function wireConversation(
     workBoardStorage,
     agentProfileStore,
     mainWindow,
-    isSubscriptionConnected,
     subscriptionProviderFactory,
   } = ctx;
   // User-typed skill names route to the model for skill_load.
@@ -646,7 +645,6 @@ export async function wireConversation(
       rewireReviewerAgent,
       llmFetch,
       networkFetch: singleHopNetworkFetch,
-      isSubscriptionConnected,
       subscriptionProviderFactory,
     },
     toolRegistry,

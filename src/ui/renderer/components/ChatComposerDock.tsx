@@ -4,7 +4,6 @@ import { KeyRound, ShieldQuestion, Store } from "lucide-react";
 import { useTranslation } from "../../../i18n/react.js";
 import { imageInputRecoveryMessage } from "../../../shared/model-capability-settings.js";
 import { Popover, PopoverContent, PopoverTrigger } from "../../../components/ui/popover.js";
-import { Button } from "../../../components/ui/button.js";
 import { useCallback, type RefObject } from "react";
 import { SessionTasksPanel } from "./SessionTasksPanel.js";
 import { ShellTasksPanel } from "./ShellTasksPanel.js";
@@ -422,7 +421,7 @@ export function ChatComposerDock({
               `hasApiKey` here is App's `effectiveLlmReady`, which already ORs in
               `llmReadyWithoutApiKey` — a keyless-ready session never shows it,
               and `null` (probe unresolved) stays silent. */}
-          {hasApiKey === false && !subscriptionRuntimePolicy?.connectionMissing ? (
+          {hasApiKey === false ? (
             <div
               className="absolute right-0 top-0 z-20"
               data-testid="composer-api-key-chip-slot"
@@ -464,7 +463,6 @@ export function ChatComposerDock({
           onImageAttachmentLimitExceeded={onImageAttachmentLimitExceeded}
           placeholder={computeComposerPlaceholder({
             hasApiKey,
-            connectionMissing: subscriptionRuntimePolicy?.connectionMissing,
             streaming,
             suggestedReplies,
             subscriptionUnavailable: runtimeUnavailable,
@@ -594,13 +592,6 @@ export function ComposerApiKeyChip({
   subscriptionPendingProvider,
 }: ComposerApiKeyChipProps) {
   const { t } = useTranslation();
-  if (subscriptionRuntimePolicy?.connectionMissing) {
-    return (
-      <Button type="button" variant="outline" size="sm" onClick={() => onOpenSettings("llm")}>
-        {t("bottomActionRow.setUpProvider")}
-      </Button>
-    );
-  }
   const subscriptionUnavailable = subscriptionRuntimePolicy
     ? subscriptionRuntimePolicy.chatUnavailable
     : subscriptionUnavailableProvider !== undefined;

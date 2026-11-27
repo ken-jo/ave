@@ -1,11 +1,3 @@
-// @vitest-environment jsdom
-import { act, renderHook, waitFor } from "@testing-library/react";
-import { fakeAppSettings } from "../../../../test/renderer/fake-app-settings.js";
-import { makeMockAveApi } from "../../../../test/renderer/mock-ave-api.js";
-import { useSettings } from "../../../ui/renderer/hooks/use-settings.js";
-import type { AppSettings, AveApi } from "../../../ui/renderer/types.js";
-import type { SubscriptionRuntimeStatusUpdatedEvent } from "../../../shared/subscription-runtime.js";
-import { subscriptionAccountFixture } from "../../../__tests__/support/subscription-account-fixture.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { resolve } from "node:path";
 import type {
@@ -13,19 +5,15 @@ import type {
   SubscriptionRuntimeStatus,
 } from "../../../shared/subscription-runtime.js";
 import { MAX_COMPOSER_ATTACHMENT_COUNT, MAX_COMPOSER_IMAGE_BYTES } from "../../../shared/composer-image-input.js";
-import { claimFakeRuntimeDirectories, createSubscriptionRuntimeNamespace } from "../../../__tests__/support/subscription-runtime-namespace.js";
-import type { CodexSubscriptionStatus } from "../../../shared/codex-subscription.js";
-import { acpSubscriptionStatus } from "../../../shared/acp-subscription.js";
 import { SETTINGS } from "../../../shared/ipc-channels.js";
+import { CHANNELS } from "../../../contract/app-contract.js";
 import { deferred } from "../../../__tests__/test-helpers.js";
 import { makeAppIpcInvoker } from "./test-helpers.js";
 
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
 const runtimeServiceMock = vi.hoisted(() => ({
   get: vi.fn(),
-  connectionProjection: vi.fn(),
-  hostRevision: vi.fn(() => 0),
-  onAutoVerified: vi.fn((_listener: (provider: SubscriptionRuntimeId, connected?: boolean) => void) => vi.fn()),
+  onAutoVerified: vi.fn((_listener: (provider: string) => void) => vi.fn()),
   errorCode: vi.fn((error: unknown) => {
     if (
       error !== null
@@ -64,12 +52,9 @@ vi.mock("electron", () => ({
   shell: { openExternal: shellOpenExternal },
 }));
 
-vi.mock("../../../main/subscription-runtime-service.js", async (importOriginal) => ({
-  ...await importOriginal<typeof import("../../../main/subscription-runtime-service.js")>(),
+vi.mock("../../../main/subscription-runtime-service.js", () => ({
   getSubscriptionRuntimeService: runtimeServiceMock.get,
   onSubscriptionRuntimeStatusChanged: runtimeServiceMock.onAutoVerified,
-  subscriptionConnectionProjection: runtimeServiceMock.connectionProjection,
-  subscriptionHostRevision: runtimeServiceMock.hostRevision,
   subscriptionRuntimeErrorCode: runtimeServiceMock.errorCode,
   SubscriptionRuntimeServiceError: runtimeServiceMock.RuntimeError,
 }));
@@ -475,179 +460,6 @@ describe("common subscription runtime IPC", () => {
     expect(unsubscribe).toHaveBeenCalledOnce();
   });
 
-  it.each([
-    { name: "publishes each transport connection change to the active model once", failsSelection: false },
-    { name: "restores the mounted composer after a concurrent selection fails verification", failsSelection: true },
-  ])("$name", async ({ failsSelection }) => {
-    const actual = await vi.importActual<typeof import("../../../main/subscription-runtime-service.js")>(
-      "../../../main/subscription-runtime-service.js",
-    );
-    const selection = { kind: "subscription", provider: "codex", model: "saved-model" } as const;
-    const connected: CodexSubscriptionStatus = {
-      runtime: "ready", connection: "connected", planType: "plus", pendingLogin: null, pendingDeviceCode: null, version: "test",
-    };
-    let status = connected;
-    const getStatus = vi.fn(async () => status);
-    const verifyIsolation = vi.fn(async () => {});
-    const service = await actual.SubscriptionRuntimeService.create(async () => {}, {
-      namespace: createSubscriptionRuntimeNamespace(),
-      claimRuntimeDirectories: claimFakeRuntimeDirectories,
-      claudeCodeClient: { stop: vi.fn() } as never,
-      codexClient: subscriptionAccountFixture({ getStatus, stop: vi.fn() }) as never,
-      acpRegistry: { stopAll: vi.fn() } as never,
-      createCodexConversationRuntime: () => ({ verifyIsolation, stop: vi.fn() }) as never,
-    });
-    runtimeServiceMock.get.mockResolvedValue(service);
-    runtimeServiceMock.connectionProjection.mockImplementation(actual.subscriptionConnectionProjection);
-    runtimeServiceMock.hostRevision.mockImplementation(actual.subscriptionHostRevision);
-    runtimeServiceMock.onAutoVerified.mockImplementationOnce((listener) => vi.fn(actual.onSubscriptionRuntimeStatusChanged(listener)));
-    const { deps, currentLlm } = makeStatefulSelectionDeps({
-      provider: "openai", vendors: { openai: { model: "unused", baseUrl: null } }, activeChatRuntime: selection,
-    });
-    const isSubscriptionConnected = async () => (await service.getStatus(selection.provider, { allowCached: true })).connection === "connected";
-    const send = vi.fn();
-    deps.getAppWindows = vi.fn(() => [{ isDestroyed: () => false, webContents: { isDestroyed: () => false, send } }]);
-    const { registerSettingsHandlers } = await import("../settings.js");
-    const dispose = registerSettingsHandlers({ ...deps, isSubscriptionConnected } as never);
-    let unmount: (() => void) | undefined;
-    try {
-      await service.verify(selection.provider);
-      const initial = await invoke("ave:settings:get");
-      const selected = { kind: "subscription", provider: selection.provider, model: selection.model };
-      expect(initial).toMatchObject({ activeChatModel: selected });
-      await vi.waitFor(() => expect(send).toHaveBeenCalledWith(SETTINGS.updated, expect.objectContaining({ activeChatModel: selected })));
-      send.mockClear();
-      const held = deferred<CodexSubscriptionStatus>();
-      getStatus.mockImplementationOnce(() => held.promise);
-      const earlierSampleCount = getStatus.mock.calls.length;
-      const older = invoke("ave:settings:subscription:status", selection.provider, { refresh: true });
-      await vi.waitFor(() => expect(getStatus).toHaveBeenCalledTimes(earlierSampleCount + 1));
-      status = { ...connected, connection: "signed-out" };
-      await expect(service.openTextSession(selection)).rejects.toMatchObject({ code: "subscription-chat-unavailable" });
-      await vi.waitFor(() => expect(send).toHaveBeenCalledWith(SETTINGS.updated, expect.objectContaining({
-        activeChatModel: { kind: "none", reason: "no-connected-provider" },
-      })));
-      held.resolve(connected);
-      await expect(older).resolves.toMatchObject({ ok: true, status: { connection: "signed-out", capabilities: { chat: false } } });
-      expect(await isSubscriptionConnected()).toBe(false);
-
-      if (failsSelection) {
-        const project = (snapshot: unknown) => {
-          const { activeChatModel, subscriptionRevision, llm } = snapshot as AppSettings;
-          return fakeAppSettings({ activeChatModel, subscriptionRevision, llm: { activeChatRuntime: llm.activeChatRuntime } });
-        };
-        const { api, emitSubscriptionRuntimeStatusUpdated } = makeMockAveApi({
-          getSettings: async () => project(await invoke("ave:settings:get")),
-        });
-        api.subscriptionRuntimeStatus.mockImplementation(async () => ({ ok: true, status: await service.getCachedStatus(selection.provider) }));
-        send.mockImplementation((channel, payload) => {
-          if (channel === SETTINGS.updated) api.onSettingsUpdated.mock.calls[0]?.[0](project(payload));
-          if (channel === "ave:settings:subscription:status-updated") {
-            emitSubscriptionRuntimeStatusUpdated(payload as SubscriptionRuntimeStatusUpdatedEvent);
-          }
-        });
-        const composer = renderHook(() => useSettings(api as unknown as AveApi));
-        unmount = composer.unmount;
-        await waitFor(() => expect(composer.result.current.activeChatModel).toEqual({ kind: "none", reason: "no-connected-provider" }));
-        const localeStarted = deferred<void>();
-        const releaseLocale = deferred<boolean>();
-        localeMock.tryLoadLocaleMessages.mockImplementationOnce(() => {
-          localeStarted.resolve();
-          return releaseLocale.promise;
-        });
-        status = connected;
-        await act(async () => {
-          try {
-            await invoke("ave:settings:subscription:status", selection.provider, { refresh: true });
-            await localeStarted.promise;
-            vi.spyOn(service, "verify").mockRejectedValueOnce(new actual.SubscriptionRuntimeServiceError("subscription-operation-failed"));
-            await expect(invoke("ave:settings:subscription:use-for-chat", "kimi-code")).resolves.toMatchObject({
-              ok: false, error: "subscription-operation-failed",
-            });
-            expect(composer.result.current.activeChatModel).toMatchObject({ kind: "none" });
-          } finally {
-            releaseLocale.resolve(true);
-          }
-        });
-        await waitFor(() => expect(composer.result.current.activeChatModel).toEqual(selected));
-        expect(api.getSettings).toHaveBeenCalledOnce();
-      } else {
-        status = connected;
-        await invoke("ave:settings:subscription:status", selection.provider, { refresh: true });
-      }
-      await vi.waitFor(() => expect(send).toHaveBeenCalledWith(SETTINGS.updated, expect.objectContaining({ activeChatModel: selected })));
-      expect(deps.rewireReviewerAgent).not.toHaveBeenCalled();
-      expect(send.mock.calls.filter(([channel]) => channel === SETTINGS.updated)).toHaveLength(2);
-      expect(send.mock.calls.filter(([channel, payload]) => channel === "ave:settings:subscription:status-updated"
-        && (payload as SubscriptionRuntimeStatusUpdatedEvent).provider === selection.provider)).toHaveLength(2);
-      expect(currentLlm().activeChatRuntime).toEqual(selection);
-      expect(deps.settingsService.patch).not.toHaveBeenCalled();
-      expect(verifyIsolation).toHaveBeenCalledOnce();
-    } finally {
-      unmount?.();
-      dispose();
-      await service.stop();
-    }
-  });
-
-  it.each([false, true])("publishes a failed focus probe and its recovery with Settings closed, previously connected=%s", async (previouslyConnected) => {
-    const actual = await vi.importActual<typeof import("../../../main/subscription-runtime-service.js")>(
-      "../../../main/subscription-runtime-service.js",
-    );
-    const selection = { kind: "subscription", provider: "codex", model: "saved-model" } as const;
-    const ready: CodexSubscriptionStatus = {
-      runtime: "ready", connection: "connected", planType: "plus", pendingLogin: null, pendingDeviceCode: null, version: "test",
-    };
-    const getStatus = vi.fn(async () => ready);
-    const service = await actual.SubscriptionRuntimeService.create(async () => {}, {
-      namespace: createSubscriptionRuntimeNamespace(),
-      claimRuntimeDirectories: claimFakeRuntimeDirectories,
-      claudeCodeClient: { stop: vi.fn() } as never,
-      codexClient: subscriptionAccountFixture({ getStatus, getCachedStatus: () => ready, stop: vi.fn() }) as never,
-      acpRegistry: { stopAll: vi.fn() } as never,
-    });
-    runtimeServiceMock.get.mockResolvedValue(service);
-    runtimeServiceMock.connectionProjection.mockImplementation(actual.subscriptionConnectionProjection);
-    runtimeServiceMock.hostRevision.mockImplementation(actual.subscriptionHostRevision);
-    runtimeServiceMock.onAutoVerified.mockImplementationOnce((listener) => vi.fn(actual.onSubscriptionRuntimeStatusChanged(listener)));
-    const { deps, currentLlm } = makeStatefulSelectionDeps({
-      provider: "openai", vendors: { openai: { model: "unused", baseUrl: null } }, activeChatRuntime: selection,
-    });
-    const send = vi.fn();
-    deps.getAppWindows = vi.fn(() => [{ isDestroyed: () => false, webContents: { isDestroyed: () => false, send } }]);
-    const { registerSettingsHandlers } = await import("../settings.js");
-    const dispose = registerSettingsHandlers({
-      ...deps, isSubscriptionConnected: async () => (await service.getStatus(selection.provider)).connection === "connected",
-    } as never);
-    const focusProbe = () => invoke("ave:settings:subscription:status", selection.provider, { refresh: true });
-    try {
-      if (previouslyConnected) {
-        await focusProbe();
-        await vi.waitFor(() => expect(send).toHaveBeenCalledWith(SETTINGS.updated, expect.objectContaining({ activeChatModel: selection })));
-        send.mockClear();
-      }
-      getStatus.mockRejectedValueOnce(new actual.SubscriptionRuntimeServiceError("subscription-runtime-incompatible"));
-      await expect(focusProbe()).resolves.toMatchObject({
-        ok: false, error: "subscription-runtime-incompatible",
-        status: { runtime: "unavailable", connection: "unknown", capabilities: { chat: false } },
-      });
-      await vi.waitFor(() => expect(send).toHaveBeenCalledWith(SETTINGS.updated, expect.objectContaining({
-        activeChatModel: { kind: "none", reason: "no-connected-provider" },
-      })));
-      await expect(focusProbe()).resolves.toMatchObject({ ok: true, status: { connection: "connected" } });
-      await vi.waitFor(() => expect(send).toHaveBeenCalledWith(SETTINGS.updated, expect.objectContaining({
-        activeChatModel: selection,
-      })));
-      expect(send.mock.calls.filter(([channel]) => channel === SETTINGS.updated)).toHaveLength(2);
-      expect(send.mock.calls.filter(([channel]) => channel === "ave:settings:subscription:status-updated")).toHaveLength(2);
-      expect(currentLlm().activeChatRuntime).toEqual(selection);
-      expect(deps.settingsService.patch).not.toHaveBeenCalled();
-    } finally {
-      dispose();
-      await service.stop();
-    }
-  });
-
   it("announces the subscription restored when overlapping switches fail to save", async () => {
     const saved = { kind: "subscription", provider: "kimi-code" } as const;
     const state = makeStatefulSelectionDeps({
@@ -767,49 +579,6 @@ describe("common subscription runtime IPC", () => {
       llm: { activeChatRuntime: { kind: "subscription", provider: "kimi-code" } },
     });
   });
-
-  it("broadcasts a single status event for an ACP verification recovery", async () => {
-    const actual = await vi.importActual<typeof import("../../../main/subscription-runtime-service.js")>(
-      "../../../main/subscription-runtime-service.js",
-    );
-    const service = await actual.SubscriptionRuntimeService.create(async () => undefined, {
-      namespace: createSubscriptionRuntimeNamespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories,
-      claudeCodeClient: { stop: vi.fn() } as never, codexClient: { stop: vi.fn() } as never,
-      acpRegistry: {
-        stopAll: vi.fn(),
-        verify: async () => acpSubscriptionStatus("kimi-code", "ready", "connected"),
-      } as never,
-    });
-    runtimeServiceMock.get.mockResolvedValue(service);
-    runtimeServiceMock.connectionProjection.mockImplementation(actual.subscriptionConnectionProjection);
-    runtimeServiceMock.onAutoVerified.mockImplementationOnce((listener) => vi.fn(actual.onSubscriptionRuntimeStatusChanged(listener)));
-    const deps = makeDeps();
-    const send = vi.fn();
-    deps.getAppWindows = vi.fn(() => [{ isDestroyed: () => false, webContents: { isDestroyed: () => false, send } }]);
-    const { registerSettingsHandlers } = await import("../settings.js");
-    const dispose = registerSettingsHandlers(deps as never);
-    try {
-      const statusUpdated = "ave:settings:subscription:status-updated";
-      await expect(invoke("ave:settings:subscription:verify", "kimi-code")).resolves.toMatchObject({
-        ok: true, status: { capabilities: { chat: true } },
-      });
-      const events = send.mock.calls.filter(([channel]) => channel === statusUpdated);
-      expect(events).toEqual([[statusUpdated, {
-        provider: "kimi-code", connected: true,
-        revision: actual.subscriptionConnectionProjection("kimi-code")?.revision,
-      }]]);
-      send.mockClear();
-      const verified = await invoke("ave:settings:subscription:verify", "kimi-code");
-      expect(verified).toMatchObject({ ok: true, status: { revision: expect.any(Number) } });
-      expect(send.mock.calls.filter(([channel]) => channel === statusUpdated)).toEqual([
-        [statusUpdated, { provider: "kimi-code", revision: actual.subscriptionHostRevision() }],
-      ]);
-    } finally {
-      dispose();
-      runtimeServiceMock.connectionProjection.mockReset();
-      await service.stop();
-    }
-  });
   it("emits revision-only status invalidations for runtime mutations, including failures", async () => {
     const deps = makeDeps();
     const send = vi.fn();
@@ -842,6 +611,50 @@ describe("common subscription runtime IPC", () => {
     expect(events[0]).toEqual({ provider: "codex", revision: expect.any(Number) });
     expect(events[1]).toEqual({ provider: "codex", revision: expect.any(Number) });
     expect(events[1]!.revision).toBeGreaterThan(events[0]!.revision);
+  });
+
+  it("publishes the saved model only after sign-in and ignores a status reply that predates logout", async () => {
+    const selection = { kind: "subscription", provider: "codex", model: "example-model" } as const;
+    const { deps, currentLlm } = makeStatefulSelectionDeps({
+      provider: "openai", vendors: { openai: { model: "example-api-model", baseUrl: null } }, activeChatRuntime: selection,
+    });
+    const send = vi.fn();
+    deps.getAppWindows.mockReturnValue([{
+      isDestroyed: () => false,
+      webContents: { isDestroyed: () => false, send },
+    }]);
+    const signedOut = { ...readyStatus("codex"), connection: "signed-out" } as const;
+    const noModel = { kind: "none", reason: "no-connected-provider" };
+    const pending = { ...signedOut, connection: "pending", pendingLogin: "browser" } as const;
+    const { registerSettingsHandlers } = await import("../settings.js");
+    registerSettingsHandlers(deps as never);
+    const readStatus = () => invoke(CHANNELS.settings.subscriptionRuntimeStatus, "codex");
+    const readModels = () => send.mock.calls.filter(([channel]) => channel === SETTINGS.updated).map(([, snapshot]) => snapshot.activeChatModel);
+
+    runtime.getStatus.mockResolvedValueOnce(signedOut);
+    await readStatus();
+    await vi.waitFor(() => expect(readModels()).toEqual([noModel]));
+    runtime.startLogin.mockResolvedValueOnce(pending);
+    await expect(invoke(CHANNELS.settings.subscriptionStartLogin, "codex", "browser")).resolves.toMatchObject({ ok: true, status: pending });
+    runtime.cancelLogin.mockResolvedValueOnce(signedOut);
+    await expect(invoke(CHANNELS.settings.subscriptionCancelLogin, "codex")).resolves.toMatchObject({ ok: true, status: signedOut });
+    expect(readModels()).toEqual([noModel]);
+
+    runtime.startLogin.mockResolvedValueOnce(pending);
+    await invoke(CHANNELS.settings.subscriptionStartLogin, "codex", "browser");
+    await readStatus();
+    await vi.waitFor(() => expect(readModels()).toEqual([noModel, selection]));
+
+    const oldRead = deferred<SubscriptionRuntimeStatus>();
+    runtime.getStatus.mockReturnValueOnce(oldRead.promise);
+    const staleReply = readStatus();
+    runtime.logout.mockResolvedValueOnce(signedOut);
+    await invoke(CHANNELS.settings.subscriptionLogout, "codex");
+    await vi.waitFor(() => expect(readModels()).toEqual([noModel, selection, noModel]));
+    oldRead.resolve(readyStatus("codex"));
+    await staleReply;
+    expect(readModels()).toEqual([noModel, selection, noModel]);
+    expect(currentLlm().activeChatRuntime).toEqual(selection);
   });
 
   it("serves settings status and catalog reads from the runtime cache unless the user asks to check again", async () => {
@@ -1107,7 +920,7 @@ describe("common subscription runtime IPC", () => {
     await firstApplied.promise;
     await expect(invoke("ave:settings:subscription:use-api-for-chat")).resolves.toEqual({ ok: true });
     releaseFirstPersist.resolve();
-    await expect(older).resolves.toMatchObject({ ok: false, error: "subscription-status-superseded" });
+    await expect(older).resolves.toMatchObject({ ok: true, status: { provider: "codex" } });
 
     expect(state.currentLlm().activeChatRuntime).toEqual({ kind: "api" });
     expect(rewire).toHaveBeenCalledTimes(2);
@@ -1185,7 +998,7 @@ describe("common subscription runtime IPC", () => {
     await firstLocaleRequested.promise;
     await expect(invoke("ave:settings:subscription:use-api-for-chat")).resolves.toEqual({ ok: true });
     releaseFirstLocale.resolve(true);
-    await expect(older).resolves.toMatchObject({ ok: false, error: "subscription-status-superseded" });
+    await expect(older).resolves.toMatchObject({ ok: true, status: { provider: "codex" } });
 
     expect(localeMock.setLocale).toHaveBeenCalledTimes(1);
     expect(localeMock.setLocale).toHaveBeenCalledWith("en");

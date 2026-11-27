@@ -52,11 +52,7 @@ describe("renderer types are the owner types", () => {
   it("AppSettings omits settings with dedicated renderer channels", () => {
     expectTypeOf<AppSettings>().toEqualTypeOf<RendererSettingsSnapshot>();
     expectTypeOf<AppSettings>().toEqualTypeOf<
-      Omit<HostAppSettings, "a2aRemote" | "upstreamProxy" | "memoryEmbedding"> & {
-        readonly activeChatModel: ActiveChatModel;
-        readonly subscriptionRevision: number;
-        readonly vertexProjectConfigured: boolean;
-      }
+      Omit<HostAppSettings, "a2aRemote" | "upstreamProxy" | "memoryEmbedding"> & { readonly activeChatModel: ActiveChatModel }
     >();
     expectTypeOf<"a2aRemote">().not.toMatchTypeOf<keyof AppSettings>();
     expectTypeOf<"upstreamProxy">().not.toMatchTypeOf<keyof AppSettings>();

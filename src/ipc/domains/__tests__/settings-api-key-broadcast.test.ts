@@ -125,25 +125,11 @@ function depsWithOpenAiListing(before: readonly string[] | null, after: readonly
 
 beforeEach(async () => {
   handlers.clear();
-  vi.stubEnv("GOOGLE_CLOUD_PROJECT", undefined);
-  vi.stubEnv("GCLOUD_PROJECT", undefined);
   listLlmModelsFromSettingsMock.mockReset();
   listLlmModelsFromSettingsMock.mockResolvedValue({ ok: true, models: [], endpoint: "", fetchedAt: "" });
   vi.resetModules();
   const { configureHostResources } = await import("../../../main/host-resources.js");
   configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
-});
-
-it.each(["GOOGLE_CLOUD_PROJECT", "GCLOUD_PROJECT"])("projects a host-only project as available via %s", async (envName) => {
-  const deps = makeDeps([]);
-  const { rendererSettingsSnapshot } = await import("../settings.js");
-  vi.stubEnv("GOOGLE_CLOUD_PROJECT", undefined);
-  vi.stubEnv("GCLOUD_PROJECT", undefined);
-  expect((await rendererSettingsSnapshot(deps.settingsService as never)).vertexProjectConfigured).toBe(false);
-  vi.stubEnv(envName, "example-project");
-  const projected = await rendererSettingsSnapshot(deps.settingsService as never);
-  expect(projected.vertexProjectConfigured).toBe(true);
-  expect(JSON.stringify(projected)).not.toContain("example-project");
 });
 
 describe("set-api-key broadcast (M3)", () => {
@@ -162,7 +148,7 @@ describe("set-api-key broadcast (M3)", () => {
     expect(deps.conversationLoop.refreshProvider).toHaveBeenCalled();
     expect(deps.sideChatConversationLoop.refreshProvider).toHaveBeenCalled();
     for (const win of windows) {
-      expect(win.webContents.send).toHaveBeenCalledWith(SETTINGS.updated, { ...snapshot, activeChatModel: NO_CONNECTED_PROVIDER, vertexProjectConfigured: false, subscriptionRevision: expect.any(Number) });
+      expect(win.webContents.send).toHaveBeenCalledWith(SETTINGS.updated, { ...snapshot, activeChatModel: NO_CONNECTED_PROVIDER });
     }
   });
 
@@ -246,7 +232,7 @@ describe("delete-api-key broadcast (MAJOR-3)", () => {
     expect(deps.conversationLoop.refreshProvider).toHaveBeenCalled();
     expect(deps.sideChatConversationLoop.refreshProvider).toHaveBeenCalled();
     for (const win of windows) {
-      expect(win.webContents.send).toHaveBeenCalledWith(SETTINGS.updated, { ...snapshot, activeChatModel: NO_CONNECTED_PROVIDER, vertexProjectConfigured: false, subscriptionRevision: expect.any(Number) });
+      expect(win.webContents.send).toHaveBeenCalledWith(SETTINGS.updated, { ...snapshot, activeChatModel: NO_CONNECTED_PROVIDER });
     }
   });
 
@@ -356,7 +342,7 @@ describe("set-web-api-key broadcast (MAJOR-3)", () => {
 
     expect(deps.settingsService.setSecret).toHaveBeenCalledWith("web.apiKey.tavily", "fixture-web-key");
     for (const win of windows) {
-      expect(win.webContents.send).toHaveBeenCalledWith(SETTINGS.updated, { ...snapshot, activeChatModel: NO_CONNECTED_PROVIDER, vertexProjectConfigured: false, subscriptionRevision: expect.any(Number) });
+      expect(win.webContents.send).toHaveBeenCalledWith(SETTINGS.updated, { ...snapshot, activeChatModel: NO_CONNECTED_PROVIDER });
     }
   });
 });
@@ -375,7 +361,7 @@ describe("delete-web-api-key broadcast (MAJOR-3)", () => {
 
     expect(deps.settingsService.deleteSecret).toHaveBeenCalledWith("web.apiKey.tavily");
     for (const win of windows) {
-      expect(win.webContents.send).toHaveBeenCalledWith(SETTINGS.updated, { ...snapshot, activeChatModel: NO_CONNECTED_PROVIDER, vertexProjectConfigured: false, subscriptionRevision: expect.any(Number) });
+      expect(win.webContents.send).toHaveBeenCalledWith(SETTINGS.updated, { ...snapshot, activeChatModel: NO_CONNECTED_PROVIDER });
     }
   });
 });
@@ -1188,7 +1174,7 @@ describe("Minor-1: broadcastSettingsSnapshot helper — all mutation handlers ca
 
     await invoke("ave:settings:set-api-key", "openai", "sk-test");
 
-    expect(win.webContents.send).toHaveBeenCalledWith(SETTINGS.updated, { ...snapshot, activeChatModel: NO_CONNECTED_PROVIDER, vertexProjectConfigured: false, subscriptionRevision: expect.any(Number) });
+    expect(win.webContents.send).toHaveBeenCalledWith(SETTINGS.updated, { ...snapshot, activeChatModel: NO_CONNECTED_PROVIDER });
   });
 
   it("suppresses a stale generic settings:update locale side effect and snapshot", async () => {
@@ -1302,7 +1288,7 @@ describe("Minor-1: broadcastSettingsSnapshot helper — all mutation handlers ca
 
     expect(getLocale()).toBe("ko");
     expect(translate("ko", "settings.appearance.language.title")).toBe("언어");
-    expect(win.webContents.send).toHaveBeenCalledWith(SETTINGS.updated, { ...snapshot, activeChatModel: NO_CONNECTED_PROVIDER, vertexProjectConfigured: false, subscriptionRevision: expect.any(Number) });
+    expect(win.webContents.send).toHaveBeenCalledWith(SETTINGS.updated, { ...snapshot, activeChatModel: NO_CONNECTED_PROVIDER });
   });
 
   it("keeps the current main-process locale and still broadcasts when lazy locale loading fails", async () => {
@@ -1338,7 +1324,7 @@ describe("Minor-1: broadcastSettingsSnapshot helper — all mutation handlers ca
       await invoke("ave:settings:update", { appearance: { language: "ko" } });
 
       expect(getLocale()).toBe("en");
-      expect(win.webContents.send).toHaveBeenCalledWith(SETTINGS.updated, { ...snapshot, activeChatModel: NO_CONNECTED_PROVIDER, vertexProjectConfigured: false, subscriptionRevision: expect.any(Number) });
+      expect(win.webContents.send).toHaveBeenCalledWith(SETTINGS.updated, { ...snapshot, activeChatModel: NO_CONNECTED_PROVIDER });
     } finally {
       restore();
     }
@@ -1513,7 +1499,7 @@ describe("the renderer settings snapshot", () => {
 
     const snapshot = await invoke("ave:settings:get") as Record<string, unknown>;
 
-    expect(snapshot).toEqual({ llm: { provider: "openai" }, activeChatModel: NO_CONNECTED_PROVIDER, vertexProjectConfigured: false, subscriptionRevision: expect.any(Number) });
+    expect(snapshot).toEqual({ llm: { provider: "openai" }, activeChatModel: NO_CONNECTED_PROVIDER });
   });
 });
 
