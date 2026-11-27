@@ -760,7 +760,7 @@ it("requires a native keyboard receipt for an output-bearing approval", async ()
 
 it("shows the full output request on the desktop and executes it only with its bound keyboard receipt", async () => {
   const execute = vi.fn(async ({ output }: { output: { id: string } }) => ({ id: output.id, status: "failed" as const, detail: "output-execution-failed" }));
-  const h = await stageRunHarness({ observeRunWork: true, workflow: { outputs: { execute, accept: input => acceptRequestedOutput(input, createHostGit()) } } });
+  const h = await stageRunHarness({ observeRunWork: true, workflow: { outputs: { execute, accept: input => acceptRequestedOutput(input, createHostGit(), (_decl, args) => ({ input: args, paths: [] })) } } });
   await h.runThenEnd(async () => {
     const decl = { kind: "send-message", owner: "plugin", ownerId: "delivery", toolName: "send" } as const;
     const version = await h.confirm([stageOf("a", { requestedOutputs: [decl] })]);

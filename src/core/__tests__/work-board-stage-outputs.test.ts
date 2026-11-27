@@ -8,7 +8,10 @@ import { AuditLogger } from "../../audit/audit-logger.js";
 import { makeConversationLoopSettings } from "../../engine/__tests__/conversation-loop-test-helpers.js";
 import { makeSubagentLoopDeps, patchLoopProvider } from "../../engine/__tests__/support/subagent-loop-fixtures.js";
 import { PARENT_ALL_TOOL_SCOPE, SubAgentRunner } from "../../engine/subagent-runner.js";
+import { HookRunner } from "../../hooks/hook-runner.js";
 import { mintHostDecisionProof } from "../../main/workflow-template-decision.js";
+import { mcpToolToTool } from "../../mcp/mcp-tool-adapter.js";
+import { mcpToolToPluginTool } from "../../mcp/plugin-tool-from-mcp.js";
 import { MemoryManager } from "../../memory/memory-manager.js";
 import { ApprovalGate, IPC_APPROVAL_REQUEST, type ApprovalRequest } from "../../permissions/approval-gate.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
@@ -30,7 +33,7 @@ const ENVELOPE: StageEnvelope = {
 it("a scheduled run ends at the gate with outputs pending and nothing sent", async () => {
   const send = vi.fn();
   const h = await stageRunHarness({ observeRunWork: true, workflow: {
-    outputs: createRequestedOutputHooks(createHostGit(), send),
+    outputs: createRequestedOutputHooks(createHostGit(), { operands: (_decl, input) => ({ input, paths: [] }), invoke: send }),
     unattendedAllowed: () => ({ ok: true }),
     lane: { admit: async () => ({ ok: true }), sessionLinked: vi.fn(), sessionEnded: vi.fn(), onDenied: () => () => {} },
   } });
@@ -142,18 +145,21 @@ it("a recorded tool uses the deciding window for its fresh permission check and 
   });
   const gate = new ApprovalGate(sessionId => approvalSurfaceRegistry.resolve(sessionId));
   const registry = new ToolRegistry();
+  const decl = { ...DECLARATION, owner: "plugin" } as const;
   const execute = vi.fn(async () => ({ output: "Sent", isError: false }));
-  registry.register(createDynamicTool({ ...DECLARATION, name: DECLARATION.toolName, source: "mcp", mcpServerId: DECLARATION.ownerId,
+  registry.register(createDynamicTool({ name: decl.toolName, source: "plugin", pluginId: decl.ownerId, pathFields: [],
     description: "Send a report", category: "write", jsonSchema: { type: "object" }, execute }));
   const manager = new PermissionManager(join(h.dir, "permissions.json"));
   manager.setMode("strict");
-  const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, undefined, new AuditLogger());
-  const invoke = governedWorkflowOutput(registry, executor);
+  const hooks = new HookRunner();
+  hooks.registerPreHook("rewrite-payload", () => ({ action: "modify", updatedInput: { message: "Changed" } }));
+  const executor = new ToolExecutor(registry, hooks, manager, undefined, gate, undefined, new AuditLogger());
+  const adapter = governedWorkflowOutput(registry, executor);
   const recheck = vi.fn(async () => true);
   try {
-    const dispatch = invoke({
-      output: { id: "approved", decl: DECLARATION, args: '{"message":"Approved"}', summary: "Send report" },
-      args: { message: "Changed" }, root: h.dir, surface: owner as never, recheck,
+    const dispatch = adapter.invoke({
+      output: { id: "approved", decl, args: '{"message":"Approved"}', summary: "Send report" },
+      args: { message: "Approved" }, root: h.dir, workspace: h.dir, surface: owner as never, recheck,
     });
     const card = await shown.promise;
     expect(card.toolName).toBe(DECLARATION.toolName);
@@ -168,7 +174,7 @@ it("a recorded tool uses the deciding window for its fresh permission check and 
   }
 });
 
-it.each(["manifest", "upload", "declared operand", "conventional operand"] as const)("refuses an unbound file argument from a %s", async (kind) => {
+it.each(["unverified", "inline upload", "file operands"] as const)("binds requested output by verified operands for %s", async scenario => {
   const { governedWorkflowOutput } = await import("../../boot/steps/workflow-output-invocation.js");
   const { approvalSurfaceRegistry } = await import("../../permissions/approval-surface-registry.js");
   const { ToolExecutor } = await import("../../tools/executor.js");
@@ -178,39 +184,66 @@ it.each(["manifest", "upload", "declared operand", "conventional operand"] as co
   owner.send.mockImplementation((channel: string, request: ApprovalRequest) => {
     if (channel === IPC_APPROVAL_REQUEST) shown.resolve(request);
   });
-  const gate = new ApprovalGate(sessionId => approvalSurfaceRegistry.resolve(sessionId));
+  const gate = new ApprovalGate(sessionId => sessionId === "ordinary" ? owner as never : approvalSurfaceRegistry.resolve(sessionId));
   try {
-    const decl = { ...DECLARATION, kind: kind === "upload" ? "upload" : DECLARATION.kind } as const;
-    const path = join(h.dir, "report.txt");
-    writeFileSync(path, "Approved bytes");
-    const args = kind === "declared operand" ? { document: { source: path } } : { path };
-    const opened: string[] = [];
-    const execute = vi.fn(async (input: typeof args) => {
-      writeFileSync(path, "Later bytes");
-      opened.push(readFileSync(String(input.document?.source ?? input.path), "utf8"));
-      return { output: "Sent", isError: false };
+    const source = join(h.dir, "report.txt");
+    const attachment = join(h.dir, "attachment.txt");
+    writeFileSync(source, "Approved report");
+    writeFileSync(attachment, "Approved attachment");
+    const args = scenario === "inline upload" ? { path: "An inline label" }
+      : scenario === "unverified" ? { documentSource: source }
+      : { document: { sources: ["report.txt", "attachment.txt"] } };
+    const execute = vi.fn(async (_name: string, input: Record<string, unknown>) => {
+      if (scenario === "file operands") {
+        const { sources } = input.document as { sources: string[] };
+        expect(sources).not.toContain(source);
+        expect(sources.map(path => readFileSync(path, "utf8"))).toEqual(["Approved report", "Approved attachment"]);
+      }
+      return { text: "Sent" };
     });
     const registry = new ToolRegistry();
-    registry.register(createDynamicTool({ name: decl.toolName, source: "mcp", mcpServerId: decl.ownerId,
-      description: "Send a report", category: "write", jsonSchema: { type: "object" },
-      ...(kind === "declared operand" && { pathFields: ["document.source"] }),
-      execute: input => execute(input as typeof args) }));
+    const decl = scenario === "unverified" ? DECLARATION
+      : { ...DECLARATION, owner: "plugin", kind: scenario === "inline upload" ? "upload" : "external-write" } as const;
+    const schema = { name: decl.toolName, description: "Send a report", inputSchema: { type: "object" as const, properties: {} } };
+    registry.register(scenario === "unverified" ? mcpToolToTool(decl.ownerId, decl.toolName, schema, execute)
+      : mcpToolToPluginTool(decl.ownerId, { ...schema, _meta: { ui: { visibility: ["model"] },
+        "ai.agent-connector.ave/pathFields": scenario === "inline upload" ? [] : ["document.sources"] } }, execute));
     const manager = new PermissionManager(join(h.dir, "permissions.json"));
     manager.setMode("strict");
     const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, undefined, new AuditLogger());
     const hooks = createRequestedOutputHooks(createHostGit(), governedWorkflowOutput(registry, executor));
-    const run = { itemId: 1, runId: "file-delivery", runKey: "file-delivery" };
-    const request = await hooks.accept({ stage: stageOf("review", { requestedOutputs: [decl] }), workspaceRoot: h.dir, run,
-      raw: { toolName: decl.toolName, owner: decl.owner, ownerId: decl.ownerId, args, summary: "Send report",
-        ...(kind === "manifest" && { files: ["report.txt"] }) } });
+    const run = { itemId: 1, runId: "verified-operands", runKey: "verified-operands" };
+    const raw = { toolName: decl.toolName, owner: decl.owner, ownerId: decl.ownerId, args, summary: "Send report" };
+    const request = await hooks.accept({ stage: stageOf("review", { requestedOutputs: [decl] }), workspaceRoot: h.dir, run, raw });
+    if (scenario === "unverified") {
+      expect(request).toEqual({ ok: false, code: "output-operands-unverified" });
+      expect(execute).not.toHaveBeenCalled();
+      const ordinary = executor.executeAll([{ id: "ordinary", name: decl.toolName, input: args }], {
+        executionCwd: h.dir, sessionId: "ordinary", permissionContext: { trustOrigin: "llm-tool-arg" },
+      });
+      const card = await Promise.race([shown.promise, ordinary.then(() => undefined)]);
+      expect(card?.toolName).toBe(decl.toolName);
+      if (card) gate.resolveFromDesktopRenderer(card.id, { requestId: card.id, choice: "allow-once", nonce: card.nonce, hmac: card.hmac }, owner as never);
+      await ordinary;
+      expect(execute).toHaveBeenCalledWith(decl.toolName, args);
+      return;
+    }
     if (!request.ok) throw new Error(request.code);
+    if (scenario === "file operands") {
+      expect(request.output.files).toEqual(["report.txt", "attachment.txt"].map(path => ({ path,
+        sha256: expect.stringMatching(/^[a-f0-9]{64}$/u), size: expect.any(Number) })));
+    }
     const dispatch = hooks.execute({ run, stageId: "review", output: request.output, approvalSurface: owner as never,
       workspace: { root: h.dir }, canExecute: () => true });
     const card = await Promise.race([shown.promise, dispatch.then(() => undefined)]);
-    if (card) gate.resolveFromDesktopRenderer(card.id, { requestId: card.id, choice: "allow-once", nonce: card.nonce, hmac: card.hmac }, owner as never);
-    await expect(dispatch).resolves.toMatchObject({ status: "failed", detail: "output-file-unbound" });
+    expect(card?.toolName).toBe(decl.toolName);
     expect(execute).not.toHaveBeenCalled();
-    expect(opened).toEqual([]);
+    writeFileSync(source, "Later report");
+    writeFileSync(attachment, "Later attachment");
+    if (card) gate.resolveFromDesktopRenderer(card.id, { requestId: card.id, choice: "allow-once", nonce: card.nonce, hmac: card.hmac }, owner as never);
+    await expect(dispatch).resolves.toMatchObject({ status: "done" });
+    expect(execute).toHaveBeenCalledOnce();
+    if (scenario === "inline upload") expect(execute).toHaveBeenCalledWith(decl.toolName, args);
   } finally {
     gate.disposeAll();
     await h.cleanup();

@@ -1,14 +1,12 @@
 import type { OutputRefusal } from "../work-board/workflow/requested-outputs.js";
-import type { RequestedOutputDecl } from "../shared/workflow-template-types.js";
+import { STAGE_REQUEST_OUTPUT_TOOL, type RequestedOutputDecl } from "../shared/workflow-template-types.js";
 import type { Tool } from "./base.js";
-
-const STAGE_REQUEST_OUTPUT = "stage_request_output";
 
 type OutputIntake = (input: unknown) => Promise<{ ok: true; id: string } | { ok: false; code: OutputRefusal }>;
 
 export function createStageRequestOutputTool(declarations: readonly RequestedOutputDecl[], accept: OutputIntake): Tool {
   return {
-    name: STAGE_REQUEST_OUTPUT,
+    name: STAGE_REQUEST_OUTPUT_TOOL,
     source: "builtin",
     category: "read",
     version: "1.0.0",

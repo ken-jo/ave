@@ -14,10 +14,11 @@ import { isWorkspaceGlob } from "../template-graph.js";
 import { type HostGit, configuredWorkflowPush, executeWorkflowPush, isWorkflowPush } from "./host-git.js";
 import { holdDir, realWithin } from "./owned-fs.js";
 import type { RunRef } from "./stage-workspace.js";
-import { hashSeedFile } from "./workspace-seed.js";
+import { copySeedFiles, hashSeedFile } from "./workspace-seed.js";
 
 export type OutputRefusal = "output-not-declared" | "remote-not-configured" | "too-many" | "args-too-large"
-  | "file-outside-workspace" | "file-unreadable" | "needs-human-gate";
+  | "file-outside-workspace" | "file-unreadable" | "needs-human-gate"
+  | "output-remote-local-unsupported" | "output-operands-unverified" | "output-file-unbound";
 const MAX_REQUESTED_OUTPUTS = 10;
 const MAX_ARGS_BYTES = 32 * 1024;
 const MAX_OUTPUT_FILES = 5_000;
@@ -55,7 +56,7 @@ export function requestedOutputHash(stage: WorkItemStageRun): string | undefined
   return stage.output !== undefined && stage.requestedOutputs?.length ? outputHashOf(stage.output, stage.requestedOutputs) : undefined;
 }
 
-function relativeOutputFile(path: unknown): path is string {
+export function relativeOutputFile(path: unknown): path is string {
   return isWorkspaceGlob(path) && !/[:*?\\]/u.test(path) && !hasInvisibleOrReorderingChars(path)
     && path.split("/").every(segment => segment !== "" && segment !== "." && !/[. ]$/u.test(segment));
 }
@@ -81,7 +82,7 @@ async function outputFiles(root: string, paths: readonly unknown[]): Promise<Out
   return files;
 }
 
-export async function acceptRequestedOutput(input: OutputIntake, git: HostGit): Promise<Accepted> {
+export async function acceptRequestedOutput(input: OutputIntake, git: HostGit, operandsOf: GovernedOutputAdapter["operands"]): Promise<Accepted> {
   const { raw, stage, workspaceRoot, run, repository } = input;
   if (stage.gate.type !== "human") return { ok: false, code: "needs-human-gate" };
   if (!isPlainRecord(raw)) return { ok: false, code: "output-not-declared" };
@@ -92,11 +93,12 @@ export async function acceptRequestedOutput(input: OutputIntake, git: HostGit): 
     return { ok: false, code: "args-too-large" };
   }
   let args: string;
+  let paths: readonly string[] = [];
   if (isWorkflowPush(decl)) {
     const bound = raw.files === undefined && repository !== undefined
       ? await configuredWorkflowPush(git, repository, run.runId, raw.args) : undefined;
-    if (!bound) return { ok: false, code: "remote-not-configured" };
-    args = canonicalWorkflowJson(bound);
+    if (!bound || "code" in bound) return { ok: false, code: bound?.code ?? "remote-not-configured" };
+    args = canonicalWorkflowJson(bound.binding);
   } else {
     if (!isPlainRecord(raw.args)) return { ok: false, code: "args-too-large" };
     try { args = canonicalWorkflowJson(raw.args); } catch { return { ok: false, code: "args-too-large" }; }
@@ -106,9 +108,19 @@ export async function acceptRequestedOutput(input: OutputIntake, git: HostGit): 
     return { ok: false, code: "args-too-large" };
   }
   let files: OutputFile[] | undefined;
+  if (!isWorkflowPush(decl)) {
+    const operands = operandsOf(decl, JSON.parse(args), workspaceRoot);
+    if (typeof operands === "string") return { ok: false, code: operands };
+    paths = operands.paths;
+  }
   if (raw.files !== undefined) {
-    if (!Array.isArray(raw.files)) return { ok: false, code: "file-unreadable" };
-    try { files = await outputFiles(workspaceRoot, raw.files); }
+    if (!Array.isArray(raw.files) || raw.files.length > MAX_OUTPUT_FILES) return { ok: false, code: "file-unreadable" };
+    if (!raw.files.every(relativeOutputFile) || new Set(raw.files).size !== raw.files.length) return { ok: false, code: "file-outside-workspace" };
+    const declared = new Set(raw.files);
+    if (declared.size !== paths.length || paths.some(path => !declared.has(path))) return { ok: false, code: "output-file-unbound" };
+  }
+  if (paths.length) {
+    try { files = await outputFiles(workspaceRoot, paths); }
     catch (error) { return { ok: false, code: error instanceof OutputFileError ? error.code : "file-unreadable" }; }
   }
   return { ok: true, output: { id: randomUUID(), decl: { ...decl }, args, ...(files?.length && { files }), summary: maskSensitiveData(raw.summary).masked } };
@@ -133,14 +145,20 @@ export function stageOutputIntake(hooks: RequestedOutputHooks, scope: Omit<Outpu
   return { tool, close: () => { open = false; return [...outputs]; } };
 }
 
-export type GovernedOutputCall = (input: {
-  output: RequestedOutput; args: Record<string, unknown>; root: string; surface: WebContents;
-  recheck: () => Promise<boolean>;
-}) => Promise<OutputExecution["status"] | "output-file-unbound">;
+export type OutputOperands = { input: Record<string, unknown>; paths: readonly string[] }
+  | "output-operands-unverified" | "file-outside-workspace";
 
-export function createRequestedOutputHooks(git: HostGit, invoke: GovernedOutputCall): RequestedOutputHooks {
+export interface GovernedOutputAdapter {
+  operands(decl: RequestedOutputDecl, args: Record<string, unknown>, workspace: string): OutputOperands;
+  invoke(input: {
+    output: RequestedOutput; args: Record<string, unknown>; root: string; workspace: string; surface: WebContents;
+    recheck: () => Promise<boolean>;
+  }): Promise<OutputExecution["status"] | "output-operands-unverified">;
+}
+
+export function createRequestedOutputHooks(git: HostGit, adapter: GovernedOutputAdapter): RequestedOutputHooks {
   return {
-    accept: input => acceptRequestedOutput(input, git),
+    accept: input => acceptRequestedOutput(input, git, adapter.operands),
     async execute({ run, output, approvalSurface, workspace, canExecute }) {
       const { id, decl, files } = output;
       const args: unknown = JSON.parse(output.args);
@@ -148,19 +166,29 @@ export function createRequestedOutputHooks(git: HostGit, invoke: GovernedOutputC
       if (!canExecute()) return { id, status: "failed", detail: "output-execution-interrupted" };
       if (isWorkflowPush(decl)) return { id, ...await executeWorkflowPush(git, workspace.repository, run.runId, args, canExecute) };
       if (!approvalSurface || approvalSurface.isDestroyed()) return { id, status: "denied", detail: "user-keyboard-required" };
-      if (files?.length) {
-        try {
-          const current = await outputFiles(workspace.root, files.map(file => file.path));
-          if (canonicalWorkflowJson(current) !== canonicalWorkflowJson(files)) return { id, status: "failed", detail: "output-file-changed" };
-        } catch { return { id, status: "failed", detail: "output-file-changed" }; }
-      }
-      // External handlers have no contract for opening a host-bound file operand.
-      if (files?.length || decl.kind === "upload") return { id, status: "failed", detail: "output-file-unbound" };
-      const recheck = async () => canExecute() && !approvalSurface.isDestroyed();
-      const root = await mkdtemp(join(tmpdir(), "ave-output-"));
+      const root = await realpath(await mkdtemp(join(tmpdir(), "ave-output-")));
       try {
-        const status = await invoke({ output, args, root, surface: approvalSurface, recheck });
-        if (status === "output-file-unbound") return { id, status: "failed", detail: status };
+        const currentFilesMatch = async (directory: string) => {
+          if (!files?.length) return true;
+          try { return canonicalWorkflowJson(await outputFiles(directory, files.map(file => file.path))) === canonicalWorkflowJson(files); }
+          catch { return false; }
+        };
+        if (files?.length) {
+          try {
+            const source = holdDir(await realpath(workspace.root));
+            const copied = await copySeedFiles(source, holdDir(root), files.map(file => file.path),
+              new Map(files.map(file => [file.path, file.sha256])), false, MAX_OUTPUT_FILE_BYTES);
+            if (canonicalWorkflowJson(copied) !== canonicalWorkflowJson(files)) return { id, status: "failed", detail: "output-file-changed" };
+          } catch { return { id, status: "failed", detail: "output-file-changed" }; }
+        }
+        let filesChanged = false;
+        const recheck = async () => {
+          filesChanged = !await currentFilesMatch(root);
+          return !filesChanged && canExecute() && !approvalSurface.isDestroyed();
+        };
+        const status = await adapter.invoke({ output, args, root, workspace: workspace.root, surface: approvalSurface, recheck });
+        if (filesChanged) return { id, status: "failed", detail: "output-file-changed" };
+        if (status === "output-operands-unverified") return { id, status: "failed", detail: status };
         return { id, status, ...(status === "failed" ? { detail: "output-execution-failed" } : {}) };
       } finally {
         await rm(root, { recursive: true, force: true }).catch(() => undefined);

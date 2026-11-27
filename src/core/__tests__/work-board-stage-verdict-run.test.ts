@@ -15,7 +15,7 @@ import { PermissionManager } from "../../permissions/permission-manager.js";
 import { ReadFileTool, WriteFileTool } from "../../tools/file-tools.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import { autoStageOf, runScopePermissions, stageOf } from "../../work-board/workflow/__tests__/stage-fixtures.js";
-import { stageRunHarness } from "../../work-board/workflow/__tests__/stage-run-harness.js";
+import { stageRunHarness, unavailableOutputAdapter } from "../../work-board/workflow/__tests__/stage-run-harness.js";
 
 const MODEL_STAGE = autoStageOf("a", { gate: { type: "auto", pass: { kind: "model_verdict" } } });
 const PASS = '```json\n{"verdict":"pass","reason":"The total is verified."}\n```';
@@ -29,7 +29,7 @@ async function withRun(
   const h = await stageRunHarness({
     observeRunWork: true,
     runner,
-    wiring: (store, { templates }) => ({ passConditions: workflowEngineExtensions(store, templates, runScopePermissions(), async () => "denied").passConditions }),
+    wiring: (store, { templates }) => ({ passConditions: workflowEngineExtensions(store, templates, runScopePermissions(), unavailableOutputAdapter).passConditions }),
   });
   await h.runThenEnd(() => test(h));
 }

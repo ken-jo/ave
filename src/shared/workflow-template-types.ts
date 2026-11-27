@@ -70,6 +70,7 @@ export interface WorkflowTemplateDraftInput extends TemplateGraph {
   description?: string;
   basedOn?: number;
 }
+export const STAGE_REQUEST_OUTPUT_TOOL = "stage_request_output";
 export const WORKFLOW_TEMPLATE_PROPOSE_TOOL = "workflow_template_propose";
 
 /** An in-memory draft that can be saved only through template confirmation. */

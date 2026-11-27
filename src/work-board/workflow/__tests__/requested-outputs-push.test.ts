@@ -1,5 +1,5 @@
 import { once } from "node:events";
-import { appendFileSync, readFileSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { deferred } from "../../../__tests__/support/deferred.js";
@@ -8,8 +8,11 @@ import { ko } from "../../../i18n/messages/ko.js";
 import * as hostGitLaunch from "../../../shared/host-git.js";
 import { canonicalWorkflowJson, outputHashOf } from "../../../shared/workflow-template-output.js";
 import { configuredWorkflowPush, createHostGit, executeWorkflowPush, type HostGit } from "../host-git.js";
+import { createRequestedOutputHooks, stageOutputIntake } from "../requested-outputs.js";
+import { stageOf } from "./stage-fixtures.js";
+import { pathToFileURL } from "node:url";
 import { runBranch } from "../workspace-layout.js";
-import { gitFixture } from "./stage-git-fixture.js";
+import { fixturePushRemote, gitFixture } from "./stage-git-fixture.js";
 
 const RUN_ID = "approved-run";
 const REF = `refs/heads/${runBranch(RUN_ID)}`;
@@ -22,24 +25,29 @@ afterEach(async () => {
 function setup() {
   const fixture = gitFixture();
   fixtures.push(fixture);
-  const one = join(fixture.base, "endpoint-one.git");
-  const two = join(fixture.base, "endpoint-two.git");
+  const onePath = join(fixture.base, "endpoint-one.git");
+  const twoPath = join(fixture.base, "endpoint-two.git");
+  const one = fixturePushRemote(fixture, onePath);
+  const two = fixturePushRemote(fixture, twoPath);
   const { repo, userGit } = fixture;
-  userGit(fixture.base, "init", "-q", "--bare", one);
-  userGit(fixture.base, "init", "-q", "--bare", two);
+  userGit(fixture.base, "init", "-q", "--bare", onePath);
+  userGit(fixture.base, "init", "-q", "--bare", twoPath);
   const git = (...args: string[]) => userGit(repo, ...args);
   git("update-ref", REF, "HEAD");
   git("remote", "add", "origin", one);
   const real = createHostGit({ env: fixture.env });
-  const refs = (root: string) => userGit(root, "for-each-ref", "--format=%(refname)");
-  const bind = (args: unknown = { remote: "origin" }, runner: HostGit = real) => configuredWorkflowPush(runner, repo, RUN_ID, args);
+  const refs = (url: string) => userGit(url === one ? onePath : twoPath, "for-each-ref", "--format=%(refname)");
+  const bind = async (args: unknown = { remote: "origin" }, runner: HostGit = real) => {
+    const result = await configuredWorkflowPush(runner, repo, RUN_ID, args);
+    return "binding" in result ? result.binding : undefined;
+  };
   const capture = async () => {
     const args = await bind();
     if (!args) throw new Error("Expected an approved push binding");
     return args;
   };
   const push = (args: object, runner: HostGit = real) => executeWorkflowPush(runner, repo, RUN_ID, { ...args }, () => true);
-  return { fixture, one, two, git, real, refs, bind, capture, push, repo };
+  return { fixture, one, two, onePath, git, real, refs, bind, capture, push, repo };
 }
 
 type PushFixture = ReturnType<typeof setup>;
@@ -59,7 +67,7 @@ it("a push to a configured remote sends only ave/workflow/<run> to the same-name
   const result = await x.push(args);
   expect(result.status).toBe("done");
   expect(x.refs(x.one)).toBe(REF);
-  expect(x.fixture.userGit(x.one, "rev-parse", REF)).toBe(args.sha);
+  expect(x.fixture.userGit(x.onePath, "rev-parse", REF)).toBe(args.sha);
   expect(x.refs(x.two)).toBe("");
 });
 
@@ -68,7 +76,7 @@ it("sends no configured default push option to a receiver that advertises push o
   x.git("config", "--add", "push.pushOption", "unapproved-repository-option");
   const runner = createHostGit({ env: { ...x.fixture.env, GIT_CONFIG_COUNT: "1",
     GIT_CONFIG_KEY_0: "push.pushOption", GIT_CONFIG_VALUE_0: "unapproved-command-option" } });
-  x.fixture.userGit(x.one, "config", "receive.advertisePushOptions", "true");
+  x.fixture.userGit(x.onePath, "config", "receive.advertisePushOptions", "true");
   const trace = join(x.fixture.base, "packets");
   const launch = hostGitLaunch.spawnHostGitIfWorkspaceFree;
   vi.spyOn(hostGitLaunch, "spawnHostGitIfWorkspaceFree").mockImplementation((cwd, program, args, options, deadline) =>
@@ -82,12 +90,42 @@ it("sends no configured default push option to a receiver that advertises push o
   expect(x.refs(x.one)).toBe(REF);
 });
 
+it.each(["absolute", "file URL", "relative"])("shows the local transport refusal at intake for an %s remote", async shape => {
+  const x = setup();
+  const remoteUrl = shape === "absolute" ? x.onePath : shape === "file URL" ? pathToFileURL(x.onePath).href : "../endpoint-one.git";
+  x.git("remote", "set-url", "origin", remoteUrl);
+  const decl = { kind: "external-write", owner: "host", ownerId: "host:git", toolName: "git_push" } as const;
+  const intake = stageOutputIntake(createRequestedOutputHooks(x.real, { operands: vi.fn(), invoke: vi.fn() }), {
+    stage: stageOf("review", { requestedOutputs: [decl] }), workspaceRoot: x.repo, repository: x.repo,
+    run: { itemId: 1, runId: RUN_ID, runKey: RUN_ID },
+  });
+  await expect(intake.tool.execute({ toolName: decl.toolName, owner: decl.owner, ownerId: decl.ownerId,
+    args: { remote: "origin" }, summary: "Publish run branch" }, { cwd: x.repo, metadata: {}, extraAllowedDirectories: [] }))
+    .resolves.toMatchObject({ isError: true, output: expect.stringContaining('"reasonCode":"output-remote-local-unsupported"') });
+  expect(intake.close()).toEqual([]);
+  empty(x);
+});
+
+it("allows an HTTP header scoped to another host or repository at intake and dispatch", async () => {
+  const x = setup();
+  const url = "https://example.test/team/repo.git";
+  x.git("remote", "set-url", "origin", url);
+  x.git("config", "http.https://other.test/team.extraHeader", "X-Other: fixture");
+  x.git("config", "http.https://example.test/another.extraHeader", "X-Other-Path: fixture");
+  const push = vi.fn(async () => ({ code: 0, stdout: "", stderr: "" }));
+  const runner = wrap(x, (command, next) => command[0] === "push" ? push() : next());
+  const binding = await x.capture();
+  expect(binding.url).toBe(url);
+  await expect(x.push(binding, runner)).resolves.toMatchObject({ status: "done" });
+  expect(push).toHaveBeenCalledOnce();
+});
+
 it("refuses an HTTP header configured for the approved URL before starting the transport", async () => {
   const x = setup();
   const url = "https://example.test/repo";
   x.git("remote", "set-url", "origin", url);
   const binding = await x.capture();
-  x.git("config", `http.${url}.extraHeader`, "X-Unapproved: fixture");
+  x.git("config", "http.https://*.test.extraHeader", "X-Unapproved: fixture");
   await expect(x.bind()).resolves.toBeUndefined();
   const runner = wrap(x, async (command, next) => command[0] === "push" ? { code: 0, stdout: "", stderr: "" } : next());
   await expect(x.push(binding, runner)).resolves.toEqual({ status: "failed", detail: "push-url-unverified" });
@@ -101,43 +139,15 @@ it("refuses a configured remote named like the approved literal URL", async () =
   empty(x);
 });
 
-it.each(["retargets the symlink", "replaces the repository at the same path"])("refuses a parked local endpoint when it %s", async (change) => {
-  const x = setup();
-  if (change === "retargets the symlink") {
-    const alias = join(x.fixture.base, "approved-endpoint");
-    symlinkSync(x.one, alias, "junction");
-    x.git("remote", "set-url", "origin", alias);
-    const binding = await x.capture();
-    unlinkSync(alias);
-    symlinkSync(x.two, alias, "junction");
-    expect(x.git("remote", "get-url", "--push", "origin")).toBe(binding.url);
-    await expect(x.push(binding)).resolves.toEqual({ status: "failed", detail: "push-url-unverified" });
-    empty(x);
-  } else {
-    const binding = await x.capture();
-    const moved = join(x.fixture.base, "former-endpoint.git");
-    renameSync(x.one, moved);
-    renameSync(x.two, x.one);
-    await expect(x.push(binding)).resolves.toEqual({ status: "failed", detail: "push-url-unverified" });
-    expect(x.refs(x.one)).toBe("");
-    expect(x.refs(moved)).toBe("");
-  }
-});
-
-it("rechecks the local repository identity at process launch", async () => {
+it("refuses a previously recorded local destination before transport", async () => {
   const x = setup();
   const binding = await x.capture();
-  const moved = join(x.fixture.base, "former-endpoint.git");
-  const runner = wrap(x, (command, next) => {
-    if (command[0] === "push") {
-      renameSync(x.one, moved);
-      renameSync(x.two, x.one);
-    }
-    return next();
-  });
-  await expect(x.push(binding, runner)).resolves.toEqual({ status: "failed", detail: "push-url-unverified" });
-  expect(x.refs(x.one)).toBe("");
-  expect(x.refs(moved)).toBe("");
+  const push = vi.fn(async () => ({ code: 0, stdout: "", stderr: "" }));
+  const runner = wrap(x, (command, next) => command[0] === "push" ? push() : next());
+  await expect(x.push({ ...binding, url: x.onePath }, runner))
+    .resolves.toEqual({ status: "failed", detail: "output-remote-local-unsupported" });
+  expect(push).not.toHaveBeenCalled();
+  empty(x);
 });
 
 it("a request that names an unknown remote, or a URL, is refused remote-not-configured, which has an en and a ko message, and nothing is sent", async () => {
@@ -152,12 +162,12 @@ it("a push whose remote branch has diverged is not forced: it ends failed as a n
   const x = setup();
   writeFileSync(join(x.repo, "a.txt"), "Diverged");
   const divergent = x.fixture.commitAll("An independent commit");
-  x.git("push", x.one, `HEAD:${REF}`);
+  x.git("push", x.onePath, `HEAD:${REF}`);
   const args = await x.capture();
   const outcome = await x.push(args);
   expect(outcome.status).toBe("failed");
   expect(JSON.parse(outcome.detail)).toMatchObject({ exit: "push-non-fast-forward" });
-  expect(x.fixture.userGit(x.one, "rev-parse", REF)).toBe(divergent);
+  expect(x.fixture.userGit(x.onePath, "rev-parse", REF)).toBe(divergent);
 });
 
 it("a push request in a folder-kind run is refused at request, and an execution of one ends failed and sends nothing", async () => {
@@ -238,7 +248,7 @@ it("the git call pushes the approved SHA to the bound branch using the compared 
   const binding = await x.capture();
   const runner = wrap(x, async (args, next) => {
     if (args[0] === "push") {
-      expect(args.slice(-2)).toEqual([binding.localEndpoint?.path, `${binding.sha}:${REF}`]);
+      expect(args.slice(-2)).toEqual([binding.url, `${binding.sha}:${REF}`]);
       expect(args).not.toContain("origin");
     }
     return next();
@@ -261,7 +271,7 @@ it("the push record is canonical JSON in OutputExecution.detail and holds no cre
   const x = setup();
   const args = await x.capture();
   const result = await x.push(args);
-  expect(result.detail).toBe(canonicalWorkflowJson({ remote: "origin", host: "", branch: runBranch(RUN_ID), sha: args.sha, exit: "ok" }));
+  expect(result.detail).toBe(canonicalWorkflowJson({ remote: "origin", host: "example.test", branch: runBranch(RUN_ID), sha: args.sha, exit: "ok" }));
 });
 
 it("a changed run ref invalidates approval and nothing is sent", async () => {
@@ -284,7 +294,7 @@ it("the approved Git ref cannot move between the final verification and transpor
     return next();
   });
   expect((await x.push(args, runner)).status).toBe("done");
-  expect(x.fixture.userGit(x.one, "rev-parse", REF)).toBe(args.sha);
+  expect(x.fixture.userGit(x.onePath, "rev-parse", REF)).toBe(args.sha);
 });
 
 it("cancels a push waiting on its final guard when the prepared lock process exits", async () => {
@@ -459,7 +469,7 @@ it("a rule that matches U but is not the longest match still refuses", async () 
   stableAlias(x, "insteadOf");
   const args = await x.capture();
   x.git("config", `url.${x.two}.insteadOf`, x.one);
-  x.git("config", `url.${x.fixture.base}/.pushInsteadOf`, `${x.fixture.base}/`);
+  x.git("config", `url.${x.two}.pushInsteadOf`, "ssh://example.test/");
   await expect(x.push(args)).resolves.toEqual({ status: "failed", detail: "push-url-unverified" });
   empty(x);
 });

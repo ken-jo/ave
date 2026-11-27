@@ -19,6 +19,7 @@ import { boardParentToolRegistry } from "../../__tests__/board-test-fixtures.js"
 import { authoriseRunSource } from "../run-authority.js";
 import { boardRunState, type RunRecord } from "../run-state.js";
 import { createPassConditionRegistry } from "../stage-gates.js";
+import type { GovernedOutputAdapter } from "../requested-outputs.js";
 import type { StageWorkspaceProvider } from "../stage-workspace.js";
 import type { JoinConflict } from "../shipped-shapes.js";
 
@@ -44,6 +45,11 @@ type ChildWaitPulse = { error: Error; originSessionId?: string };
  * failure. The failure stands while it is newer than the latest start and every pending call. The origin is in flight while its latest
  * start is newer than its latest end, or a call is pending. A call changes nothing until it resolves. */
 type Flight = { startedAt: number; endedAt: number; pending: number[]; failure?: ChildWaitFailure };
+
+export const unavailableOutputAdapter: GovernedOutputAdapter = {
+  operands: () => "output-operands-unverified",
+  invoke: async () => "denied",
+};
 
 const ITEM_RECHECK_BURST = 8;
 

@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { expect, it } from "vitest";
 import { en } from "../../../i18n/messages/en.js";
 import { canonicalWorkflowJson } from "../../../shared/workflow-template-output.js";
-import { configuredWorkflowPush, createHostGit, executeWorkflowPush } from "../host-git.js";
+import { configuredWorkflowPush, createHostGit, executeWorkflowPush, type HostGit } from "../host-git.js";
 import { runBranch } from "../workspace-layout.js";
 import { gitFixture } from "./stage-git-fixture.js";
 
@@ -14,6 +14,12 @@ const ALICE_SECRET = "fixture-alice-credential";
 const BOB_SECRET = "fixture-bob-credential";
 const RUN_ID = "accounts";
 const REF = `refs/heads/${runBranch(RUN_ID)}`;
+
+async function bind(git: HostGit, repo: string) {
+  const result = await configuredWorkflowPush(git, repo, RUN_ID, { remote: "origin" });
+  if ("code" in result) throw new Error(result.code);
+  return result.binding;
+}
 
 function receive(fixture: ReturnType<typeof gitFixture>, request: IncomingMessage, response: ServerResponse) {
   const url = new URL(request.url ?? "/", "https://localhost");
@@ -110,7 +116,7 @@ fi
 
 it('a push that would need a credential prompt fails with "push failed: authentication" and does not hang', () => withAccounts(async (fixture, endpoint, requests) => {
   const git = createHostGit({ env: { ...fixture.env, GIT_ASKPASS: "invalid-askpass-program" }, timeoutMs: 2_000 });
-  const binding = await configuredWorkflowPush(git, fixture.repo, RUN_ID, { remote: "origin" });
+  const binding = await bind(git, fixture.repo);
   expect(binding?.url).toBe(endpoint);
   const result = await executeWorkflowPush(git, fixture.repo, RUN_ID, { ...binding }, () => true);
   expect(result.status).toBe("failed");
@@ -121,7 +127,7 @@ it('a push that would need a credential prompt fails with "push failed: authenti
 it('the push of a remote whose https URL names alice asks the helper with the URL without a user name, and ends in one of two ways: it uses the credential the fixture configures for that URL, or it ends failed with "push failed: authentication"', () => withAccounts(async (fixture, endpoint, requests) => {
   const trace = installHelper(fixture, endpoint);
   const runner = createHostGit({ env: fixture.env, timeoutMs: 2_000 });
-  const resolved = await configuredWorkflowPush(runner, fixture.repo, RUN_ID, { remote: "origin" });
+  const resolved = await bind(runner, fixture.repo);
   expect(resolved?.url).toBe(endpoint);
   const result = await executeWorkflowPush(runner, fixture.repo, RUN_ID, { ...resolved }, () => true);
   const observed = readFileSync(trace, "utf8");
@@ -143,7 +149,7 @@ it("after a push through a credential helper, and after a failed one, the run re
     await withAccounts(async (fixture, endpoint, requests) => {
       const trace = installHelper(fixture, endpoint);
       const runner = createHostGit({ env: fixture.env, timeoutMs: 3_000 });
-      const binding = await configuredWorkflowPush(runner, fixture.repo, RUN_ID, { remote: "origin" });
+      const binding = await bind(runner, fixture.repo);
       const result = await executeWorkflowPush(runner, fixture.repo, RUN_ID, { ...binding }, () => true);
       expect(result.status).toBe(succeeds ? "done" : "failed");
       if (succeeds) expect(fixture.userGit(join(fixture.base, "repo.git"), "rev-parse", REF)).toBe(binding?.sha);
@@ -168,7 +174,7 @@ it.each([
 ])("$title", ({ verify }) => withAccounts(async (fixture, endpoint, requested) => {
   const trace = installHelper(fixture, endpoint);
   const runner = createHostGit({ env: { ...fixture.env, GIT_ASKPASS: "invalid-askpass-program" }, timeoutMs: 3_000 });
-  const binding = await configuredWorkflowPush(runner, fixture.repo, RUN_ID, { remote: "origin" });
+  const binding = await bind(runner, fixture.repo);
   const now = performance.now();
   const result = await executeWorkflowPush(runner, fixture.repo, RUN_ID, { ...binding }, () => true);
   expect(result.status).toBe("failed");

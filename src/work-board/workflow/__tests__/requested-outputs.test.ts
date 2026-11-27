@@ -15,7 +15,7 @@ import { acceptRequestedOutput, createRequestedOutputHooks, requestedOutputHash,
 import { createStageWorkspaceProvider } from "../stage-workspaces.js";
 import { runBranch } from "../workspace-layout.js";
 import { stageOf } from "./stage-fixtures.js";
-import { gitFixture } from "./stage-git-fixture.js";
+import { fixturePushRemote, gitFixture } from "./stage-git-fixture.js";
 import { stageRunHarness } from "./stage-run-harness.js";
 
 const DELIVER = { kind: "send-message", toolName: "deliver", owner: "plugin", ownerId: "delivery" } as const;
@@ -25,11 +25,14 @@ const REQUEST = { toolName: "deliver", owner: "plugin", ownerId: "delivery", arg
 const ENVELOPE: StageEnvelope = { tools: [], writePaths: [], readRoots: [], commands: [], network: [], mcpReadOnlyTools: [],
   mcpGenerationTools: [], pluginGenerationTools: [], outputs: ["branch"], budget: { rounds: 5, minutes: 1, costUsd: 0 } };
 
+const operands = (_decl: unknown, input: Record<string, unknown>) => ({
+  input, paths: typeof input.path === "string" ? [input.path] : [],
+});
 const accept = (raw: unknown, stage = STAGE) => acceptRequestedOutput({ stage, workspaceRoot: process.cwd(), raw,
-  run: { itemId: 1, runId: "sample", runKey: "sample" } }, createHostGit());
+  run: { itemId: 1, runId: "sample", runKey: "sample" } }, createHostGit(), operands);
 
 it("refuses a tool the stage does not declare with reasonCode output-not-declared, which has an en and a ko message", async () => {
-  const hooks = createRequestedOutputHooks(createHostGit(), vi.fn());
+  const hooks = createRequestedOutputHooks(createHostGit(), { operands, invoke: vi.fn() });
   const intake = stageOutputIntake(hooks, { stage: STAGE, workspaceRoot: process.cwd(), run: { itemId: 1, runId: "sample", runKey: "sample" } });
   await expect(intake.tool.execute({ ...REQUEST, toolName: "undeclared" }, { cwd: process.cwd(), metadata: {}, extraAllowedDirectories: [] }))
     .resolves.toEqual({ isError: true, output: '{"reasonCode":"output-not-declared"}' });
@@ -65,7 +68,7 @@ it("bounds intake and refuses a stage without a human gate", async () => {
   await expect(accept({ ...REQUEST, args: { text: "x".repeat(33 * 1024) } })).resolves.toEqual({ ok: false, code: "args-too-large" });
   await expect(accept(REQUEST, { ...STAGE, gate: { type: "auto", pass: { kind: "always" } } } as never))
     .resolves.toEqual({ ok: false, code: "needs-human-gate" });
-  const intake = stageOutputIntake(createRequestedOutputHooks(createHostGit(), vi.fn()), {
+  const intake = stageOutputIntake(createRequestedOutputHooks(createHostGit(), { operands, invoke: vi.fn() }), {
     stage: STAGE, workspaceRoot: process.cwd(), run: { itemId: 1, runId: "sample", runKey: "sample" },
   });
   const ctx = { cwd: process.cwd(), metadata: {}, extraAllowedDirectories: [] };
@@ -81,9 +84,9 @@ it("refuses an escaping or unreadable member of the requested file manifest", as
     writeFileSync(outside, "Outside");
     symlinkSync(outside, join(fixture.repo, "alias.txt"), "file");
     const request = (files: string[]) => acceptRequestedOutput({
-      stage: STAGE, workspaceRoot: fixture.repo, raw: { ...REQUEST, files },
+      stage: STAGE, workspaceRoot: fixture.repo, raw: { ...REQUEST, args: { path: files[0] }, files },
       run: { itemId: 1, runId: "sample", runKey: "sample" },
-    }, createHostGit({ env: fixture.env }));
+    }, createHostGit({ env: fixture.env }), operands);
     await expect(request(["../outside.txt"])).resolves.toEqual({ ok: false, code: "file-outside-workspace" });
     await expect(request(["alias.txt"])).resolves.toEqual({ ok: false, code: "file-outside-workspace" });
     await expect(request(["missing.txt"])).resolves.toEqual({ ok: false, code: "file-unreadable" });
@@ -118,7 +121,7 @@ async function parked(body: (fixture: Awaited<ReturnType<typeof stageRunHarness>
   if (opts.fail) invoke.mockRejectedValueOnce(new Error("Transient tool failure"));
   const fixture = await stageRunHarness({ observeRunWork: true, workflow: {
     ...(opts.files && { workspace: createStageWorkspaceProvider() }),
-    outputs: createRequestedOutputHooks(createHostGit(), invoke),
+    outputs: createRequestedOutputHooks(createHostGit(), { operands, invoke }),
   } });
   await fixture.runThenEnd(async () => {
     const version = await fixture.confirm([{ ...STAGE, toolScope: "all" }]);
@@ -130,7 +133,7 @@ async function parked(body: (fixture: Awaited<ReturnType<typeof stageRunHarness>
     if (!tool || !cwd) throw new Error("Expected a scoped stage tool");
     for (const name of opts.files ?? []) writeFileSync(join(cwd, name), "Original");
     for (let i = 0; i < (opts.calls ?? 1); i++) {
-      expect(await tool.execute({ ...REQUEST, ...(opts.files && { files: opts.files }) }, { cwd, metadata: {}, extraAllowedDirectories: [] }))
+      expect(await tool.execute({ ...REQUEST, ...(opts.files && { args: { path: opts.files[0] }, files: opts.files }) }, { cwd, metadata: {}, extraAllowedDirectories: [] }))
         .toMatchObject({ isError: false });
     }
     child.finish({ summary: "Prose result" });
@@ -181,7 +184,7 @@ it("a file changed after the request is not sent", () => parked(async (h, id, bi
   expect(invoke).not.toHaveBeenCalled();
 }, { files: ["deliver.txt"] }));
 
-it("preserves a failed file output across restart and still refuses its retry without a bound file operand", () => parked(async (h, id, binding, invoke) => {
+it("preserves a failed file output across restart and retries the same approved bytes", () => parked(async (h, id, binding, invoke) => {
   await expect(h.engine.decideStageGate(id, binding, gesture(WORK_BOARD.decideStage, id, binding))).resolves.toMatchObject({ ok: true });
   await h.until(id, item => item.runStatus === "completed");
   const engine = h.makeEngine();
@@ -193,9 +196,9 @@ it("preserves a failed file output across restart and still refuses its retry wi
   const { runId, stageId, attempt, outputHash } = binding;
   const retry = { runId, stageId, attempt, outputHash, outputId: stage.outputExecutions?.[0].id ?? "" };
   await expect(engine.retryOutput(id, retry, gesture(WORK_BOARD.retryOutput, id, retry))).resolves.toEqual({ ok: true });
-  expect((await h.stageRun(id, "review")).outputExecutions).toMatchObject([{ status: "failed", detail: "output-file-unbound" }]);
-  expect(invoke).not.toHaveBeenCalled();
-}, { files: ["deliver.txt"] }));
+  expect((await h.stageRun(id, "review")).outputExecutions).toMatchObject([{ status: "done" }]);
+  expect(invoke).toHaveBeenCalledTimes(2);
+}, { files: ["deliver.txt"], fail: true }));
 
 it("a rejected gate executes nothing", () => parked(async (h, id, binding, invoke) => {
   await expect(h.engine.decideStageGate(id, { ...binding, decision: "reject" })).resolves.toMatchObject({ ok: true });
@@ -218,10 +221,10 @@ async function pushGate(decision: "approve" | "reject", changeRef = false) {
   const fixture = gitFixture();
   const remote = join(fixture.base, "endpoint.git");
   fixture.userGit(fixture.base, "init", "--bare", remote);
-  fixture.userGit(fixture.repo, "remote", "add", "origin", remote);
+  fixture.userGit(fixture.repo, "remote", "add", "origin", fixturePushRemote(fixture, remote));
   const { provider } = fixture.start();
   const h = await stageRunHarness({ observeRunWork: true, workflow: {
-    workspace: provider, outputs: createRequestedOutputHooks(createHostGit({ env: fixture.env }), vi.fn()),
+    workspace: provider, outputs: createRequestedOutputHooks(createHostGit({ env: fixture.env }), { operands, invoke: vi.fn() }),
   } });
   try {
     await h.runThenEnd(async () => {

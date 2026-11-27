@@ -1,7 +1,8 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
+import { shellQuote } from "../../../lib/shell-resolver.js";
 import { createHostGit } from "../host-git.js";
 import type { RunRef } from "../stage-workspace.js";
 import { createStageWorkspaceProvider, type StageWorkspaceOptions } from "../stage-workspaces.js";
@@ -73,4 +74,21 @@ export async function sealed(handle: GitHandle, stageId: string): Promise<string
   const result = await handle.provider.seal(handle.run, stageId);
   if (!result.ok) throw new Error(`seal refused: ${result.code}`);
   return result.sealCommit;
+}
+
+// Run the real Git receive protocol through a fixture SSH command without contacting a network host.
+export function fixturePushRemote(fixture: GitFixture, receiver: string): string {
+  const helper = join(fixture.base, "fixture-ssh.cjs");
+  writeFileSync(helper, String.raw`
+    const { spawnSync } = require("node:child_process");
+    const { join } = require("node:path");
+    const match = /^git-receive-pack '\/([a-z-]+\.git)'$/.exec(process.argv.at(-1));
+    if (!match) process.exit(1);
+    const child = spawnSync("git", ["receive-pack", join(__dirname, match[1])], { stdio: "inherit" });
+    process.exit(child.status ?? 1);
+  `);
+  const node = process.env.AVE_TEST_NODE_EXEC_PATH ?? "node";
+  fixture.env.GIT_SSH_COMMAND = `${shellQuote(node)} ${shellQuote(helper)}`;
+  fixture.env.GIT_SSH_VARIANT = "simple";
+  return `ssh://example.test/${basename(receiver)}`;
 }
