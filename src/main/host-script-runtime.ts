@@ -135,8 +135,8 @@ export function checkWindowsWorkbookAccess(path: string): { identity: string } |
     }
     const inherited = parent.aces.filter(ace => (ace.flags & OBJECT_INHERIT_ACE) !== 0);
     if (inherited.length !== dacl.aces.length || dacl.aces.some((ace, index) => {
-      const source = inherited[index]!;
-      return ace.flags !== INHERITED_ACE || (ace.type !== 0 && ace.type !== 1) || ace.type !== source.type
+      const source = inherited[index];
+      return source === undefined || ace.flags !== INHERITED_ACE || (ace.type !== 0 && ace.type !== 1) || ace.type !== source.type
         || ace.sid === null || ace.sid === CREATOR_OWNER_SID || ace.sid !== source.sid
         || mapWindowsGenericRights(ace.mask) !== mapWindowsGenericRights(source.mask);
     })) return { reason: WORKBOOK_ACL_DIFFERS };

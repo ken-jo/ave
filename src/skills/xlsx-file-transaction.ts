@@ -58,9 +58,10 @@ export function readWorkbookSnapshot(path: string, windowsIdentity?: string): Wo
   requireCondition(location.identity.isDirectory(), "Workbook parent must be a directory.");
   const before = fs.lstatSync(location.path, { bigint: true });
   if (process.platform === "win32" && windowsIdentity !== undefined) {
-    const fields = /^(0x[0-9a-f]{16}):(0x[0-9a-f]{16}):(0x[0-9a-f]{16})$/u.exec(windowsIdentity);
-    if (!fields || before.dev !== BigInt(fields[1]!) || before.ino !== BigInt(fields[2]!)
-      || before.ctimeNs !== (BigInt(fields[3]!) - 116444736000000000n) * 100n) stale();
+    const [, device, inode, change] = /^(0x[0-9a-f]{16}):(0x[0-9a-f]{16}):(0x[0-9a-f]{16})$/u.exec(windowsIdentity) ?? [];
+    if (device === undefined || inode === undefined || change === undefined
+      || before.dev !== BigInt(device) || before.ino !== BigInt(inode)
+      || before.ctimeNs !== (BigInt(change) - 116444736000000000n) * 100n) stale();
   }
   requireCondition(before.isFile() && before.nlink === 1n, "Workbook must be a singly linked regular file.");
   requireCondition(before.size <= BigInt(XLSX_EDIT_LIMITS.maxFileBytes), "Workbook exceeds 20 MiB.");

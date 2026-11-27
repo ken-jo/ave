@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
 import JSZip from "jszip";
 import * as XLSX from "xlsx";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { build } from "esbuild";
 import { checkWindowsWorkbookAccess } from "../../main/host-script-runtime.js";
 import { WINDOWS_WORKBOOK_IDENTITY_ENV } from "../../shared/xlsx-edit.js";
@@ -74,7 +74,9 @@ for (const name of ["exec", "execSync", "execFile", "execFileSync", "fork", "spa
     const result = run(path, [{ cell: "B1", value: 21 }], 0, script, ["--require", preload]);
     expect(result.status, result.stderr).toBe(0);
     const edited = await JSZip.loadAsync(readFileSync(path));
-    expect(await edited.file("xl/worksheets/sheet1.xml")!.async("string")).toContain("<v>21</v>");
+    const sheet = edited.file("xl/worksheets/sheet1.xml");
+    if (!sheet) throw new Error("Edited workbook has no worksheet");
+    expect(await sheet.async("string")).toContain("<v>21</v>");
   });
 
   it.runIf(process.platform === "win32")("refuses before writing when the approved file is swapped before the first snapshot", async () => {

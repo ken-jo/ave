@@ -3985,7 +3985,7 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
       return checked.result;
     }
 
-    const command = workbookIdentity === undefined ? input.command : awaitedHostScriptCommand(input.command, commandAst.commands[0]!);
+    const command = workbookIdentity === undefined ? input.command : awaitedHostScriptCommand(input.command, commandAst.commands[0]);
     if (command === null) return { output: "PowerShell command blocked: host script runtime has no parser extent", isError: true };
     const checked = await checkedShellResult(() => spawnPowerShell(
       command, spawnCwd, input.timeoutSeconds, ctx.abortSignal,
@@ -4188,8 +4188,10 @@ function findPowerShellAstPathViolationInDecision(
 // and the sandbox then tears it down. Node's main-script realpath lstat()s the drive root, which MXC
 // denies; the verified script is never a link, so preserving the main path is equivalent.
 // The console decodes child output with the OEM code page unless told it is UTF-8.
-export function awaitedHostScriptCommand(source: string, invocation: PowerShellAstSummary["commands"][number]): string | null {
-  const { start, end, text } = invocation.arguments[0]!;
+export function awaitedHostScriptCommand(source: string, invocation: PowerShellAstSummary["commands"][number] | undefined): string | null {
+  const runtime = invocation?.arguments[0];
+  if (!runtime) return null;
+  const { start, end, text } = runtime;
   if (start === undefined || end === undefined || source.slice(start, end) !== text) return null;
   // A runtime that never starts leaves $LASTEXITCODE unset; that must not read as success.
   return `[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);${source.slice(0, end)} --preserve-symlinks-main` +

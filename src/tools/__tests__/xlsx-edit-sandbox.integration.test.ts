@@ -71,7 +71,8 @@ describe("native governed XLSX command", () => {
       vi.stubGlobal("__AVE_WINDOWS_PATH_KIND_SHA256__", pin);
     }
     configureHostResources(hostResources);
-    const runtime = hostScriptRuntimePaths()!;
+    const runtime = hostScriptRuntimePaths();
+    if (!runtime) throw new Error("Host script runtime is unavailable");
     const script = join(runtime.bundledScriptsDirectory, "edit-xlsx.cjs");
     const originalScript = readFileSync(script);
     const originalRuntime = readFileSync(runtime.javascriptRuntime);
@@ -191,27 +192,32 @@ describe("native governed XLSX command", () => {
         const prepare = vi.spyOn(mxcShellLaunch, "prepareMxcShellLaunch");
         const readDacls = windowsPathFacts.readWindowsDacls;
         const workspaceNames = readdirSync(directory).sort();
+        type AccessDacl = windowsPathFacts.WindowsDacl & Required<Pick<windowsPathFacts.WindowsDacl, "sacl">>;
         const refusals: Array<{
           name: string;
-          dacl?: (facts: windowsPathFacts.WindowsDaclFacts) => windowsPathFacts.WindowsDaclFacts;
+          alter?: (facts: windowsPathFacts.WindowsDaclFacts, dacl: AccessDacl) => windowsPathFacts.WindowsDaclFacts;
           unreadable?: true;
         }> = [
-          { name: "explicit ACE", dacl: facts => ({ ...facts, dacl: { ...facts.dacl!, aces: facts.dacl!.aces.map(ace => ({ ...ace, flags: 0 })) } }) },
-          { name: "protected DACL", dacl: facts => ({ ...facts, dacl: { ...facts.dacl!, protected: true } }) },
-          { name: "foreign owner", dacl: facts => ({ ...facts, dacl: { ...facts.dacl!, owner: "S-1-5-18" } }) },
-          { name: "mandatory label", dacl: facts => ({ ...facts, dacl: { ...facts.dacl!, sacl: { ...facts.dacl!.sacl!, integrityLabel: { sid: "S-1-16-4096", policy: 1, flags: 0 } } } }) },
-          { name: "EFS", dacl: facts => ({ ...facts, attributes: facts.attributes | 0x4000 }) },
-          { name: "dynamic access control", dacl: facts => ({ ...facts, dacl: { ...facts.dacl!, sacl: { ...facts.dacl!.sacl!, dynamicAccessControl: true } } }) },
+          { name: "explicit ACE", alter: (facts, dacl) => ({ ...facts, dacl: { ...dacl, aces: dacl.aces.map(ace => ({ ...ace, flags: 0 })) } }) },
+          { name: "protected DACL", alter: (facts, dacl) => ({ ...facts, dacl: { ...dacl, protected: true } }) },
+          { name: "foreign owner", alter: (facts, dacl) => ({ ...facts, dacl: { ...dacl, owner: "S-1-5-18" } }) },
+          { name: "mandatory label", alter: (facts, dacl) => ({ ...facts, dacl: { ...dacl, sacl: { ...dacl.sacl, integrityLabel: { sid: "S-1-16-4096", policy: 1, flags: 0 } } } }) },
+          { name: "EFS", alter: facts => ({ ...facts, attributes: facts.attributes | 0x4000 }) },
+          { name: "dynamic access control", alter: (facts, dacl) => ({ ...facts, dacl: { ...dacl, sacl: { ...dacl.sacl, dynamicAccessControl: true } } }) },
           { name: "unreadable facts", unreadable: true },
-          { name: "elevated token", dacl: facts => ({ ...facts, elevated: true }) },
-          { name: "null DACL", dacl: facts => ({ ...facts, dacl: { ...facts.dacl!, nullDacl: true, aces: [] } }) },
-          { name: "unusable file identity", unreadable: true, dacl: facts => ({ ...facts, fileIndex: "0x0000000000000000" }) },
+          { name: "elevated token", alter: facts => ({ ...facts, elevated: true }) },
+          { name: "null DACL", alter: (facts, dacl) => ({ ...facts, dacl: { ...dacl, nullDacl: true, aces: [] } }) },
+          { name: "unusable file identity", unreadable: true, alter: facts => ({ ...facts, fileIndex: "0x0000000000000000" }) },
         ];
         for (const refusal of refusals) {
           const dacl = vi.spyOn(windowsPathFacts, "readWindowsDacls").mockImplementation((paths, options) => {
             if (paths.length !== 1 || paths[0] !== target || !options?.parent) return readDacls(paths, options);
-            if (refusal.unreadable && !refusal.dacl) throw new Error("Unreadable fixture");
-            return readDacls(paths, options).map(facts => refusal.dacl ? refusal.dacl(facts) : facts);
+            const alter = refusal.alter;
+            if (!alter) throw new Error("Unreadable fixture");
+            return readDacls(paths, options).map(facts => {
+              if (!facts.dacl?.sacl) throw new Error("Expected workbook access rules");
+              return alter(facts, { ...facts.dacl, sacl: facts.dacl.sacl });
+            });
           });
           prepare.mockClear();
           try {
@@ -232,13 +238,16 @@ describe("native governed XLSX command", () => {
 
         const oldParent = join(directory, "old-parent");
         mkdirSync(oldParent);
-        const icacls = join(process.env.SystemRoot!, "System32", "icacls.exe");
+        const { SystemRoot: systemRoot } = process.env;
+        if (!systemRoot) throw new Error("Windows system directory is unavailable");
+        const icacls = join(systemRoot, "System32", "icacls.exe");
         execFileSync(icacls, [oldParent, "/grant", "*S-1-5-7:(OI)(R)"], { stdio: "ignore" });
         const oldPath = join(oldParent, "moved.xlsx");
         const movedPath = join(directory, "moved.xlsx");
         writeFileSync(oldPath, originalWorkbook);
         renameSync(oldPath, movedPath);
-        const movedFacts = readDacls([movedPath], { parent: true })[0]!;
+        const [movedFacts] = readDacls([movedPath], { parent: true });
+        if (!movedFacts) throw new Error("Expected facts for the moved workbook");
         expect(movedFacts.dacl?.aces).toContainEqual(expect.objectContaining({ sid: "S-1-5-7", flags: 0x10 }));
         expect(movedFacts.parent?.aces).not.toContainEqual(expect.objectContaining({ sid: "S-1-5-7", flags: expect.any(Number) }));
         const movedNames = readdirSync(directory).sort();
@@ -356,7 +365,8 @@ describe("native governed XLSX command", () => {
         const retired = join(directory, "retired.xlsx");
         writeFileSync(replacement, originalWorkbook);
         const [approved] = readDacls([target], { parent: true });
-        const identity = `${approved!.volumeSerialNumber}:${approved!.fileIndex}:${approved!.changeTime}`;
+        if (!approved?.volumeSerialNumber || !approved.fileIndex || !approved.changeTime) throw new Error("Expected an approved workbook identity");
+        const identity = `${approved.volumeSerialNumber}:${approved.fileIndex}:${approved.changeTime}`;
         let swapped = false;
         prepare.mockImplementation((options, lifecycle) => {
           if (options.env[WINDOWS_WORKBOOK_IDENTITY_ENV] !== undefined) {

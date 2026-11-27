@@ -611,7 +611,7 @@ function isCompleteFileAcl(aclHex: unknown, aceCount: number): boolean {
 function isFileOwnerSid(value: unknown): value is string {
   if (typeof value !== "string" || !/^S-1-(?:[0-9]{1,15}|0x[0-9a-fA-F]{12})(?:-[0-9]{1,10}){0,15}$/u.test(value)) return false;
   const [, , authority, ...parts] = value.split("-");
-  return BigInt(authority!) <= 0xffffffffffffn && parts.every(part => Number(part) <= 0xffffffff);
+  return authority !== undefined && BigInt(authority) <= 0xffffffffffffn && parts.every(part => Number(part) <= 0xffffffff);
 }
 
 function isIntegrityLabel(value: unknown): value is WindowsIntegrityLabel | null {

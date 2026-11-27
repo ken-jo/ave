@@ -47,7 +47,12 @@ function ast(...paths: string[]): PowerShellAstSummary {
   return { errors: [], redirections: [], unsupported: [], commands: [{ name: process.execPath,
     text: "literal runtime command", arguments: [process.execPath, script, ...paths].map((value) => ({ kind: "literal", text: value, value })) }] };
 }
-const powershellSource = (summary: PowerShellAstSummary) => `$env:ELECTRON_RUN_AS_NODE='1'; ${summary.commands[0]!.text}`;
+function firstCommand(summary: PowerShellAstSummary) {
+  const [command] = summary.commands;
+  if (!command) throw new Error("Expected a PowerShell command");
+  return command;
+}
+const powershellSource = (summary: PowerShellAstSummary) => `$env:ELECTRON_RUN_AS_NODE='1'; ${firstCommand(summary).text}`;
 
 describe("host-owned script roles", () => {
   it("admits the exact runtime/script pair in both shell policy dialects", () => {
@@ -79,8 +84,11 @@ describe("host-owned script roles", () => {
     }] };
     expect.soft(powerShellHostScriptReadPaths(summary, powershellSource(summary))).toEqual(expected);
     if (process.platform === "win32") {
-      const dynamic = { ...summary, commands: [{ ...summary.commands[0]!, arguments: [
-        ...summary.commands[0]!.arguments.slice(0, 2), { kind: "dynamic" as const, text: "$workbook" }, summary.commands[0]!.arguments[3]!,
+      const invocation = firstCommand(summary);
+      const request = invocation.arguments[3];
+      if (!request) throw new Error("Expected a workbook edit request");
+      const dynamic = { ...summary, commands: [{ ...invocation, arguments: [
+        ...invocation.arguments.slice(0, 2), { kind: "dynamic" as const, text: "$workbook" }, request,
       ] }] };
       expect.soft(powerShellHostScriptReadPaths(dynamic, powershellSource(dynamic))).toEqual([]);
       const bashCommand = `ELECTRON_RUN_AS_NODE=1 ${requests.map(shellQuote).join(" ")}`;
@@ -115,7 +123,8 @@ describe("host-owned script roles", () => {
       const [device, inode, change] = decision.identity.split(":").map(value => BigInt(value));
       expect(device).toBe(stats.dev);
       expect(inode).toBe(stats.ino);
-      expect((change! - 116444736000000000n) * 100n).toBe(stats.ctimeNs);
+      if (change === undefined) throw new Error("Workbook identity has no change time");
+      expect((change - 116444736000000000n) * 100n).toBe(stats.ctimeNs);
       expect(access).toHaveBeenCalledExactlyOnceWith([workbook], { parent: true, access: true });
       expect(separate).not.toHaveBeenCalled();
     } finally {
@@ -158,7 +167,7 @@ describe("host-owned script roles", () => {
     }
     expect(violation(command().replace("ELECTRON_RUN_AS_NODE=1 ", ""))).not.toBeNull();
     const summary = ast(join(workspace, "book.xlsx"), join(workspace, "edits.json"));
-    for (const source of [summary.commands[0]!.text, powershellSource(summary).replace("='1'", "='0'"),
+    for (const source of [firstCommand(summary).text, powershellSource(summary).replace("='1'", "='0'"),
       `$env:NODE_OPTIONS='--require evil'; ${powershellSource(summary)}`]) {
       expect(findPowerShellAstPathViolation(summary, workspace, workspace, [], true, source)).not.toBeNull();
     }

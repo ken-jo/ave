@@ -171,7 +171,8 @@ describe("workbook file transaction", () => {
     });
     publish.mockClear();
     const stat = vi.mocked(fstatSync);
-    const actualStat = stat.getMockImplementation()!;
+    const actualStat = stat.getMockImplementation();
+    if (!actualStat) throw new Error("Expected a descriptor stat implementation");
     stat.mockImplementation(((...args: Parameters<typeof fstatSync>) => {
       const identity = actualStat(...args);
       if (identity.size === 0n) throw new Error("Unexpected stat of an empty staging descriptor");
@@ -213,7 +214,8 @@ describe("workbook file transaction", () => {
     try {
       expect(() => publishWorkbookEdit(path, snapshot, Buffer.from("validated output"), 1, { write() {
         const [temporary] = temporaryNames();
-        const staged = join(directory, temporary!);
+        if (temporary === undefined) throw new Error("Expected an output staging file");
+        const staged = join(directory, temporary);
         renameSync(staged, join(directory, "retired-staging"));
         writeFileSync(staged, "rebound staging name");
         throw new Error("Interrupted staging");
