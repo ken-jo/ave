@@ -188,12 +188,16 @@ it("an output that failed before dispatch leaves the stage passed and can be ret
 }, { refuseBeforeDispatch: true }));
 
 it.each(["missing workspace", "unconfirmed execution"] as const)("handles %s after restart without calling the tool again", scenario => parked(async (h, id, binding, invoke) => {
+  if (scenario === "unconfirmed execution") invoke.mockRejectedValueOnce(new Error("Transient tool failure"));
   await expect(h.engine.decideStageGate(id, binding, { kind: "local-desktop", receipt: gesture(WORK_BOARD.decideStage, id, binding) }))
     .resolves.toMatchObject({ ok: true });
   await h.until(id, item => item.runStatus === "completed");
   const { runId, stageId, attempt, outputHash } = binding;
   const [outcome] = (await h.stageRun(id, stageId)).outputExecutions ?? [];
   if (!outcome) throw new Error("Missing output outcome");
+  if (scenario === "unconfirmed execution") {
+    expect(outcome).toMatchObject({ status: "failed", detail: "output-execution-failed" });
+  }
   expect(await h.board.updateRun(id, runId, run => ({
     ...run,
     stageRuns: run.stageRuns.map(stage => stage.stageId !== stageId ? stage
@@ -212,7 +216,7 @@ it.each(["missing workspace", "unconfirmed execution"] as const)("handles %s aft
     expect((await h.stageRun(id, stageId)).outputExecutions).toEqual([{ id: outcome.id, status: "pending" }]);
   }
   expect(invoke).toHaveBeenCalledTimes(1);
-}, { refuseBeforeDispatch: true }));
+}, { refuseBeforeDispatch: scenario === "missing workspace" }));
 
 async function pushGate(decision: "approve" | "reject", changeRef = false) {
   const fixture = gitFixture();
