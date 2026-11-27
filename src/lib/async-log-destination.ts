@@ -1,6 +1,6 @@
 import sonicBoom, { type SonicBoom as SonicBoomInstance, type SonicBoomOpts } from "sonic-boom";
 
-const SonicBoom = sonicBoom as unknown as new (options: SonicBoomOpts) => SonicBoomInstance;
+const SonicBoom = sonicBoom as unknown as new (options: SonicBoomOpts & { maxWriteRetries: number }) => SonicBoomInstance;
 
 export function createAsyncLogDestination(options: SonicBoomOpts, onProgress?: () => void) {
   const stream = new SonicBoom({ ...options, maxWriteRetries: 3 });
