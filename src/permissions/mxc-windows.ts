@@ -193,9 +193,10 @@ export function parseMxcRawIpProbeEvidence(stdout: string, probeId: string, stde
         || (evidence.udp !== "sent" && evidence.udp !== "refused-local" && evidence.udp !== "unmeasured")
         || !isRawIpTargetResult(evidence.t4) || !isRawIpTargetResult(evidence.t6) || !isRawIpTargetResult(evidence.tl)) return undefined;
     const { control, t4, t6, tl, capabilitySids, udp } = evidence;
+    if (capabilitySids !== null && (!Array.isArray(capabilitySids) || !capabilitySids.every(isCapabilitySid))) return undefined;
     const frame = { control, t4, t6, tl, capabilitySids, udp };
     if (payload !== JSON.stringify(frame)) return undefined;
-    return { ...frame, capabilitySids: Array.isArray(capabilitySids) && capabilitySids.every(isCapabilitySid) ? capabilitySids : null };
+    return frame;
   } catch {
     return undefined;
   }

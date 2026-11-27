@@ -107,10 +107,10 @@ describe("raw IP evidence frame", () => {
     expect(parseMxcRawIpProbeEvidence(line, "b".repeat(32))).toBeUndefined();
   });
 
-  it("treats an unparseable capability read as IPv6 unmeasured", () => {
-    const evidence = { ...REFUSED, t6: 10051, capabilitySids: ["invalid-sid"] };
-    const parsed = parseMxcRawIpProbeEvidence(evidenceFrame(PROBE_ID, evidence), PROBE_ID);
-    expect(classifyMxcRawIpProbe(parsed, true, "absent").reason).toBe("ipv6-unmeasured");
+  it.each([["S-1-15-3-7"], [["invalid-sid"]], [["S-1-15-3-7", 7]]])("rejects malformed capability data %j despite TCP refusals", (capabilitySids) => {
+    const line = EVIDENCE_LINE.replace('"capabilitySids":null', `"capabilitySids":${JSON.stringify(capabilitySids)}`);
+    const parsed = parseMxcRawIpProbeEvidence(line, PROBE_ID);
+    expect(classifyMxcRawIpProbe(parsed, true, "absent")).toMatchObject({ rawIp: "unknown", reason: "no-evidence" });
   });
 
   it.each([
