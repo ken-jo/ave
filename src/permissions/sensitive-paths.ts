@@ -44,6 +44,7 @@ import {
   type LocalRoute, openLocalityDecision, rethrowLocalityFailure, unprovenLookup, withLocalityDecision,
 } from "../shared/local-path-io.js";
 import { isWindowsPathKindHelperUnavailable } from "../main/windows-path-kind-launcher.js";
+import { projectLocalWindowsFilesystemPath } from "../shared/shell-filesystem-path.js";
 import { classifyWindowsSpelling } from "../shared/windows-path-spelling.js";
 
 // Bounded walk-up depth used by canonicalizePathForMatch when the input path does not yet exist on disk. We try `realpathSync.native` on progressively higher ancestors until we find one that exists, then compose `<resolvedAncestor>/<remainder>`. Capped to defend against adversarial inputs (deep paths, symlink cycles).
@@ -59,11 +60,12 @@ export function protectRuntimeSettingsPath(path: string, resourcePath?: string):
   const lexical = process.platform === "win32" ? foldCanonicalPathSeparators(pathResolve(path)) : pathResolve(path);
   let canonical: string | undefined;
   try {
-    canonical = withLocalityDecision(() => {
-      // Only a proven local route names the physical file; a refused one leaves it unknown.
-      if (process.platform === "win32") admitLocalRoute(pathResolve(path), { maxSymlinkHops: MAX_WALK_UP });
-      return canonicalizePathForMatch(path);
-    }, process.platform === "win32" && resourcePath !== undefined ? openLocalityDecision(resourcePath) : undefined);
+    canonical = withLocalityDecision(
+      () => process.platform === "win32"
+        ? foldCanonicalPathSeparators(projectLocalWindowsFilesystemPath(pathResolve(path), MAX_WALK_UP))
+        : canonicalizePathForMatch(path),
+      process.platform === "win32" && resourcePath !== undefined ? openLocalityDecision(resourcePath) : undefined,
+    );
   } catch (error) {
     const refusedRoute = !isLocalityFailure(error) && (error as NodeJS.ErrnoException | undefined)?.code === "ENETWORKSHAREPATH";
     if (process.platform !== "win32" || !isWindowsPathKindHelperUnavailable(error) && !refusedRoute) throw error;

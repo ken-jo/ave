@@ -217,7 +217,7 @@ describe("desktop host resource startup", () => {
     }
   });
 
-  it.each(["incomplete", "share"] as const)("denies native writes when the settings route was refused at startup (%s)", async (refusal) => {
+  it.each(["incomplete", "transient", "share"] as const)("denies native writes when the settings route was refused at startup (%s)", async (refusal) => {
     const { app } = await import("electron");
     const { createDesktopBootHost } = await import("../../boot/desktop-host-runtime.js");
     const { canonicalizePathForMatch, isSensitivePath, protectedControlEntryFor } = await import("../../permissions/sensitive-paths.js");
@@ -226,28 +226,47 @@ describe("desktop host resource startup", () => {
     const junction = "C:\\profile";
     const lexical = win32.join(junction, "settings.json");
     const physical = "C:\\physical\\settings.json";
+    const unrelated = "C:\\other\\note.txt";
     let recovered = false;
+    let startupWalks = 0;
     io.lstat.mockImplementation((path: string) => {
-      if (path === junction && refusal === "incomplete" && !recovered) throw Object.assign(new Error("access denied"), { code: "EACCES" });
+      if (path === junction && !recovered) {
+        startupWalks++;
+        if (refusal === "incomplete" || (refusal === "transient" && startupWalks > 1)) {
+          throw Object.assign(new Error("access denied"), { code: "EACCES" });
+        }
+      }
       return { isSymbolicLink: () => path === junction };
     });
-    io.readlink.mockImplementation(() => recovered || refusal === "incomplete" ? win32.dirname(physical) : "\\\\server\\share\\profile");
-    io.realpath.mockImplementation((path: string) => path === lexical ? physical : path);
+    io.readlink.mockImplementation(() => !recovered && refusal === "share" ? "\\\\server\\share\\profile" : win32.dirname(physical));
+    io.realpath.mockImplementation((path: string) => {
+      // Admission can see the junction, but resolving its physical directory fails during startup.
+      if (!recovered && refusal === "transient" && path === win32.dirname(physical)) {
+        throw Object.assign(new Error("access denied"), { code: "EACCES" });
+      }
+      if (path === junction) return win32.dirname(physical);
+      return path === lexical ? physical : path;
+    });
     io.lstat.mockClear();
+    io.readlink.mockClear();
 
     const host = createDesktopBootHost(PROJECT_ROOT);
     try {
       expect(io.lstat).toHaveBeenCalledWith(junction, { throwIfNoEntry: false });
+      if (refusal === "incomplete") expect(io.readlink).not.toHaveBeenCalled();
       recovered = true;
       configureHostResources({ resourcePath: PACKAGED_RESOURCES, isPackaged: true });
       expect(canonicalizePathForMatch(lexical)).toBe("c:/physical/settings.json");
+      expect(isSensitivePath(unrelated, "write")).toBe("runtime-settings-file");
       expect(isSensitivePath(physical, "write")).toBe("runtime-settings-file");
       expect(protectedControlEntryFor(physical)).toBe("runtime-settings-file");
+      expect(startupWalks).toBe(1);
     } finally {
       await host.close();
     }
     expect(isSensitivePath(physical, "write")).toBeNull();
     expect(protectedControlEntryFor(physical)).toBeUndefined();
+    expect(isSensitivePath(unrelated, "write")).toBeNull();
   });
 
   it("uses separate Node host locality decisions without global resources", async () => {
