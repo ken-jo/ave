@@ -1,5 +1,6 @@
 import { useId, useState } from "react";
 import { Switch } from "../../../components/ui/switch.js";
+import { isSettingsSection } from "../../../shared/settings-tabs.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { SettingsControlActions, useSettingsControls } from "../context/SettingsEditorContext.js";
 
@@ -35,21 +36,23 @@ export function SessionIndexingSection({ enabled, onChange }: {
     disabledReason: saving ? t("settingsContent.saving") : undefined,
     reset: () => save(true),
   }]);
-  if (enabled === undefined) return null;
+  if (enabled === undefined && !isSettingsSection("chat", "session-indexing")) return null;
   return (
     <section data-settings-section="session-indexing" tabIndex={-1} aria-labelledby={`${id}-title`} className="space-y-3 rounded-lg border p-4">
       <h2 id={`${id}-title`} className="text-sm font-semibold">{t("sessionIndexing.title")}</h2>
-      <div data-setting-id={SESSION_INDEXING_SETTING} className="space-y-1 text-xs">
-        <label htmlFor={id} className="flex items-center gap-2">
-          <Switch id={id} checked={enabled} disabled={saving} aria-describedby={descriptionId}
-            onCheckedChange={next => { void save(next).catch(() => {}); }} />
-          {label}
-        </label>
-        <p id={descriptionId} className="text-muted-foreground">{t("sessionIndexing.description")}</p>
-      </div>
-      {!enabled && <p role="status" className="text-xs">{t("sessionIndexing.disabled")}</p>}
-      {saveFailed && <p role="alert" className="text-xs text-destructive">{t("sessionIndexing.saveFailed")}</p>}
-      <SettingsControlActions section="session-indexing" />
+      {enabled === undefined ? <p className="text-xs text-muted-foreground">{t("sessionIndexing.unavailable")}</p> : <>
+        <div data-setting-id={SESSION_INDEXING_SETTING} className="space-y-1 text-xs">
+          <label htmlFor={id} className="flex items-center gap-2">
+            <Switch id={id} checked={enabled} disabled={saving} aria-describedby={descriptionId}
+              onCheckedChange={next => { void save(next).catch(() => {}); }} />
+            {label}
+          </label>
+          <p id={descriptionId} className="text-muted-foreground">{t("sessionIndexing.description")}</p>
+        </div>
+        {!enabled && <p role="status" className="text-xs">{t("sessionIndexing.disabled")}</p>}
+        {saveFailed && <p role="alert" className="text-xs text-destructive">{t("sessionIndexing.saveFailed")}</p>}
+        <SettingsControlActions section="session-indexing" />
+      </>}
     </section>
   );
 }

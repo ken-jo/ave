@@ -70,6 +70,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "memoryEmbeddings.localInferenceWithoutSandbox": "샌드박스 없이 로컬 추론 허용",
   "memoryEmbeddings.localInferenceWithoutSandboxDescription": "이 옵션을 켜면 이 PC에서 로컬 메모리 추론이 격리 없이 실행됩니다.",
   "sessionIndexing.title": "세션 검색 색인",
+  "sessionIndexing.unavailable": "이 PC에서는 이 설정을 사용할 수 없습니다.",
   "sessionIndexing.switch": "격리 없이 세션 검색 색인 허용",
   "sessionIndexing.description": "이 옵션을 켜면 이 PC에서 세션 검색 색인이 격리 없이 실행됩니다.",
   "sessionIndexing.disabled": "이 PC에서 세션 검색 색인이 꺼져 있습니다.",

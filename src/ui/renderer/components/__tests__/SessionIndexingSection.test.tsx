@@ -1,14 +1,21 @@
 import "../../../../../test/renderer/setup.js";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useState } from "react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { parseSettingsPath } from "../../../../shared/settings-tabs.js";
+import { setProcessPlatform } from "../../../../__tests__/support/process-platform.js";
 import { getLocale, setLocale } from "../../../../i18n/index.js";
 import { en } from "../../../../i18n/messages/en.js";
 import { ko } from "../../../../i18n/messages/ko.js";
 import { SessionIndexingSection } from "../SessionIndexingSection.js";
 
 const previousLocale = getLocale();
-afterEach(() => setLocale(previousLocale));
+const host = process.platform;
+beforeEach(() => setProcessPlatform("win32"));
+afterEach(() => {
+  setLocale(previousLocale);
+  setProcessPlatform(host);
+});
 
 function TestSettings({ onSave }: { onSave: (enabled: boolean) => void }) {
   const [enabled, setEnabled] = useState(true);
@@ -19,10 +26,20 @@ function TestSettings({ onSave }: { onSave: (enabled: boolean) => void }) {
 }
 
 describe("session search indexing switch", () => {
-  it("shows no switch or notice when the release policy omits the preference", () => {
-    render(<SessionIndexingSection enabled={undefined} onChange={vi.fn()} />);
+  it("renders the advertised Windows destination without a switch when the preference is unavailable", () => {
+    const path = parseSettingsPath("chat/session-indexing");
+    expect(path).toEqual({ tab: "chat", section: "session-indexing" });
+    const { container } = render(<SessionIndexingSection enabled={undefined} onChange={vi.fn()} />);
+    expect(container.querySelector(`[data-settings-section="${path?.section}"]`)).toBeInTheDocument();
     expect(screen.queryByRole("switch")).toBeNull();
     expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  it.each(["darwin", "linux"] as const)("has no destination or section on %s", platform => {
+    setProcessPlatform(platform);
+    expect(parseSettingsPath("chat/session-indexing")).toBeNull();
+    const { container } = render(<SessionIndexingSection enabled={undefined} onChange={vi.fn()} />);
+    expect(container.querySelector("[data-settings-section]")).toBeNull();
   });
 
   it.each([["en", en], ["ko", ko]] as const)("shows one stable off notice and no dialog (%s)", async (locale, messages) => {

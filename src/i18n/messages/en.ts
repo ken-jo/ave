@@ -68,6 +68,7 @@ export const en = {
   "memoryEmbeddings.localInferenceWithoutSandbox": "Allow local inference without a sandbox",
   "memoryEmbeddings.localInferenceWithoutSandboxDescription": "On this PC, local memory inference runs without containment when enabled.",
   "sessionIndexing.title": "Session search indexing",
+  "sessionIndexing.unavailable": "This setting is unavailable on this PC.",
   "sessionIndexing.switch": "Allow session search indexing without containment",
   "sessionIndexing.description": "When enabled, session search indexing runs without containment on this PC.",
   "sessionIndexing.disabled": "Session search indexing is off on this PC.",
