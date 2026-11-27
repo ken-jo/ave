@@ -79,6 +79,7 @@ export function createWorkflowTemplateProposeTool(store: WorkflowTemplateStore):
     description: t("be_workflowTemplates.proposeToolDescription"),
     source: "builtin",
     category: "read",
+    requiresAttendedStage: true,
     isReadOnly: () => true,
     jsonSchema: z.toJSONSchema(draftSchema),
     execute: async (raw, ctx) => {

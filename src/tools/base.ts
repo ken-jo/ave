@@ -76,6 +76,8 @@ export interface Tool {
   readonly description: string;
   readonly source: ToolSource;
   readonly category: ToolCategory;
+  /** This builtin has an effect beyond reading local data even when routed as a read. */
+  readonly requiresAttendedStage?: true;
   readonly unattendedEffect?: import("../permissions/tool-effect-evidence.js").ToolEffectEvidence;
   readonly effectAnnotations?: import("../permissions/tool-effect-evidence.js").ExternalEffectAnnotations;
   readonly categoryForInput?: (input: unknown, ctx?: ToolPolicyContext) => ToolCategory;
@@ -163,7 +165,7 @@ export function isModelExposedTool(tool: Pick<Tool, "modelVisible">): boolean {
 /** Only fixed-category local reads are visible and executable in an unattended stage. */
 export function isUnattendedReadTool(tool: Tool): boolean {
   return tool.source === "builtin" && tool.category === "read" && isModelExposedTool(tool)
-    && !isBrowserToolName(tool.name)
+    && !tool.requiresAttendedStage && !isBrowserToolName(tool.name)
     && !tool.arbitraryEgress && !tool.requiresMcpScope && !tool.appInvokable
     && tool.categoryForInput === undefined && tool.decisionOverride === undefined
     && tool.operationPolicy === undefined;
@@ -228,6 +230,7 @@ export interface DynamicToolSpec {
   workerId?: string;
   mcpServerId?: string;
   mcpReadOnlyHint?: boolean;
+  requiresAttendedStage?: Tool["requiresAttendedStage"];
   unattendedEffect?: Tool["unattendedEffect"];
   effectAnnotations?: Tool["effectAnnotations"];
   mcpRuleIdentity?: Tool["mcpRuleIdentity"];
@@ -274,6 +277,7 @@ export function createDynamicTool(spec: DynamicToolSpec): Tool {
     workerId: spec.workerId,
     mcpServerId: spec.mcpServerId,
     mcpReadOnlyHint: spec.mcpReadOnlyHint,
+    ...(spec.requiresAttendedStage && { requiresAttendedStage: true }),
     unattendedEffect: spec.unattendedEffect,
     effectAnnotations: spec.effectAnnotations,
     mcpRuleIdentity: spec.mcpRuleIdentity,
