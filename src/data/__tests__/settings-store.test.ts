@@ -101,22 +101,20 @@ it("persists a POSIX profile without introducing Windows-only preferences", asyn
 });
 
 describe.runIf(process.platform === "win32")("local memory inference preference", () => {
-  it.each(["new", "existing"] as const)("persists an explicit off choice for a %s installation", async (installation) => {
+  it.each([undefined, false, true] as const)("preserves the stored choice %s across an unrelated save", async (choice) => {
     const userDataPath = mkdtempSync(join(tmpdir(), "local-inference-settings-"));
-    const load = () => new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    const file = join(userDataPath, "ave-settings.json");
     try {
-      const existingModel = { source: "local", localModelPath: join(userDataPath, "model") } as const;
-      if (installation === "existing") {
-        writeFileSync(join(userDataPath, "ave-settings.json"), currentSettingsJson({ memoryEmbedding: existingModel }));
-      }
-      const service = load();
-      const config = service.get("memoryEmbedding");
-      if (installation === "existing") expect(config).toMatchObject({ ...existingModel, localInferenceWithoutSandbox: true });
-      else expect(config).toBeUndefined();
-      await service.set("memoryEmbedding", { ...config, localInferenceWithoutSandbox: false });
-      const reloaded = load().get("memoryEmbedding");
-      expect(reloaded).toMatchObject({ localInferenceWithoutSandbox: false });
-      if (installation === "existing") expect(reloaded).toMatchObject(existingModel);
+      const config = {
+        source: "local",
+        localModelPath: join(userDataPath, "model"),
+        ...(choice === undefined ? {} : { localInferenceWithoutSandbox: choice }),
+      };
+      writeFileSync(file, currentSettingsJson({ memoryEmbedding: config }));
+      const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+      expect.soft(service.get("memoryEmbedding")).toStrictEqual(config);
+      await service.patch({ features: { idlePreferenceRefresh: false } });
+      expect(JSON.parse(readFileSync(file, "utf8")).memoryEmbedding).toEqual(config);
     } finally {
       await cleanupTmpDir(userDataPath);
     }
