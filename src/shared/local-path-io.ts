@@ -213,7 +213,9 @@ function driveIdentity(drive: string, decision: Decision): DriveIdentity {
       identity = decision.resourcePath === undefined
         ? queryDriveIdentity(drive)
         : queryDriveIdentity(drive, decision.resourcePath);
-      if (!identity.local && identity.unavailable !== undefined) throw identity.unavailable;
+      if (!identity.local && identity.unavailable !== undefined) {
+        throw Object.assign(refused(identity.root), { cause: identity.unavailable });
+      }
     } catch (error) {
       if (typeof error === "object" && error !== null) driveQueryFailures.set(error, drive);
       decision.failure = { error, drive };

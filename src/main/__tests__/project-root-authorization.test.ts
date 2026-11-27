@@ -166,8 +166,11 @@ describe("project root authorization under the exclusive workload-broker route",
       expect(realpath).not.toHaveBeenCalled();
 
       broker.active = false;
-      expect(() => defaultWorkspaceProject()).toThrow("Host cwd is unavailable");
-      expect(() => listAuthorizedWorkspaceProjects()).toThrow("Host cwd is unavailable");
+      const expected = process.platform === "win32"
+        ? expect.objectContaining({ code: "ENETWORKSHAREPATH", cause: expect.objectContaining({ message: "Host cwd is unavailable" }) })
+        : "Host cwd is unavailable";
+      expect(() => defaultWorkspaceProject()).toThrow(expected);
+      expect(() => listAuthorizedWorkspaceProjects()).toThrow(expected);
     } finally { realpath.mockRestore(); }
   });
 
