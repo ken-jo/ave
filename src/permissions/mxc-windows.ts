@@ -5,6 +5,7 @@ import { t } from "../i18n/index.js";
 import type { ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { isIPv4 } from "node:net";
+import { gzipSync } from "node:zlib";
 import { win32SystemBinary, windowsSystemRoot } from "../shared/windows-system-path.js";
 import { WIN32_POWERSHELL_STARTUP_ARGS } from "../shared/powershell-startup-policy.js";
 import { WINDOWS_COMMAND_LINE_LIMIT, WINDOWS_COMMAND_LINE_MARGIN, windowsCommandLineLength } from "../shared/windows-command-line.js";
@@ -151,15 +152,20 @@ const MXC_RAW_IP_TARGET_TIMEOUT_MS = 3_000;
 const MXC_RAW_IP_PROBE_TIMEOUT_MS = 12_000;
 const MXC_LAN_TARGET_LOOKUP_TIMEOUT_MS = 6_000;
 const MXC_RAW_IP_EVIDENCE_MARKER = "AVE_MXC_RAW_IP ";
+const MXC_NETWORK_CAPABILITY_SIDS = new Set(["S-1-15-3-1", "S-1-15-3-2", "S-1-15-3-3"]);
 
 type MxcRawIpTarget = "t4" | "t6" | "tl";
 type MxcRawIpTargetResult = number | "connected" | "deadline" | "other";
-type MxcRawIpProbeEvidence = Readonly<Record<MxcRawIpTarget, MxcRawIpTargetResult>> & { readonly control: boolean };
+type MxcRawIpProbeEvidence = Readonly<Record<MxcRawIpTarget, MxcRawIpTargetResult>> & {
+  readonly control: boolean;
+  readonly capabilitySids: readonly string[] | null;
+};
 type MxcRawIpUnknownReason = "listener-unavailable" | "no-evidence" | "control-failed" | "raw-ip-reachable"
   | "ipv6-unmeasured" | "no-route" | "timeout" | "unclassified";
 type MxcRawIpProbeVerdict = {
   readonly reachableTargets: readonly MxcRawIpTarget[];
-} & ({ readonly rawIp: "blocked"; readonly reason: "blocked" } | { readonly rawIp: "unknown"; readonly reason: MxcRawIpUnknownReason });
+} & ({ readonly rawIp: "blocked"; readonly reason: "blocked"; readonly evidenceKind: "measured" | "structural" }
+  | { readonly rawIp: "unknown"; readonly reason: MxcRawIpUnknownReason });
 type MxcStartSupport = Extract<MxcSupport, { state: "unavailable" }>
   | (Extract<MxcSupport, { state: "available" }> & { readonly rawIpProbe?: MxcRawIpProbeVerdict });
 type MxcLanProbeTarget = { readonly address: string; readonly port: number };
@@ -169,16 +175,23 @@ function isRawIpTargetResult(value: unknown): value is MxcRawIpTargetResult {
     || (typeof value === "number" && Number.isSafeInteger(value) && value > 0);
 }
 
+function isCapabilitySid(value: unknown): value is string {
+  return typeof value === "string" && /^S-1-15-3(?:-(?:0|[1-9]\d{0,9})){1,14}$/.test(value)
+    && value.split("-").slice(4).every(part => Number(part) <= 0xffffffff);
+}
+
 export function parseMxcRawIpProbeEvidence(stdout: string, probeId: string, stderr = ""): MxcRawIpProbeEvidence | undefined {
   const prefix = `${MXC_RAW_IP_EVIDENCE_MARKER}${probeId} `;
   if (stderr !== "" || !stdout.startsWith(prefix) || !stdout.endsWith("\n")) return undefined;
   const payload = stdout.slice(prefix.length, stdout.endsWith("\r\n") ? -2 : -1);
   try {
     const evidence = JSON.parse(payload) as Partial<MxcRawIpProbeEvidence> | null;
-    if (evidence === null || typeof evidence.control !== "boolean"
+    if (evidence === null || typeof evidence.control !== "boolean" || !Object.hasOwn(evidence, "capabilitySids")
         || !isRawIpTargetResult(evidence.t4) || !isRawIpTargetResult(evidence.t6) || !isRawIpTargetResult(evidence.tl)) return undefined;
-    const frame = { control: evidence.control, t4: evidence.t4, t6: evidence.t6, tl: evidence.tl };
-    return payload === JSON.stringify(frame) ? frame : undefined;
+    const { control, t4, t6, tl, capabilitySids } = evidence;
+    const frame = { control, t4, t6, tl, capabilitySids };
+    if (payload !== JSON.stringify(frame)) return undefined;
+    return { ...frame, capabilitySids: Array.isArray(capabilitySids) && capabilitySids.every(isCapabilitySid) ? capabilitySids : null };
   } catch {
     return undefined;
   }
@@ -188,12 +201,14 @@ function rawIpInconclusiveReason(result: MxcRawIpTargetResult): "timeout" | "unc
   return result === 10060 || result === "deadline" ? "timeout" : "unclassified";
 }
 
-export function mxcRawIpBlockingRequirement({ t6 }: {
-  readonly t6: MxcRawIpTargetResult;
-  readonly u4?: MxcRawIpTargetResult;
-}): "ipv6-unmeasured" | "timeout" | "unclassified" | undefined {
-  if (t6 === 10013) return undefined;
-  if (t6 === 10051 || t6 === 10065 || t6 === 10049 || t6 === 10047) return "ipv6-unmeasured";
+export function mxcRawIpBlockingRequirement({ t6, capabilitySids }: Pick<MxcRawIpProbeEvidence, "t6" | "capabilitySids">):
+  "refused-local" | "refused-structural" | "ipv6-unmeasured" | "timeout" | "unclassified" {
+  if (t6 === 10013) return "refused-local";
+  if (t6 === 10051 || t6 === 10065) {
+    return capabilitySids !== null && !capabilitySids.some(sid => MXC_NETWORK_CAPABILITY_SIDS.has(sid))
+      ? "refused-structural" : "ipv6-unmeasured";
+  }
+  if (t6 === 10049 || t6 === 10047) return "ipv6-unmeasured";
   return rawIpInconclusiveReason(t6);
 }
 
@@ -205,12 +220,13 @@ export function classifyMxcRawIpProbe(evidence: MxcRawIpProbeEvidence | undefine
   if (reachableTargets.length > 0) return unknown("raw-ip-reachable");
   if (evidence.t4 === 10051 || evidence.t4 === 10065) return unknown("no-route");
   if (evidence.t4 !== 10013) return unknown(rawIpInconclusiveReason(evidence.t4));
-  const reason = mxcRawIpBlockingRequirement(evidence);
-  return reason === undefined ? { rawIp: "blocked", reason: "blocked", reachableTargets } : unknown(reason);
+  const t6 = mxcRawIpBlockingRequirement(evidence);
+  if (t6 !== "refused-local" && t6 !== "refused-structural") return unknown(t6);
+  return { rawIp: "blocked", reason: "blocked", evidenceKind: t6 === "refused-local" ? "measured" : "structural", reachableTargets };
 }
 
 function buildMxcRawIpProbeScript(probeId: string, port: number, controlHost: string, lan: MxcLanProbeTarget | undefined, deadline: number): string {
-  return String.raw`
+  const script = String.raw`
 function Get-Remaining($targetClock) {
   [int][Math]::Min(${MXC_RAW_IP_TARGET_TIMEOUT_MS} - $targetClock.ElapsedMilliseconds, $probeBudget - $probeClock.ElapsedMilliseconds)
 }
@@ -265,6 +281,44 @@ function Invoke-Tcp([string] $address, [int] $port, [string] $controlHost) {
     if ($socket) { $socket.Dispose() }
   }
 }
+function Read-CapabilitySids {
+  $identity = $null
+  $buffer = [IntPtr]::Zero
+  try {
+    $assembly = [AppDomain]::CurrentDomain.DefineDynamicAssembly([Reflection.AssemblyName]::new('AveProbeToken'), 'Run')
+    $type = $assembly.DefineDynamicModule('Token').DefineType('TokenInfo')
+    $method = $type.DefinePInvokeMethod('GetTokenInformation', 'advapi32.dll', 'Public, Static, PinvokeImpl',
+      'Standard', [bool], [Type[]]@([IntPtr], [int], [IntPtr], [int], ([int]).MakeByRefType()), 'Winapi', 'Auto')
+    $method.SetImplementationFlags($method.GetMethodImplementationFlags() -bor [Reflection.MethodImplAttributes]::PreserveSig)
+    $tokenInfo = $type.CreateType()
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $token = $identity.Token
+    $size = 0
+    $tokenCapabilities = 30
+    $null = $tokenInfo::GetTokenInformation($token, $tokenCapabilities, [IntPtr]::Zero, 0, [ref]$size)
+    if ($size -lt 4) { return $null }
+    $buffer = [Runtime.InteropServices.Marshal]::AllocHGlobal($size)
+    $written = 0
+    if (-not $tokenInfo::GetTokenInformation($token, $tokenCapabilities, $buffer, $size, [ref]$written)) { return $null }
+
+    # TOKEN_GROUPS starts with a count followed by pointer-aligned SID_AND_ATTRIBUTES entries.
+    $count = [Runtime.InteropServices.Marshal]::ReadInt32($buffer)
+    $offset = [IntPtr]::Size
+    $stride = 2 * $offset
+    if ($written -lt 4 -or $count -lt 0 -or ($count -gt 0 -and ($offset + $count * $stride) -gt $written)) { return $null }
+    $sids = [Collections.Generic.List[string]]::new()
+    for ($i = 0; $i -lt $count; $i++) {
+      $sid = [Runtime.InteropServices.Marshal]::ReadIntPtr($buffer, $offset + $i * $stride)
+      $sids.Add([Security.Principal.SecurityIdentifier]::new($sid).Value)
+    }
+    return ,$sids.ToArray()
+  } catch {
+    return $null
+  } finally {
+    if ($buffer -ne [IntPtr]::Zero) { [Runtime.InteropServices.Marshal]::FreeHGlobal($buffer) }
+    if ($identity) { $identity.Dispose() }
+  }
+}
 try {
   $ErrorActionPreference = 'Stop'
   $ProgressPreference = 'SilentlyContinue'
@@ -275,10 +329,21 @@ try {
   $t4 = Invoke-Tcp '192.0.2.1' 443
   $t6 = Invoke-Tcp '2001:db8::1' 443
   $tl = ${lan === undefined ? "'other'" : `Invoke-Tcp '${lan.address}' ${lan.port}`}
+  $capabilitySids = $null
+  if ($t6 -eq 10051 -or $t6 -eq 10065) { $capabilitySids = Read-CapabilitySids }
   if ($probeClock.ElapsedMilliseconds -ge $probeBudget) { exit 0 }
-  $evidence = [ordered]@{ control = $control; t4 = $t4; t6 = $t6; tl = $tl } | ConvertTo-Json -Compress
+  $evidence = [ordered]@{ control = $control; t4 = $t4; t6 = $t6; tl = $tl; capabilitySids = $capabilitySids } | ConvertTo-Json -Compress
   [Console]::WriteLine('${MXC_RAW_IP_EVIDENCE_MARKER}${probeId} ' + $evidence)
 } catch {} finally { exit 0 }
+`;
+  // The probe request encodes the PowerShell command line inside its own base64 envelope.
+  const compressed = gzipSync(script).toString("base64");
+  return String.raw`
+$inputStream = [IO.MemoryStream]::new([Convert]::FromBase64String('${compressed}'))
+$stream = [IO.Compression.GZipStream]::new($inputStream, [IO.Compression.CompressionMode]::Decompress)
+$reader = [IO.StreamReader]::new($stream)
+try { $probe = $reader.ReadToEnd() } finally { $reader.Dispose() }
+& ([ScriptBlock]::Create($probe))
 `;
 }
 
@@ -473,7 +538,8 @@ export async function probeMxcPowerShellStart(
     if (!start.ok) return unavailable(start.reason, start.detail);
     if (!measure) return available;
     log.info({ launcherSha256: pinnedWxcExecSha256(deps.arch), schema: request.version,
-      network: request.network, windowsBuild: deps.windowsBuild }, "MXC raw IP startup measurement");
+      network: request.network, windowsBuild: deps.windowsBuild,
+      ...(rawIpProbe.rawIp === "blocked" ? { evidenceKind: rawIpProbe.evidenceKind } : {}) }, "MXC raw IP startup measurement");
     if (rawIpProbe.reachableTargets.length > 0) log.warn("raw-ip-reachable");
     return { ...available, rawIpProbe };
   } catch (error) {

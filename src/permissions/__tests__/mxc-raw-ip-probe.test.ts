@@ -2,6 +2,7 @@ import { once } from "node:events";
 import { get } from "node:http";
 import { createServer } from "node:net";
 import { describe, expect, it, vi } from "vitest";
+import { readMxcRawIpProbeScript } from "../../__tests__/support/mxc-raw-ip-probe.js";
 import { openInvocationProxyListener } from "../egress-invocation-listener.js";
 import {
   classifyMxcRawIpProbe,
@@ -11,7 +12,9 @@ import {
   type DetectMxcSupportDeps,
 } from "../mxc-windows.js";
 
-const REFUSED = { control: true, t4: 10013, t6: 10013, tl: 10013 };
+const REFUSED: NonNullable<ReturnType<typeof parseMxcRawIpProbeEvidence>> = {
+  control: true, t4: 10013, t6: 10013, tl: 10013, capabilitySids: null,
+};
 const PROBE_ID = "a".repeat(32);
 const EVIDENCE_LINE = evidenceFrame(PROBE_ID);
 
@@ -39,7 +42,9 @@ describe("Windows raw IP probe classification", () => {
 
   it("only downgrades a blocked verdict when a listener binds after the LAN lookup", () => {
     const beforeBind = { ...REFUSED, t6: 10013, tl: "deadline" } as const;
-    expect(classifyMxcRawIpProbe(beforeBind, true)).toEqual({ rawIp: "blocked", reason: "blocked", reachableTargets: [] });
+    expect(classifyMxcRawIpProbe(beforeBind, true)).toEqual({
+      rawIp: "blocked", reason: "blocked", evidenceKind: "measured", reachableTargets: [],
+    });
     const afterBind = { ...beforeBind, tl: "connected" } as const;
     expect(classifyMxcRawIpProbe(afterBind, true)).toEqual({
       rawIp: "unknown", reason: "raw-ip-reachable", reachableTargets: ["tl"],
@@ -55,11 +60,22 @@ describe("Windows raw IP probe classification", () => {
 });
 
 describe("additional raw IP blocking requirements", () => {
-  it.each([undefined, 10013, "other"] as const)("requires an IPv6 refusal with UDP result %s", (u4) => {
-    expect(mxcRawIpBlockingRequirement({ t6: 10013, u4 })).toBeUndefined();
-    expect(mxcRawIpBlockingRequirement({ t6: 10051, u4 })).toBe("ipv6-unmeasured");
-    expect(mxcRawIpBlockingRequirement({ t6: 10060, u4 })).toBe("timeout");
-    expect(mxcRawIpBlockingRequirement({ t6: "other", u4 })).toBe("unclassified");
+  it.each([10051, 10065])("accepts a successful empty capability read for no-route result %s", (t6) => {
+    const evidence = { ...REFUSED, t6, capabilitySids: [] };
+    expect(mxcRawIpBlockingRequirement(evidence)).toBe("refused-structural");
+    expect(classifyMxcRawIpProbe(evidence, true)).toMatchObject({ rawIp: "blocked", evidenceKind: "structural" });
+  });
+
+  it.each(["S-1-15-3-1", "S-1-15-3-2", "S-1-15-3-3"])("keeps IPv6 unmeasured with capability %s", (sid) => {
+    expect(mxcRawIpBlockingRequirement({ t6: 10051, capabilitySids: [sid] })).toBe("ipv6-unmeasured");
+  });
+
+  it("requires a successful capability read for structural evidence", () => {
+    expect(mxcRawIpBlockingRequirement({ t6: 10051, capabilitySids: null })).toBe("ipv6-unmeasured");
+    expect(mxcRawIpBlockingRequirement({ t6: 10049, capabilitySids: [] })).toBe("ipv6-unmeasured");
+    expect(mxcRawIpBlockingRequirement({ t6: 10060, capabilitySids: [] })).toBe("timeout");
+    expect(mxcRawIpBlockingRequirement({ t6: "other", capabilitySids: [] })).toBe("unclassified");
+    expect(mxcRawIpBlockingRequirement({ t6: 10013, capabilitySids: null })).toBe("refused-local");
   });
 });
 
@@ -68,11 +84,25 @@ describe("raw IP evidence frame", () => {
     expect(parseMxcRawIpProbeEvidence(EVIDENCE_LINE, PROBE_ID)).toEqual(REFUSED);
   });
 
+  it("preserves the capability list in the matching frame", () => {
+    const evidence = { ...REFUSED, t6: 10051, capabilitySids: ["S-1-15-3-7"] };
+    const line = evidenceFrame(PROBE_ID, evidence);
+    expect(parseMxcRawIpProbeEvidence(line, PROBE_ID)).toEqual(evidence);
+    expect(parseMxcRawIpProbeEvidence(line, "b".repeat(32))).toBeUndefined();
+  });
+
+  it("treats an unparseable capability read as IPv6 unmeasured", () => {
+    const evidence = { ...REFUSED, t6: 10051, capabilitySids: ["invalid-sid"] };
+    const parsed = parseMxcRawIpProbeEvidence(evidenceFrame(PROBE_ID, evidence), PROBE_ID);
+    expect(classifyMxcRawIpProbe(parsed, true).reason).toBe("ipv6-unmeasured");
+  });
+
   it.each([
     "", "AVE_MXC_RAW_IP {", EVIDENCE_LINE.trimEnd(),
     evidenceFrame("b".repeat(32)), evidenceFrame("").replace("  ", " "),
     EVIDENCE_LINE.replace('"t4":10013', '"t4":"10013"'),
     EVIDENCE_LINE.replace('"t4":10013', '"t4":10013,"t4":10013'),
+    EVIDENCE_LINE.replace(',"capabilitySids":null', ''),
     EVIDENCE_LINE.repeat(2), `launcher\r\n${EVIDENCE_LINE}`, `${EVIDENCE_LINE}other\r\n`,
   ])("treats invalid or absent evidence as unknown (%j)", (stdout) => {
     expect(classifyMxcRawIpProbe(parseMxcRawIpProbeEvidence(stdout, PROBE_ID), true).reason).toBe("no-evidence");
@@ -92,7 +122,7 @@ function makeDeps(run: DetectMxcSupportDeps["run"]): DetectMxcSupportDeps {
 
 function probeScriptInputs(args: readonly string[]) {
   const request = JSON.parse(Buffer.from(args[1] ?? "", "base64").toString("utf8"));
-  const script = Buffer.from(request.process.commandLine.split(" ").at(-1), "base64").toString("utf16le");
+  const script = readMxcRawIpProbeScript(request.process.commandLine);
   const id = /'AVE_MXC_RAW_IP ([a-f0-9]{32}) '/.exec(script)?.[1];
   const controlHost = /Invoke-Tcp '127\.0\.0\.1' \d+ '(127\.[\d.]+)'/.exec(script)?.[1];
   if (controlHost === undefined) throw new Error("Missing proxy control destination");
