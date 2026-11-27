@@ -1058,6 +1058,13 @@ describe("prepareMxcShellLaunch", () => {
     vi.spyOn(asrtSandbox, "getWindowsProxyPortRange").mockReturnValue([1, 1]);
     const lifecycle = createContainedShellLifecycle();
     const hostPlatform = process.platform;
+    // Only the listener's bind behavior varies in this test.
+    const openListener = invocationProxy.openInvocationProxyListener;
+    vi.spyOn(invocationProxy, "openInvocationProxyListener").mockImplementationOnce(async options => {
+      setProcessPlatform(platform);
+      try { return await openListener(options); }
+      finally { setProcessPlatform(hostPlatform); }
+    });
     const listen = net.Server.prototype.listen;
     const bind = deferred<void>();
     const binding = deferred<void>();
@@ -1068,10 +1075,10 @@ describe("prepareMxcShellLaunch", () => {
       void bind.promise.then(() => listen.apply(this, args as Parameters<typeof listen>));
       return this;
     });
-    setProcessPlatform(platform);
     const prepared = prepareMxcShellLaunch(INPUT, lifecycle).then(() => "prepared", (error: unknown) => error);
     try {
-      await Promise.race([binding.promise, prepared]);
+      const firstBindOrExit = await Promise.race([binding.promise, prepared]);
+      if (firstBindOrExit instanceof Error) throw firstBindOrExit;
       expect(servers).toHaveLength(1);
       lifecycle.revoke();
       bind.resolve();
@@ -1084,7 +1091,6 @@ describe("prepareMxcShellLaunch", () => {
     } finally {
       bind.resolve();
       await lifecycle.dispose();
-      setProcessPlatform(hostPlatform);
     }
   });
 
