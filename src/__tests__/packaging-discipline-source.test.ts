@@ -1562,7 +1562,7 @@ describe("installer smoke and packaging discipline", () => {
     // Affected selections cover before..HEAD only; cancelling them could lose
     // verification for a change present solely in a superseded push.
     expect(workflow.concurrency.group).toContain("github.sha");
-    for (const job of ["build", "vitest", "build-and-test"]) {
+    for (const job of ["build", "background-ui", "vitest", "build-and-test"]) {
       expect(workflow.jobs[job]!.concurrency).toBeUndefined();
     }
     const scopes = [
@@ -1611,6 +1611,11 @@ describe("installer smoke and packaging discipline", () => {
     { label: "selected cancellation", selected: "true", native: "cancelled", build: "success", vitest: "success", docs: "false", status: 1 },
     { label: "unresolved impact", selected: "unknown", native: "skipped", build: "success", vitest: "success", docs: "false", status: 1 },
     { label: "missing impact", selected: "", native: "skipped", build: "success", vitest: "success", docs: "false", status: 1 },
+    { label: "skipped background authority", selected: "false", native: "skipped", build: "success", vitest: "success", docs: "false", background: "skipped", status: 1 },
+    { label: "failed background authority", selected: "false", native: "skipped", build: "success", vitest: "success", docs: "false", background: "failure", status: 1 },
+    { label: "cancelled background authority", selected: "false", native: "skipped", build: "success", vitest: "success", docs: "false", background: "cancelled", status: 1 },
+    { label: "missing background authority result", selected: "false", native: "skipped", build: "success", vitest: "success", docs: "false", background: "", status: 1 },
+    { label: "background authority ran on a documentation change", selected: "false", native: "skipped", build: "success", vitest: "skipped", docs: "true", background: "success", status: 1 },
     { label: "failed build", selected: "false", native: "skipped", build: "failure", vitest: "skipped", docs: "false", status: 1 },
     { label: "failed tests", selected: "false", native: "skipped", build: "success", vitest: "failure", docs: "false", status: 1 },
     { label: "cancelled tests", selected: "false", native: "skipped", build: "success", vitest: "cancelled", docs: "false", status: 1 },
@@ -1631,13 +1636,15 @@ describe("installer smoke and packaging discipline", () => {
       { label: "out-of-order completions", jobs: [completedShard(2), completedShard(1)], status: 0 },
     ].map((test) => ({ selected: "true", native: "success", build: "success", vitest: "success",
       docs: "false", count: "2", matrix: "[1,2]", ...test })),
-  ].map((test) => ({ jobs: undefined, jobExit: "0", ...test })))("evaluates the actual aggregate shell for $label", ({
-    selected, native, build, vitest, docs, status, count = "1", matrix = "[1]", jobs, jobExit,
+  ].map((test) => ({ background: undefined, jobs: undefined, jobExit: "0", ...test })))("evaluates the actual aggregate shell for $label", ({
+    selected, native, build, vitest, docs, background = docs === "true" ? "skipped" : "success", status,
+    count = "1", matrix = "[1]", jobs, jobExit,
   }) => {
     const workflow = parseYaml(readRepoFile(".github/workflows/ci.yml"));
     const command = workflow.jobs["build-and-test"].steps[0].run as string;
     const result = spawnSync("bash", ["-e", "-c", mockShardJobs + command], { encoding: "utf8", env: {
-      ...process.env, GATE_CORE_RESULT: "success", MXC_PINS_RESULT: "success", BUILD_RESULT: build, VITEST_RESULT: vitest, DOCS_ONLY: docs,
+      ...process.env, GATE_CORE_RESULT: "success", MXC_PINS_RESULT: "success", BUILD_RESULT: build,
+      BACKGROUND_UI_RESULT: background, VITEST_RESULT: vitest, DOCS_ONLY: docs,
       VITEST_SHARD_COUNT: count, VITEST_SHARDS: matrix,
       SHARD_JOB_EVIDENCE: jobEvidence(jobs ?? Array.from({ length: Number(count) }, (_, index) => completedShard(index + 1))),
       SHARD_JOB_EXIT: jobExit,
@@ -1660,7 +1667,8 @@ describe("installer smoke and packaging discipline", () => {
     const workflow = parseYaml(readRepoFile(".github/workflows/ci.yml"));
     const command = workflow.jobs["build-and-test"].steps[0].run as string;
     const result = spawnSync("bash", ["-e", "-c", mockShardJobs + command], { encoding: "utf8", env: {
-      ...process.env, GATE_CORE_RESULT: "success", MXC_PINS_RESULT: "success", BUILD_RESULT: "success", VITEST_RESULT: "success",
+      ...process.env, GATE_CORE_RESULT: "success", MXC_PINS_RESULT: "success", BUILD_RESULT: "success",
+      BACKGROUND_UI_RESULT: "success", VITEST_RESULT: "success",
       VITEST_SHARD_COUNT: "1", VITEST_SHARDS: "[1]",
       SHARD_JOB_EVIDENCE: jobEvidence([completedShard(1)]), SHARD_JOB_EXIT: "0",
       DOCS_ONLY: "false", PLATFORM_CHECKS: "true", WINDOWS_PREPARATION_RESULT: preparation,
@@ -1679,8 +1687,11 @@ describe("installer smoke and packaging discipline", () => {
     const command = workflow.jobs["build-and-test"].steps[0].run as string;
     for (const docs of ["true", "false"]) {
       for (const result of ["failure", "cancelled", "skipped", ""]) {
-        const run = spawnSync("bash", ["-e", "-c", command], { encoding: "utf8", env: {
+        const run = spawnSync("bash", ["-e", "-c", mockShardJobs + command], { encoding: "utf8", env: {
           ...process.env, BUILD_RESULT: "success", VITEST_RESULT: docs === "true" ? "skipped" : "success",
+          BACKGROUND_UI_RESULT: docs === "true" ? "skipped" : "success",
+          VITEST_SHARD_COUNT: "1", VITEST_SHARDS: "[1]",
+          SHARD_JOB_EVIDENCE: jobEvidence([completedShard(1)]), SHARD_JOB_EXIT: "0",
           DOCS_ONLY: docs, PLATFORM_CHECKS: "false", WINDOWS_PREPARATION_RESULT: "skipped",
           WINDOWS_RESULT: "skipped", MACOS_RESULT: "skipped", LINUX_RESULT: "skipped",
           GATE_CORE_RESULT: "success", MXC_PINS_RESULT: "success", [variable]: result,
@@ -1865,7 +1876,7 @@ describe("installer smoke and packaging discipline", () => {
     // a cancellation cannot skip either, fails unless both succeeded.
     // Independent gates must report success through the required aggregate.
     const body = verification as string;
-    expect(body).toMatch(/^ {4}needs: \[build, vitest, vitest-tiers, windows-native-preparation, windows-payload-packaging, windows-script-tests, windows-dev-boot, windows-permission-tests, windows-tier-tests, windows-arm64-path-kind, macos-permission-tests, linux-confinement-tests, gate-core, mxc-pins\]$/mu);
+    expect(body).toMatch(/^ {4}needs: \[build, background-ui, vitest, vitest-tiers, windows-native-preparation, windows-payload-packaging, windows-script-tests, windows-dev-boot, windows-permission-tests, windows-tier-tests, windows-arm64-path-kind, macos-permission-tests, linux-confinement-tests, gate-core, mxc-pins\]$/mu);
     expect(body).toMatch(/^ {4}if: always\(\)$/mu);
     expect(body).not.toContain("cancelled()");
     expect(body).toContain("      - name: Require the build and every Vitest shard\n        if: always()\n");
@@ -1874,6 +1885,8 @@ describe("installer smoke and packaging discipline", () => {
     expect(results).toContain('if [ "$VITEST_RESULT" != "success" ]; then');
     expect(results).toContain('if [ "$VITEST_RESULT" != "skipped" ]; then');
     expect(body).toContain("BUILD_RESULT: ${{ needs.build.result }}");
+    expect(body).toContain("BACKGROUND_UI_RESULT: ${{ needs.background-ui.result }}");
+    expect(results).toContain('case "$DOCS_ONLY:$BACKGROUND_UI_RESULT" in\ntrue:skipped|false:success) ;;');
     expect(body).toContain("VITEST_RESULT: ${{ needs.vitest.result }}");
     expect(results).toContain('if [ "$PLATFORM_CHECKS" != "true" ] && [ "$PLATFORM_CHECKS" != "false" ]; then');
     expect(results).toContain('if [ "$PLATFORM_CHECKS" = "true" ]; then expected=success; fi');
@@ -1906,9 +1919,14 @@ describe("installer smoke and packaging discipline", () => {
     // full run and the affected tests on a traceable pull request.
     expect(matched(jobRunCommands(build as string), VERIFIES_THE_CODE)).toEqual([
       "bun run build",
-      "bun run test:ui-e2e",
       "bun run typecheck",
       "check:typecheck-tests",
+    ]);
+    const background = jobs.get("background-ui");
+    expect(background, "ci.yml lost its background-ui job").toBeDefined();
+    expect(matched(jobRunCommands(background as string), VERIFIES_THE_CODE)).toEqual([
+      "bun run build:icons",
+      "bun run test:ui-e2e",
     ]);
     expect(matched(jobRunCommands(shards as string), VERIFIES_THE_CODE)).toEqual(["bun run test:ci", "bun run test:scripts"]);
     expect(packageScripts["test:ci"]).toBe("node scripts/run-ci-suite.mjs");
