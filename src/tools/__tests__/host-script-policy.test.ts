@@ -1,11 +1,12 @@
 import { createHash } from "node:crypto";
-import { copyFileSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { configureHostResources } from "../../main/host-resources.js";
 import { windowsPathKindHelperIn } from "../../main/windows-path-kind-launcher.js";
-import { hostScriptInvocationReadPaths, hostScriptRuntimePaths, isVerifiedHostScript } from "../../main/host-script-runtime.js";
+import { checkWindowsWorkbookAccess, hostScriptInvocationReadPaths, hostScriptRuntimePaths, isVerifiedHostScript } from "../../main/host-script-runtime.js";
+import * as windowsPathFacts from "../../shared/windows-path-facts.js";
 import { isSensitivePath } from "../../permissions/sensitive-paths.js";
 import { getDefaultSensitiveWriteDenyPaths } from "../../permissions/asrt-sandbox.js";
 import { findShellPathPolicyViolation } from "../shell-path-policy.js";
@@ -99,6 +100,28 @@ describe("host-owned script roles", () => {
     expect(violation(`${command(join(workspace, "book.xlsx"), join(workspace, "edits.json"))} > ${shellQuote(join(root, "outside.txt"))}`)?.kind).toBe("sandbox-boundary");
     const summary = ast(join(root, "outside.xlsx"));
     expect(findPowerShellAstPathViolation(summary, workspace, workspace, [], true, powershellSource(summary))?.kind).toBe("sandbox-boundary");
+  });
+
+  it.skipIf(process.platform !== "win32")("binds workbook approval to the descriptor from the pinned leaf", () => {
+    const workbook = join(workspace, "book.xlsx");
+    writeFileSync(workbook, "workbook fixture");
+    const stats = lstatSync(workbook, { bigint: true });
+    const access = vi.spyOn(windowsPathFacts, "readWindowsDacls");
+    const separate = vi.spyOn(windowsPathFacts, "readWindowsFileDacls");
+    try {
+      const decision = checkWindowsWorkbookAccess(workbook);
+      expect(decision).toHaveProperty("identity");
+      if (!("identity" in decision)) throw new Error(decision.reason);
+      const [device, inode, change] = decision.identity.split(":").map(value => BigInt(value));
+      expect(device).toBe(stats.dev);
+      expect(inode).toBe(stats.ino);
+      expect((change! - 116444736000000000n) * 100n).toBe(stats.ctimeNs);
+      expect(access).toHaveBeenCalledExactlyOnceWith([workbook], { parent: true, access: true });
+      expect(separate).not.toHaveBeenCalled();
+    } finally {
+      access.mockRestore();
+      separate.mockRestore();
+    }
   });
 
   it("never grants scripts write authority even inside a broader workspace", () => {

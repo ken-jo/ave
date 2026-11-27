@@ -643,7 +643,7 @@ function isFileDacl(value: unknown): value is WindowsFileDacl {
     && isUint(row.aceCount, 0xffff) && isCompleteFileAcl(row.aclHex, row.aceCount);
 }
 
-/** File-only metadata for callers that bind the result to an already known identity. */
+/** File-only metadata from a component-pinned leaf. */
 export function readWindowsFileDacls(paths: readonly string[]): readonly WindowsFileDacl[] {
   if (paths.length === 0) return [];
   if (paths.some(path => !isAbsolute(path))) throw new Error("Windows path facts require absolute paths");

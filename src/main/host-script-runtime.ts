@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, realpathSync } from "node:fs";
-import { admitLocalRoute, localFs, withLocalityDecision } from "../shared/local-path-io.js";
+import { admitLocalPath, admitLocalRoute, localFs, withLocalityDecision } from "../shared/local-path-io.js";
 import { dirname, isAbsolute, join, relative } from "node:path";
-import { admitWindowsReparse, mapWindowsGenericRights, readWindowsDacls, readWindowsFileDacls } from "../shared/windows-path-facts.js";
+import { admitWindowsReparse, mapWindowsGenericRights, readWindowsDacls } from "../shared/windows-path-facts.js";
 import { getConfiguredHostResources, type HostResources } from "./host-resources.js";
 
 interface ScriptRuntimePaths { javascriptRuntime: string; bundledScriptsDirectory: string }
@@ -117,17 +117,20 @@ const CREATOR_OWNER_SID = "S-1-3-0";
 
 export function checkWindowsWorkbookAccess(path: string): { identity: string } | { reason: string } {
   try {
-    const route = withLocalityDecision(() => admitLocalRoute(path));
-    if (route.followedLink) return { reason: WORKBOOK_ACL_DIFFERS };
+    // Prove the drive locally, then let the native handle walk admit each component.
+    withLocalityDecision(() => admitLocalPath(path));
     const [facts] = readWindowsDacls([path], { parent: true, access: true });
-    if (!facts?.exists || !facts.dacl || !facts.parent?.sacl || !facts.volumeSerialNumber || !facts.fileIndex || !facts.changeTime
+    if (facts && admitWindowsReparse(facts) !== true) return { reason: WORKBOOK_ACL_DIFFERS };
+    if (!facts?.exists || !facts.dacl?.sacl || !facts.parent?.sacl || !facts.volumeSerialNumber || !facts.fileIndex || !facts.changeTime
       || facts.fileSystemName !== "NTFS" || [facts.volumeSerialNumber, facts.fileIndex, facts.changeTime].some(value => BigInt(value) === 0n)) {
       return { reason: WORKBOOK_ACL_UNREADABLE };
     }
     const { dacl, parent } = facts;
-    if (facts.directory || admitWindowsReparse(facts) !== true || (facts.attributes & ENCRYPTED_FILE) !== 0
+    const leafAccess = facts.dacl.sacl;
+    if (facts.directory || (facts.attributes & ENCRYPTED_FILE) !== 0
       || facts.elevated || dacl.owner !== facts.currentUserSid || dacl.protected || dacl.nullDacl || parent.nullDacl
-      || ((parent.sacl?.integrityLabel?.flags ?? 0) & OBJECT_INHERIT_ACE) !== 0) {
+      || leafAccess.integrityLabel !== null || leafAccess.dynamicAccessControl
+      || ((facts.parent.sacl.integrityLabel?.flags ?? 0) & OBJECT_INHERIT_ACE) !== 0) {
       return { reason: WORKBOOK_ACL_DIFFERS };
     }
     const inherited = parent.aces.filter(ace => (ace.flags & OBJECT_INHERIT_ACE) !== 0);
@@ -138,15 +141,7 @@ export function checkWindowsWorkbookAccess(path: string): { identity: string } |
         || mapWindowsGenericRights(ace.mask) !== mapWindowsGenericRights(source.mask);
     })) return { reason: WORKBOOK_ACL_DIFFERS };
 
-    const [file] = readWindowsFileDacls([path]);
-    if (!file || file.volumeSerialNumber !== facts.volumeSerialNumber || file.fileIndex !== facts.fileIndex || file.changeTime !== facts.changeTime) {
-      return { reason: WORKBOOK_ACL_UNREADABLE };
-    }
-    if (file.integrityLabel !== null || file.dynamicAccessControl || file.ownerSid !== facts.currentUserSid
-      || file.aclHex === null || (file.control & 0x1000) !== 0 || file.aceCount !== dacl.aces.length) {
-      return { reason: WORKBOOK_ACL_DIFFERS };
-    }
-    return { identity: `${file.volumeSerialNumber}:${file.fileIndex}:${file.changeTime}` };
+    return { identity: `${facts.volumeSerialNumber}:${facts.fileIndex}:${facts.changeTime}` };
   } catch {
     return { reason: WORKBOOK_ACL_UNREADABLE };
   }

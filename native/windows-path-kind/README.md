@@ -271,7 +271,7 @@ missing components have null identity/canonical fields and zero attributes
 and tag. Only `exists:true` carries observed metadata. Policy belongs to
 `admitWindowsReparse` in `src/shared/windows-path-facts.ts`.
 
-`ave-path-kind.exe --dacl [--parent] [--content] <absolute-path>...` adds
+`ave-path-kind.exe --dacl [--parent] [--content] [--access] <absolute-path>...` adds
 descriptor fields directly to each row (or `identity:null` for an
 unopened/missing target), token context
 `currentUserSid`, `elevated`, and a SID-keyed `principals` table for the two
@@ -286,7 +286,10 @@ descriptor fields under `dacl` and validates that their identity matches the
 pin before returning them.
 
 `--parent` adds the immediate parent's descriptor, captured while both
-objects are pinned. `--content` adds `contentHex`, read from the same target
+objects are pinned. `--access` queries the mandatory label and dynamic access
+control entries on those same handles and adds `sacl` to each descriptor.
+It checks that change time stayed stable and refuses multiply linked files.
+`--content` adds `contentHex`, read from the same target
 handle with a one-MiB limit; this preserves the policy reader's protection
 against concurrent replacement and writes. It reads files only and leaves
 content null for reparse/unopened/missing objects. No link is followed.
@@ -295,8 +298,8 @@ without partial output; output failures return 3. Missing objects are data.
 `--content` requests whose content exceeds 1,048,576 bytes exit with status 5 and write no partial output.
 Relative paths, device namespace paths and alternate streams are refused.
 
-`ave-path-kind.exe --dacl --file-access <absolute-file-path>...` opens only the
-requested files with metadata access. It returns ordered rows with
+`ave-path-kind.exe --dacl --file-access <absolute-file-path>...` walks and pins
+each component with metadata access. It returns ordered rows with
 `volumeSerialNumber`, `fileIndex`, `changeTime`, `ownerSid`, `control` (DACL
 presence, protection and auto-inheritance bits), `aceCount`, `aclHex` (ACL revision
 followed by ordered, complete ACE bytes), `integrityLabel`, and

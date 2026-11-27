@@ -1,4 +1,4 @@
-use crate::pin::{Facts, components, pin, verify};
+use crate::pin::{Facts, pin, verify};
 use crate::security::{self, Descriptor};
 use crate::windows::*;
 use std::fmt::Write;
@@ -126,9 +126,12 @@ fn descriptor_json(handle: Raw, facts: &Facts, access: bool) -> Option<String> {
     let (security, sacl) = if access {
         let (descriptor, label, dynamic_access_control) = Descriptor::read_file_access(handle)?;
         let label = label_json(label);
-        (descriptor, Some(format!(
-            r#","sacl":{{"integrityLabel":{label},"dynamicAccessControl":{dynamic_access_control}}}"#
-        )))
+        (
+            descriptor,
+            Some(format!(
+                r#","sacl":{{"integrityLabel":{label},"dynamicAccessControl":{dynamic_access_control}}}"#
+            )),
+        )
     } else {
         (Descriptor::read(handle)?, None)
     };
@@ -230,20 +233,18 @@ fn framed_row_fits(output_size: usize, row_size: usize, first: bool) -> bool {
 }
 
 fn file_access_row(path: &[u16]) -> Option<String> {
-    let parts = components(path)?;
-    let [.., _, leaf] = parts.as_slice() else {
-        return None;
-    };
-    // The caller binds the result to its file identity. Open only the leaf so
-    // the read also works with metadata access limited to a workspace.
-    let file = open_absolute(leaf, READ_ATTRIBUTES | READ_CONTROL, SHARE_READ | SHARE_WRITE, OPEN_REPARSE).ok()?;
-    let info = legacy(file.raw()).ok()?;
-    if info.attributes & (DIRECTORY | REPARSE) != 0 || info.links != 1 {
+    let pinned = pin(path, false)?;
+    let (facts, ancestors) = pinned.facts.split_last()?;
+    if ancestors.is_empty()
+        || facts.exists != Some(true)
+        || facts.tag.attributes & (DIRECTORY | REPARSE) != 0
+        || facts.legacy.links != 1
+    {
         return None;
     }
-    let change = basic(file.raw()).ok()?.change;
-    let (descriptor, label, dynamic_access_control) = Descriptor::read_file_access(file.raw())?;
-    if basic(file.raw()).ok()?.change != change {
+    let file = pinned.handles.last()?.raw();
+    let (descriptor, label, dynamic_access_control) = Descriptor::read_file_access(file)?;
+    if basic(file).ok()?.change != facts.change || !verify(&pinned) {
         return None;
     }
     let owner = json(&security::sid_text(descriptor.owner).ok()?);
@@ -261,9 +262,9 @@ fn file_access_row(path: &[u16]) -> Option<String> {
     };
     Some(format!(
         r#"{{"volumeSerialNumber":"0x{:016x}","fileIndex":"0x{:016x}","changeTime":"0x{:016x}","ownerSid":{owner},"control":{},"aceCount":{count},"aclHex":{acl},"integrityLabel":{label},"dynamicAccessControl":{dynamic_access_control}}}"#,
-        info.volume,
-        info.index(),
-        change as u64,
+        facts.legacy.volume,
+        facts.legacy.index(),
+        facts.change as u64,
         descriptor.control & FILE_DACL_CONTROL_MASK
     ))
 }
@@ -370,6 +371,12 @@ fn batch(args: &[Vec<u16>], dacl: bool) -> Result<String, u8> {
             row.push_str(&context);
             let mut bytes = "null".into();
             if facts.exists == Some(true) {
+                if access
+                    && facts.tag.attributes & (DIRECTORY | REPARSE) == 0
+                    && facts.legacy.links != 1
+                {
+                    return Err(4);
+                }
                 let file = pinned.handles.last().ok_or(4_u8)?.raw();
                 let descriptor = descriptor_json(file, facts, access).ok_or(4_u8)?;
                 if content && facts.tag.attributes & REPARSE == 0 {
@@ -392,7 +399,8 @@ fn batch(args: &[Vec<u16>], dacl: bool) -> Result<String, u8> {
                             pinned.handles[last - 1].raw(),
                             &pinned.facts[last - 1],
                             access,
-                        ).ok_or(4_u8)?,
+                        )
+                        .ok_or(4_u8)?,
                     );
                 } else {
                     row.push_str("null");

@@ -1,4 +1,4 @@
-import { copyFileSync, cpSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, cpSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
@@ -190,33 +190,29 @@ describe("native governed XLSX command", () => {
         const prepareMxc = mxcShellLaunch.prepareMxcShellLaunch;
         const prepare = vi.spyOn(mxcShellLaunch, "prepareMxcShellLaunch");
         const readDacls = windowsPathFacts.readWindowsDacls;
-        const readFileDacls = windowsPathFacts.readWindowsFileDacls;
         const workspaceNames = readdirSync(directory).sort();
         const refusals: Array<{
           name: string;
           dacl?: (facts: windowsPathFacts.WindowsDaclFacts) => windowsPathFacts.WindowsDaclFacts;
-          file?: (facts: ReturnType<typeof readFileDacls>[number]) => ReturnType<typeof readFileDacls>[number];
           unreadable?: true;
         }> = [
           { name: "explicit ACE", dacl: facts => ({ ...facts, dacl: { ...facts.dacl!, aces: facts.dacl!.aces.map(ace => ({ ...ace, flags: 0 })) } }) },
           { name: "protected DACL", dacl: facts => ({ ...facts, dacl: { ...facts.dacl!, protected: true } }) },
           { name: "foreign owner", dacl: facts => ({ ...facts, dacl: { ...facts.dacl!, owner: "S-1-5-18" } }) },
-          { name: "mandatory label", file: facts => ({ ...facts, integrityLabel: { sid: "S-1-16-4096", policy: 1, flags: 0 } }) },
+          { name: "mandatory label", dacl: facts => ({ ...facts, dacl: { ...facts.dacl!, sacl: { ...facts.dacl!.sacl!, integrityLabel: { sid: "S-1-16-4096", policy: 1, flags: 0 } } } }) },
           { name: "EFS", dacl: facts => ({ ...facts, attributes: facts.attributes | 0x4000 }) },
-          { name: "dynamic access control", file: facts => ({ ...facts, dynamicAccessControl: true }) },
+          { name: "dynamic access control", dacl: facts => ({ ...facts, dacl: { ...facts.dacl!, sacl: { ...facts.dacl!.sacl!, dynamicAccessControl: true } } }) },
           { name: "unreadable facts", unreadable: true },
           { name: "elevated token", dacl: facts => ({ ...facts, elevated: true }) },
           { name: "null DACL", dacl: facts => ({ ...facts, dacl: { ...facts.dacl!, nullDacl: true, aces: [] } }) },
-          { name: "unbound file facts", unreadable: true, file: facts => ({ ...facts, fileIndex: "0x0000000000000000" }) },
+          { name: "unusable file identity", unreadable: true, dacl: facts => ({ ...facts, fileIndex: "0x0000000000000000" }) },
         ];
         for (const refusal of refusals) {
           const dacl = vi.spyOn(windowsPathFacts, "readWindowsDacls").mockImplementation((paths, options) => {
             if (paths.length !== 1 || paths[0] !== target || !options?.parent) return readDacls(paths, options);
-            if (refusal.unreadable && !refusal.file) throw new Error("Unreadable fixture");
+            if (refusal.unreadable && !refusal.dacl) throw new Error("Unreadable fixture");
             return readDacls(paths, options).map(facts => refusal.dacl ? refusal.dacl(facts) : facts);
           });
-          const file = vi.spyOn(windowsPathFacts, "readWindowsFileDacls").mockImplementation(paths =>
-            readFileDacls(paths).map(facts => paths[0] === target && refusal.file ? refusal.file(facts) : facts));
           prepare.mockClear();
           try {
             const denied = await tool.execute({ command: commandFor(target), timeoutSeconds }, context);
@@ -231,7 +227,6 @@ describe("native governed XLSX command", () => {
             }
           } finally {
             dacl.mockRestore();
-            file.mockRestore();
           }
         }
 
@@ -276,7 +271,7 @@ describe("native governed XLSX command", () => {
         renameSync(target, unlabelled);
         const labelledSibling = join(labelledParent, "new-file");
         writeFileSync(labelledSibling, "");
-        expect(readFileDacls([labelledSibling])[0]?.integrityLabel?.sid).toBe("S-1-16-4096");
+        expect(readDacls([labelledSibling], { access: true })[0]?.dacl?.sacl?.integrityLabel?.sid).toBe("S-1-16-4096");
         rmSync(labelledSibling);
         const [labelFacts] = readDacls([unlabelled], { parent: true, access: true });
         expect(labelFacts?.dacl?.sacl?.integrityLabel).toBeNull();
@@ -293,6 +288,37 @@ describe("native governed XLSX command", () => {
         rmSync(`${unlabelled}.ave-bak`, { force: true });
         rmSync(labelledParent, { recursive: true });
         writeFileSync(target, originalWorkbook);
+
+        const redirectParent = join(directory, "redirect-parent");
+        const parkedParent = join(directory, "parked-parent");
+        const redirectWorkbook = join(redirectParent, "gate.xlsx");
+        mkdirSync(redirectParent);
+        writeFileSync(redirectWorkbook, originalWorkbook);
+        let redirectedBeforePin = false;
+        const access = vi.spyOn(windowsPathFacts, "readWindowsDacls").mockImplementation((paths, options) => {
+          if (paths[0] === redirectWorkbook && options?.access) {
+            renameSync(redirectParent, parkedParent);
+            symlinkSync(directory, redirectParent, "junction");
+            redirectedBeforePin = true;
+          }
+          return readDacls(paths, options);
+        });
+        try {
+          prepare.mockClear();
+          const redirected = await tool.execute({ command: commandFor(redirectWorkbook), timeoutSeconds }, context);
+          expect.soft(redirectedBeforePin).toBe(true);
+          expect.soft(redirected.output).toContain("[workbook-acl-differs]");
+          expect.soft(redirected.isError).toBe(true);
+          expect.soft(prepare).toHaveBeenCalledTimes(1);
+          expect.soft(readdirSync(parkedParent)).toEqual(["gate.xlsx"]);
+          expect.soft(readFileSync(join(parkedParent, "gate.xlsx")).equals(originalWorkbook)).toBe(true);
+          expect.soft(readdirSync(directory).sort()).toEqual([...workspaceNames, "parked-parent", "redirect-parent"].sort());
+          expect.soft(readFileSync(target).equals(originalWorkbook)).toBe(true);
+        } finally {
+          access.mockRestore();
+          if (redirectedBeforePin) rmdirSync(redirectParent);
+          rmSync(redirectedBeforePin ? parkedParent : redirectParent, { recursive: true });
+        }
 
         prepare.mockClear();
         const computedCommand = commandFor(target).replace(quotePowerShell(target), "$env:WORKBOOK");
