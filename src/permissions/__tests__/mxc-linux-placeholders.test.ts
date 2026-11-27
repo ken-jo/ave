@@ -1,12 +1,26 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { launcherPathFor } from "../mxc-launcher.js";
 import { holdMxcLinuxPlaceholders, sweepMxcLinuxPlaceholders } from "../mxc-linux-placeholders.js";
 import { posixPolicyLookups, rankPosixContainerRows, type PosixPolicyLookups } from "../mxc-posix.js";
-import { _forgetMxcRuntimeRootForTest, currentMxcRuntimeHost, establishMxcRuntimeRoot, type MxcRuntimeHost } from "../mxc-runtime-root.js";
+import { _forgetMxcRuntimeRootForTest, currentMxcRuntimeHost, establishMxcRuntimeRoot, requireMxcContainerStartRoot, type MxcRuntimeHost } from "../mxc-runtime-root.js";
 import { buildPolicyModel, policyFloorRow, policyGrantRow } from "../policy-model.js";
+
+// A host whose mkdir creates the folder and then fails, as a crash between the two would leave it.
+const mkdirFault = vi.hoisted(() => ({ path: undefined as string | undefined }));
+vi.mock("node:fs", async (importOriginal) => {
+  const fs = await importOriginal<typeof import("node:fs")>();
+  return {
+    ...fs,
+    mkdirSync: ((path: string, options?: unknown) => {
+      const result = fs.mkdirSync(path, options as never);
+      if (path === mkdirFault.path) throw Object.assign(new Error("injected failure after mkdir"), { code: "EIO" });
+      return result;
+    }) as typeof fs.mkdirSync,
+  };
+});
 
 describe.runIf(process.platform === "linux")("Linux placeholder ownership", () => {
   let root: string;
@@ -33,7 +47,11 @@ describe.runIf(process.platform === "linux")("Linux placeholder ownership", () =
     rank = (policyLookups) => rankPosixContainerRows(model, "bubblewrap", policyLookups);
   });
 
+  const journalPath = () => join(requireMxcContainerStartRoot(host), "shell-placeholders.json");
+  const journal = () => JSON.parse(readFileSync(journalPath(), "utf8")) as { directories: unknown[] };
+
   afterEach(() => {
+    mkdirFault.path = undefined;
     _forgetMxcRuntimeRootForTest(host.cacheHome);
     rmSync(root, { recursive: true, force: true });
   });
@@ -80,6 +98,57 @@ describe.runIf(process.platform === "linux")("Linux placeholder ownership", () =
       return grants;
     }, host)).rejects.toThrow("Container placeholder ancestor changed");
     expect(existsSync(leaf)).toBe(false);
+  });
+
+  it("journals a placeholder before creating it, so a creation that failed is still removed", async () => {
+    mkdirFault.path = join(work, "missing");
+    await expect(holdMxcLinuxPlaceholders(lookups, rank, host)).rejects.toThrow("injected failure after mkdir");
+    expect(existsSync(join(work, "missing"))).toBe(false);
+    expect(journal().directories).toEqual([]);
+  });
+
+  describe("a pending entry left by a run that died between journalling and creating", () => {
+    const dead = { processExists: (pid: number) => pid !== 81, processStart: (pid: number) => pid === 81 ? null : "live" };
+    function leavePending(path: string, notBefore: bigint, owner = { pid: 81, start: "gone" }) {
+      const run = "7c9e6679-7425-40de-944b-e07fc1f90ae7";
+      const parent = lstatSync(dirname(path), { bigint: true });
+      writeFileSync(journalPath(), JSON.stringify({
+        runs: [{ id: run, owner }],
+        directories: [{ path, parent: { device: String(parent.dev), inode: String(parent.ino) }, leaf: false, owners: [run],
+          pending: { notBefore: String(notBefore) } }],
+      }));
+    }
+
+    it("is removed at the next sweep when the folder is empty and newer than the entry", async () => {
+      leavePending(join(work, "missing"), BigInt(Date.now() - 1_000) * 1_000_000n);
+      mkdirSync(join(work, "missing"));
+      await sweepMxcLinuxPlaceholders({ ...host, ...dead });
+      expect(existsSync(join(work, "missing"))).toBe(false);
+      expect(journal().directories).toEqual([]);
+    });
+
+    it("leaves a folder the user made before the entry, and drops the entry", async () => {
+      mkdirSync(join(work, "missing"));
+      leavePending(join(work, "missing"), BigInt(Date.now() + 60_000) * 1_000_000n);
+      await sweepMxcLinuxPlaceholders({ ...host, ...dead });
+      expect(existsSync(join(work, "missing"))).toBe(true);
+      expect(journal().directories).toEqual([]);
+    });
+
+    it("leaves a folder that is not empty, and drops the entry", async () => {
+      leavePending(join(work, "missing"), BigInt(Date.now() - 1_000) * 1_000_000n);
+      mkdirSync(join(work, "missing"));
+      writeFileSync(join(work, "missing", "user-file"), "mine");
+      await sweepMxcLinuxPlaceholders({ ...host, ...dead });
+      expect(readFileSync(join(work, "missing", "user-file"), "utf8")).toBe("mine");
+      expect(journal().directories).toEqual([]);
+    });
+
+    it("never satisfies another launch's claim while its run is live", async () => {
+      leavePending(join(work, "missing"), BigInt(Date.now() - 1_000) * 1_000_000n, { pid: process.pid, start: host.processStart(process.pid) ?? "x" });
+      mkdirSync(join(work, "missing"));
+      await expect(holdMxcLinuxPlaceholders(lookups, rank, host)).rejects.toThrow("Container placeholder changed");
+    });
   });
 
   it("cleans the protected leaf and leaves an ordinary file in a created parent", async () => {
