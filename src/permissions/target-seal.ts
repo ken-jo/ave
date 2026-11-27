@@ -1,7 +1,6 @@
 import { resolve } from "node:path";
 import { fileIdentityKey } from "../lib/file-identity.js";
 import { admitLocalPath, admitLocalRoute, localFs, withLocalityDecision } from "../shared/local-path-io.js";
-import type { ApprovalPersistenceGuard } from "./approval-persistence-guard.js";
 
 /**
  * What a judgment observed about its original operands, carried to each effect the judgment authorizes. `verify` observes
@@ -10,6 +9,10 @@ import type { ApprovalPersistenceGuard } from "./approval-persistence-guard.js";
  */
 export interface TargetSeal {
   verify(): void;
+  /** Runtime spelling of a file operand captured with its authorization. */
+  pathFor?(path: string): string | undefined;
+  /** Physical parent with the original name retained for a by-name mutation. */
+  entryFor?(path: string): string | undefined;
   /** Keep checking the route after an authorized operation has changed this entry. */
   afterMutation?(path: string): TargetSeal;
 }
@@ -40,14 +43,15 @@ export function observeWindowsTarget(path: string, rejectDanglingLink = false): 
   });
 }
 
-export function assertWindowsTarget(expected: WindowsTargetObservation, actual: WindowsTargetObservation): void {
+export function assertWindowsTarget(expected: WindowsTargetObservation, actual: WindowsTargetObservation, allowCreatedDirectory = false): void {
   if (actual.path !== expected.path) throw new TargetIdentityChangedError();
   if (actual.ancestor === expected.ancestor) {
     if (actual.identity !== expected.identity) throw new TargetIdentityChangedError();
     return;
   }
   // Some effects create missing parent directories. Keep the originally admitted ancestor pinned.
-  if (expected.ancestor === expected.path || actual.ancestor === actual.path || identityAt(expected.ancestor) !== expected.identity) {
+  if (expected.ancestor === expected.path || (!allowCreatedDirectory && actual.ancestor === actual.path) ||
+      identityAt(expected.ancestor) !== expected.identity) {
     throw new TargetIdentityChangedError();
   }
 }
@@ -78,10 +82,4 @@ export function sealsHold(...seals: ReadonlyArray<TargetSeal | undefined>): bool
   } catch {
     return false;
   }
-}
-
-/** A persistence guard whose synchronous commit check also requires `seals` to hold. */
-export function sealedPersistenceGuard(guard: ApprovalPersistenceGuard | undefined, ...seals: ReadonlyArray<TargetSeal | undefined>): ApprovalPersistenceGuard {
-  const isCurrent = (): boolean => (guard === undefined || guard.isCurrent()) && sealsHold(...seals);
-  return { isCurrent, refresh: async () => (guard === undefined || await guard.refresh()) && isCurrent() };
 }

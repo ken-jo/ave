@@ -296,8 +296,9 @@ function sealEffectTargets(methodPath: string, effect: Effect, args: readonly un
     };
     const paths = effectPaths(methodPath, effect, args, resolveStoragePath, canonicalize);
     const relativePath = methodPath === "storage.list" && args[0] === undefined ? "." : args[0];
-    const storageRoot = resolveStoragePath && paths.length > 0
-      ? canonicalize(methodPath.startsWith("storage.") && relativePath === "." ? paths[0]!.lexical : resolveStoragePath("."))
+    const firstPath = paths[0];
+    const storageRoot = resolveStoragePath && firstPath
+      ? canonicalize(methodPath.startsWith("storage.") && relativePath === "." ? firstPath.lexical : resolveStoragePath("."))
       : undefined;
     return { paths, storageRoot, observations };
   };

@@ -583,7 +583,14 @@ export async function checkpointFileMutation<T>(
   const baselinePaths = withLocalityDecision(() => {
     seal?.verify();
     return effects.map((effect) => {
-      try { return resolvePhysicalFilesystemPath(effect.path, process.cwd(), 64); }
+      try {
+        if (seal?.pathFor !== undefined) {
+          const admitted = seal.pathFor(effect.path);
+          if (admitted === undefined) throw new TargetIdentityChangedError();
+          return admitted;
+        }
+        return resolvePhysicalFilesystemPath(effect.path, process.cwd(), 64);
+      }
       catch (error) {
         rethrowLocalityFailure(error);
         if (!isTerminalReviewUnavailable(error)) throw error;
@@ -646,14 +653,20 @@ async function checkpointMutation<T>(
     const changes: StoredChange[] = [];
     const effectPaths = new Map<string, StoredChange>();
     const targetSeals = new Map<string, TargetSeal>();
+    const checkpointEntry = (path: string): string | Promise<string> => {
+      if (!isWindows || seal?.entryFor === undefined) return canonicalPath(resolve(path));
+      const admitted = seal.entryFor(path);
+      if (admitted === undefined) throw new TargetIdentityChangedError();
+      return admitted;
+    };
     try {
       for (const effect of effects) {
         seal?.verify();
-        const path = await canonicalPath(resolve(effect.path));
+        const path = await checkpointEntry(effect.path);
         const before = await snapshot(path, seal);
         seal?.verify();
         const content = "copyFrom" in effect
-          ? (await snapshot(await canonicalPath(resolve(effect.copyFrom)), seal)).bytes
+          ? (await snapshot(await checkpointEntry(effect.copyFrom), seal)).bytes
           : effect.content;
         seal?.verify();
         const after = typeof content === "string" ? Buffer.from(content) : content;

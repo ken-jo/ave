@@ -408,6 +408,32 @@ describe("sealed file targets up to their effects", () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
+  it("persists no always folder grant when the staged scope cannot be rebuilt", async () => {
+    const writes: string[] = [];
+    let committing = false;
+    const query = vi.fn((drive: string) => {
+      if (drive === "Z:") throw new Error("Additional directory drive query failed");
+      return LOCAL_DRIVE;
+    });
+    const lifecycle = {
+      allowDirectory: async (root: string, _source: "permission-slash", authority?: { isCurrent(): boolean }) => {
+        await Promise.resolve();
+        committing = true;
+        setWindowsDriveQueryForTest(query);
+        if (authority && !authority.isCurrent()) throw new ApprovalPersistenceError();
+        writes.push(root);
+        return writes;
+      },
+      denyDirectory: async () => writes,
+    };
+    const { result, execute } = await runAnswered("allow-always", () => undefined, lifecycle,
+      () => committing ? [String.raw`Z:\example`] : []);
+    expect(result.is_error).toBe(true);
+    expect(writes).toEqual([]);
+    expect(execute).not.toHaveBeenCalled();
+    expect(query.mock.calls.filter(([drive]) => drive === "Z:")).toHaveLength(1);
+  });
+
   it("persists no always folder grant when the target changes before the commit", async () => {
     const writes: string[] = [];
     const lifecycle = {

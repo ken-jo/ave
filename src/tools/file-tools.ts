@@ -31,7 +31,7 @@ import { z } from "zod";
 import type { PathEffect } from "../permissions/allowed-directories.js";
 import { isPathAllowed } from "../permissions/allowed-directories.js";
 import { canonicalizePathForMatch, caseFoldForMatch, judgedPathNamesOpenedFile } from "../permissions/sensitive-paths.js";
-import type { TargetSeal } from "../permissions/target-seal.js";
+import { TargetIdentityChangedError, type TargetSeal } from "../permissions/target-seal.js";
 import { resolvePhysicalFilesystemPath } from "../shared/shell-filesystem-path.js";
 import type { ApprovalMemoryScope } from "../shared/permissions-events.js";
 import { consumeExecutionGrantForBuiltinToolInvocation } from "../permissions/execution-router.js";
@@ -335,6 +335,11 @@ abstract class FileTool<TSchema extends z.ZodTypeAny> extends ZodTool<TSchema> {
     if (!seal) return realpath(path);
     return withLocalityDecision(() => {
       seal.verify();
+      if (process.platform === "win32" && seal.pathFor !== undefined) {
+        const judged = seal.pathFor(path);
+        if (judged === undefined) throw new TargetIdentityChangedError();
+        return judged;
+      }
       return resolvePhysicalFilesystemPath(path, ctx.cwd, 64);
     });
   }
@@ -489,7 +494,7 @@ export class ReadFileTool extends FileTool<typeof ReadFileInputSchema> {
     const shown = fitReadWindow(target, input.offset, window.lines, whole.lineCount);
     const sessionId = sessionIdOf(ctx);
     if (sessionId !== undefined) {
-      const key = await fileReadKey(target);
+      const key = process.platform === "win32" && ctx.fileTargetSeal?.pathFor !== undefined ? judged : await fileReadKey(target);
       ctx.fileTargetSeal?.verify();
       recordFileRead(sessionId, key, {
         mtimeMs: fileStat.value.mtimeMs,
@@ -2253,14 +2258,18 @@ async function writeTextAtomically(
   seal?: TargetSeal,
 ): Promise<WrittenFileIdentity | undefined> {
   const windows = process.platform === "win32";
-  const prepareTemp = () => {
+  const prepareEntry = () => {
     seal?.verify();
-    const stableTarget = seal === undefined
-      ? target
-      : join(resolvePhysicalFilesystemPath(dirname(target), process.cwd(), 64), basename(target));
-    return temporaryWritePath(stableTarget);
+    if (seal === undefined) return target;
+    if (windows && seal.entryFor !== undefined) {
+      const entry = seal.entryFor(target);
+      if (entry === undefined) throw new TargetIdentityChangedError();
+      return entry;
+    }
+    return join(resolvePhysicalFilesystemPath(dirname(target), process.cwd(), 64), basename(target));
   };
-  const temp = windows ? withLocalityDecision(prepareTemp) : prepareTemp();
+  const entry = windows ? withLocalityDecision(prepareEntry) : prepareEntry();
+  const temp = temporaryWritePath(entry);
   const windowsStage = windows && seal !== undefined ? openWindowsStagedWrite(temp) : undefined;
   const handle = windowsStage ? undefined : await open(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), 0o666);
   let identity: WrittenFileIdentity | undefined;
@@ -2276,7 +2285,7 @@ async function writeTextAtomically(
       }
     } finally { await handle?.close(); }
     if (!windows) noteOwnedWrite(target, identity);
-    await renameWithTransientRetry(temp, target, seal);
+    await renameWithTransientRetry(temp, windows && seal?.entryFor !== undefined ? entry : target, seal);
     recordEffect(target);
   } catch (error) {
     if (!windows) {
