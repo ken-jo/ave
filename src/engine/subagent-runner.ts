@@ -1,5 +1,5 @@
 /** Spawn isolated child history with scoped tools, a host-assigned round budget, labeled approval prompts, and streamed status.
- * Never expose agent_spawn to children or mutate the parent loop's state. */
+ * Only an opted-in workflow stage can expose agent_spawn inside a child loop. */
 import type { ListSessionsOptions, RestoredSubAgentSession, SessionListEntry } from "../memory/session-repository.js";
 import {
   SUBAGENT_MAX_ROUNDS_DEFAULT,
@@ -33,6 +33,7 @@ import type {
   ApprovalRequestInput,
   PendingApprovalSummary,
 } from "../permissions/approval-gate.js";
+import { forwardPendingAnswerRequest } from "../permissions/pending-answer-policy.js";
 import {
   isModelComplexityLevel,
   resolveModelForComplexity,
@@ -125,6 +126,7 @@ import type {
 } from "../shared/subagent-events.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
 import { sessionAuthorityWithheld, turnExtensionPolicyContext, withholdSessionAuthorityForLifetime } from "../shared/turn-extension-policy.js";
+import { endUnattendedStage, inheritUnattendedStage, registeredUnattendedStageOf } from "../permissions/unattended-lane-registry.js";
 const log = createLogger("ave");
 
 function maskSubAgentText(text: string): string {
@@ -218,7 +220,27 @@ export interface SubAgentSpawnInput {
   hostInputTaint?: "file-content";
   /** Host-only: marks the child as one stage of an unattended workflow run. Minted by the stage scheduler, never by a model or a renderer. */
   unattendedStage?: { runKey: string; stageId: string };
+  /** Host-only lifetime and policy binding for descendants of an opted-in stage. */
+  stageSubAgents?: { stageName: string; runKey: string; max: number };
 }
+
+interface StageSubAgentScope {
+  child: ConversationLoop;
+  maxRounds: number;
+  unattendedStage: SubAgentSpawnInput["unattendedStage"];
+  hostInputTaint: SubAgentSpawnInput["hostInputTaint"];
+  authority: NonNullable<SubAgentSpawnInput["stageSubAgents"]>;
+  bind: NonNullable<SubAgentSpawnCallbacks["onStageSubAgentLinked"]>;
+  spawned: number;
+  stop: AbortController;
+  signal: AbortSignal;
+  pending: Set<Promise<SubAgentSpawnResult>>;
+}
+
+type StageSubAgentInput = Pick<SubAgentSpawnInput,
+  "title" | "instructions" | "spawnId" | "toolUseId" | "toolScope" | "profileModel" | "profileMode"> & {
+    approvalProvenance?: SubAgentApprovalProvenance | null;
+  };
 
 export interface SubAgentActivityUpdate {
   /** Full child transcript snapshot as `ChatEntry[]` (the shared chat model). Idempotent replace; the consumer
@@ -270,6 +292,8 @@ export interface SubAgentSpawnCallbacks {
   /** Fired as soon as a fresh spawn has an addressable child session id. This happens before the first child LLM round, so background
    * `agent_spawn` can return a durable handle immediately and the live viewer can join later activity against the same persisted session. */
   onLinked?: (link: { childSessionId: string }) => void;
+  /** Link a stage descendant to its host-owned workspace and permission scope. Returns its teardown. */
+  onStageSubAgentLinked?: (sessionId: string, title: string) => () => void;
   /** Resume setup reached a durable WORKING state and its active lease exists. */
   onReady?: (link: { childSessionId: string }) => void;
   /** Fired whenever the child loop produces new transcript content (tool start/end, permission review, completed
@@ -624,16 +648,12 @@ function normalizeRoundBudget(requested: number): number {
     ? Math.max(SUBAGENT_MAX_ROUNDS_MIN, Math.floor(requested))
     : MAX_TURNS_DEFAULT;
 }
-/**
- * Tools that must NEVER appear in a sub-agent's registry, whatever the run's
- * {@link SubAgentToolScope} says. Adding `agent_spawn` here is the primary
- * fork-bomb defense; the depth check on the tool itself (in `agent-spawn.ts`)
- * is the defense-in-depth backstop.
- */
+export const MAX_STAGE_SUB_AGENTS = 3;
+const STAGE_SUB_AGENT_TOOLS = ["agent_spawn", "agent_status", "agent_interrupt"] as const;
+
+/** Only opted-in stage loops can control their own descendants. */
 const SUB_AGENT_TOOL_BLOCKLIST = new Set<string>([
-  "agent_spawn",
-  "agent_status",
-  "agent_interrupt",
+  ...STAGE_SUB_AGENT_TOOLS,
   // Parent-only: `agent_guide` addresses the caller's OWN children, and a sub-agent has none. Its execute() already refuses a
   // non-root caller; the blocklist keeps it out of the child's registry so the refusal is never a tool the child can see and try.
   "agent_guide",
@@ -924,7 +944,7 @@ export function makeSubAgentApprovalAdapter(
     // Dropped before the spread, not overwritten after it. Overwriting only covers the runs that HAVE provenance; the runs that deliberately have none; a remote wire
     // run, a host-orchestrated one; are exactly the ones a forged field would smuggle into tier 2, and the gate's only entry condition is that the field is present.
     const { childProvenance: _callerSupplied, ...safeReq } = req;
-    return base.requestAndWait({
+    const forwarded: ApprovalRequestInput = {
       ...safeReq,
       // Child provenance makes the gate require explicit consent. A regular host-shell ask
       // must carry the matching one-shot choices while retaining its exact native binding.
@@ -944,7 +964,8 @@ export function makeSubAgentApprovalAdapter(
               background: provenance.background,
             },
           }),
-    });
+    };
+    return base.requestAndWait(forwardPendingAnswerRequest(req, wrapper, forwarded, base));
   };
   return wrapper;
 }
@@ -1329,6 +1350,7 @@ export class SubAgentRunner {
   private readonly trackedRuns = new Map<string, TrackedSubAgentRun>();
 
   private readonly activeChildren = new Map<string, ActiveSubAgentChild>();
+  private readonly stageSubAgentScopes = new Map<string, StageSubAgentScope>();
 
   /** The conversation that spawned a running child, while it runs; the session whose scope the child
    * inherits (terminal_read reads the parent's window). Undefined for a session that is not a live child. */
@@ -2319,7 +2341,7 @@ export class SubAgentRunner {
   }
 
   /** Shared child-loop reconstruction used by BOTH `spawn()` and `resume()`. Returns the composed {@link ConversationLoopDeps}, the grant the child ended up with (its frozen permission surface, ready to persist), and the wrapped
-   * ApprovalGate. The tool surface comes ONLY from `toolScope`; what each kind grants is specified once on {@link SubAgentToolScope}. The blocklist (`agent_spawn`) is ALWAYS stripped so a sub-agent; spawned or resumed; cannot recurse. */
+   * ApprovalGate. A stage's descendants select tools from the stage's actual registry. */
   private buildChildDeps(args: {
     /** @see SubAgentToolScope */
     toolScope: SubAgentToolScope;
@@ -2329,6 +2351,8 @@ export class SubAgentRunner {
     /** The parent behind this run, when it has one that could answer for it. `null` leaves the child's approvals on the path they took before tier 2 existed: straight to the user. */
     approvalProvenance: SubAgentApprovalProvenance | null;
     unattendedStage?: boolean;
+    stageSpawnEnabled?: boolean;
+    parentStage?: { registry: ToolRegistry; activePluginIds: ReadonlySet<string> };
   }): {
     childDeps: ConversationLoopDeps;
     grantedScope: PersistedSubAgentToolScope;
@@ -2336,7 +2360,8 @@ export class SubAgentRunner {
     // Build the sub-agent's tool surface. The blocklist (agent_spawn) is stripped on every branch, including `parent-all`, which starts from the full registry and
     // intersects with it. `agent_send` is dropped here and re-registered below, because it is the parent channel rather than a source tool: see SubAgentToolScope.
     const scope = args.toolScope;
-    const exposeAgentSend = !args.unattendedStage && (args.includeAgentSend === true
+    const registry = args.parentStage?.registry ?? this.deps.toolRegistry;
+    const exposeAgentSend = !args.unattendedStage && args.parentStage === undefined && (args.includeAgentSend === true
       || (scope.kind === "exactly" && scope.names.includes("agent_send")));
     const allowlist = scope.kind === "parent-all"
       ? null
@@ -2345,19 +2370,30 @@ export class SubAgentRunner {
         : scope.names.filter((name) => !SUB_AGENT_TOOL_BLOCKLIST.has(name));
     const baseToolNames = allowlist
       ? allowlist.filter((name) => name !== "agent_send")
-      : this.deps.toolRegistry
+      : registry
           .listAll()
           .map((tool) => tool.name)
           .filter((name) =>
             !SUB_AGENT_TOOL_BLOCKLIST.has(name) && name !== "agent_send");
-    const scopedRegistry = this.deps.toolRegistry.createScopedView(args.unattendedStage
-      ? baseToolNames.filter(name => {
-        const tool = this.deps.toolRegistry.findByName(name);
-        return tool !== undefined && isUnattendedReadTool(tool);
-      })
-      : baseToolNames);
+    const scopedRegistry = registry.createScopedView(baseToolNames.filter(name => {
+      const tool = registry.findByName(name);
+      if (!tool || (args.unattendedStage && !isUnattendedReadTool(tool))) return false;
+      return args.parentStage === undefined || tool.source !== "plugin"
+        || (tool.pluginId !== undefined && args.parentStage.activePluginIds.has(tool.pluginId));
+    }));
+    if (args.stageSpawnEnabled) {
+      for (const name of STAGE_SUB_AGENT_TOOLS) {
+        const tool = registry.findByName(name);
+        if (tool?.source !== "builtin") continue;
+        // An admitted unattended stage already has the pinned authority to delegate and stop its own work.
+        // The meta policy still evaluates admission, deny rules and forced floors. Descendant effects are checked separately.
+        scopedRegistry.register(args.unattendedStage && tool.category === "meta"
+          ? { ...tool, decisionOverride: "always-allow-with-audit" }
+          : tool);
+      }
+    }
     const recoveryTool = createReadToolResultChunkTool();
-    if (scopedRegistry.size > 0 && !scopedRegistry.findByName(recoveryTool.name)
+    if (args.parentStage === undefined && scopedRegistry.size > 0 && !scopedRegistry.findByName(recoveryTool.name)
       && (!args.unattendedStage || isUnattendedReadTool(recoveryTool))) scopedRegistry.register(recoveryTool);
     if (exposeAgentSend) {
       const agentSend = this.deps.toolRegistry.findByName("agent_send");
@@ -2365,7 +2401,7 @@ export class SubAgentRunner {
     }
     const scopedTools = scopedRegistry.listAll();
     const forcedActivePluginIds = new Set(
-      allowlist
+      allowlist || args.parentStage
         ? scopedTools
             .filter((tool) => tool.source === "plugin" && tool.pluginId)
             .map((tool) => tool.pluginId as string)
@@ -2441,6 +2477,72 @@ export class SubAgentRunner {
     callbacks?: SubAgentSpawnCallbacks,
   ): Promise<SubAgentSpawnResult> {
     return await this.runSpawn(input, callbacks);
+  }
+
+  async spawnStageSubAgent(
+    stageSessionId: string,
+    input: StageSubAgentInput,
+    callbacks?: SubAgentSpawnCallbacks,
+    abortSignal?: AbortSignal,
+    activePluginIds: ReadonlySet<string> = new Set(),
+  ): Promise<SubAgentSpawnResult> {
+    if (("stageSubAgents" in input && input.stageSubAgents !== undefined)
+      || ("onStageSubAgentLinked" in (callbacks ?? {}))) {
+      throw new Error("Stage descendants cannot delegate");
+    }
+    if (input.approvalProvenance != null || ("parentAuthoredTask" in input && input.parentAuthoredTask !== undefined)) {
+      throw new Error("Stage descendants cannot carry approval provenance");
+    }
+    const stage = this.stageSubAgentScopes.get(stageSessionId);
+    const ended = () => this.buildFailureResult(buildChildSessionId(stageSessionId), t("be_agentSpawn.stageEnded"));
+    if (!stage || stage.signal.aborted || abortSignal?.aborted) return ended();
+    if (stage.spawned >= stage.authority.max) {
+      return this.buildFailureResult(buildChildSessionId(stageSessionId),
+        t("be_agentSpawn.stageSpawnLimit", { max: String(stage.authority.max) }), { stopReason: "blocked" });
+    }
+    if (input.toolScope.kind === "exactly") {
+      for (const name of input.toolScope.names) {
+        const tool = stage.child.deps.toolRegistry.findByName(name);
+        if (tool?.source === "plugin" && (!tool.pluginId || !activePluginIds.has(tool.pluginId))) {
+          return this.buildFailureResult(buildChildSessionId(stageSessionId),
+            t("be_agentSpawn.stageExtensionOutOfScope", { tool: name }), { stopReason: "blocked" });
+        }
+      }
+    }
+
+    const parentStage = { stage, abortSignal, activePluginIds: new Set(activePluginIds) };
+    stage.spawned += 1;
+    let linked = false;
+    let release: (() => void) | undefined;
+    // Register the promise before linking can notify progress or synchronously re-enter Stop.
+    const run = Promise.resolve().then(() => {
+      if (stage.signal.aborted || abortSignal?.aborted) return ended();
+      return this.runSpawn({
+        ...input,
+        ...stage.child.getSessionProjectContext(),
+        title: `${stage.authority.stageName} › ${input.title}`,
+        originSessionId: stageSessionId,
+        maxRounds: stage.maxRounds,
+        unattendedStage: stage.unattendedStage,
+        hostInputTaint: stage.hostInputTaint,
+      }, {
+        ...callbacks,
+        onLinked: ({ childSessionId }) => {
+          release = stage.bind(childSessionId, input.title);
+          callbacks?.onLinked?.({ childSessionId });
+          linked = true;
+        },
+      }, undefined, undefined, parentStage);
+    }).finally(() => {
+      try {
+        release?.();
+      } finally {
+        if (!linked) stage.spawned -= 1;
+        stage.pending.delete(run);
+      }
+    });
+    stage.pending.add(run);
+    return await run;
   }
 
   /** Host-only A2A ingress. The remote-controlled request is intentionally limited to message text; profile,
@@ -2614,8 +2716,13 @@ export class SubAgentRunner {
     callbacks?: SubAgentSpawnCallbacks,
     executionPolicy?: SubAgentExecutionPolicy,
     durableLinkBarrier?: A2AWireSpawnCallbacks["onDurablyLinked"],
+    stageParent?: { stage: StageSubAgentScope; abortSignal?: AbortSignal; activePluginIds: ReadonlySet<string> },
   ): Promise<SubAgentSpawnResult> {
-    const checkpointChild: { release?: () => void } = {};
+    const inheritedLane = registeredUnattendedStageOf(input.originSessionId);
+    if (inheritedLane && input.unattendedStage === undefined) {
+      input = { ...input, unattendedStage: { runKey: inheritedLane.runKey, stageId: inheritedLane.stageId } };
+    }
+    const checkpointChild: { release?: () => void; endLane?: () => void } = {};
     try {
       // Delegated sessions retain content and attendance policy, never the parent's controller binding.
       const inherited = turnExtensionPolicyContext.getStore();
@@ -2624,20 +2731,25 @@ export class SubAgentRunner {
         allowExternalHooks: inherited?.allowExternalHooks ?? true,
         remoteControllerAuthority: undefined,
         ...(input.unattendedStage ? { unattendedStage: true as const, headless: true, approvalSurface: "unavailable" as const, withholdSessionAuthority: true, allowExternalHooks: false } : {}),
-      }), () => this.runSpawnChild(checkpointChild, input, callbacks, executionPolicy, durableLinkBarrier));
+      }), () => this.runSpawnChild(checkpointChild, input, callbacks, executionPolicy, durableLinkBarrier, stageParent));
     } finally {
+      checkpointChild.endLane?.();
       checkpointChild.release?.();
     }
   }
 
   private async runSpawnChild(
-    checkpointChild: { release?: () => void },
+    checkpointChild: { release?: () => void; endLane?: () => void },
     input: SubAgentSpawnInput,
     callbacks?: SubAgentSpawnCallbacks,
     executionPolicy?: SubAgentExecutionPolicy,
     durableLinkBarrier?: A2AWireSpawnCallbacks["onDurablyLinked"],
+    stageParent?: { stage: StageSubAgentScope; abortSignal?: AbortSignal; activePluginIds: ReadonlySet<string> },
   ): Promise<SubAgentSpawnResult> {
     const childSessionId = buildChildSessionId(input.originSessionId);
+    if (inheritUnattendedStage(childSessionId, input.originSessionId)) {
+      checkpointChild.endLane = () => endUnattendedStage(childSessionId);
+    }
     // A child of a scheduled wake turn never reads the woken chat's session allows, also after the wake has ended.
     if (sessionAuthorityWithheld()) withholdSessionAuthorityForLifetime(childSessionId);
     if (executionPolicy && typeof durableLinkBarrier !== "function") {
@@ -2647,7 +2759,17 @@ export class SubAgentRunner {
         callbacks,
       );
     }
+    const stageAuthority = input.stageSubAgents;
+    const bindStageSubAgent = callbacks?.onStageSubAgentLinked;
+    if (stageAuthority && (stageAuthority.max !== MAX_STAGE_SUB_AGENTS || !bindStageSubAgent
+      || (input.unattendedStage && stageAuthority.runKey !== input.unattendedStage.runKey))) {
+      throw new Error("Invalid workflow stage sub-agent authority");
+    }
+    const stageStop = stageAuthority ? new AbortController() : undefined;
     const cancellation = new AbortController();
+    const signal = stageParent === undefined ? cancellation.signal : AbortSignal.any([
+      cancellation.signal, stageParent.stage.signal, ...(stageParent.abortSignal ? [stageParent.abortSignal] : []),
+    ]);
     let childForAbort: ConversationLoop | undefined;
     const trackedRun = this.trackRun({
       spawnId: input.spawnId,
@@ -2655,6 +2777,7 @@ export class SubAgentRunner {
       originSessionId: input.originSessionId,
       title: input.title,
       abort: () => {
+        stageStop?.abort();
         cancellation.abort();
         childForAbort?.abortCurrentTurn();
       },
@@ -2696,7 +2819,9 @@ export class SubAgentRunner {
           profileModel: input.profileModel,
           includeAgentSend: true,
           unattendedStage: input.unattendedStage !== undefined,
-          approvalProvenance: buildSubAgentApprovalProvenance({
+          stageSpawnEnabled: stageAuthority !== undefined,
+          ...(stageParent ? { parentStage: { registry: stageParent.stage.child.deps.toolRegistry, activePluginIds: stageParent.activePluginIds } } : {}),
+          approvalProvenance: stageParent ? null : buildSubAgentApprovalProvenance({
             childSessionId,
             originSessionId: input.originSessionId,
             // NOT `instructions`. By the time a profile-based spawn reaches here, `instructions` is the RENDERED prompt; profile body
@@ -2741,7 +2866,7 @@ export class SubAgentRunner {
     if (!setupResult.ok) {
       if (childForAbort) updateApprovalSurface({ kind: "release", sessionId: childForAbort.sessionId });
       trackedRun.initialMetadataFailed = true;
-      const interrupted = cancellation.signal.aborted;
+      const interrupted = signal.aborted;
       const message = interrupted
         ? "sub-agent run interrupted"
         : (setupResult.error as Error).message ?? "sub-agent setup failed";
@@ -2764,6 +2889,7 @@ export class SubAgentRunner {
           ? child.getSessionProjectContext()
           : {}),
       sourceTools: toPersistedToolScope(grantedScope),
+      ...(input.unattendedStage ? { subAgentUnattended: true } : {}),
       ...(input.profileModel !== undefined ? { profileModel: input.profileModel } : {}),
       ...(input.profileMode !== undefined ? { profileMode: input.profileMode } : {}),
       ...(input.originSessionId !== undefined ? { originSessionId: input.originSessionId } : {}),
@@ -2830,7 +2956,7 @@ export class SubAgentRunner {
     } catch (err) {
       unregisterSpawnChild();
       if (!initialMetadataPersisted) trackedRun.initialMetadataFailed = true;
-      const interrupted = cancellation.signal.aborted;
+      const interrupted = signal.aborted;
       const message = interrupted
         ? "sub-agent run interrupted"
         : initialMetadataPersisted
@@ -2889,7 +3015,7 @@ export class SubAgentRunner {
       try {
         await saveResult(stableResult);
       } catch (err) {
-        const interrupted = cancellation.signal.aborted
+        const interrupted = signal.aborted
           || stableResult.stopReason === "interrupted";
         const message = interrupted
           ? "sub-agent run interrupted"
@@ -2898,12 +3024,14 @@ export class SubAgentRunner {
           completedQuestionWait,
           this.questionDeliveryFailure(stableResult, message),
         );
+        // The stage owns its descendants' effects even when a terminal transcript cannot be saved.
+        if (stageParent) await this.cleanupTerminalChildSession(childSessionId, projectSubAgentResultState(stableResult));
         this.finalizeRun(trackedRun, stableResult);
         if (!interrupted) callbacks?.onError?.(maskSubAgentText(message));
         return stableResult;
       }
 
-      if (cancellation.signal.aborted && stableResult.suspension?.reason === "question") {
+      if (signal.aborted && stableResult.suspension?.reason === "question") {
         stableResult = await this.prepareQuestionStageForPersistence(
           completedQuestionWait,
           this.questionDeliveryFailure(stableResult, "sub-agent run interrupted"),
@@ -2940,7 +3068,7 @@ export class SubAgentRunner {
       return stableResult;
     };
 
-    if (cancellation.signal.aborted) {
+    if (signal.aborted) {
       const message = "sub-agent run interrupted";
       return await persistFinalResult(this.buildFailureResult(childSessionId, message, {
         stopReason: "interrupted",
@@ -3004,6 +3132,13 @@ export class SubAgentRunner {
       : input.instructions;
     let assistantRounds = 0;
     let subagentStopDispatched = false;
+    const stageScope: StageSubAgentScope | undefined = stageStop && stageAuthority && bindStageSubAgent
+      ? {
+        child, maxRounds: cappedRounds, unattendedStage: input.unattendedStage, hostInputTaint: input.hostInputTaint,
+        authority: stageAuthority, bind: bindStageSubAgent, spawned: 0, stop: stageStop,
+        signal: AbortSignal.any([signal, stageStop.signal]), pending: new Set(),
+      }
+      : undefined;
 
     try {
       // Subagent lifecycle parity : fire SubagentStart on the child loop before its spawn run and SubagentStop in the
@@ -3012,8 +3147,9 @@ export class SubAgentRunner {
         agentId: input.spawnId,
         agentType: input.profileMode,
       });
+      if (stageScope) this.stageSubAgentScopes.set(childSessionId, stageScope);
       // C3(a): pass `maxRounds` so queryLoop terminates cleanly between rounds; the previous abortCurrentTurn() approach only halted the next streaming response, leaving in-flight tool calls to run. C3(c): pass
-      // childSessionId so audit entries from tool calls fire under the child's session id, not the parent's. C3(b): spawnDepth=1 so any agent_spawn invocation that slipped past the registry strip refuses with a clear error.
+      // childSessionId so audit entries from tool calls fire under the child's session id, not the parent's. The tool context enforces the same delegation boundary as the scoped registry.
       const result = await child.runTurn(
         initialPrompt,
         this.buildTurnCallbacks({
@@ -3030,11 +3166,12 @@ export class SubAgentRunner {
         }),
         // The run's cancellation signal, exactly as the resume path passes it. The `abortCurrentTurn()` closure registered above cannot cover the window between `interruptRun` firing and this call: it is documented as a no-op when no
         // turn is in flight, so an interrupt that lands during spawn setup was reported as CANCELED while the child went on to burn its full `cappedRounds`; and the second interrupt returns "not running", so the user could not even retry.
-        cancellation.signal,
+        signal,
         {
           maxRounds: cappedRounds,
           sessionIdOverride: childSessionId,
-          spawnDepth: 1,
+          spawnDepth: stageParent ? 2 : 1,
+          ...(stageScope ? { stageSubAgents: true as const } : {}),
           ...(executionPolicy
             ? { approvalReasonPrefix: executionPolicy.approvalReasonPrefix }
             : {}),
@@ -3059,11 +3196,14 @@ export class SubAgentRunner {
         result.authorizationRequired,
       );
       ok = isSuccessfulSubAgentStopReason(childStopReason, childInputRequired);
-      if (!ok) {
+      if (stageParent && (childStopReason === "round-cap" || childStopReason === "input-required")) {
+        ok = false;
+        failureReason = t("be_agentSpawn.stageContinuationUnavailable");
+      } else if (!ok) {
         failureReason = subAgentStopFailureReason(childStopReason, lastText, "run");
       }
     } catch (err) {
-      if (cancellation.signal.aborted) {
+      if (signal.aborted) {
         const message = "sub-agent run interrupted";
         lastText = message;
         failureReason = message;
@@ -3078,6 +3218,11 @@ export class SubAgentRunner {
       // A run aborted mid-stream has deltas with no round boundary behind them, so a queued trailing emission could
       // still land after this run has gone terminal. Drop it here rather than let an activity frame trail the terminal one.
       reasoningStreamEmitter.cancel();
+      if (stageScope) {
+        this.stageSubAgentScopes.delete(childSessionId);
+        stageScope.stop.abort();
+        await Promise.allSettled(stageScope.pending);
+      }
       unregisterSpawnChild();
       // SubagentStop; fires once whether the run completed, errored, or aborted (the subagent has
       // stopped either way). Observe-only/fail-soft here; a clean end already dispatched it inside the run.
@@ -3089,7 +3234,7 @@ export class SubAgentRunner {
       }
     }
 
-    if (cancellation.signal.aborted) {
+    if (signal.aborted) {
       lastText = "sub-agent run interrupted";
       failureReason = lastText;
       childStopReason = "interrupted";
@@ -3610,6 +3755,10 @@ export class SubAgentRunner {
       return refuseStructurally(
         "sub-agent resume: origin session metadata does not match caller",
       );
+    }
+    if (meta.subAgentUnattended || registeredUnattendedStageOf(resumeId) || registeredUnattendedStageOf(originSessionId)
+      || turnExtensionPolicyContext.getStore()?.unattendedStage === true) {
+      return refuseStructurally("sub-agent resume: unattended sessions cannot be resumed");
     }
     const hasWireBinding = meta.a2aWireHandlerId !== undefined
       || meta.a2aWireInternalOrigin !== undefined;

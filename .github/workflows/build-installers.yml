@@ -223,6 +223,9 @@ jobs:
             test "$(x86_64-linux-gnu-gcc -dumpmachine)" = x86_64-linux-gnu
           fi
           dpkg-query -W -f='${Package} ${Version} ${Architecture}\n' "${tools[@]#*:}" 2>/dev/null | sort -u || true
+      - name: Install the pinned path helper toolchain
+        if: matrix.target == 'win'
+        run: node .github/scripts/install-windows-path-kind-rust.mjs x64
       - name: Verify native owner token flow
         if: matrix.target == 'win'
         run: node test/scripts/probes/windows-owner-flow.mjs

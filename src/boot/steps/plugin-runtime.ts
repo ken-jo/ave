@@ -327,6 +327,7 @@ export async function initPluginRuntime(
     deploymentGuard,
     installReceiptCacheRoot: pluginPaths.cacheRoot,
     auditLog: pluginRuntimeAuditLog,
+    effectAudit: bootAuditLogger,
     onMalformedCredentialSelector: (pluginId) => {
       leaseDenialAudit.record(pluginId, "hostFetch", { code: "credential-conflict" });
     },

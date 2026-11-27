@@ -2,7 +2,8 @@
 // Native signing, dependency rebuilds and tooling require the CI platform matrix.
 import { runCommand } from "./hooks/spawn-command.mjs";
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gunzipSync, gzipSync } from "node:zlib";
@@ -54,7 +55,7 @@ function usage() {
     "",
     "Options:",
     "  --publish <mode> Publish mode for electron-builder (default: never)",
-    "  --skip-build     Package the existing dist/ output",
+    "  --skip-build     Package existing dist/ output (Windows requires a producer receipt)",
     "  --skip-code-sign Produce an unsigned build",
     "  --skip-native-rebuild",
     "                   Trust already-rebuilt native deps and pass npmRebuild=false",
@@ -393,13 +394,6 @@ async function main() {
     throw new Error("--fast writes non-release-size artifacts and cannot be combined with --publish");
   }
 
-  if (!skipBuild) {
-    run("bun", ["run", "build"]);
-  }
-  if (crossBuild) {
-    retargetLinuxNativeModules(arch);
-  }
-
   const env = {
     ...process.env,
   };
@@ -426,15 +420,37 @@ async function main() {
     process.stdout.write(`[installer] --fast: output=${fastOutputDir}, compression=store (larger artifacts)\n`);
   }
 
+  let receiptDir;
   try {
-    for (const target of selected) {
-      process.stdout.write(`[installer] required runtime assets for ${target}: ${hostRuntimeAssetSummary(target, arch)}\n`);
-      prepareUvRuntime(target, arch);
-      run("bunx", builderArgsFor(target, { arch, publish, dirOnly, skipNativeRebuild, fast }), { env });
-      checkPackageFootprint(target, fast);
+    if (selected.includes("win")) {
+      if (skipBuild) {
+        if (!env.AVE_WINDOWS_PATH_KIND_BUNDLE_RECEIPT) {
+          throw new Error("Windows --skip-build requires AVE_WINDOWS_PATH_KIND_BUNDLE_RECEIPT from the producing build");
+        }
+      } else {
+        receiptDir = mkdtempSync(join(tmpdir(), "ave-windows-bundle-"));
+        env.AVE_WINDOWS_PATH_KIND_BUNDLE_RECEIPT = join(receiptDir, "bundle.json");
+      }
+    }
+    if (!skipBuild) {
+      run("bun", ["run", "build"], {
+        env: { ...process.env, AVE_WINDOWS_PATH_KIND_BUNDLE_RECEIPT: env.AVE_WINDOWS_PATH_KIND_BUNDLE_RECEIPT },
+      });
+    }
+    if (crossBuild) retargetLinuxNativeModules(arch);
+
+    try {
+      for (const target of selected) {
+        process.stdout.write(`[installer] required runtime assets for ${target}: ${hostRuntimeAssetSummary(target, arch)}\n`);
+        prepareUvRuntime(target, arch);
+        run("bunx", builderArgsFor(target, { arch, publish, dirOnly, skipNativeRebuild, fast }), { env });
+        checkPackageFootprint(target, fast);
+      }
+    } finally {
+      cleanUvRuntime();
     }
   } finally {
-    cleanUvRuntime();
+    if (receiptDir) rmSync(receiptDir, { recursive: true, force: true });
   }
 
   process.stdout.write(`[installer] done. Artifacts in ${fast ? fastOutputDir : "release"}/\n`);

@@ -6,11 +6,13 @@ import { isBrowserSiteChoice, isExtensionStartChoices } from "../../shared/permi
 import { ipcMain, session, type IpcMainInvokeEvent } from "electron";
 import { isRuleSpecifier } from "../../permissions/rules/rule-specifier.js";
 import { validatePermissionRule } from "../../permissions/rules/rule-files.js";
-import { saveApprovalCardRule } from "../../permissions/approval-rule-save.js";
+import { ProjectRuleScopeChangedError } from "../../permissions/rules/project-rule-files.js";
+import { planApprovalCardRule, saveApprovalCardRule } from "../../permissions/approval-rule-save.js";
+import type { ApprovalPersistenceGuard } from "../../permissions/approval-persistence-guard.js";
 import { RunGrantError, runGrantKeyOfSession } from "../../permissions/run-grants.js";
 import { loadPolicy, savePolicy, validatePolicyPatch, PolicyWriteError } from "../../permissions/policy-store.js";
 import { isPolicyUserEditable } from "../../shared/policy-editability.js";
-import { UNATTRIBUTED_APPROVAL_SESSION_ID, type ApprovalDecision } from "../../permissions/approval-gate.js";
+import { admitApprovalAnswer, UNATTRIBUTED_APPROVAL_SESSION_ID, type AnsweredRecord, type ApprovalDecision } from "../../permissions/approval-gate.js";
 import { PERMISSIONS } from "../../shared/ipc-channels.js";
 import {
   UPSTREAM_PROXY_CREDENTIALS_SECRET,
@@ -23,7 +25,7 @@ import {
 const UPSTREAM_PROXY_DIAGNOSTIC_URL = "https://example.com/";
 import { errorMessage } from "../../shared/error-message.js";
 import { exactCanonicalStringify } from "../../shared/exact-json.js";
-import { AveHomeConfigurationRefusedWriteError, getAveHomePrivacyFailure } from "../../shared/ave-home.js";
+import { AveHomeConfigurationRefusedWriteError, aveHome, getAveHomePrivacyFailure, isAveHomeConfigurationRefused } from "../../shared/ave-home.js";
 import { approveAveHomeTrustItems, AveHomeTrustReviewError, getAveHomeTrustReview, removeAveHomeTrustItem, type AveHomeTrustReviewView } from "../../shared/ave-home-trust.js";
 import { AveHomeConfigurationNotOwnerError } from "../../shared/ave-home-configuration-access.js";
 import type { AuditLogger } from "../../audit/audit-logger.js";
@@ -217,11 +219,9 @@ function createPermissionReviewSuggestionTracker() {
   return {
     record(
       deps: IpcDeps,
-      decision: ApprovalDecision,
-      snapshot: { toolName: string } | null | undefined,
+      answer: AnsweredRecord,
     ): void {
-      if (!decision.choice.startsWith("allow")) return;
-      if (snapshot?.toolName === "/permission mode") return;
+      if (answer.decision !== "allow" || answer.toolName === "/permission mode") return;
 
       const pm = deps.conversationLoop.permissionManager;
       if (!pm) return;
@@ -230,13 +230,13 @@ function createPermissionReviewSuggestionTracker() {
       const now = Date.now();
       samples = samples
         .filter((sample) => now - sample.at <= REVIEW_SUGGESTION_WINDOW_MS)
-        .concat({ at: now, choice: decision.choice });
+        .concat({ at: now, choice: answer.choice });
 
       if (now - lastSuggestedAt < REVIEW_SUGGESTION_COOLDOWN_MS) return;
 
       const allowAlwaysCount = samples.filter((sample) => sample.choice === "allow-always").length;
       const reason: PermissionReviewSuggestionReason | null =
-        decision.choice === "allow-always" || allowAlwaysCount > 0
+        answer.choice === "allow-always" || allowAlwaysCount > 0
           ? "allow-always"
           : samples.length >= REVIEW_SUGGESTION_REPEAT_THRESHOLD
             ? "repeat-allow"
@@ -854,7 +854,14 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     const decision = body as unknown as ApprovalDecision;
     const snapshot = approvalGate?.getRequestSnapshot?.(decision.requestId);
     const honoredDecision = await approvalGate?.resolveFromDesktopRendererWithFreshIdentity(decision.requestId, decision, e.sender);
-    if (honoredDecision) reviewSuggestionTracker.record(deps, honoredDecision, snapshot);
+    if (honoredDecision && snapshot) {
+      try {
+        const answer = admitApprovalAnswer(honoredDecision, { requestId: decision.requestId, toolName: snapshot.toolName, toolUseId: snapshot.toolUseId });
+        if (answer) reviewSuggestionTracker.record(deps, answer);
+      } catch {
+        // Unbound answers cannot supply review feedback.
+      }
+    }
     return { ok: true };
   });
 
@@ -1220,37 +1227,78 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       return { ok: false, error: "no-such-request", message: "user-approval record: no in-flight ApprovalRequest for requestId" };
     }
     if (!approvalGate.canAccessRendererRequest(requestId, e.sender, "desk")) return UNAUTHORIZED_FRAME;
-    const capturedAuthority = approvalGate.capturePendingRequestIdentityGuard(requestId);
-    if (!capturedAuthority) return { ok: false, error: "no-such-request", message: "Approval authority is unavailable" };
-    const authority = {
-      refresh: capturedAuthority.refresh,
-      isCurrent: () => capturedAuthority.isCurrent() && approvalGate.canAccessRendererRequest(requestId, e.sender, "desk"),
+    const capturedAuthority = approvalGate.capturePendingRequestAuthority(requestId);
+    const authorityUnavailable = { ok: false, error: "no-such-request", message: "Approval authority is unavailable" } as const;
+    if (!capturedAuthority) return authorityUnavailable;
+    const rulePayload = body.rule === undefined ? undefined : payloadRecord(body.rule);
+    const isShellRuleSave = rulePayload !== undefined && snapshot.shellRule !== undefined;
+    const isControllerCurrent = () => capturedAuthority.controller.isCurrent() && approvalGate.canAccessRendererRequest(requestId, e.sender, "desk");
+    const settleChangedProjectScope = () => {
+      if (!isControllerCurrent() || !approvalGate.mayRecordFrom(requestId, e.sender)) return authorityUnavailable;
+      return approvalGate.cancelPendingRequest(requestId, snapshot.sessionId, "project-scope-changed")
+        ? { ok: false, error: "project-scope-changed" } as const
+        : authorityUnavailable;
     };
-    if (!await authority.refresh() || !authority.isCurrent()) {
-      return { ok: false, error: "no-such-request", message: "Approval authority is unavailable" };
-    }
+    const guardFor = (controller: ApprovalPersistenceGuard): ApprovalPersistenceGuard => ({
+      refresh: controller.refresh,
+      isCurrent: () => {
+        if (!controller.isCurrent()) return false;
+        if (capturedAuthority.isWorkingDirectoryCurrent()) return true;
+        if (isShellRuleSave) throw new ProjectRuleScopeChangedError();
+        return false;
+      },
+    });
+    const authority = guardFor({ refresh: capturedAuthority.controller.refresh, isCurrent: isControllerCurrent });
+    // A card the pending-answer owner judges keeps an allow only once its answer stands: the save is checked now and written then.
+    const defersAllowSave = decision === "allow" && approvalGate.defersAllowSaves(requestId);
+    const homeFolderRefusal = () => {
+      const home = aveHome();
+      return isAveHomeConfigurationRefused(home)
+        ? { ok: false, error: HOME_FOLDER_REFUSED, message: new AveHomeConfigurationRefusedWriteError(home, "save this approval").message } as const
+        : undefined;
+    };
+    if (!await authority.refresh() || !isControllerCurrent()) return authorityUnavailable;
+    if (!isShellRuleSave && !capturedAuthority.isWorkingDirectoryCurrent()) return authorityUnavailable;
     if (readjudicate && (decision !== "allow" || snapshot.readjudication === undefined ||
         snapshot.verdictAtApproval !== "high" || body.rule !== undefined)) {
       return { ok: false, error: "readjudication-unavailable", message: "This request is not eligible for re-adjudication" };
     }
-    if (body.rule !== undefined) {
+    if (rulePayload !== undefined) {
       // A card's rule save (owner 2026-10-25, unified approval card): the renderer names the choice's action and scope and, only when the person edited it, the rule text. The host checks an edited rule against the card's own rule grammar and requires it to decide this very request; without one it stores the rule it derived itself.
       if (!approvalGate?.mayRecordFrom(requestId, e.sender)) {
         return { ok: false, error: "not-request-owner", message: "This request is answered from the window that owns its terminal tab" };
       }
       const manager = conversationLoop.permissionManager;
+      const auditRuleSave: NonNullable<Parameters<typeof saveApprovalCardRule>[5]> = async (rule) => {
+        await auditLogger.append({
+          timestamp: new Date().toISOString(),
+          sessionId: snapshot.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
+          type: "approval",
+          output: `[approval:remembered] store=rules decision=${rule.action} scope=${rule.scope} rule=${JSON.stringify(rule.pattern)} edited=${rule.edited} toolName=${JSON.stringify(snapshot.toolName)} source=${JSON.stringify(snapshot.source)}`,
+        });
+      };
+      if (defersAllowSave && manager !== undefined) {
+        const plan = planApprovalCardRule(snapshot, rulePayload, { decision, scope, displayedVerdictAtApproval }, manager);
+        if (!plan.ok) return plan;
+        const checked = await plan.persist(authority, undefined, true);
+        if (!checked.ok) return checked.error === "project-scope-changed" ? settleChangedProjectScope() : checked;
+        const refusal = plan.saved.scope === "project" || plan.saved.scope === "always" ? homeFolderRefusal() : undefined;
+        if (refusal !== undefined) return refusal;
+        const staged = approvalGate.stageAllowSave(requestId, async (controller) => {
+          const from = manager.getPolicyEpoch();
+          const saved = await plan.persist(guardFor(controller), auditRuleSave);
+          if (!saved.ok) return { ok: false, error: saved.message === undefined ? saved.error : `${saved.error}: ${saved.message}` };
+          broadcastPermissionConfigChanged(deps);
+          return { ok: true, store: "rules", from, to: manager.getPolicyEpoch(), scope: saved.scope };
+        });
+        if (!staged) return authorityUnavailable;
+        return plan.saved.warning === undefined ? { ok: true } : { ok: true, warning: plan.saved.warning };
+      }
       const saveToken = manager === undefined ? undefined : approvalGate.beginApprovalRuleSave(requestId, manager.getPolicyEpoch());
       let savedScope: "session" | "run" | "project" | "always" | undefined;
       try {
-        const saved = await saveApprovalCardRule(snapshot, payloadRecord(body.rule), { decision, scope, displayedVerdictAtApproval }, manager, authority, async (rule) => {
-          await auditLogger.append({
-            timestamp: new Date().toISOString(),
-            sessionId: snapshot.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
-            type: "approval",
-            output: `[approval:remembered] store=rules decision=${rule.action} scope=${rule.scope} rule=${JSON.stringify(rule.pattern)} edited=${rule.edited} toolName=${JSON.stringify(snapshot.toolName)} source=${JSON.stringify(snapshot.source)}`,
-          });
-        });
-        if (!saved.ok) return saved;
+        const saved = await saveApprovalCardRule(snapshot, rulePayload, { decision, scope, displayedVerdictAtApproval }, manager, authority, auditRuleSave);
+        if (!saved.ok) return saved.error === "project-scope-changed" ? settleChangedProjectScope() : saved;
         savedScope = saved.scope;
         broadcastPermissionConfigChanged(deps);
         return saved.warning === undefined ? { ok: true } : { ok: true, warning: saved.warning };
@@ -1296,6 +1344,13 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     if (decision === "allow" && (!snapshot.persistentAllowAllowed || (scope !== "global" && !snapshot.workingDirectoryIdentity))) {
       return { ok: false, error: verdictAtApproval === "high" ? "high-is-one-shot" : "one-shot-not-recordable", message: "This request requires a one-shot approval and cannot be recorded" };
     }
+    const exactSaveFailure = (err: unknown) => {
+      // The saved-approvals store refuses writes while boot refuses the home folder: the card answers once instead and says why.
+      if (err instanceof AveHomeConfigurationRefusedWriteError) return { ok: false, error: HOME_FOLDER_REFUSED, message: err.message } as const;
+      // The run ended while the card's authority was checked: nothing was stored.
+      if (err instanceof RunGrantError) return { ok: false, error: "run-scope-unavailable", message: err.message } as const;
+      return { ok: false, error: "managed", message: (err as Error).message } as const;
+    };
     try {
       // Canonicalize the host-owned raw input from ApprovalGate. The renderer still sends `args` for wire
       // compatibility and display, but it cannot swap the exact tuple that is persisted from Settings or the card.
@@ -1310,48 +1365,68 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       }
       // Authority fields come from the main-process snapshot, never the renderer body. The renderer
       // contribution is reduced to decision metadata; the exact tool/input identity remains host-owned.
-      if (readjudicate) {
-        await auditLogger.append({
+      const store = async (guard: ApprovalPersistenceGuard, audited?: () => void): Promise<void> => {
+        if (readjudicate) {
+          await auditLogger.append({
+            timestamp: new Date().toISOString(),
+            sessionId: snapshot.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
+            type: "approval",
+            output: `[approval:readjudication] scope=${scope} rawVerdict=high effectiveVerdict=medium evidence=${JSON.stringify(snapshot.readjudication)}`,
+          });
+        }
+        audited?.();
+        await recordApproval(snapshot.toolName, canonicalArgs, snapshot.source, {
+          decision,
+          scope,
+          ...(scope === "session" || scope === "run" ? { sessionId: snapshot.sessionId } : {}),
+          ...(snapshot.projectCwd === undefined || scope === "global" || scope === "run" ? {} : { projectCwd: snapshot.projectCwd }),
+          verdictAtApproval,
+          nlJustification: typeof nlJustification === "string" ? nlJustification : null,
+          trustOrigin: snapshot.trustOrigin,
+          // Throws (→ "managed") when the host request carried a key without its identity mode: never guess which identity to persist under.
+          approvalCacheKey: readjudicate ? undefined : approvalCacheKeyIdentity(snapshot.approvalCacheKey,
+            decision === "deny" && snapshot.approvalMemory?.kind === "key" && snapshot.approvalMemory.scope.kind === "mcp-tool"
+              ? { kind: "args" } : snapshot.approvalMemory),
+          ...(decision === "allow" ? {
+            workingDirectoryIdentity: snapshot.workingDirectoryIdentity,
+            ...(readjudicate ? { readjudication: snapshot.readjudication } : { riskCeilingAtApproval: snapshot.riskCeilingAtApproval }),
+          } : {}),
+        }, guard);
+      };
+      const remembered = (): void => {
+        if (!readjudicate) auditLogger.log({
           timestamp: new Date().toISOString(),
           sessionId: snapshot.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
           type: "approval",
-          output: `[approval:readjudication] scope=${scope} rawVerdict=high effectiveVerdict=medium evidence=${JSON.stringify(snapshot.readjudication)}`,
+          output: `[approval:remembered] store=exact decision=${decision} scope=${scope} toolName=${JSON.stringify(snapshot.toolName)} source=${JSON.stringify(snapshot.source)}`,
         });
+        // User-approval store mutation; outside PermissionManager, so emit the broadcast explicitly to keep the Active Approvals view in multi-window PermissionsTab fresh.
+        broadcastPermissionConfigChanged(deps);
+      };
+      if (defersAllowSave) {
+        const refusal = scope === "persistent" || scope === "global" ? homeFolderRefusal() : undefined;
+        if (refusal !== undefined) return refusal;
+        const staged = approvalGate.stageAllowSave(requestId, async (controller) => {
+          const from = getUserApprovalGeneration();
+          try {
+            await store(guardFor(controller));
+          } catch (err) {
+            return { ok: false, error: `${exactSaveFailure(err).error}: ${(err as Error).message}` };
+          }
+          remembered();
+          return { ok: true, store: "exact", from, to: getUserApprovalGeneration(), scope };
+        });
+        return staged ? { ok: true } : authorityUnavailable;
       }
-      const exactSaveToken = decision === "allow" ? approvalGate.beginExactApprovalSave(requestId, getUserApprovalGeneration()) : undefined;
-      await recordApproval(snapshot.toolName, canonicalArgs, snapshot.source, {
-        decision,
-        scope,
-        ...(scope === "session" || scope === "run" ? { sessionId: snapshot.sessionId } : {}),
-        ...(snapshot.projectCwd === undefined || scope === "global" || scope === "run" ? {} : { projectCwd: snapshot.projectCwd }),
-        verdictAtApproval,
-        nlJustification: typeof nlJustification === "string" ? nlJustification : null,
-        trustOrigin: snapshot.trustOrigin,
-        // Throws (→ "managed") when the host request carried a key without its identity mode: never guess which identity to persist under.
-        approvalCacheKey: readjudicate ? undefined : approvalCacheKeyIdentity(snapshot.approvalCacheKey,
-          decision === "deny" && snapshot.approvalMemory?.kind === "key" && snapshot.approvalMemory.scope.kind === "mcp-tool"
-            ? { kind: "args" } : snapshot.approvalMemory),
-        ...(decision === "allow" ? {
-          workingDirectoryIdentity: snapshot.workingDirectoryIdentity,
-          ...(readjudicate ? { readjudication: snapshot.readjudication } : { riskCeilingAtApproval: snapshot.riskCeilingAtApproval }),
-        } : {}),
-      }, authority);
-      if (decision === "allow") approvalGate.completeExactApprovalSave(exactSaveToken, getUserApprovalGeneration(), scope);
-      if (!readjudicate) auditLogger.log({
-        timestamp: new Date().toISOString(),
-        sessionId: snapshot.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
-        type: "approval",
-        output: `[approval:remembered] store=exact decision=${decision} scope=${scope} toolName=${JSON.stringify(snapshot.toolName)} source=${JSON.stringify(snapshot.source)}`,
+      let exactSaveToken: ReturnType<typeof approvalGate.beginExactApprovalSave> | undefined;
+      await store(authority, () => {
+        if (decision === "allow") exactSaveToken = approvalGate.beginExactApprovalSave(requestId, getUserApprovalGeneration());
       });
-      // User-approval store mutation; outside PermissionManager, so emit the broadcast explicitly to keep the Active Approvals view in multi-window PermissionsTab fresh.
-      broadcastPermissionConfigChanged(deps);
+      if (decision === "allow") approvalGate.completeExactApprovalSave(exactSaveToken, getUserApprovalGeneration(), scope);
+      remembered();
       return { ok: true };
     } catch (err) {
-      // The saved-approvals store refuses writes while boot refuses the home folder: the card answers once instead and says why.
-      if (err instanceof AveHomeConfigurationRefusedWriteError) return { ok: false, error: HOME_FOLDER_REFUSED, message: err.message };
-      // The run ended while the card's authority was checked: nothing was stored.
-      if (err instanceof RunGrantError) return { ok: false, error: "run-scope-unavailable", message: err.message };
-      return { ok: false, error: "managed", message: (err as Error).message };
+      return exactSaveFailure(err);
     }
   });
 

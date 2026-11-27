@@ -55,10 +55,10 @@ it.each([
   });
 });
 
-it("declines MCP elicitation before local or remote delivery", async () => {
+it("cancels MCP elicitation before local or remote delivery", async () => {
   await withLiveGate(async approvalGate => {
     const resolve = createElicitationResolverFactory({ approvalGate })("server");
-    await expect(resolve("question", { method: "elicitation/create", mode: "form", message: "Continue?" })).resolves.toEqual({ action: "decline" });
+    await expect(resolve("question", { method: "elicitation/create", mode: "form", message: "Continue?" })).resolves.toEqual({ action: "cancel" });
   });
 });
 
@@ -66,7 +66,8 @@ it("refuses a nested agent action without a receipt or a card", async () => {
   await withLiveGate(async gate => {
     const approve = buildSingleFlightAgentActionApprover(gate);
     if (!approve) throw new Error("Agent action approval was not wired");
-    await expect(approve({ toolName: "agent_action", args: {}, reason: "Continue?", trustOrigin: "llm-tool-arg" })).resolves.toBeNull();
+    await expect(approve({ toolName: "agent_action", args: {}, reason: "Continue?", trustOrigin: "llm-tool-arg" }))
+      .resolves.toEqual({ approved: false, outcome: "rejected" });
   });
 });
 
@@ -94,7 +95,7 @@ it("denies a direct extension-start card request before local or remote delivery
     const asker = createExtensionStartAsker({ approvalGate, reason: () => "Start helper?", notify: vi.fn() });
     await expect(asker.ask([
       { key: "plugin-child:extension", identity: "identity", kind: "plugin-child", label: "Extension", cause: "no-backend" },
-    ], { sessionId: "scheduled-stage" })).resolves.toBe("no-approver");
+    ], { sessionId: "scheduled-stage" })).resolves.toBe("rejected");
   });
 });
 

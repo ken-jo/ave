@@ -4,7 +4,8 @@ import { createLogger } from "../lib/logger.js";
 import { answeredApprovalProvenance, isAnsweredApprovalDenial, type ApprovalDecision } from "../permissions/approval-gate.js";
 import { errorMessage } from "../shared/error-message.js";
 import { HostExitAbortError, isHostExitAbort } from "../shared/host-exit-abort.js";
-import { abortSupersedesApprovalDecision, refusal } from "./pipeline/approval-outcome.js";
+import { abortSupersedesApprovalDecision, approvalFailureOutcome, isSettledRefusal, refusal } from "./pipeline/approval-outcome.js";
+import type { PermissionCheckResult } from "../permissions/permission-manager.js";
 
 const log = createLogger("invocation-ledger");
 const shutdown = new AbortController();
@@ -100,7 +101,7 @@ export interface InvocationTerminal {
   readonly owner: TerminalOwner;
   readonly state: TerminalState;
   readonly denyKind: TerminalDenyKind | undefined;
-  readonly hasSettledRationaleDenial: boolean;
+  readonly settledRationaleRefusal: PermissionCheckResult | undefined;
   /** The host's writer, which ends the attempt when a forced quit, a held card's abort or an invocation failure finds it
    * unclaimed, and the attempt's denial lifecycle. */
   hostTerminal(write: HostTerminalWrite, lifecycle: TerminalDenialLifecycle): void;
@@ -124,6 +125,7 @@ class TerminalLedger implements InvocationTerminal {
   #lifecycle: TerminalDenialLifecycle | undefined;
   #selected: unknown;
   #settledRationaleDecision: ApprovalDecision | undefined;
+  #settledRationaleRefusal: PermissionCheckResult | undefined;
   #releaseAbort: (() => void) | undefined;
   #key: string | undefined;
   #integrityFailure = false;
@@ -139,7 +141,7 @@ class TerminalLedger implements InvocationTerminal {
   get owner(): TerminalOwner { return this.#owner; }
   get state(): TerminalState { return this.#state; }
   get denyKind(): TerminalDenyKind | undefined { return this.#denyKind; }
-  get hasSettledRationaleDenial(): boolean { return this.#settledRationaleDecision !== undefined; }
+  get settledRationaleRefusal(): PermissionCheckResult | undefined { return this.#settledRationaleRefusal; }
   get key(): string | undefined { return this.#key; }
 
   bindAbortSignal(signal?: AbortSignal): AbortSignal {
@@ -158,9 +160,14 @@ class TerminalLedger implements InvocationTerminal {
   }
 
   selectRationaleDenial(decision: ApprovalDecision, reason: string): void {
-    if (this.#state !== "open" || this.#owner !== "rationale" || !isAnsweredApprovalDenial(decision)) return;
+    if (this.#state !== "open" || this.#owner !== "rationale" || this.#settledRationaleDecision !== undefined
+      || !isSettledRefusal(decision) || abortSupersedesApprovalDecision(this.#signal, decision)) return;
+    const permission = isAnsweredApprovalDenial(decision) ? refusal(reason, answeredApprovalProvenance(decision))
+      : approvalFailureOutcome(decision, this.tool)?.permission;
+    if (permission === undefined) return;
     this.#settledRationaleDecision = decision;
-    this.select(refusal(reason, answeredApprovalProvenance(decision)));
+    this.#settledRationaleRefusal = permission;
+    this.select(permission);
   }
 
   #refusal(by: TerminalOwner | "host"): TerminalClaimError | undefined {
@@ -200,7 +207,7 @@ class TerminalLedger implements InvocationTerminal {
       }
       if (this.#refusal(by)) return Promise.resolve();
       const { reason } = terminal;
-      const cancellation = terminal.kind === "denied" ? this.#abortCancellation(terminal.humanAnswered === true) : undefined;
+      const cancellation = terminal.kind === "denied" ? this.#abortCancellation(terminal.humanAnswered === true || terminal.entry.denyReasons.some(({ source }) => source === "approval-gate")) : undefined;
       // A deny row persists its kind, so a reader of the row and its PermissionDenied can never disagree.
       const entry: PermissionAuditEntryInput = terminal.entry.decision !== "deny" ? terminal.entry
         : cancellation === undefined ? { ...terminal.entry, terminalKind: terminal.kind }
@@ -246,6 +253,7 @@ class TerminalLedger implements InvocationTerminal {
       // The host's own refusal: a selected answer whose record just failed would fail the host's row the same way.
       this.#selected = undefined;
       this.#settledRationaleDecision = undefined;
+      this.#settledRationaleRefusal = undefined;
       void this.endByHost("error", `the terminal row failed its integrity check: ${errorMessage(error)}`)?.catch(() => {});
     });
     return written;
@@ -253,11 +261,11 @@ class TerminalLedger implements InvocationTerminal {
 
   /**
    * A denial committed after the invocation's abort is that abort's cancellation, whichever writer or site committed it
-   * (a hook the Stop cancelled, a step the abort made throw); only a person's settled deny and the host's own integrity
+   * (a hook the Stop cancelled, a step the abort made throw); only a settled approval refusal and the host's own integrity
    * refusal stay denials. Returns the cancellation's reason, or undefined when the row stays a denial.
    */
-  #abortCancellation(humanAnswered: boolean): string | undefined {
-    if (!this.#signal.aborted || humanAnswered || this.#integrityFailure) return undefined;
+  #abortCancellation(settledApproval: boolean): string | undefined {
+    if (!this.#signal.aborted || settledApproval || this.#integrityFailure) return undefined;
     return isHostExitAbort(this.#signal.reason) ? "host-shutdown" : "user aborted turn";
   }
 
@@ -349,7 +357,7 @@ export function admitToolInvocation(tool: string, parent?: AbortSignal, resumeOf
     get owner() { return ledger.owner; },
     get state() { return ledger.state; },
     get denyKind() { return ledger.denyKind; },
-    get hasSettledRationaleDenial() { return ledger.hasSettledRationaleDenial; },
+    get settledRationaleRefusal() { return ledger.settledRationaleRefusal; },
     hostTerminal: (write, lifecycle) => { ledger.hostTerminal(write, lifecycle); },
     bindAbortSignal: (abortSignal) => ledger.bindAbortSignal(abortSignal),
     select: (outcome) => { ledger.select(outcome); },

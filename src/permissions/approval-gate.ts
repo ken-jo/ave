@@ -25,6 +25,7 @@ import {
 import type { PermissionEvaluationContext } from "./evaluation-context.js";
 import { matchesReviewerApprovalBasis, type ReviewerApprovalBasis, type ReviewerDispatchOutcome } from "./permission-manager.js";
 import { matchesApprovalRuleBasis, type ApprovalRuleBasis } from "./approval-rule-evidence.js";
+import { describePermissionQuestion, pendingAnswerDefersAllowSaves, spendStandingAnswer, type PermissionQuestion, type StaleAnswerOutcome, type StandingAnswer } from "./pending-answer-policy.js";
 import { NO_APPROVER_MESSAGE, type PermissionDecisionRequest } from "./decision-pipeline.js";
 import { isIssuedToolApprovalWait, withToolApprovalWait, type ToolApprovalWait } from "../tools/executor-ceiling.js";
 import { maskSensitiveData } from "../audit/dlp-filter.js";
@@ -32,6 +33,7 @@ import { runSessionOf } from "./run-grants.js";
 import { canonicalStringify } from "../shared/canonical-json.js";
 import { isSessionOnlyApprovalMemoryScope, isUserOwnedSurface, isUserOwnedSurfaceChoice, resolveUserApprovalVerdict, type ApprovalMemory, type UserOwnedSurface, type UserOwnedSurfaceChoice } from "../shared/permissions-events.js";
 import { buildShellRuleApproval, type HostTerminalApprovalBinding } from "./rules/shell-rule-approval.js";
+import { captureProjectRuleRootBinding, type ProjectRuleRootBinding } from "./rules/project-rule-files.js";
 import type { ShellRuleApproval } from "../shared/permissions-events.js";
 import { captureApprovalWorkingDirectory } from "./user-approval-store.js";
 import { matchesPluginReadjudicationBasis, type PluginReadjudicationBasis } from "./plugin-readjudication-evidence.js";
@@ -46,7 +48,9 @@ import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import type { ApprovalPurposeSuggestion } from "../shared/permission-review-status.js";
 import {
   type HostShellExecutionPermitBinding,
+  type ShellApprovalDirectory,
 } from "./host-shell-execution-permit.js";
+import { isBrokerGuestRoutePlan, isIssuedExecutionPlan, type ExecutionPlan } from "./execution-router.js";
 import {
   getHostShellExecutionPlanAuditProjection,
   isIssuedHostShellExecutionPlanAuditProjection,
@@ -61,6 +65,8 @@ import { resolve as pathResolve } from "node:path";
 import { caseFoldForMatch, foldCanonicalPathSeparators } from "./sensitive-paths.js";
 import { isEgressGrantScope, type EgressGrantNetwork, type EgressGrantScope } from "../shared/egress-grant-scopes.js";
 import { isTerminalTabId } from "../shared/tab-id.js";
+import { captureShellWorkingDirectoryIdentity, matchesShellWorkingDirectoryIdentity, type ShellWorkingDirectoryIdentity } from "./shell-working-directory-identity.js";
+import type { ApprovalPersistenceGuard } from "./approval-persistence-guard.js";
 import { HOST_PROVENANCE, RULE_PROVENANCE, type HostProvenance, type RuleProvenance } from "./decision-provenance.js";
 
 // Args DLP masking
@@ -109,6 +115,14 @@ function maskApprovalPurposeForDisplay(
 type ApprovalKind =
   "tool" | "out-of-allowed-dir" | "agent-action" | "egress-host" | "extension-start";
 
+const PROCESS_CWD_CARD_KINDS = {
+  "tool": true,
+  "out-of-allowed-dir": true,
+  "agent-action": false,
+  "egress-host": false,
+  "extension-start": false,
+} satisfies Record<ApprovalKind, boolean>;
+
 // The egress-host ask's payload (`kind: "egress-host"`): a sandboxed shell call or workspace terminal tab wants to reach `host:port`, and the person picks how long an allow lasts from `scopes`. Built by `egress-approval.ts`.
 interface EgressHostApproval {
   readonly host: string;
@@ -133,23 +147,23 @@ export interface ApprovalRequestTarget {
 }
 
 // The tree stages whose card reason the renderer words itself; any other stage keeps the host's reason text.
-const APPROVAL_REASON_CODES = ["protected-path", "project-escape", "secret-read", "file-write"] as const;
+const APPROVAL_REASON_CODES = ["protected-path", "project-escape", "secret-read", "file-write", "shell-analysis-limit"] as const;
 
-// The card's reason fields for a permission result, sent only for a card about a file target: the same codes are raised for
-// shell commands and for write tools that name no file, and those cards keep the host's own reason text. A folder card states
-// its ordinary reason in its headline, so it carries a floor code only. The protected entry is named only on its own floor's
-// card; a matched secret pattern is named on any file card for that read, a reviewed one included.
+// File reasons use a target. The analysis-limit reason applies to the entire shell command.
 export function approvalReasonFields(
-  result: { readonly reasonCode?: string; readonly pipelineRequest?: Pick<PermissionDecisionRequest, "pathFacts"> },
+  result: { readonly reasonCode?: string; readonly pipelineRequest?: Pick<PermissionDecisionRequest, "pathFacts" | "shellAnalysisLimited"> },
   card: { readonly fileTarget: boolean; readonly folderCard?: true },
-): Pick<ApprovalRequest, "reasonCode" | "reasonDetail"> {
-  if (!card.fileTarget) return {};
+): Pick<ApprovalRequest, "reasonCode" | "reasonDetail" | "shellAnalysisLimited"> {
+  const analysis = result.pipelineRequest?.shellAnalysisLimited ? { shellAnalysisLimited: true as const } : {};
+  if (result.reasonCode === "shell-analysis-limit") return { ...analysis, reasonCode: result.reasonCode };
+  if (!card.fileTarget) return analysis;
   const reasonCode = APPROVAL_REASON_CODES.find((code) => code === result.reasonCode
     && (card.folderCard === undefined || code === "protected-path" || code === "project-escape"));
   const facts = result.pipelineRequest?.pathFacts;
   const protectedEntry = reasonCode === "protected-path" ? facts?.protectedEntry : undefined;
   const secretPattern = facts?.secretPattern;
   return {
+    ...analysis,
     ...(reasonCode === undefined ? {} : { reasonCode }),
     ...(protectedEntry === undefined && secretPattern === undefined ? {} : { reasonDetail: {
       ...(protectedEntry === undefined ? {} : { protectedEntry }),
@@ -197,8 +211,10 @@ export interface ApprovalRequest {
   /** Host-derived delivery route for a workflow stage or its descendants. */
   workBoardProjectApproval?: WorkBoardApprovalProject & { readonly parked: boolean };
   id: string;
-  // Display-only: the code of the pipeline decision that asked, so the card can word its reason in the user's language instead of the host's English `reason`. A user-owned-surface card gets its surface decision's code; a card about a file target gets one of `APPROVAL_REASON_CODES`, the tree stage that raised it. Never an approval capability, and never read back from a decision.
+  // Display-only code for localizing the permission reason. The gate never reads it from an answer.
   reasonCode?: string;
+  // Display-only evidence that the shell analysis budget ran out.
+  shellAnalysisLimited?: true;
   userOwnedSurface?: UserOwnedSurface;
   userOwnedSurfaceReviewFallback?: true;
   // Display-only projection of the host terminal's current-turn provenance; never an approval capability.
@@ -336,6 +352,7 @@ export type ApprovalRequestInput = Omit<
   readonly durableApprovalRecordAllowed?: boolean;
   // Host-only binding for an explicit plain-shell fallback permit. It is retained only in the pending entry and never serialized to the renderer or audit payload.
   readonly hostShellExecutionPermitBinding?: HostShellExecutionPermitBinding;
+  readonly processCwd?: { readonly directory: ShellApprovalDirectory } | { readonly guestRoute: ExecutionPlan };
   // Host-only: the forced card answers the sandbox-unavailable floor alone (`offersFloorSessionAllow`), so later shells and hooks of this conversation may also pass that floor.
   readonly floorSessionAllowed?: true;
   readonly floorSessionPolicyEpoch?: string;
@@ -430,6 +447,13 @@ export function isHostApprovalRejectedDecision(
   );
 }
 
+const remoteControllerRevokedDecisions = new WeakSet<ApprovalDecision>();
+const REMOTE_CONTROLLER_REFUSAL = "Remote controller authentication or session binding is unavailable.";
+
+export function isHostApprovalControllerRevoked(decision: ApprovalDecision): boolean {
+  return remoteControllerRevokedDecisions.has(decision);
+}
+
 /** The gate's record of an accepted answer: which way it went, who gave it and the origin that answerer writes. */
 export interface AnsweredRecord {
   readonly decision: "allow" | "deny";
@@ -490,6 +514,41 @@ export function answeredRecordForAction(
   return record;
 }
 
+/** A decision returned for a card it does not answer. The host refuses the call; nobody's answer is recorded. */
+export class ApprovalReceiptError extends Error {
+  override readonly name = "ApprovalReceiptError";
+}
+
+/** The card a returned decision has to answer: its exact request, the action it names and the call it is bound to. */
+export interface ExpectedApprovalAnswer {
+  readonly requestId: string;
+  readonly toolName: string;
+  readonly toolUseId: string | undefined;
+  readonly extensionStartRow?: string;
+}
+
+/** Admit the decision a card's ask returned, before anything judges, saves or acts on it. An answer the gate recorded must be
+ * the answer to this request, for this action and this call, in the direction the decision states. A deny without a record is
+ * the host's own refusal and passes without a receipt; an allow without one breaks the gate's contract. */
+export function admitApprovalAnswer(decision: ApprovalDecision, expected: ExpectedApprovalAnswer): AnsweredRecord | undefined {
+  if (decision.requestId !== expected.requestId || decision.extensionStartRow !== expected.extensionStartRow) {
+    throw new ApprovalReceiptError("Approval answer does not match the pending request");
+  }
+  const handle = answeredDecisionHandles.get(decision);
+  if (handle === undefined) {
+    if (decision.choice.startsWith("allow")) throw new ApprovalReceiptError("approval: an answered decision carries no record of who answered");
+    return;
+  }
+  const record = answeredProvenanceRecord(handle);
+  if (record.toolName !== expected.toolName || record.toolUseId !== expected.toolUseId) {
+    throw new ApprovalReceiptError(`approval: the answer to ${record.requestId} does not settle this ${record.decision} of ${expected.toolName}`);
+  }
+  if (record.requestId !== expected.requestId || record.choice !== decision.choice) {
+    throw new ApprovalReceiptError("Approval answer does not match the pending request");
+  }
+  return record;
+}
+
 /** The gate's handle for a decision a caller is treating as answered. A missing handle breaks the gate's contract. */
 export function answeredApprovalProvenance(decision: ApprovalDecision): AnsweredProvenance {
   const handle = answeredDecisionHandles.get(decision);
@@ -510,6 +569,29 @@ export function provenanceTrustOrigin<Origin extends string>(
     case "rule": return invocation;
     case "host": return "unknown";
     default: return provenance satisfies never;
+  }
+}
+
+export type ApprovalFailureKind = "denied" | "rejected" | "expired" | "unavailable" | "cancelled";
+
+/** Classify a card result after admitting it against its request. */
+export function approvalFailureKind(decision: ApprovalDecision): ApprovalFailureKind | undefined {
+  if (isAnsweredApprovalDenial(decision)) return "denied";
+  if (decision.choice.startsWith("allow")) return undefined;
+  if (isHostApprovalCancelledDecision(decision)) return "cancelled";
+  if (decision.rememberPattern === NO_APPROVER_MESSAGE) return "unavailable";
+  if (isHostApprovalTimeoutDecision(decision)) return "expired";
+  return "rejected";
+}
+
+/** A refused approval stays host-owned unless the gate recorded a person's denial. */
+export function hostApprovalDenialReason(decision: ApprovalDecision): string | undefined {
+  switch (approvalFailureKind(decision)) {
+    case "cancelled": return "approval request cancelled";
+    case "unavailable": return NO_APPROVER_MESSAGE;
+    case "expired": return "approval request expired";
+    case "rejected": return "approval rejected by host";
+    default: return undefined;
   }
 }
 
@@ -598,7 +680,15 @@ function markHostApprovalRejectedDecision(
   return decision;
 }
 
-function hostCancellationDecision(requestId: string, reason?: "caller-abort" | "session-close"): ApprovalDecision {
+function hostControllerRevokedDecision(requestId: string): ApprovalDecision {
+  const decision = markHostApprovalRejectedDecision({ requestId, choice: "deny-once", rememberPattern: REMOTE_CONTROLLER_REFUSAL });
+  remoteControllerRevokedDecisions.add(decision);
+  return decision;
+}
+
+type ApprovalCancellationReason = "caller-abort" | "session-close" | "project-scope-changed";
+
+function hostCancellationDecision(requestId: string, reason?: ApprovalCancellationReason): ApprovalDecision {
   const decision = markHostApprovalRejectedDecision({
     requestId, choice: "deny-once",
     ...(reason === undefined ? {} : { rememberPattern: `approval cancelled: ${reason}` }),
@@ -626,6 +716,7 @@ function sameHostShellExecutionPermitBinding(
     actual.requestedCwd === expected.requestedCwd &&
     actual.executionCwd === expected.executionCwd &&
     actual.resolvedCwd === expected.resolvedCwd &&
+    actual.cwdIdentity === expected.cwdIdentity &&
     actual.timeoutSeconds === expected.timeoutSeconds &&
     actual.executionMode === expected.executionMode &&
     actual.justification === expected.justification &&
@@ -644,7 +735,7 @@ function matchesHostShellExecutionPermitBindingRequest(
 ): boolean {
   if (
     request.category !== "tool" ||
-    (request.kind !== undefined && request.kind !== "tool") ||
+    (request.kind !== undefined && request.kind !== "tool" && request.kind !== "out-of-allowed-dir") ||
     request.source !== "builtin" ||
     request.toolCategory !== "shell" ||
     request.toolName !== binding.toolName ||
@@ -701,7 +792,39 @@ export interface ApprovalPolicyMutation {
   readonly directories?: { readonly from: readonly string[]; readonly to: readonly string[]; readonly directory: string; readonly scope: "session" | "always" };
 }
 
+/** What a held allow save reports once it ran: the store it moved, and that store's generation before and after. */
+type StagedAllowSaveResult =
+  | { readonly ok: true; readonly store: "rules"; readonly from: string; readonly to: string; readonly scope: "session" | "run" | "project" | "always" }
+  | { readonly ok: true; readonly store: "exact"; readonly from: string; readonly to: string; readonly scope: string }
+  | { readonly ok: false; readonly error: string };
+export type StagedAllowSave = (controller: ApprovalPersistenceGuard) => Promise<StagedAllowSaveResult>;
+
+const POLICY_CHANGED_WHILE_PENDING = "Permission policy changed while approval was pending";
+
+// Rule saves increment the manager generation once and, for project rules,
+// the project revision once. Concurrent policy changes cannot join this receipt.
+function isRuleSaveStep(before: string, after: string, scope: "session" | "run" | "project" | "always" | undefined): boolean {
+  const beforeParts = before.split(":");
+  const afterParts = after.split(":");
+  const generation = Number(beforeParts[0]);
+  const revision = Number(beforeParts[1]);
+  return scope !== undefined && beforeParts.length === 3 && afterParts.length === 3 &&
+    Number.isSafeInteger(generation) && Number.isSafeInteger(revision) && generation >= 0 && revision >= 0 &&
+    afterParts[0] === String(generation + 1) &&
+    afterParts[1] === String(revision + (scope === "project" ? 1 : 0)) &&
+    afterParts[2] === beforeParts[2];
+}
+
+function isExactSaveStep(before: string, after: string, scope: string): boolean {
+  const generation = Number(before);
+  return Number.isSafeInteger(generation) && generation >= 0 && after === String(generation + 1) &&
+    ["session", "run", "persistent", "global"].includes(scope);
+}
+
 interface PendingEntry {
+  /** The pending-answer owner judges this card: an allow its person asks to remember is held until that answer stands. */
+  defersAllowSaves?: true;
+  stagedAllowSave?: StagedAllowSave;
   /** Unattributed cards stay with their recipient until that window leaves. */
   unattributedOwner?: WebContents;
   projectDelivery?: { project: WorkBoardApprovalProject; recipient: WebContents | null };
@@ -765,6 +888,7 @@ interface PendingEntry {
   // require the offer.
   runStage: ApprovalRequest["runStage"];
   shellRule?: ShellRuleApproval;
+  shellRuleProjectRoot?: ProjectRuleRootBinding;
   // Host-only: the floor a "This session" save on this card answers (never sent to the renderer).
   floorSessionGrant?: FloorSessionGrant & { policyEpoch: string; plan: NonNullable<ApprovalRequestInput["hostShellExecutionPlan"]> };
   hostShellExecutionPlan?: import("./host-shell-execution-plan.js").HostShellExecutionPlan;
@@ -772,6 +896,7 @@ interface PendingEntry {
   invocationToolUseId?: string;
   projectCwd?: string;
   workingDirectoryIdentity?: string;
+  shellWorkingDirectory?: { readonly path: string; readonly identity: ShellWorkingDirectoryIdentity };
   riskCeilingAtApproval?: RiskLevel;
   executionPlan?: HostShellExecutionPlanAuditProjection;
   hostShellExecutionPermitBinding?: HostShellExecutionPermitBinding;
@@ -788,6 +913,7 @@ interface PendingEntry {
 export interface PendingApprovalView {
   readonly requestId: string;
   readonly toolName: string;
+  readonly toolUseId?: string;
   readonly source?: ToolSource;
   readonly category: "tool" | "agent-action";
   readonly kind?: ApprovalKind;
@@ -958,9 +1084,12 @@ export class ApprovalGate {
   private readonly pending = new Map<string, PendingEntry>();
   private readonly ruleSaveTokens = new WeakMap<object, { requestId: string; entry: PendingEntry; before: string }>();
   private readonly approvedPolicyTransitions = new WeakMap<ApprovalDecision, { from: string; to: string }>();
+  // The card each decided answer settled, for the stale-answer audit row.
+  private readonly decidedCards = new WeakMap<ApprovalDecision, { requestId: string; sessionId: string; fields: string }>();
   private readonly approvedPolicyMutations = new WeakMap<ApprovalDecision, ApprovalPolicyMutation>();
   private readonly authenticatedDirectoryAnswers = new WeakSet<ApprovalDecision>();
   private readonly exactSaveTokens = new WeakMap<object, { requestId: string; entry: PendingEntry; before: string }>();
+  private readonly stagedAllowSaves = new WeakMap<ApprovalDecision, { save: StagedAllowSave; controller: ApprovalPersistenceGuard }>();
   private readonly approvedBrowserSites = new WeakMap<ApprovalDecision, { sessionId: string; origin: string; choice: BrowserSiteChoice }>();
 
   consumeBrowserSiteChoice(decision: ApprovalDecision, sessionId: string, origin: string): BrowserSiteChoice | undefined {
@@ -996,9 +1125,7 @@ export class ApprovalGate {
     if (!saved || this.pending.get(saved.requestId) !== saved.entry) return;
     const transition = saved.entry.exactSaveTransition!;
     transition.saving = false;
-    const before = Number(saved.before);
-    if (!Number.isSafeInteger(before) || before < 0 || after !== String(before + 1) ||
-        !["session", "run", "persistent", "global"].includes(scope)) transition.valid = false;
+    if (!isExactSaveStep(saved.before, after, scope)) transition.valid = false;
     transition.to = after;
     transition.scope = scope;
   }
@@ -1044,18 +1171,52 @@ export class ApprovalGate {
     if (!saved || this.pending.get(saved.requestId) !== saved.entry) return;
     const transition = saved.entry.ruleSaveTransition!;
     transition.saving = false;
-    const beforeParts = saved.before.split(":");
-    const afterParts = after.split(":");
-    const generation = Number(beforeParts[0]);
-    const revision = Number(beforeParts[1]);
-    // Rule saves increment the manager generation once and, for project rules,
-    // the project revision once. Concurrent policy changes cannot join this receipt.
-    if (scope === undefined || beforeParts.length !== 3 || afterParts.length !== 3 ||
-      !Number.isSafeInteger(generation) || !Number.isSafeInteger(revision) || generation < 0 || revision < 0 ||
-      afterParts[0] !== String(generation + 1) ||
-      afterParts[1] !== String(revision + (scope === "project" ? 1 : 0)) ||
-      afterParts[2] !== beforeParts[2]) transition.valid = false;
+    if (!isRuleSaveStep(saved.before, after, scope)) transition.valid = false;
     transition.to = after;
+  }
+
+  defersAllowSaves(requestId: string): boolean {
+    return this.pending.get(requestId)?.defersAllowSaves === true;
+  }
+
+  /** Hold one validated allow save on its live card. A second save is refused. */
+  stageAllowSave(requestId: string, save: StagedAllowSave): boolean {
+    const entry = this.pending.get(requestId);
+    if (entry?.defersAllowSaves !== true || entry.stagedAllowSave !== undefined) return false;
+    entry.stagedAllowSave = save;
+    return true;
+  }
+
+  /** Spend the standing answer's rule-save use to write the card's held allow and record its mutation. */
+  async commitStagedAllowSaves(decision: ApprovalDecision, answer: StandingAnswer, action: string): Promise<{ readonly saved: boolean; readonly refusal?: string }> {
+    const staged = this.stagedAllowSaves.get(decision);
+    if (!staged) return { saved: false };
+    this.stagedAllowSaves.delete(decision);
+    if (spendStandingAnswer(answer, "rule-save", action)?.decision !== decision) return { saved: false, refusal: POLICY_CHANGED_WHILE_PENDING };
+    const result = await staged.save(staged.controller);
+    if (!result.ok) return { saved: false, refusal: result.error };
+    let mutation: ApprovalPolicyMutation;
+    if (result.store === "rules") {
+      if (!isRuleSaveStep(result.from, result.to, result.scope)) return { saved: true, refusal: POLICY_CHANGED_WHILE_PENDING };
+      mutation = { permission: { from: result.from, to: result.to } };
+    } else {
+      if (!isExactSaveStep(result.from, result.to, result.scope)) return { saved: true, refusal: POLICY_CHANGED_WHILE_PENDING };
+      mutation = { approvals: { from: result.from, to: result.to, scope: result.scope } };
+    }
+    this.approvedPolicyMutations.set(decision, { ...this.approvedPolicyMutations.get(decision), ...mutation });
+    return { saved: true };
+  }
+
+  /** Audit the owner's verdict that a person's Allow answered a question the call no longer asks (pending-answer-policy.ts). No authority follows it. */
+  recordStaleAnswer(decision: ApprovalDecision, outcome: StaleAnswerOutcome, from: PermissionQuestion, to: PermissionQuestion): void {
+    const card = this.decidedCards.get(decision);
+    if (!card) return;
+    this.auditLogger?.log({
+      timestamp: new Date().toISOString(),
+      sessionId: card.sessionId,
+      type: "approval",
+      output: `[approval:answer-stale] ${card.requestId} ${card.fields} choice=${decision.choice} outcome=${outcome} authority=none question=${describePermissionQuestion(from)} -> ${describePermissionQuestion(to)}`,
+    });
   }
 
   /** Consume the exact authenticated answer's same-card policy transition once. */
@@ -1280,6 +1441,7 @@ export class ApprovalGate {
 
   // Send an approval request to the renderer and wait for the response. ConversationLoop.executeOne awaits this and blocks the turn. The requireExplicit field controls renderer dismiss behavior.
   async requestAndWait(req: ApprovalRequestInput): Promise<ApprovalDecision> {
+    const defersAllowSaves = pendingAnswerDefersAllowSaves(req, this);
     const auditFieldsFor = (fields: ApprovalAuditFields, executionPlan?: HostShellExecutionPlanAuditProjection): string =>
       formatApprovalAuditFields({ ...fields, remoteControllerOrigin: req.remoteControllerOrigin }, executionPlan);
     const isAborted = () => this.lifetime.signal.aborted || req.abortSignal?.aborted === true;
@@ -1314,6 +1476,7 @@ export class ApprovalGate {
       toolApprovalWait,
       durableApprovalRecordAllowed: requestedDurableApprovalRecordAllowed,
       hostShellExecutionPermitBinding,
+      processCwd,
       floorSessionAllowed: requestedFloorSessionAllowed,
       floorSessionPolicyEpoch,
       hostTerminal,
@@ -1346,8 +1509,11 @@ export class ApprovalGate {
     if (toolApprovalWait !== undefined && !isIssuedToolApprovalWait(toolApprovalWait)) {
       return rejectBeforeAnswer("Approval execution budget was not issued by the host");
     }
-    if (!isRemoteControllerBoundToSession(remoteControllerAuthority, req.sessionId) || (remoteControllerOrigin !== undefined && remoteControllerOrigin !== remoteControllerAuthority?.kind)) {
-      return rejectBeforeAnswer("Remote controller authentication or session binding is unavailable.");
+    if (!isRemoteControllerBoundToSession(remoteControllerAuthority, req.sessionId)) {
+      return isAborted() ? denyForAbortedTurn() : hostControllerRevokedDecision(req.id);
+    }
+    if (remoteControllerOrigin !== undefined && remoteControllerOrigin !== remoteControllerAuthority?.kind) {
+      return rejectBeforeAnswer(REMOTE_CONTROLLER_REFUSAL);
     }
     const forceExplicit = requestedForceExplicit || childProvenance !== undefined;
     if ((requestedUserOwnedSurface !== undefined && (!isUserOwnedSurface(requestedUserOwnedSurface) || !req.sessionId)) ||
@@ -1458,6 +1624,24 @@ export class ApprovalGate {
       return rejectBeforeAnswer("execution plan did not match the host shell binding", request, boundExecutionPlan);
     }
     const executionPlanAudit = boundExecutionPlan ?? suppliedExecutionPlan;
+    let shellDirectory: ShellApprovalDirectory | undefined;
+    if (req.source === "builtin" && req.toolCategory === "shell" &&
+      (req.toolName === "bash" || req.toolName === "powershell")) {
+      if (!PROCESS_CWD_CARD_KINDS[req.kind ?? "tool"]) {
+        throw new Error("approval: shell card has a card kind that cannot bind a working directory");
+      }
+      if (processCwd && "guestRoute" in processCwd) {
+        if (!isIssuedExecutionPlan(processCwd.guestRoute) || !isBrokerGuestRoutePlan(processCwd.guestRoute) ||
+          req.toolName !== "bash" || hostShellExecutionPermitBinding !== undefined) {
+          throw new Error("approval: shell guest route was not issued for this request");
+        }
+      } else {
+        if (processCwd === undefined || !matchesHostShellExecutionPermitBindingRequest(request, processCwd.directory.binding)) {
+          throw new Error("approval: shell card is missing its working directory binding");
+        }
+        shellDirectory = processCwd.directory;
+      }
+    }
     const deliveryProject = this.resolveSurface?.projectOf?.(req.sessionId);
     if (executionPlanAudit?.executionRequest === "host") {
       const hasDesktopDelivery = deliveryProject !== undefined
@@ -1494,16 +1678,17 @@ export class ApprovalGate {
       : undefined;
     const riskCeilingAtApproval = verifiedApprovalBasis?.ruleVerdict;
     // One-shot requests never persist a working-directory identity. Do not make their approval depend on validating an unrelated persistent-store scope.
+    const boundShellCwd = shellDirectory?.binding.cwdIdentity?.realpath;
+    const shellRuleCwd = boundShellCwd ?? req.evaluationContext?.executionCwd;
     const workingDirectory = canRememberRequest
-      ? verifiedApprovalBasis?.workingDirectory ?? (req.evaluationContext?.executionCwd
-          ? captureApprovalWorkingDirectory(req.evaluationContext.executionCwd) : undefined)
+      ? verifiedApprovalBasis?.workingDirectory ?? (shellRuleCwd
+          ? captureApprovalWorkingDirectory(shellRuleCwd) : undefined)
       : undefined;
     const persistentAllowAllowed = canRememberRequest && workingDirectory !== undefined;
     const readjudication = persistentAllowAllowed && verdictAtApproval === "high" &&
       req.source === "plugin" && req.evaluationContext?.headless === false &&
       !assessmentUnavailable && matchesPluginReadjudicationBasis(readjudicationBasis, req)
       ? Object.freeze({ ...readjudicationBasis.evidence }) : undefined;
-    const shellRuleCwd = req.evaluationContext?.executionCwd;
     // Ordinary shell cards may save a rule; forced one-shot cards cannot create remembered authority.
     const shellRuleSaveAllowed = hasShellRuleApprovalContract && !hasOneShotApprovalChoiceContract || floorSessionGrant !== undefined;
     const shellRuleDialect = req.toolName === "bash" || req.toolName === "powershell" ? req.toolName : undefined;
@@ -1529,10 +1714,13 @@ export class ApprovalGate {
     const shellRule: ShellRuleApproval | undefined = floorRuleContext !== undefined && floorSessionGrant !== undefined
       ? { ...floorRuleContext, exactRule: null, sessionAllowed: true, persistentAllowed: false, floorSessionOnly: true }
       : builtShellRule;
+    const projectRootBinding = shellRule?.persistentAllowed ? captureProjectRuleRootBinding(shellRule.projectCwd) : undefined;
+    const shellRuleProjectRoot = projectRootBinding?.path === shellRule?.projectRoot ? projectRootBinding : undefined;
     // One approval lane per stage session: the card names the stage of the run member that asked. "Allow for this run" is offered where
     // this card's session allow is: a shell card's session rule, any other card's remembered exact allow. A scope that only ever lives
     // for its own session (a browser or terminal target) and a schedule-started run offer none.
     const runMember = runSessionOf(req.sessionId);
+    const requestingAgentTitle = runMember?.agentTitle ?? childProvenance?.childTitle;
     const sessionOnlyMemory = req.approvalMemory?.kind === "key" && isSessionOnlyApprovalMemoryScope(req.approvalMemory.scope);
     const runStage = runMember === undefined ? undefined : Object.freeze({
       stageId: runMember.stageId,
@@ -1544,7 +1732,7 @@ export class ApprovalGate {
       ...request,
       ...(runStage === undefined ? {} : { runStage }),
       ...(readjudication === undefined ? {} : { args: JSON.parse(exactCanonicalStringify(req.args)) }),
-      ...(childProvenance === undefined ? {} : { requestingAgentTitle: maskSensitiveData(childProvenance.childTitle).masked.slice(0, 240) }),
+      ...(requestingAgentTitle === undefined ? {} : { requestingAgentTitle: maskSensitiveData(requestingAgentTitle).masked.slice(0, 240) }),
       ...(hostTerminal?.afterExternalContent === true ? { hostTerminalAfterExternalContent: true as const } : {}),
       ...(isAveHomeConfigurationRefused(aveHome()) ? { homeFolderRefused: true as const } : {}),
       ...(userOwnedSurface === undefined ? {} : { userOwnedSurface }),
@@ -1559,9 +1747,7 @@ export class ApprovalGate {
       ...(executionPlanAudit === undefined
         ? {}
         : { executionPlan: executionPlanAudit }),
-      ...(oneShotPermitBinding === undefined
-        ? {}
-        : { executionCwd: oneShotPermitBinding.resolvedCwd }),
+      ...(boundShellCwd === undefined ? {} : { executionCwd: boundShellCwd }),
       reason: req.reason,
       // A sealed execution plan is the only renderer-safe authority description for canonical host shells. Its projection deliberately excludes the host capability's free-form reason, so never retain or inject the raw capability alongside it.
       ...(executionPlanAudit === undefined
@@ -1612,11 +1798,11 @@ export class ApprovalGate {
     // Above the away answer, the OS notification and the renderer send, all for one reason: none of them should happen on behalf of a turn that is already over. An away grant in particular has a finite budget, and spending a unit of it to answer a dead turn spends it on nothing.
     if (isAborted()) return denyForAbortedTurn(fullReq, executionPlanAudit);
 
-    if (oneShotPermitBinding !== undefined) {
+    if (shellDirectory !== undefined) {
       const displayedArgs = maskArgsForDisplay(fullReq.args, new Set<string>());
-      const displayedCwd = maskSensitiveData(oneShotPermitBinding.resolvedCwd).masked;
-      if (canonicalStringify(displayedArgs) !== canonicalStringify(fullReq.args) ||
-          displayedCwd !== oneShotPermitBinding.resolvedCwd) {
+      const cwd = boundShellCwd ?? shellDirectory.binding.resolvedCwd;
+      if ((oneShotPermitBinding !== undefined && canonicalStringify(displayedArgs) !== canonicalStringify(fullReq.args)) ||
+          maskSensitiveData(cwd).masked !== cwd) {
         // Exact host consent cannot authorize bytes hidden by display masking. Preserve masking and reject before signing or parking the request.
         const reason = "Host execution cannot be approved because sensitive-data masking would hide part of the command, working directory, or justification.";
         this.auditLogger?.log({
@@ -1627,6 +1813,11 @@ export class ApprovalGate {
         });
         return rejectBeforeAnswer(reason, fullReq, executionPlanAudit);
       }
+    }
+
+    if (shellDirectory !== undefined) {
+      if (shellDirectory.binding.cwdIdentity === undefined) throw new Error("approval: shell card is missing its working directory binding");
+      if (!shellDirectory.hold()) return rejectBeforeAnswer("Shell working directory changed before the card opened", fullReq, executionPlanAudit);
     }
 
     // surface a system notification when an approval is about to block the user. Approval is the most user-visible gate, so the OS toast is critical; its sound is the renderer's approval-needed accessibility signal.
@@ -1751,6 +1942,7 @@ export class ApprovalGate {
       }
 
       this.pending.set(fullReq.id, {
+        ...(defersAllowSaves ? { defersAllowSaves: true as const } : {}),
         ...(projectDelivery === undefined ? {} : { projectDelivery }),
         ...(fullReq.browserSite === undefined ? {} : { browserSite: fullReq.browserSite }),
         ...(userOwnedSurface === undefined ? {} : { userOwnedSurface }),
@@ -1806,12 +1998,17 @@ export class ApprovalGate {
         persistentAllowAllowed,
         runStage,
         shellRule,
+        ...(shellRuleProjectRoot === undefined ? {} : { shellRuleProjectRoot }),
         ...(floorSessionGrant !== undefined && shellRule?.sessionAllowed === true ? { floorSessionGrant } : {}),
         verifiedShellCommand,
         hostShellExecutionPlan,
         ...(invocationToolUseId === undefined ? {} : { invocationToolUseId }),
         projectCwd: workingDirectory?.path,
         workingDirectoryIdentity: workingDirectory?.identity,
+        shellWorkingDirectory: shellDirectory?.binding.cwdIdentity === undefined ? undefined : {
+          path: shellDirectory.binding.resolvedCwd,
+          identity: shellDirectory.binding.cwdIdentity,
+        },
         riskCeilingAtApproval,
         ...(executionPlanAudit === undefined
           ? {}
@@ -1829,6 +2026,7 @@ export class ApprovalGate {
       if (userOwnedSurface === undefined && oneShotPermitBinding?.executionMode !== "host" && hostTerminal === undefined) this.notifyPendingParked({
         requestId: fullReq.id,
         toolName: fullReq.toolName,
+        ...(req.invocationToolUseId === undefined ? {} : { toolUseId: req.invocationToolUseId }),
         ...(fullReq.source === undefined ? {} : { source: fullReq.source }),
         category: fullReq.category,
         ...(fullReq.kind === undefined ? {} : { kind: fullReq.kind }),
@@ -1954,11 +2152,29 @@ export class ApprovalGate {
     }).catch((error: unknown) => { retractToast(); throw error; });
   }
 
-  capturePendingRequestIdentityGuard(requestId: string): { refresh: () => Promise<boolean>; isCurrent: () => boolean } | null {
+  capturePendingRequestAuthority(requestId: string): {
+    controller: ApprovalPersistenceGuard;
+    isWorkingDirectoryCurrent(): boolean;
+  } | null {
     const entry = this.pending.get(requestId);
     if (!entry) return null;
-    const isCurrent = () => this.pending.get(requestId) === entry && isRemoteControllerBoundToSession(entry.remoteControllerAuthority, entry.sessionId);
-    return { refresh: async () => await refreshRemoteControllerBoundToSession(entry.remoteControllerAuthority, entry.sessionId) && isCurrent(), isCurrent };
+    const { hostTerminal, shellWorkingDirectory } = entry;
+    return {
+      controller: {
+        refresh: () => refreshRemoteControllerBoundToSession(entry.remoteControllerAuthority, entry.sessionId),
+        isCurrent: () => this.pending.get(requestId) === entry &&
+          isRemoteControllerBoundToSession(entry.remoteControllerAuthority, entry.sessionId),
+      },
+      isWorkingDirectoryCurrent: () => {
+        if (hostTerminal !== undefined) {
+          const identity = captureShellWorkingDirectoryIdentity(hostTerminal.physicalCwd);
+          return identity !== undefined && foldCanonicalPathSeparators(identity.realpath) === hostTerminal.physicalCwd &&
+            identity.dev.toString() === hostTerminal.cwdDevice && identity.ino.toString() === hostTerminal.cwdInode;
+        }
+        return shellWorkingDirectory === undefined ||
+          matchesShellWorkingDirectoryIdentity(shellWorkingDirectory.path, shellWorkingDirectory.identity);
+      },
+    };
   }
 
   async resolveWithFreshIdentity(requestId: string, decision: ApprovalDecision, answeredBy: ApprovalAnswerer = "desk"): Promise<ApprovalDecision | null> {
@@ -1966,13 +2182,7 @@ export class ApprovalGate {
     if (!entry) return null;
     const identityCurrent = await refreshRemoteControllerBoundToSession(entry.remoteControllerAuthority, entry.sessionId);
     if (this.pending.get(requestId) !== entry) return null;
-    if (!identityCurrent) {
-      clearTimeout(entry.timer);
-      this.pending.delete(requestId);
-      const rejected = markHostApprovalRejectedDecision({ requestId, choice: "deny-once", rememberPattern: "Remote controller authentication or session binding is unavailable." });
-      entry.resolve(rejected);
-      return rejected;
-    }
+    if (!identityCurrent) return this.refuseRevokedController(requestId, entry);
     return this.resolveDecision(requestId, decision, answeredBy, false, undefined, true);
   }
 
@@ -1981,14 +2191,16 @@ export class ApprovalGate {
     if (!entry || !this.canAccessRendererRequest(requestId, responder, "desk")) return null;
     const identityCurrent = await refreshRemoteControllerBoundToSession(entry.remoteControllerAuthority, entry.sessionId);
     if (this.pending.get(requestId) !== entry) return null;
-    if (!identityCurrent) {
-      clearTimeout(entry.timer);
-      this.pending.delete(requestId);
-      const rejected = markHostApprovalRejectedDecision({ requestId, choice: "deny-once", rememberPattern: "Remote controller authentication or session binding is unavailable." });
-      entry.resolve(rejected);
-      return rejected;
-    }
+    if (!identityCurrent) return this.refuseRevokedController(requestId, entry);
     return this.resolveDecision(requestId, decision, "desk", true, responder, true);
+  }
+
+  private refuseRevokedController(requestId: string, entry: PendingEntry): ApprovalDecision {
+    clearTimeout(entry.timer);
+    this.pending.delete(requestId);
+    const rejected = hostControllerRevokedDecision(requestId);
+    entry.resolve(rejected);
+    return rejected;
   }
 
   // Resolve responses from non-native host surfaces. Ignores unknown pending entries, making duplicate responses safe. `answeredBy` is host-derived AT THE CALL SITE, never read from the decision payload: the renderer's IPC route and the plugin host-API route use separate entry points; the paired chat-platform card handler is the one caller that passes `"platform-bridge"`. Every answerer passes the same integrity and allowed-choice checks below — there is deliberately no second integrity or choice-validation implementation.
@@ -2078,11 +2290,7 @@ export class ApprovalGate {
     // Tailnet answers need a fresh owner-identity probe; a synchronous answer path for them is a host contract violation, not a revoked controller.
     if (entry.remoteControllerAuthority?.kind === "tailnet-controller" && !identityRefreshed) throw new ApprovalFreshIdentityRequiredError(requestId);
     if (!isRemoteControllerBoundToSession(entry.remoteControllerAuthority, entry.sessionId)) {
-      clearTimeout(entry.timer);
-      this.pending.delete(requestId);
-      const rejected = markHostApprovalRejectedDecision({ requestId, choice: "deny-once", rememberPattern: "Remote controller authentication or session binding is unavailable." });
-      entry.resolve(rejected);
-      return rejected;
+      return this.refuseRevokedController(requestId, entry);
     }
     if ((entry.browserSite !== undefined || entry.userOwnedSurface !== undefined || entry.hostShellExecutionPermitBinding?.executionMode === "host" || entry.hostTerminal !== undefined) && !nativeRenderer) {
       // Signed card contents authenticate a request, not the answering surface. Reject plugin/platform answers while keeping the desktop request pending.
@@ -2214,7 +2422,11 @@ export class ApprovalGate {
       });
       // Still waiting on other rows: this row is answered, the card is not. The desk card is sent again so it shows the row answered.
       if (answered.size < offered.length) {
-        return this.showExtensionStartRowsAnswered(requestId, entry, answered) ?? { requestId, choice: decision.choice };
+        const refusal = this.showExtensionStartRowsAnswered(requestId, entry, answered);
+        if (refusal !== undefined) return refusal;
+        const rowAnswer = Object.freeze({ requestId, choice: decision.choice, extensionStartRow: row });
+        if (Object.hasOwn(APPROVAL_ANSWERER_TRUST_ORIGINS, answeredBy)) mintAnsweredProvenance(rowAnswer, answeredBy, entry.toolName, entry.invocationToolUseId);
+        return rowAnswer;
       }
       // Every row has its answer: the card settles with them, through the same checks as an answer for the whole card.
       entry.extensionStartRowAnswers = undefined;
@@ -2299,6 +2511,12 @@ export class ApprovalGate {
     if (nativeRenderer && entry.browserSite !== undefined && entry.sessionId !== undefined && resolvedDecision.choice === "allow-once" && isBrowserSiteChoice(resolvedDecision.browserSiteChoice)) {
       this.approvedBrowserSites.set(resolvedDecision, { sessionId: entry.sessionId, origin: entry.browserSite, choice: resolvedDecision.browserSiteChoice });
     }
+    if (nativeRenderer && entry.stagedAllowSave !== undefined && resolvedDecision.choice.startsWith("allow")) {
+      this.stagedAllowSaves.set(resolvedDecision, { save: entry.stagedAllowSave, controller: {
+        refresh: () => refreshRemoteControllerBoundToSession(entry.remoteControllerAuthority, entry.sessionId),
+        isCurrent: () => isRemoteControllerBoundToSession(entry.remoteControllerAuthority, entry.sessionId),
+      } });
+    }
     const exactTransition = entry.exactSaveTransition;
     if (nativeRenderer && entry.kind === "out-of-allowed-dir" && resolvedDecision.choice.startsWith("allow")) {
       this.authenticatedDirectoryAnswers.add(resolvedDecision);
@@ -2328,6 +2546,8 @@ export class ApprovalGate {
         entry.hostShellExecutionPermitBinding,
       );
     }
+    this.decidedCards.set(resolvedDecision, { requestId, sessionId: entry.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
+      fields: formatApprovalAuditFields({ ...entry, answeredBy }, entry.executionPlan) });
     // Derive answeredBy from the host caller, never response fields; renderer/plugin responses cannot forge the audit answerer.
     this.auditLogger?.log({
       timestamp: new Date().toISOString(),
@@ -2343,8 +2563,8 @@ export class ApprovalGate {
   // Host cancellation binds the exact pending card and conversation; late renderer answers cannot revive it.
   cancelPendingRequest(
     requestId: string,
-    sessionId: string,
-    reason: "caller-abort" | "session-close" = "caller-abort",
+    sessionId: string | undefined,
+    reason: ApprovalCancellationReason = "caller-abort",
   ): boolean {
     const entry = this.pending.get(requestId);
     if (!entry || entry.sessionId !== sessionId || entry.category !== "tool") return false;
@@ -2363,6 +2583,7 @@ export class ApprovalGate {
   // server-side ApprovalRequest snapshot lookup. The userApprovalRecord IPC handler binds to an in-flight request by id and reads the canonical `trustOrigin` / `approvalCacheKey` / `toolName` / `source` from the main-process pending entry rather than trusting the renderer payload. Eliminates the "renderer pretends a different trustOrigin" attack class — a renderer XSS that spoofs `trustOrigin: "user-keyboard"` for an `llm-tool-arg` request can no longer fool the user-approval-store cache identity. Returns `null` when no pending entry exists for `requestId` (e.g. the approval already resolved or timed out).
   getRequestSnapshot(requestId: string): {
     toolName: string;
+    toolUseId?: string;
     args: unknown;
     source: ToolSource;
     trustOrigin: string;
@@ -2374,6 +2595,7 @@ export class ApprovalGate {
     sessionId: string | undefined;
     projectCwd: string | undefined;
     shellRule: ShellRuleApproval | undefined;
+    shellRuleProjectRoot?: ProjectRuleRootBinding;
     floorSessionGrant?: PendingEntry["floorSessionGrant"];
     hostShellExecutionPlan?: import("./host-shell-execution-plan.js").HostShellExecutionPlan;
     verifiedShellCommand?: import("./verified-shell-command.js").VerifiedShellCommand;
@@ -2387,6 +2609,7 @@ export class ApprovalGate {
     if (!entry || !isRemoteControllerBoundToSession(entry.remoteControllerAuthority, entry.sessionId)) return null;
     return {
       toolName: entry.toolName,
+      ...(entry.invocationToolUseId === undefined ? {} : { toolUseId: entry.invocationToolUseId }),
       args: entry.args,
       // PendingEntry.source can be undefined for legacy callers — default to "builtin" so cache identity is conservative (high-trust source). The strict-record handler additionally validates against the SOT emitter; this default never widens an existing approval.
       source: entry.source ?? "builtin",
@@ -2399,6 +2622,7 @@ export class ApprovalGate {
       sessionId: entry.sessionId,
       projectCwd: entry.projectCwd,
       shellRule: entry.shellRule,
+      ...(entry.shellRuleProjectRoot === undefined ? {} : { shellRuleProjectRoot: entry.shellRuleProjectRoot }),
       ...(entry.floorSessionGrant === undefined ? {} : { floorSessionGrant: entry.floorSessionGrant }),
       ...(entry.hostShellExecutionPlan === undefined ? {} : { hostShellExecutionPlan: entry.hostShellExecutionPlan }),
       ...(entry.verifiedShellCommand === undefined ? {} : { verifiedShellCommand: entry.verifiedShellCommand }),

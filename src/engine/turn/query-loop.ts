@@ -35,6 +35,8 @@ import type {
   ToolUseBlock,
 } from "../../tools/executor.js";
 import { TOOL_SEARCH_TOOL_NAME } from "../../tools/registry.js";
+import { admitApprovalAnswer, approvalFailureKind, type ApprovalFailureKind, type ApprovalRequestInput } from "../../permissions/approval-gate.js";
+import { approvalFailureOutcome } from "../../tools/pipeline/approval-outcome.js";
 import { collectActiveRuntimeRoundStream, type ActiveRuntimeStreamGuard } from "./stream-collector.js";
 import { FallbackProvider } from "../llm/vercel/fallback-chain.js";
 import { vendorSupportsLengthContinuation } from "../llm/vendor-capabilities.js";
@@ -120,6 +122,7 @@ export async function queryLoop(
       thinkingOverride?: RunTurnOptions["thinkingOverride"];
       sessionIdOverride?: string;
       spawnDepth?: number;
+      stageSubAgents?: true;
       approvalReasonPrefix?: string;
       remoteControllerAuthority?: import("../../shared/chat-origin.js").RemoteControllerAuthority;
       unattendedAuthority?: UnattendedTurnAuthority;
@@ -1652,6 +1655,7 @@ export async function queryLoop(
           overlayTriggerOrigin: stagedOrigin ?? null,
           // Carry spawn depth so execution refuses recursive agent_spawn calls.
           spawnDepth: bounds?.spawnDepth,
+          stageSubAgents: bounds?.stageSubAgents,
           memoryIncludeUnscoped: self.getSessionMemoryProjectContext?.()?.includeUnscoped === true,
           // memory_write records the row that opened the turn as where a memory was learned.
           ...(bounds.turnMessageId !== undefined ? { turnMessageId: bounds.turnMessageId } : {}),
@@ -2727,22 +2731,17 @@ export async function gateCrossAgentInterceptedMetaTools(
     }
 
     const gate = self.deps.approvalGate;
-    let allowed = false;
-    if (!gate) {
-      self.auditLogger.log({
-        timestamp: new Date().toISOString(),
-        sessionId,
-        type: "error",
-        input: `cross-agent-meta-approval-unavailable:${toolUse.name}`,
-      });
-    } else {
+    let failure: ApprovalFailureKind | undefined = "unavailable";
+    let detail: string | undefined;
+    if (gate) {
       try {
-        const decision = await gate.requestAndWait({
+        const request = {
           id: randomUUID(),
           category: "tool",
           kind: "tool",
           toolName: toolUse.name,
           toolCategory: "meta",
+          invocationToolUseId: toolUse.id,
           sessionId,
           args: toolUse.input,
           reason: `${approvalReasonPrefix} cross-agent message requested ${toolUse.name}`,
@@ -2753,25 +2752,31 @@ export async function gateCrossAgentInterceptedMetaTools(
           ...(self.currentAbortController === null
             ? {}
             : { abortSignal: self.currentAbortController.signal }),
-        });
-        allowed = isApprovalChoiceAllowed(decision.choice);
+        } satisfies ApprovalRequestInput;
+        const decision = await gate.requestAndWait(request);
+        admitApprovalAnswer(decision, { requestId: request.id, toolName: request.toolName, toolUseId: request.invocationToolUseId });
+        failure = approvalFailureKind(decision);
+        if (failure === undefined && !isApprovalChoiceAllowed(decision.choice)) failure = "rejected";
+        detail = approvalFailureOutcome(decision, toolUse.name)?.content;
       } catch {
-        self.auditLogger.log({
-          timestamp: new Date().toISOString(),
-          sessionId,
-          type: "error",
-          input: `cross-agent-meta-approval-failed:${toolUse.name}`,
-        });
+        failure = "rejected";
       }
     }
 
-    if (allowed) {
+    if (failure === undefined) {
       approved.push(toolUse);
     } else {
+      self.auditLogger.log({
+        timestamp: new Date().toISOString(),
+        sessionId,
+        type: "error",
+        input: `cross-agent-meta-approval-${failure}:${toolUse.name}`,
+        ...(detail === undefined ? {} : { output: detail }),
+      });
       denied.push({
         toolUseId: toolUse.id,
         toolName: toolUse.name,
-        content: `cross-agent-approval-denied: ${toolUse.name}`,
+        content: `cross-agent-approval-${failure}: ${toolUse.name}${detail === undefined ? "" : ` (${detail})`}`,
       });
     }
   }

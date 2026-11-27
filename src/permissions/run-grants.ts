@@ -10,6 +10,7 @@ export interface RunSessionMember {
   readonly stageId: string;
   readonly stageName: string;
   readonly lane: RunSessionLane;
+  readonly agentTitle?: string;
 }
 
 export class RunGrantError extends Error {
@@ -27,7 +28,7 @@ const endedRuns = new Set<string>();
  * Links a session to its run. Returns false when the same link already exists. Throws when the member is malformed, the session belongs
  * to another run or stage, or the run has ended.
  */
-export function registerRunSession(runKey: string, sessionId: string, member: { stageId: string; stageName: string; lane: RunSessionLane }): boolean {
+export function registerRunSession(runKey: string, sessionId: string, member: Omit<RunSessionMember, "runKey">): boolean {
   if (runKey.length === 0 || sessionId.length === 0 || member.stageId.length === 0 || member.stageName.length === 0
     || (member.lane !== "attended" && member.lane !== "unattended")) {
     throw new RunGrantError("invalid-member", "A run session needs its run, its session, its stage and its lane");
@@ -35,12 +36,15 @@ export function registerRunSession(runKey: string, sessionId: string, member: { 
   if (endedRuns.has(runKey)) throw new RunGrantError("run-ended", "The run has ended and takes no session");
   const known = members.get(sessionId);
   if (known !== undefined) {
-    if (known.runKey !== runKey || known.stageId !== member.stageId || known.lane !== member.lane) {
+    if (known.runKey !== runKey || known.stageId !== member.stageId || known.lane !== member.lane || known.agentTitle !== member.agentTitle) {
       throw new RunGrantError("session-in-another-run", "The session already belongs to another run or stage");
     }
     return false;
   }
-  members.set(sessionId, Object.freeze({ runKey, stageId: member.stageId, stageName: member.stageName, lane: member.lane }));
+  members.set(sessionId, Object.freeze({
+    runKey, stageId: member.stageId, stageName: member.stageName, lane: member.lane,
+    ...(member.agentTitle === undefined ? {} : { agentTitle: member.agentTitle }),
+  }));
   const sessions = sessionsByRun.get(runKey) ?? new Set<string>();
   sessions.add(sessionId);
   sessionsByRun.set(runKey, sessions);
@@ -72,7 +76,7 @@ export function runSessionOf(sessionId: string | undefined): RunSessionMember | 
   return undefined;
 }
 
-/** True for a session a run linked itself (a stage session), not for its descendants. */
+/** True for a session the scheduler linked directly. */
 export function isRunStageSession(sessionId: string): boolean {
   return members.has(sessionId);
 }

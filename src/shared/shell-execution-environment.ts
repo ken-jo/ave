@@ -9,19 +9,19 @@ type ShellEnvironmentPlan = Pick<HostShellExecutionPlanAuditProjection,
 const INSTALL_HINT_NAMES = { bubblewrap: "bubblewrap (bwrap)", socat: "socat", ripgrep: "ripgrep (rg)" } as const;
 
 /** Public descriptions of the selected child, never the host's environment values. */
-export function shellExecutionEnvironmentLines(plan: ShellEnvironmentPlan): readonly string[] {
+export function shellExecutionEnvironmentLines(plan: ShellEnvironmentPlan, options?: { sessionOffered: boolean }): readonly string[] {
   if (plan.mode === "blocked") return [t(plan.fallbackReason === "home-privacy-helper-unavailable" ? "shellExecution.homePrivacyHelperUnavailable" : "shellExecution.blocked")];
   return [
     // When requested confinement is unavailable, report the unsandboxed route wherever the plan is shown.
     ...(plan.fallbackReason === "requested-sandbox-unavailable"
-      ? [t("shellExecution.sandboxUnavailableAsk"),
+      ? [t(options?.sessionOffered === false ? "shellExecution.sandboxUnavailableOneTime" : "shellExecution.sandboxUnavailableAsk"),
         ...(plan.installHints?.length
           ? [t("shellExecution.sandboxInstallHint", { packages: plan.installHints.map((hint) => INSTALL_HINT_NAMES[hint]).join(", ") })] : [])]
       // A shell-scope-off plan requires approval only while boot cannot establish Ave home privacy (any category but helper-unavailable, whose plan is blocked).
       : plan.requiresExplicitUserApproval && (plan.fallbackReason === "disabled-by-setting" || plan.fallbackReason === "platform-unsupported")
-        ? [t("shellExecution.boundaryUnverifiedAsk")]
+        ? [t(options?.sessionOffered === false ? "shellExecution.boundaryUnverifiedOneTime" : "shellExecution.boundaryUnverifiedAsk")]
         : plan.fallbackReason === "active-sandbox-not-shell-contained" || plan.fallbackReason === "windows-partial-shell-acl-unsafe"
-          ? [t("shellExecution.shellNotContainedAsk")] : []),
+          ? [t(options?.sessionOffered === false ? "shellExecution.shellNotContainedOneTime" : "shellExecution.shellNotContainedAsk")] : []),
     t("shellExecution.location", { platform: plan.platform }),
     plan.mode === "asrt" ? t("shellExecution.temporaryHome") : t("shellExecution.hostHome"),
     plan.mode === "asrt" ? t("shellExecution.isolatedAuthentication") : t("shellExecution.hostAuthentication"),

@@ -20,6 +20,7 @@ import {
   __resetExtensionStartsForTest, deferExtensionStart, listPendingExtensionStarts, presentExtensionStartConsent, setExtensionStartAsker,
   settlePendingExtensionStarts, takeExtensionStartGrant,
 } from "../../permissions/extension-start-consent.js";
+import { deferred } from "../../__tests__/support/deferred.js";
 import { extensionStartApprovalRows, type ExtensionStartChoice } from "../../shared/permissions-events.js";
 
 const OWNER_ID = "123456789";
@@ -201,13 +202,41 @@ describe("telegram remote approval", () => {
     await vi.waitFor(() => expect(client.editMessageText).toHaveBeenCalledWith(
       OWNER_ID,
       42,
-      `Ave: the approval for tool ${TOOL_IDENTIFIER} is no longer active`,
+      `Ave: the approval for tool ${TOOL_IDENTIFIER} timed out`,
     ));
 
     // The token died with the card: a late press can no longer decide anything.
     await coordinator.handleCallbackQuery(press(approveToken));
     expect(client.answerCallbackQuery)
       .toHaveBeenCalledWith("press-1", "This approval is no longer active");
+  });
+
+  it.each([
+    ["rejected", "was refused by the host", "The host refused this approval"],
+    ["expired", "timed out", "This approval timed out"],
+    ["cancelled", "was cancelled", "This approval was cancelled"],
+  ] as const)("reports a live paired %s settlement on the card and in its acknowledgement", async (outcome, cardText, ack) => {
+    const { dock, gate, client, coordinator } = remoteApprovalHarness({ timeoutMs: outcome === "expired" ? 150 : 2_000 });
+    const resume = deferred<void>();
+    const resolve = gate.resolveWithFreshIdentity.bind(gate);
+    const intercepted = vi.spyOn(gate, "resolveWithFreshIdentity").mockImplementation(async (...args) => {
+      await resume.promise;
+      return resolve(...args);
+    });
+    const request = approvalAsk();
+    const waiting = gate.requestAndWait(request);
+    const { approveToken } = await sentCardTokens(client);
+    const pressed = coordinator.handleCallbackQuery(press(approveToken));
+    expect(intercepted).toHaveBeenCalledOnce();
+    if (outcome === "cancelled") expect(gate.cancelPendingRequest(request.id, request.sessionId, "project-scope-changed")).toBe(true);
+    if (outcome === "rejected") expect(gate.resolveFromDesktopRenderer(request.id, { ...deskEcho(dock, "allow-once"), nonce: "invalid" }, dock.webContents as never)?.choice).toBe("deny-once");
+    await waiting;
+    resume.resolve();
+    await pressed;
+    expect.soft(client.editMessageText).toHaveBeenLastCalledWith(OWNER_ID, 42, `Ave: the approval for tool ${TOOL_IDENTIFIER} ${cardText}`);
+    expect.soft(client.answerCallbackQuery).toHaveBeenLastCalledWith("press-1", ack);
+    await coordinator.handleCallbackQuery(press(approveToken));
+    expect(client.answerCallbackQuery).toHaveBeenLastCalledWith("press-1", "This approval is no longer active");
   });
 
   it("keeps a local desk decision and answers the late remote press as stale", async () => {

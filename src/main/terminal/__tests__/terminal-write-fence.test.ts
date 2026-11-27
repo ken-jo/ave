@@ -99,7 +99,7 @@ describe("terminal write fence", () => {
     manager.setMode("allow");
     const check = () => manager.checkDetailed("terminal_run", "builtin", "shell");
     const authority = issueHostTerminalWriteAuthority({
-      manager, human: false, cardForced: false, reviewed: false, settled: check(), decidedBackend: "host",
+      manager, answer: undefined, action: "tool-use:fence", reviewed: false, settled: check(), decidedBackend: "host",
       check, backendIdentity: () => "host",
     });
     const terminal = editor();
@@ -138,7 +138,7 @@ describe("terminal write fence", () => {
       manager.setMode("allow");
       const check = () => manager.checkDetailed("terminal_run", "builtin", "shell");
       const authority = issueHostTerminalWriteAuthority({
-        manager, human: false, cardForced: false, reviewed: false, settled: check(), decidedBackend: "host",
+        manager, answer: undefined, action: "tool-use:fence", reviewed: false, settled: check(), decidedBackend: "host",
         check, backendIdentity: () => "host",
       });
       const terminal = editor({ at, deny: () => manager.setRules([{ pattern: "terminal_run", action: "deny" }]) });
@@ -243,7 +243,7 @@ describe("terminal write fence", () => {
       manager.setMode("allow");
       const check = () => manager.checkDetailed("terminal_run", "builtin", "shell");
       const authority = issueHostTerminalWriteAuthority({
-        manager, human: false, cardForced: false, reviewed: false, settled: check(), decidedBackend: "host",
+        manager, answer: undefined, action: "tool-use:fence", reviewed: false, settled: check(), decidedBackend: "host",
         check, backendIdentity: () => "host",
       });
       const terminal = editor();

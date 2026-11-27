@@ -1,7 +1,7 @@
 import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
 /** Host shells use ordinary rules and modes; mandatory floors and deny rules retain precedence. */
-import { beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { configureHostResources } from "../../main/host-resources.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { withSourceHostResources } from "../../__tests__/support/source-host-resources.js";
 import { existsSync, mkdirSync, mkdtempSync, symlinkSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -24,6 +24,8 @@ import { ToolExecutor } from "../executor.js";
 import { ToolRegistry } from "../registry.js";
 import { BashTool } from "../shell-tools.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
+
+withSourceHostResources();
 
 type Substrate = "sandbox-active" | "sandbox-unavailable" | "sandbox-off";
 
@@ -117,8 +119,6 @@ async function run(input: {
 const PRINTF_DENY: PermissionRule[] = [{ pattern: "Bash(printf *)", action: "deny" }];
 const CURL_ALLOW: PermissionRule[] = [{ pattern: "Bash(curl *)", action: "allow" }];
 
-// Windows path admission pins through the shipped path-kind helper; boot configures its resources first.
-beforeAll(() => configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false }));
 
 describe("explicit unsandboxed retry (executionMode host)", () => {
   it("runs without a prompt when a matching allow rule covers the command", async () => {

@@ -66,6 +66,8 @@ import type { PromptMemorySource } from "../../memory/memory-manager.js";
 import { makePromptMemorySource } from "../../prompts/__tests__/test-helpers.js";
 import { ApprovalGate, IPC_APPROVAL_REQUEST, type ApprovalRequest } from "../../permissions/approval-gate.js";
 import { makeMockWebContents } from "../../__tests__/test-helpers.js";
+import { createToolEffectResolver } from "../../permissions/tool-effect-evidence.js";
+import { endUnattendedStage, registerUnattendedStage, unattendedStageOf, type UnattendedStageEntry } from "../../permissions/unattended-lane-registry.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { updateApprovalSurface } from "../../permissions/approval-surface-registry.js";
 import { authorizationRequiredStateForOutput } from "../../shared/authorization-required.js";
@@ -305,6 +307,139 @@ describe("SubAgentRunner checkpoint child lifetime", () => {
       detached.emitDestroy();
       vi.unstubAllEnvs();
       await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("unattended sub-agent lifetime", () => {
+  const stageSessionId = "3204871a-e8b0-4b44-8274-edbdcf1fa25f";
+  const title = "Read the staged report";
+  const input = { title, instructions: title, originSessionId: stageSessionId, toolScope: exactToolScope(["read_file"]) };
+  const entry: UnattendedStageEntry = {
+    runKey: "run", stageId: "stage", workspaceRoot: resolve("stage-workspace"), isolation: { proven: true },
+    envelope: {
+      tools: ["read_file"], readRoots: [], writePaths: [], commands: [], network: [],
+      mcpReadOnlyTools: [], mcpGenerationTools: [], pluginGenerationTools: [],
+      outputs: [], budget: { rounds: 1, minutes: 1, costUsd: 0 },
+    },
+  };
+
+  afterEach(() => {
+    endUnattendedStage(stageSessionId);
+    vi.restoreAllMocks();
+  });
+
+  it("revokes every descendant of the ended stage even if the stage id is reused", async () => {
+    const registry = new ToolRegistry();
+    registry.register(new ReadFileTool());
+    const manager = new PermissionManager();
+    manager.setMode("allow");
+    manager.setUnattendedToolEffectResolver(createToolEffectResolver(registry));
+    const runner = makeRunner(registry);
+    registerUnattendedStage(stageSessionId, entry);
+    vi.spyOn(ConversationLoop.prototype, "hasProvider").mockReturnValue(true);
+    vi.spyOn(ConversationLoop.prototype, "refreshProvider").mockResolvedValue(undefined);
+    let grandchildId: string | undefined;
+    let descendantId: string | undefined;
+    let inherited: UnattendedStageEntry | undefined;
+    let issued: ReturnType<PermissionManager["checkDetailed"]> | undefined;
+    let revoked: Array<UnattendedStageEntry | undefined> = [];
+    let decisions: Array<string | undefined> = [];
+    const check = (id: string | undefined) => manager.checkDetailed("read_file", "builtin", "read", null, { sessionId: id });
+    vi.spyOn(ConversationLoop.prototype, "runTurn").mockImplementation(async function (this: ConversationLoop) {
+      if (this.sessionId === grandchildId) {
+        await runner.spawn({ ...input, originSessionId: grandchildId }, {
+          onLinked: ({ childSessionId }) => { descendantId = childSessionId; },
+        });
+      } else if (this.sessionId === descendantId) {
+        inherited = unattendedStageOf(this.sessionId);
+        issued = check(this.sessionId);
+        endUnattendedStage(stageSessionId);
+        registerUnattendedStage(stageSessionId, entry);
+        revoked = [unattendedStageOf(grandchildId), unattendedStageOf(this.sessionId)];
+        decisions = [check(grandchildId).reasonCode, check(this.sessionId).reasonCode, manager.recheckPermission(issued).reasonCode];
+      }
+      return { text: "done", toolCalls: [], route: "default", stopReason: "end_turn" };
+    });
+    await runner.spawn(input, { onLinked: ({ childSessionId }) => { grandchildId = childSessionId; } });
+    expect(inherited).toBe(entry);
+    expect(issued).toMatchObject({ decision: "allow", reasonCode: "unattended-envelope" });
+    expect(revoked).toEqual([undefined, undefined]);
+    expect(decisions).toEqual(Array(3).fill("unattended-session-ended"));
+  });
+
+  it.each(["finished", "turn-error", "cancelled", "link-error", "setup-error", "metadata-error", "provider-missing", "suspended"] as const)(
+    "releases a grandchild registration after %s", async exit => {
+      const registry = new ToolRegistry();
+      registry.register(new ReadFileTool());
+      const memory = fakeSubAgentMemoryManager();
+      if (exit === "metadata-error") vi.spyOn(memory.sessions, "saveSessionMetadata").mockRejectedValue(new Error("fixture metadata error"));
+      const runner = new SubAgentRunner({ parentDeps: buildLoopDeps(registry), toolRegistry: registry, subAgentMemoryManager: memory });
+      registerUnattendedStage(stageSessionId, entry);
+      vi.spyOn(ConversationLoop.prototype, "hasProvider").mockReturnValue(exit !== "provider-missing");
+      vi.spyOn(ConversationLoop.prototype, "refreshProvider").mockResolvedValue(undefined);
+      if (exit === "setup-error") vi.spyOn(ConversationLoop.prototype, "initializeConversation").mockImplementation(() => { throw new Error("fixture setup error"); });
+      vi.spyOn(ConversationLoop.prototype, "runTurn").mockImplementation(async () => {
+        if (exit === "turn-error") throw new Error("fixture turn error");
+        return { text: "done", toolCalls: [], route: "default", stopReason: exit === "suspended" ? "round-cap" : "end_turn" };
+      });
+      let childId = "";
+      let inherited: UnattendedStageEntry | undefined;
+      const pending = runner.spawn(input, {
+        onLinked: ({ childSessionId }) => {
+          childId = childSessionId;
+          inherited = unattendedStageOf(childId);
+          if (exit === "link-error") throw new Error("fixture link error");
+          if (exit === "cancelled") runner.interruptRun(childId, stageSessionId);
+        },
+      });
+      if (exit === "link-error") await expect(pending).rejects.toThrow("fixture link error");
+      else {
+        const result = await pending;
+        expect(result.ok).toBe(exit === "finished" || exit === "suspended");
+        if (exit === "cancelled") expect(result.stopReason).toBe("interrupted");
+        if (exit === "suspended") expect(result.suspension?.reason).toBe("budget");
+      }
+      expect(inherited).toBe(entry);
+      expect(unattendedStageOf(childId)).toBeUndefined();
+      expect(unattendedStageOf(stageSessionId)).toBe(entry);
+      registerUnattendedStage(childId, entry);
+      endUnattendedStage(childId);
+    },
+  );
+
+  it("refuses to resume an unattended grandchild after release and an attended child from a live stage", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ave-unattended-resume-"));
+    const registry = new ToolRegistry();
+    registry.register(new ReadFileTool());
+    const makeStoredRunner = () => new SubAgentRunner({
+      parentDeps: buildLoopDeps(registry), toolRegistry: registry, subAgentMemoryManager: new MemoryManager({ aveDir: dir }),
+    });
+    vi.spyOn(ConversationLoop.prototype, "hasProvider").mockReturnValue(true);
+    vi.spyOn(ConversationLoop.prototype, "refreshProvider").mockResolvedValue(undefined);
+    vi.spyOn(ConversationLoop.prototype, "loadSession").mockResolvedValue(true);
+    const runTurn = vi.spyOn(ConversationLoop.prototype, "runTurn")
+      .mockResolvedValue({ text: "paused", toolCalls: [], route: "default", stopReason: "round-cap" });
+    try {
+      const attended = await makeStoredRunner().spawn(input);
+      registerUnattendedStage(stageSessionId, entry);
+      const unattended = await makeStoredRunner().spawn(input);
+      expect(attended.suspension?.reason).toBe("budget");
+      expect(unattended.suspension?.reason).toBe("budget");
+      expect(unattendedStageOf(unattended.childSessionId)).toBeUndefined();
+      const attemptedFromStage = await makeStoredRunner().resume(attended.childSessionId, "continue", title, undefined, stageSessionId);
+      endUnattendedStage(stageSessionId);
+      const attemptedAfterEnd = await makeStoredRunner().resume(unattended.childSessionId, "continue", title, undefined, stageSessionId);
+      expect([attemptedFromStage, attemptedAfterEnd]).toEqual([
+        expect.objectContaining({ ok: false, resumeRefusal: "invalid", error: expect.stringContaining("unattended") }),
+        expect.objectContaining({ ok: false, resumeRefusal: "invalid", error: expect.stringContaining("unattended") }),
+      ]);
+      expect(runTurn).toHaveBeenCalledTimes(2);
+      const attendedResume = await makeStoredRunner().resume(attended.childSessionId, "continue", title, undefined, stageSessionId);
+      expect(attendedResume.ok).toBe(true);
+      expect(runTurn).toHaveBeenCalledTimes(3);
+    } finally {
+      await cleanupTmpDir(dir);
     }
   });
 });
@@ -1927,7 +2062,7 @@ describe("SubAgentRunner — the child's agent context", () => {
 describe("agent_spawn — recursive call refusal", () => {
   it("returns an error when invoked from a sub-agent (spawnDepth >= 1)", async () => {
     const tool = createAgentSpawnTool({
-      getRunner: () => ({ spawn: async () => ({}) }) as never,
+      getRunner: () => ({}) as never,
       emit: () => undefined,
     });
     const ctxAsSubAgent = {
@@ -1941,7 +2076,7 @@ describe("agent_spawn — recursive call refusal", () => {
     );
     expect(r.isError).toBe(true);
     const parsed = JSON.parse(r.output);
-    expect(parsed.error).toContain("cannot be invoked from a sub-agent");
+    expect(parsed.error).toBe(t("be_agentSpawn.depthLimit"));
   });
 
   it("allows agent_spawn from the parent loop (spawnDepth=0)", async () => {

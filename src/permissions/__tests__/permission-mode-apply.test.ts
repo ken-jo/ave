@@ -1,6 +1,8 @@
 import { dispatchPermissionReviewerCommandWithRewire } from "../permission-slash.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
+import { answeredApprovalDecision, answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
+import { ApprovalGate, IPC_APPROVAL_REQUEST, type ApprovalRequest } from "../approval-gate.js";
+import { t } from "../../i18n/index.js";
 import { copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -71,6 +73,31 @@ const EXTERNAL_BYPASS = {
 } as const;
 
 describe("applyPermissionModeCommand", () => {
+  it.each([
+    ["denied", "durable-mode-denied", "be_permissionModeApply.durableModeDenied"],
+    ["rejected", "approval-rejected", "be_executor.approvalHostRejectedReason"],
+    ["expired", "approval-expired", "be_executor.approvalExpired"],
+    ["unavailable", "approval-gate-unavailable", "be_permissionModeApply.approvalGateUnavailable"],
+    ["cancelled", "approval-cancelled", "be_executor.toolExecutionCancelled"],
+  ] as const)("preserves the %s durable confirmation outcome", async (outcome, error, key) => {
+    const deps = makeDeps();
+    const surface = { isDestroyed: () => false, send: (channel: string, card: ApprovalRequest) => {
+      if (outcome === "cancelled" && channel === IPC_APPROVAL_REQUEST) {
+        queueMicrotask(() => gate.cancelPendingRequest(card.id, undefined, "project-scope-changed"));
+      }
+    } };
+    const gate = new ApprovalGate(surface as never, undefined, 10);
+    if (outcome === "denied") {
+      vi.spyOn(gate, "requestAndWait").mockImplementation(answeringRequestAndWait(() => ({ choice: "deny-once" })));
+    } else if (outcome === "rejected") {
+      vi.spyOn(gate, "requestAndWait").mockImplementation(async ({ id }) => ({ requestId: id, choice: "deny-once" }));
+    }
+    const result = await applyPermissionModeCommand(durableAuto, { ...deps, approvalGate: outcome === "unavailable" ? undefined : gate } as never);
+    expect(result).toMatchObject({ ok: false, error, message: expect.stringContaining(t(key, { name: "/permission mode" })) });
+    expect(deps.permissionManager.setModePersist).not.toHaveBeenCalled();
+    expect(deps.auditLogger.appendPermissionAuditEntry).not.toHaveBeenCalled();
+  });
+
   it("uses the approval gate for durable mode changes without a trusted built-in confirmation", async () => {
     const deps = makeDeps();
 
@@ -89,7 +116,7 @@ describe("applyPermissionModeCommand", () => {
   // The approval card answers a conversation-scoped remembered allow with allow-session; it approves the switch like any other allow.
   it.each(["allow-session", "allow-always"] as const)("applies a durable mode change the person answered %s", async (choice) => {
     const deps = makeDeps();
-    deps.approvalGate.requestAndWait.mockImplementationOnce(async (req: { id: string }) => ({ requestId: req.id, choice } as never));
+    deps.approvalGate.requestAndWait.mockImplementationOnce((req) => answeredApprovalDecision({ requestId: req.id, choice }, "desk", req.toolName));
     expect(await applyPermissionModeCommand(durableAuto, deps as never)).toMatchObject({ ok: true, mode: "auto", durable: true });
     expect(deps.permissionManager.setModePersist).toHaveBeenCalledWith("auto");
   });
@@ -211,7 +238,7 @@ describe("applyPermissionModeCommand", () => {
     } as never);
 
     expect(deps.approvalGate.requestAndWait).toHaveBeenCalledTimes(1);
-    expect(result).toMatchObject({ ok: false, error: "durable-mode-denied" });
+    expect(result).toMatchObject({ ok: false, error: "approval-rejected" });
     expect(deps.permissionManager.setModePersist).not.toHaveBeenCalled();
   });
 

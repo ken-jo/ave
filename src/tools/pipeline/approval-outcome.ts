@@ -3,7 +3,8 @@ import { t } from "../../i18n/index.js";
 import {
   answeredApprovalProvenance,
   HOST_PROVENANCE,
-  isAnsweredApprovalDenial,
+  hostApprovalDenialReason,
+  isHostApprovalCancelledDecision,
   isHostApprovalTimeoutDecision,
   isHostApprovalRejectedDecision,
   type ApprovalDecision,
@@ -43,29 +44,38 @@ export function answeredPermission(permission: PermissionCheckResult, decision: 
   return { ...permission, provenance: answeredApprovalProvenance(decision) };
 }
 
-/** Why the host ended an approval it produced itself, or undefined for a decision a person made. */
-export function hostApprovalDenialReason(decision: ApprovalDecision): string | undefined {
-  const expired = isHostApprovalTimeoutDecision(decision);
-  if (!expired && !isHostApprovalRejectedDecision(decision)) return undefined;
-  if (expired && decision.rememberPattern === NO_APPROVER_MESSAGE) return NO_APPROVER_MESSAGE;
-  return expired ? "approval request expired" : "approval rejected by host";
-}
-
 /** A card answer that is not an allow, or that the host rejected: terminal whatever the policy says afterwards. */
 export function isSettledRefusal(decision: ApprovalDecision): boolean {
   return !decision.choice.startsWith("allow") || isHostApprovalRejectedDecision(decision);
 }
 
-/** An abort can end an approval wait and still preserve a person's settled denial. */
+/** A bare cancellation from the gate delegates attribution to the invocation signal. */
 export function abortSupersedesApprovalDecision(
   abortSignal: AbortSignal | undefined,
   decision: ApprovalDecision | undefined,
 ): boolean {
   if (abortSignal?.aborted !== true) return false;
-  return decision === undefined || !isAnsweredApprovalDenial(decision);
+  return decision === undefined || !isSettledRefusal(decision)
+    || (isHostApprovalCancelledDecision(decision) && decision.rememberPattern === undefined);
 }
 
-/** Preserve host-owned failures in both tool and directory approval results. */
+export class BrowserApprovalError extends Error {
+  constructor(content: string, readonly permission: PermissionCheckResult, readonly cancelled = false) {
+    super(content);
+  }
+}
+
+export function browserApprovalErrorOf(error: unknown): BrowserApprovalError | undefined {
+  if (error instanceof BrowserApprovalError) return error;
+  if (error instanceof Error && error.cause instanceof BrowserApprovalError) return error.cause;
+}
+
+export function approvalCancellationMessage(detail?: string): string {
+  const cancellation = t("be_executor.toolExecutionCancelled");
+  return detail ? `${cancellation} (${detail})` : cancellation;
+}
+
+/** Preserve host-owned failures in tool approval results. */
 export function approvalFailureOutcome(
   decision: ApprovalDecision,
   toolName: string,
@@ -85,17 +95,21 @@ export function approvalFailureOutcome(
   }
   const expired = isHostApprovalTimeoutDecision(decision);
   const autoSkipped = reason === NO_APPROVER_MESSAGE;
+  const cancelled = isHostApprovalCancelledDecision(decision);
   const detail = decision.rememberPattern
     ? maskSensitiveData(decision.rememberPattern).masked
     : t("be_executor.approvalHostRejectedReason");
+  const cancellationDetail = cancelled && decision.rememberPattern ? detail : undefined;
+  const auditReason = cancellationDetail ?? reason;
   return {
-    content: autoSkipped ? NO_APPROVER_MESSAGE : expired ? t("be_executor.approvalExpired", { name: toolName })
+    content: cancelled ? approvalCancellationMessage(cancellationDetail) : autoSkipped ? NO_APPROVER_MESSAGE : expired ? t("be_executor.approvalExpired", { name: toolName })
       : t("be_executor.approvalRejectedByHost", { name: toolName, reason: detail }),
     permission: {
       decision: "deny",
-      reason,
+      reason: auditReason,
+      ...(cancellationDetail === undefined ? {} : { reasonCode: "approval-cancelled" }),
       // Denial audit must record why approval ended, not merely why it was requested.
-      denyReasons: [{ source: "approval-gate", reason }],
+      denyReasons: [{ source: "approval-gate", reason: auditReason }],
       // The host ended the approval; no person's origin belongs on its row.
       provenance: HOST_PROVENANCE,
     },

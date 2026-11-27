@@ -8,8 +8,9 @@ import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, unlinkSync } from "
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
+import { answeredApprovalDecision, answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 import { configureHostResources } from "../../main/host-resources.js";
+import { t } from "../../i18n/runtime.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { createHookCommandAuthorizer, type HookCommandAuthorizer } from "../hook-command-policy.js";
@@ -34,6 +35,7 @@ import type { ToolInvocationContext } from "../../permissions/reviewer/risk-clas
 import { shellRuleCoversCommand } from "../../permissions/rules/shell-rule-approval.js";
 import { saveApprovalCardRule } from "../../permissions/approval-rule-save.js";
 import { cardGate } from "../../__tests__/support/forced-shell-card.js";
+import * as workingDirectory from "../../permissions/shell-working-directory-identity.js";
 
 beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 
@@ -114,7 +116,7 @@ function policy(choice: "allow-once" | "deny-once" = "deny-once") {
   const root = mkdtempSync(join(tmpdir(), "ave-hook-policy-"));
   roots.push(root);
   const permissionManager = new PermissionManager(join(root, "permissions.json"));
-  const requestAndWait = answeringRequestAndWait<ApprovalRequestInput>(() => ({ requestId: "hook", choice }));
+  const requestAndWait = answeringRequestAndWait<ApprovalRequestInput>(() => ({ choice }));
   return { root, permissionManager, requestAndWait,
     authorizeCommand: createHookCommandAuthorizer({ permissionManager, approvalGate: { requestAndWait } }) };
 }
@@ -171,15 +173,33 @@ describe("hook command permission admission", () => {
       .toMatchObject({ decision: "deny", rawStdout: "", reason: "hook command denied: user denied hook command" });
   });
 
+  it("refuses a recordless answer without attributing it to the user", async () => {
+    const p = policy();
+    p.permissionManager.setMode("strict");
+    p.requestAndWait.mockImplementationOnce(async request => ({ requestId: request.id, choice: "deny-once" }));
+    expect(await runOneHookScript(hook, payload, { authorizeCommand: p.authorizeCommand })).toMatchObject({
+      decision: "deny", rawStdout: "", reason: "hook command denied: approval rejected by host",
+    });
+  });
+
   it("respects a deny rule added while approval was pending", async () => {
     const p = policy("allow-once");
     p.permissionManager.setMode("strict");
     p.requestAndWait.mockImplementationOnce(answeringRequestAndWait(() => {
       p.permissionManager.setRules([{ pattern: "Bash(node *)", action: "deny" }]);
-      return { requestId: "hook", choice: "allow-once" };
+      return { choice: "allow-once" };
     }));
     expect(await runOneHookScript(hook, payload, { authorizeCommand: p.authorizeCommand }))
       .toMatchObject({ decision: "deny", rawStdout: "", reason: expect.stringContaining("hook command denied") });
+  });
+
+  it.each(["allow-once", "deny-once"] as const)("refuses a %s the gate settled for another card as the host's failure", async (choice) => {
+    const p = policy("allow-once");
+    p.permissionManager.setMode("strict");
+    p.requestAndWait.mockImplementationOnce(async () => answeredApprovalDecision({ choice }, "desk", "bash"));
+    expect(await runOneHookScript(hook, payload, { authorizeCommand: p.authorizeCommand })).toMatchObject({
+      decision: "deny", rawStdout: "", reason: "hook command denied: Approval answer does not match the pending request", commandAdmissionFailure: "recheck-failed",
+    });
   });
 
   it.each([true, false])("honors eligible prefix rules on the actual shell route (sandboxed %s)", async (active) => {
@@ -349,6 +369,21 @@ describe("hook command permission admission", () => {
     expect(permits).toMatchObject({ minted: 2, consumed: [true, true] });
   });
 
+  it("drops a forced hook answer after the permission mode changes", async () => {
+    setShellSandboxRequestedAtBoot(true);
+    const p = policy();
+    p.permissionManager.setMode("strict");
+    const wc = { isDestroyed: vi.fn(() => false), send: vi.fn() };
+    const gate = new ApprovalGate(wc as never);
+    const authorizer = createHookCommandAuthorizer({ permissionManager: p.permissionManager, approvalGate: gate });
+    const pending = authorizer(hook, payload, process.cwd());
+    await vi.waitFor(() => expect(wc.send).toHaveBeenCalled());
+    const request = wc.send.mock.calls[0]?.[1] as ApprovalRequest;
+    p.permissionManager.setMode("allow");
+    gate.resolve(request.id, { requestId: request.id, choice: "allow-once", nonce: request.nonce, hmac: request.hmac });
+    expect(await pending).toMatchObject({ decision: "deny", reason: "Permission policy changed while approval was pending" });
+  });
+
   describe.each(["boundary-link", "boundary-unlisted"] as const)("worker-only boot with an unverifiable boundary (%s)", (category) => {
     // Worker confinement on, shell scope off: boot publishes the boundary state while the shell intent stays false.
     function publish(): void {
@@ -400,7 +435,7 @@ describe("hook command permission admission", () => {
     const exactHook = { ...hook, command: ["printf", "ready"] };
     const exactHookRule = "Bash('printf' 'ready')";
 
-    async function admitOnGate(p: ReturnType<typeof policy>, answer: "allow-session" | "deny-once", admitted: RunnableHook = hook, input: ScriptHookStdin = payload) {
+    async function admitOnGate(p: ReturnType<typeof policy>, answer: "allow-session" | "deny-once", admitted: RunnableHook = hook, input: ScriptHookStdin = payload, beforeAnswer?: () => void) {
       const wc = { isDestroyed: vi.fn(() => false), send: vi.fn() };
       const gate = new ApprovalGate(wc as never);
       const authorizeCommand = createHookCommandAuthorizer({ permissionManager: p.permissionManager, approvalGate: gate });
@@ -424,7 +459,10 @@ describe("hook command permission admission", () => {
           .toMatchObject({ ok: true, scope: "session" });
         gate.completeApprovalRuleSave(token, p.permissionManager.getPolicyEpoch(), "session");
       }
-      gate.resolveFromDesktopRenderer(request.id, { requestId: request.id, choice: answer === "allow-session" ? "allow-once" : "deny-once", nonce: request.nonce, hmac: request.hmac }, wc as never);
+      beforeAnswer?.();
+      gate.resolveFromDesktopRenderer(request.id, {
+        requestId: request.id, choice: answer === "allow-session" ? "allow-once" : "deny-once", nonce: request.nonce, hmac: request.hmac,
+      }, wc as never);
       return { result: await pending, gate, wc, authorizeCommand };
     }
 
@@ -455,6 +493,29 @@ describe("hook command permission admission", () => {
       p.permissionManager.endSession("hook-policy-session");
       expect((await admitOnGate(p, "deny-once", exactHook)).result.decision).toBe("deny");
       expect((await admitOnGate(allowAll(), "deny-once")).result.decision).toBe("deny");
+    });
+
+    it.each([
+      ["the floor lost its session eligibility", { floorSessionEligible: undefined }],
+      ["another floor now stands behind it, eligibility fixed", { competingFloor: { code: "protected-path" as const, reason: "Protected." } }],
+    ] as const)("refuses the card's own save answer when %s, with the effect unchanged", async (_label, change) => {
+      publish();
+      const p = allowAll();
+      const check = p.permissionManager.checkDetailed.bind(p.permissionManager);
+      const transition = vi.fn();
+      let changed: { mockRestore(): void } | undefined;
+      const first = await admitOnGate(p, "allow-session", hook, payload, () => {
+        changed = vi.spyOn(p.permissionManager, "checkDetailed").mockImplementation((...args) => {
+          const now = check(...args);
+          transition(now.reasonCode);
+          return { ...now, decision: "ask", forceModal: true, reasonCode: "sandbox-unavailable",
+            pipelineRequest: { ...now.pipelineRequest, floorSessionEligible: true, ...change } } as typeof now;
+        });
+      });
+      changed?.mockRestore();
+      expect(transition).toHaveBeenCalled();
+      expect(first.result).toMatchObject({ decision: "deny", reason: t("be_executor.answerQuestionChanged") });
+      expect(permits).toMatchObject({ minted: 0, consumed: [] });
     });
 
     it("does not pass the floor with an ordinary session allow made earlier", async () => {
@@ -787,6 +848,39 @@ describe("hook command permission admission", () => {
     expect(result.decision).toBe(revoked ? "deny" : "allow");
     if (revoked) expect(result.rawStdout).toBe("");
     expect(gate.pendingCount).toBe(0);
+  });
+
+  it.each([
+    ["effect", "Hook command effect changed during approval"],
+    ["cwd", "Hook working directory changed during approval"],
+    ["neither", "user approved hook command"],
+  ] as const)("saves an approved hook rule only after validation when %s changes", async (change, reason) => {
+    const p = policy();
+    p.permissionManager.setMode("strict");
+    const wc = { isDestroyed: vi.fn(() => false), send: vi.fn() };
+    const gate = new ApprovalGate(wc as never);
+    const authorize = createHookCommandAuthorizer({ permissionManager: p.permissionManager, approvalGate: gate });
+    const pending = authorize({ ...hook, command: ["printf", "ready"] }, payload, p.root);
+    await vi.waitFor(() => expect(wc.send).toHaveBeenCalled());
+    const request = wc.send.mock.calls[0]?.[1] as ApprovalRequest;
+    const save = vi.fn(async () => {
+      const from = p.permissionManager.getPolicyEpoch();
+      p.permissionManager.addSessionRule(payload.sessionId, "Bash('printf' 'ready')");
+      return { ok: true, store: "rules", from, to: p.permissionManager.getPolicyEpoch(), scope: "session" } as const;
+    });
+    expect(gate.stageAllowSave(request.id, save)).toBe(true);
+    const check = p.permissionManager.checkDetailed.bind(p.permissionManager);
+    vi.spyOn(p.permissionManager, "checkDetailed").mockImplementationOnce((...args) => {
+      const now = check(...args);
+      if (change === "cwd") vi.spyOn(workingDirectory, "matchesShellWorkingDirectoryIdentity").mockReturnValue(false);
+      if (change === "effect" && now.pipelineRequest !== undefined) {
+        return { ...now, pipelineRequest: { ...now.pipelineRequest, secretRead: true } };
+      }
+      return now;
+    });
+    gate.resolveFromDesktopRenderer(request.id, { requestId: request.id, choice: "allow-once", nonce: request.nonce, hmac: request.hmac }, wc as never);
+    expect(await pending).toMatchObject({ decision: change === "neither" ? "allow" : "deny", reason });
+    expect(save).toHaveBeenCalledTimes(change === "neither" ? 1 : 0);
   });
 
   it("rejects a newly protected symlink target after review", async () => {

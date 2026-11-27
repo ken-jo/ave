@@ -24,6 +24,8 @@ export function hostTerminalApprovalFacts(
       sessionId: scope.sessionId,
       shell: scope.shell,
       physicalCwd: scope.physicalCwd,
+      cwdDevice: scope.cwdDevice,
+      cwdInode: scope.cwdInode,
       command,
       ...(currentHostTerminalTurn(scope.sessionId)?.externalContentSeen() === true
         ? { afterExternalContent: true as const } : {}),

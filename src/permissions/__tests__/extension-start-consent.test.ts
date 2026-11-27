@@ -7,6 +7,8 @@ import { PERMISSIONS } from "../../shared/ipc-channels.js";
 import * as aveHome from "../../shared/ave-home.js";
 import { _resetAveHomePrivacyForTest, setAveHomePrivacyAtBoot } from "../../shared/ave-home.js";
 import { assertExtensionStartAllowed, probeExtensionStart } from "../asrt-sandbox.js";
+import { ApprovalGate, type ApprovalRequest } from "../approval-gate.js";
+import { createExtensionStartAsker } from "../extension-start-asker.js";
 import {
   __resetExtensionStartsForTest, deferExtensionStart, dropExtensionStart, dropPluginExtensionStarts, EXTENSION_START_CONSENT_REQUIRED_CODE, EXTENSION_START_GRANT_TTL_MS, extensionStartIdentity, listPendingExtensionStarts,
   requestExtensionStartConsent, runExtensionStart, setExtensionStartAsker, settlePendingExtensionStarts, takeExtensionStartGrant,
@@ -29,7 +31,8 @@ function publish(extensionMxc: ExtensionState, admittedAncestorBackend?: "srt-wi
   setWindowsSandboxSubstrate(substrate);
 }
 
-function gate(key: string, authority: ExtensionStartAuthority | undefined, spend = false, identity = ID): string {
+function gate(key: string, authority: Awaited<ReturnType<typeof requestExtensionStartConsent>>, spend = false, identity = ID): string {
+  if (typeof authority === "string") throw new Error(`Fixture approval failed: ${authority}`);
   try {
     assertExtensionStartAllowed({ start: { key, identity, authority, spend } });
     return "started";
@@ -127,8 +130,28 @@ describe("extension start with no backend", () => {
     expect(takeExtensionStartGrant("plugin-child:a")).toBeUndefined();
     expect(asker.notify).toHaveBeenCalledTimes(1);
     expect(asker.notify).toHaveBeenCalledWith(expect.objectContaining({ key: "plugin-child:a" }), "unattended");
-    expect(await requestExtensionStartConsent(start("plugin-hook:a/h"), HEADLESS)).toBeUndefined();
+    expect(await requestExtensionStartConsent(start("plugin-hook:a/h"), HEADLESS)).toBe("unavailable");
     expect(listPendingExtensionStarts().map((entry) => entry.state)).toEqual(["pending"]);
+  });
+
+  it("keeps a cancelled card in the extension start result and audit without retrying the spawn", async () => {
+    const surface = { isDestroyed: () => false, send: (_channel: string, card: ApprovalRequest) => {
+      if (card?.nonce !== undefined) queueMicrotask(() => approvalGate.cancelPendingRequest(card.id, card.sessionId));
+    } };
+    const approvalGate = new ApprovalGate(surface as never);
+    const record = vi.fn();
+    setExtensionStartAsker(createExtensionStartAsker({ approvalGate, reason: () => "Start without confinement?", notify: vi.fn(), record }));
+    const pending = start("plugin-child:a");
+    const spawn = vi.fn(async (authority?: ExtensionStartAuthority) => {
+      assertExtensionStartAllowed({ start: { ...pending, authority, spend: true } });
+    });
+
+    await expect(runExtensionStart(pending, ATTENDED, spawn)).rejects.toMatchObject({
+      code: EXTENSION_START_CONSENT_REQUIRED_CODE, approvalOutcome: "cancelled",
+    });
+    expect(record).toHaveBeenCalledExactlyOnceWith("cancelled", expect.objectContaining({ key: pending.key }));
+    expect(spawn.mock.calls).toEqual([[undefined]]);
+    expect(takeExtensionStartGrant(pending.key)).toBeUndefined();
   });
 
   it("leaves a declined start unstarted with one notice and does not ask again", async () => {
@@ -229,7 +252,7 @@ describe("extension start states a consent does not answer", () => {
   it("binds a consent to its own start: another start cannot use it, and its spawn crossing burns it", async () => {
     setExtensionStartAsker(fakeAsker(["yes", "yes"]));
     const a = await requestExtensionStartConsent(start("plugin-child:a"), ATTENDED);
-    if (a === undefined) throw new Error("the fixture consent was not given");
+    if (typeof a !== "object") throw new Error("the fixture consent was not given");
     expect(gate("plugin-child:b", a)).toBe(EXTENSION_START_CONSENT_REQUIRED_CODE);
     // Re-labelled for the other start, the same consent is still a's.
     expect(gate("plugin-child:b", { key: "plugin-child:b", identity: ID, consent: a.consent })).toBe(EXTENSION_START_CONSENT_REQUIRED_CODE);
@@ -289,7 +312,7 @@ describe("extension start states a consent does not answer", () => {
     setExtensionStartAsker(asker);
     deferExtensionStart(start("worker:p/w"));
     await settlePendingExtensionStarts(ATTENDED);
-    await expect(requestExtensionStartConsent(start("worker:p/w"), ATTENDED)).resolves.toBeUndefined();
+    await expect(requestExtensionStartConsent(start("worker:p/w"), ATTENDED)).resolves.toBe("denied");
     const authority = await requestExtensionStartConsent(start("worker:p/w"), ATTENDED);
     expect(asker.ask).toHaveBeenCalledTimes(3);
     expect(gate("worker:p/w", authority, true)).toBe("started");
@@ -535,7 +558,7 @@ describe("one card for every waiting start", () => {
     await vi.waitFor(() => expect(asker.cards).toHaveLength(2));
     expect(asker.cards[1]?.keys).toEqual(["plugin-hook:p/h", "worker:p/w"]);
     asker.cards[1]?.answer({ "plugin-hook:p/h": "no", "worker:p/w": "yes" });
-    expect(await hook).toBeUndefined();
+    expect(await hook).toBe("denied");
     expect(gate("worker:p/w", await worker, true)).toBe("started");
   });
 
@@ -549,7 +572,7 @@ describe("one card for every waiting start", () => {
     asker.cards[1]?.answer({ "plugin-hook:q/h": "yes" });
     expect(gate("plugin-hook:q/h", await other, true)).toBe("started");
     asker.cards[0]?.answer({ "plugin-hook:p/h": "no" });
-    expect(await first).toBeUndefined();
+    expect(await first).toBe("denied");
   });
 
   it("treats a start cancelled while its card was open as unanswered and leaves the card to the others", async () => {
@@ -564,7 +587,7 @@ describe("one card for every waiting start", () => {
     // The card is withdrawn only when every start on it was cancelled.
     expect(asker.ask.mock.calls[0]?.[1].abortSignal?.aborted).toBe(false);
     asker.cards[0]?.answer({ "plugin-hook:p/h": "yes", "worker:p/w": "yes" });
-    expect(await hook).toBeUndefined();
+    expect(await hook).toBe("cancelled");
     expect(gate("worker:p/w", await worker, true)).toBe("started");
   });
 

@@ -113,6 +113,7 @@ vi.mock("../conversation.js", () => ({
     h.rec("permissionManager");
     return {
       getVisibilityDenyRules: vi.fn(() => []),
+      setUnattendedToolEffectResolver: vi.fn(),
       setBroadcastUserApprovalHit: vi.fn(),
       setBroadcastConfigChanged: vi.fn(),
       // Every reviewer rewire must apply the settings read fence.

@@ -1,3 +1,5 @@
+import { requestBoundShellCard } from "../../__tests__/support/host-shell-approval.js";
+import { withSourceHostResources } from "../../__tests__/support/source-host-resources.js";
 import { ApprovalGate, type ApprovalRequest } from "../approval-gate.js";
 import { saveApprovalCardRule } from "../approval-rule-save.js";
 import { buildPermissionEvaluationContext } from "../evaluation-context.js";
@@ -17,6 +19,8 @@ import { buildIssuedHostShellExecutionPlan as buildHostShellExecutionPlan } from
 import { __issueHostShellExecutionPlanForTest, getSandboxGeneration } from "../sandbox-capability.js";
 import { inspectPowerShellCommand, inspectPowerShellPermissionPaths } from "../rules/powershell-exfiltration.js";
 import { powerShellMxcCommandLine } from "../mxc-windows.js";
+
+withSourceHostResources();
 
 const CAPABILITY = { kind: "asrt", confidence: "verified", platform: "win32", reason: "fixture",
   confines: { filesystem: true, process: true, network: true } } as const;
@@ -168,14 +172,14 @@ it("keeps the plan host-only through the card and saved-rule validation", async 
   const wc = { isDestroyed: () => false, send: vi.fn<(channel: string, payload: unknown) => void>() };
   const gate = new ApprovalGate(wc as never);
   const controller = new AbortController();
-  const pending = gate.requestAndWait({
+  const pending = requestBoundShellCard(gate, {
     id: "pinned-rule", category: "tool", toolName: "powershell", toolCategory: "shell", source: "builtin",
     args: { command }, reason: "Shell approval", createdAt: Date.now(), sessionId: "pinned-session",
     hostShellExecutionPlan: MXC_PLAN, abortSignal: controller.signal,
     evaluationContext: buildPermissionEvaluationContext({ policyMode: "default", headless: false,
       source: "builtin", category: "shell", trustOrigin: "llm-tool-arg", executionCwd: project,
       allowedDirectories: [project], pathFields: [], targetFilePaths: [], sensitivePathsAdjacent: [] }),
-  });
+  }, project);
   try {
     const sent = wc.send.mock.calls.find(call => call[0] === "ave:approval:request")?.[1] as ApprovalRequest;
     expect(sent.shellRule?.exactRule).toBe(`PowerShell(${command})`);

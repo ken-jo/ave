@@ -110,11 +110,13 @@ export interface WorkflowTemplateRecord {
   draft?: WorkflowTemplateDraft;
 }
 export interface WorkflowTemplateConfirmInput { expectedGraphHash: string; expectedDraftRevision: string }
+export interface WorkflowTemplateConfirmResult { version: TemplateVersion; unattended: UnattendedQualification }
 export type WorkflowTemplateErrorCode =
   | "invalid-input" | "template-not-found" | "unknown-version" | "graph-hash-mismatch"
   | "confirmed-version-immutable" | "stale-draft" | "no-draft" | "template-archived"
   | "bad-stage-id" | "too-many-entries" | "envelope-refused" | "not-current-version" | "routine-not-found"
   | "scope-changed" | "project-mismatch" | "scope-not-authorised" | "output-not-declared"
+  | "outward-effect-tool" | "tool-effect-unknown"
   | "invalid-template-file" | "invalid-template-run" | "schedule-requires-read-only" | "gate-check-unsupported";
 export type WorkflowTemplateIpcResult<T> = { ok: true; value: T } | { ok: false; refusals?: EnvelopeRefusal[]; error: WorkflowTemplateErrorCode | "unauthorized-frame" | "no-store" | "user-gesture-required" | "user-keyboard-required" | "storage-error" };
 

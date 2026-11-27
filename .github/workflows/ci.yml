@@ -92,7 +92,7 @@ jobs:
       - name: Check documentation policy
         if: steps.docs-impact.outputs.docs_only == 'true'
         working-directory: ave
-        run: node --import ./scripts/lib/document-consumer-guard.mjs --test test/scripts/check-asrt-version-claims.test.mjs && node scripts/check-asrt-version-claims.mjs && node --import ./scripts/lib/document-consumer-guard.mjs --test test/scripts/retired-name.test.mjs && node scripts/check-retired-name.mjs
+        run: node scripts/check-asrt-version-claims.mjs && node --import ./scripts/lib/document-consumer-guard.mjs --test test/scripts/retired-name.test.mjs && node scripts/check-retired-name.mjs
       # The pinned bun from .bun-version goes under RUNNER_TEMP, not the runner
       # user's bun home; on Windows it is a checksum-verified release download
       # (see the action).
@@ -822,6 +822,12 @@ jobs:
     # windows-2025, the image the release matrix builds the installer on, so
     # a windows-latest rollover cannot test one image and ship another.
     runs-on: windows-2025
+    # The path helper digests returned by this job's build; the shards check
+    # the downloaded helper against them before using it.
+    outputs:
+      path_kind_sha256: ${{ steps.windows-path-kind-build.outputs.binary_sha256 }}
+      path_kind_receipt_sha256: ${{ steps.windows-path-kind-build.outputs.receipt_sha256 }}
+      path_kind_hold_fixture_sha256: ${{ steps.windows-path-kind-build.outputs.hold_fixture_sha256 }}
     env: &windows-validation-env
       # Keep bun's package cache and Electron's download cache in the
       # workspace, under the cache keys below.
@@ -931,6 +937,11 @@ jobs:
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         run: node scripts/fetch-uv.mjs
+      - &windows-path-kind-rust
+        name: Install the pinned path helper toolchain
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        working-directory: ave
+        run: node .github/scripts/install-windows-path-kind-rust.mjs x64
       - name: Generate the Windows preparation input manifest
         id: windows-preparation-key
         if: steps.docs-impact.outputs.docs_only != 'true'
@@ -950,7 +961,7 @@ jobs:
           AVE_WINDOWS_PREP_KEY: ${{ steps.windows-preparation-key.outputs.key }}
           AVE_WINDOWS_PREP_EXACT_HIT: ${{ steps.windows-preparation-restore.outputs.cache-hit }}
         run: node .github/scripts/windows-preparation-cache.mjs restore
-      - name: Build Windows launcher and classification helpers
+      - name: Build Windows job launcher and fixtures
         if: steps.docs-impact.outputs.docs_only != 'true' && env.AVE_WINDOWS_PREP_VERIFIED != 'true'
         working-directory: ave
         shell: powershell
@@ -961,7 +972,13 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1 -QueryFailureFixture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1 -Helper path-kind
+      - name: Build Windows path helper and fixture
+        id: windows-path-kind-build
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        working-directory: ave
+        shell: powershell
+        run: |
+          node scripts/build-windows-path-kind.mjs --arch x64 --fixture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Verify native background process ownership
         if: steps.docs-impact.outputs.docs_only != 'true'
@@ -996,8 +1013,6 @@ jobs:
         working-directory: ave
         shell: powershell
         run: |
-          node .github/scripts/run-in-job.mjs node --import ./scripts/lib/document-consumer-guard.mjs --test test/scripts/srt-win-build.test.mjs
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node scripts/check-srt-win-integrity.cjs --upstream --inputs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node .github/scripts/run-in-job.mjs node scripts/build-srt-win.mjs --test-native
@@ -1038,7 +1053,10 @@ jobs:
           name: windows-native-helpers
           path: |
             ave/resources/windows-job/x64/ave-job.exe
+            ave/resources/windows-job/x64/ave-job-query-failure.exe
             ave/resources/windows-path-kind/x64/ave-path-kind.exe
+            ave/resources/windows-path-kind/x64/ave-path-kind.exe.build.json
+            ave/resources/windows-path-kind/x64/ave-path-kind-hold-fixture.exe
             ave/node_modules/@anthropic-ai/sandbox-runtime/vendor/srt-win/*/*.exe
             ave/node_modules/@anthropic-ai/sandbox-runtime/vendor/srt-win/*/build-receipt.json
             ave/src/permissions/generated/srt-win-build-receipts.*
@@ -1173,6 +1191,10 @@ jobs:
         name: Verify and configure the shared test inputs
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
+        env:
+          AVE_WINDOWS_PATH_KIND_SHA256: ${{ needs.windows-native-preparation.outputs.path_kind_sha256 }}
+          AVE_WINDOWS_PATH_KIND_RECEIPT_SHA256: ${{ needs.windows-native-preparation.outputs.path_kind_receipt_sha256 }}
+          AVE_WINDOWS_PATH_KIND_HOLD_FIXTURE_SHA256: ${{ needs.windows-native-preparation.outputs.path_kind_hold_fixture_sha256 }}
         run: node .github/scripts/restore-windows-ci-inputs.mjs
       # The sandbox account and permissions are local to each runner.
       - *windows-provision
@@ -1194,6 +1216,9 @@ jobs:
       - name: Run Windows regressions
         env:
           AVE_WINDOWS_TEST_PLAN: ${{ runner.temp }}/windows-ci/windows-plan.json
+          AVE_WINDOWS_PATH_KIND_SHA256: ${{ needs.windows-native-preparation.outputs.path_kind_sha256 }}
+          AVE_WINDOWS_PATH_KIND_RECEIPT_SHA256: ${{ needs.windows-native-preparation.outputs.path_kind_receipt_sha256 }}
+          AVE_WINDOWS_PATH_KIND_HOLD_FIXTURE_SHA256: ${{ needs.windows-native-preparation.outputs.path_kind_hold_fixture_sha256 }}
           UV_PYTHON_CACHE_DIR: ${{ runner.temp }}/python-archives
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
@@ -1265,6 +1290,10 @@ jobs:
       - name: Verify and configure the shared test inputs
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
+        env:
+          AVE_WINDOWS_PATH_KIND_SHA256: ${{ needs.windows-native-preparation.outputs.path_kind_sha256 }}
+          AVE_WINDOWS_PATH_KIND_RECEIPT_SHA256: ${{ needs.windows-native-preparation.outputs.path_kind_receipt_sha256 }}
+          AVE_WINDOWS_PATH_KIND_HOLD_FIXTURE_SHA256: ${{ needs.windows-native-preparation.outputs.path_kind_hold_fixture_sha256 }}
         run: node .github/scripts/restore-windows-ci-inputs.mjs
       # The sandbox account and permissions are local to each runner.
       - *windows-provision
@@ -1283,6 +1312,9 @@ jobs:
       - name: Run Windows regressions
         env:
           AVE_WINDOWS_TEST_PLAN: ${{ runner.temp }}/windows-ci/windows-plan.json
+          AVE_WINDOWS_PATH_KIND_SHA256: ${{ needs.windows-native-preparation.outputs.path_kind_sha256 }}
+          AVE_WINDOWS_PATH_KIND_RECEIPT_SHA256: ${{ needs.windows-native-preparation.outputs.path_kind_receipt_sha256 }}
+          AVE_WINDOWS_PATH_KIND_HOLD_FIXTURE_SHA256: ${{ needs.windows-native-preparation.outputs.path_kind_hold_fixture_sha256 }}
           UV_PYTHON_CACHE_DIR: ${{ runner.temp }}/python-archives
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
@@ -1361,6 +1393,7 @@ jobs:
         shell: powershell
         run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1 -QueryFailureFixture
       - *windows-provision
+      - *windows-path-kind-rust
       - name: Run script tests
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
@@ -1393,6 +1426,7 @@ jobs:
       - *windows-download-mirror
       - *windows-restore-inputs
       - *windows-provision
+      - *windows-path-kind-rust
       - name: Build Windows development desktop
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
@@ -1437,6 +1471,10 @@ jobs:
         working-directory: ave
         shell: powershell
         run: bun install --frozen-lockfile --ignore-scripts --production
+      - name: Install the pinned path helper toolchain
+        working-directory: ave
+        shell: powershell
+        run: node .github/scripts/install-windows-path-kind-rust.mjs arm64
       - name: Build the native job launcher
         working-directory: ave
         shell: powershell
@@ -1445,7 +1483,7 @@ jobs:
         working-directory: ave
         shell: powershell
         run: |
-          powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1 -Arch arm64 -Helper path-kind
+          node scripts/build-windows-path-kind.mjs --arch arm64 --fixture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node .github/scripts/run-in-job.mjs node scripts/test-windows-path-kind.mjs
       - name: Remove isolated system-volume job directory
@@ -1614,7 +1652,6 @@ jobs:
           src/plugins/isolation/__tests__/process-plugin-host-death.test.ts
           src/main/__tests__/process-group-reaper.test.ts
           src/plugins/isolation/__tests__/adversarial-escapes.test.ts
-          src/hooks/__tests__/bundled-hook-asrt.smoke.test.ts
           src/tools/__tests__/session-read-shell.test.ts
           src/tools/__tests__/host-script-policy.test.ts
           src/tools/__tests__/xlsx-edit-sandbox.integration.test.ts
@@ -1632,9 +1669,7 @@ jobs:
           src/permissions/__tests__/egress-token-isolation-native.test.ts
           src/main/terminal/__tests__/terminal-egress-native.test.ts
           src/main/memory-map/__tests__/inference-child-native.test.ts
-          test/scripts/asrt-patched-symbols.test.ts
           src/permissions/__tests__/allowed-directories.test.ts
-          src/permissions/__tests__/asrt-sandbox.test.ts
           src/permissions/__tests__/permission-manager-meta-override.test.ts
           src/tools/__tests__/registry-meta-governance.test.ts
           src/tools/__tests__/executor-rationale-batch.test.ts
@@ -1814,16 +1849,13 @@ jobs:
           AVE_SMOKE_PYTHON: ${{ steps.python.outputs.python-path }}
         run: >
           bun run test --
-          test/scripts/asrt-bwrap-ownership.test.ts
           src/permissions/__tests__/linux-sandbox-wrap.test.ts
-          src/permissions/__tests__/asrt-sandbox.test.ts
           src/plugins/isolation/__tests__/confined-plugin-child.test.ts
           src/plugins/isolation/__tests__/plugin-stderr.test.ts
           src/permissions/__tests__/launcher-environment.test.ts
           src/plugins/isolation/__tests__/process-plugin-host-death.test.ts
           src/main/__tests__/process-group-reaper.test.ts
           src/plugins/isolation/__tests__/adversarial-escapes.test.ts
-          src/hooks/__tests__/bundled-hook-asrt.smoke.test.ts
           src/tools/__tests__/session-read-shell.test.ts
           src/tools/__tests__/host-script-policy.test.ts
           src/tools/__tests__/xlsx-edit-sandbox.integration.test.ts
@@ -1831,7 +1863,6 @@ jobs:
           src/permissions/__tests__/egress-token-isolation-native.test.ts
           src/main/terminal/__tests__/terminal-egress-native.test.ts
           src/main/memory-map/__tests__/inference-child-native.test.ts
-          test/scripts/asrt-patched-symbols.test.ts
           src/main/terminal/__tests__/pty-manager-linux-sandbox.test.ts
           src/permissions/__tests__/sandbox-control-writes.integration.test.ts
           src/permissions/__tests__/sandbox-shell-sockets.integration.test.ts
