@@ -62,6 +62,7 @@ import type {
 } from "./types.js";
 import { ToolUnavailableError, trustFromSource } from "./types.js";
 import { PermissionManager, requiredTier, type PermissionCheckResult } from "../permissions/permission-manager.js";
+import { reportUnattendedDenial, unattendedStageOf } from "../permissions/unattended-lane-registry.js";
 import {
   isRemoteControllerBoundToSession,
   remoteControllerOriginOf,
@@ -2436,6 +2437,12 @@ async function runToolInvocationAttempt(
         emitToolStart(callbacks, toolUse.name, finalInput, meta);
         callbacks?.onToolEnd?.(toolUse.name, reason, true, meta, undefined, durationMs);
         await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, reason, true, startTime, blocked, Infinity, invocationPermissionContext, invocationCategory, executionCwd);
+        if (sessionId !== undefined && invocationCategory === "write" && unattendedStageOf(sessionId)?.isolation.proven) {
+          reportUnattendedDenial({
+            sessionId, code: "outside-envelope",
+            call: { toolName: toolUse.name, source, inputSummary: JSON.stringify(auditInput) },
+          });
+        }
         return withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: reason, is_error: true, durationMs });
       }
       canonicalTargets.push({ filePath, canonicalPath: caseFoldForMatch(foldCanonicalPathSeparators(runtimePath)), runtimePath });

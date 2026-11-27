@@ -21,7 +21,8 @@ import {
 import { runWithToolExecutionCwd } from "../execution-context.js";
 import { ToolExecutor } from "../executor.js";
 import { ToolRegistry } from "../registry.js";
-import { endUnattendedStage, registerUnattendedStage } from "../../permissions/unattended-lane-registry.js";
+import { endUnattendedStage, onUnattendedDenied, registerUnattendedStage } from "../../permissions/unattended-lane-registry.js";
+import * as shellFilesystemPath from "../../shared/shell-filesystem-path.js";
 import { WriteFileTool } from "../file-tools.js";
 import { BashTool } from "../shell-tools.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
@@ -226,6 +227,47 @@ it("routes the sealed edit-subject check through the unattended lane", async () 
     });
     expect(execute).not.toHaveBeenCalled();
   } finally {
+    endUnattendedStage(sessionId);
+  }
+});
+
+it.each(["proven", "unproven", "interim"] as const)("reports an unresolved write only for a linked stage with proven isolation (%s)", async state => {
+  const manager = new PermissionManager(join(directory, "permissions.json"));
+  const registry = new ToolRegistry();
+  const tool = new WriteFileTool();
+  const execute = vi.spyOn(tool, "execute");
+  registry.register(tool);
+  const executor = new ToolExecutor(registry, undefined, manager);
+  const sessionId = "unresolved-write";
+  if (state !== "interim") registerUnattendedStage(sessionId, {
+    runKey: "run", stageId: "stage", workspaceRoot: directory, isolation: { proven: state === "proven" },
+    envelope: {
+      tools: [tool.name], readRoots: [], writePaths: ["**"], commands: [], network: [],
+      mcpReadOnlyTools: [], mcpGenerationTools: [], pluginGenerationTools: [],
+      outputs: [], budget: { rounds: 1, minutes: 1, costUsd: 0 },
+    },
+  });
+  const onDenied = vi.fn();
+  const unsubscribe = onUnattendedDenied(onDenied);
+  const resolveTarget = vi.spyOn(shellFilesystemPath, "resolveShellFilesystemPath").mockImplementationOnce(() => {
+    throw new Error("Target identity unavailable");
+  });
+  try {
+    const [result] = await runWithToolExecutionCwd(directory, () => executor.executeAll([
+      { id: "unresolved", name: tool.name, input: { path: "report.txt", content: "report" } },
+    ], { sessionId, permissionContext: userPermissionContext() }));
+    expect(result).toMatchObject({ is_error: true, content: "Cannot resolve write target" });
+    expect(execute).not.toHaveBeenCalled();
+    if (state === "proven") {
+      expect(onDenied).toHaveBeenCalledExactlyOnceWith({
+        sessionId, code: "outside-envelope", call: { toolName: tool.name, source: "builtin", inputSummary: expect.any(String) },
+      });
+    } else {
+      expect(onDenied).not.toHaveBeenCalled();
+    }
+  } finally {
+    resolveTarget.mockRestore();
+    unsubscribe();
     endUnattendedStage(sessionId);
   }
 });
