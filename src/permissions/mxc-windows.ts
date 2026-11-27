@@ -458,7 +458,10 @@ export async function probeMxcPowerShellStart(
     } catch {
       // Optional measurement errors leave the plain startup check authoritative.
     } finally {
-      await listener?.close().catch(error => log.warn({ error }, "MXC startup measurement listener cleanup failed"));
+      const bound = listener;
+      await bound?.close().catch(() => bound.close()).catch((error) => {
+        log.warn({ error }, "MXC startup measurement listener cleanup failed");
+      });
     }
   }
 

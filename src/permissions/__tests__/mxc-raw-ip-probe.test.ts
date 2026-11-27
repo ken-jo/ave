@@ -1,4 +1,6 @@
+import { once } from "node:events";
 import { get } from "node:http";
+import { createServer } from "node:net";
 import { describe, expect, it, vi } from "vitest";
 import { openInvocationProxyListener } from "../egress-invocation-listener.js";
 import {
@@ -156,6 +158,42 @@ describe("raw IP startup observation", () => {
     const request = JSON.parse(Buffer.from(run.mock.calls[2]?.[1][1] ?? "", "base64").toString("utf8"));
     expect(request.process.timeout).toBe(60_000);
     expect(request.runtimeConfig.networkProxy).toBe("http://127.0.0.1:9");
+  });
+
+  it.each([
+    { scenario: "a launcher failure", launcherFails: true, closeFails: false, state: "unavailable", closeCount: 1 },
+    { scenario: "a recoverable close failure", launcherFails: false, closeFails: true, state: "available", closeCount: 2 },
+  ])("releases the listening port after $scenario", async ({ launcherFails, closeFails, state, closeCount }) => {
+    const open = vi.fn<typeof openInvocationProxyListener>();
+    const close = vi.fn<() => Promise<void>>();
+    open.mockImplementation(async (options) => {
+      const listener = await openInvocationProxyListener(options);
+      if (closeFails) close.mockRejectedValueOnce(new Error("Transient close failure"));
+      close.mockImplementation(listener.close);
+      return { ...listener, close };
+    });
+    const run = async (_file: string, args: readonly string[]) => {
+      if (launcherFails && args[0] === "--config-base64") throw new Error("Launcher failed");
+      return { code: 0, stdout: "", stderr: "" };
+    };
+    try {
+      await expect(probeMxcPowerShellStart(makeDeps(run), open)).resolves.toMatchObject({ state });
+      const listener = await open.mock.results[0]?.value;
+      if (!listener) throw new Error("Missing proxy listener");
+      const replacement = createServer();
+      try {
+        const listening = once(replacement, "listening");
+        replacement.listen(listener.port, "127.0.0.1");
+        await listening;
+      } finally {
+        replacement.close();
+      }
+      expect(close).toHaveBeenCalledTimes(closeCount);
+    } finally {
+      // Release the fixture even when a regression leaves the port bound.
+      const listener = await open.mock.results[0]?.value;
+      await listener?.close();
+    }
   });
 
   it("keeps MXC available when PowerShell exits successfully with no evidence", async () => {
