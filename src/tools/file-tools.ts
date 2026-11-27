@@ -27,6 +27,7 @@ import {
   sep,
 } from "node:path";
 import { z } from "zod";
+import { t } from "../i18n/index.js";
 
 import type { PathEffect } from "../permissions/allowed-directories.js";
 import { isPathAllowed } from "../permissions/allowed-directories.js";
@@ -363,7 +364,9 @@ abstract class FileTool<TSchema extends z.ZodTypeAny> extends ZodTool<TSchema> {
     } catch (error) {
       return {
         ok: false,
-        error: brokerFailureResult(errorMessage(error)),
+        error: process.platform === "win32" && transport.kind === "local" && ctx.fileTargetSeal !== undefined
+          ? { output: t("be_executor.fileTargetChanged"), isError: true }
+          : brokerFailureResult(errorMessage(error)),
       };
     }
   }
