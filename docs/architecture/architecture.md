@@ -3500,8 +3500,18 @@ paths before the ranker runs. A directory the resolver cannot enumerate
 stays masked, and a grant that would reopen it refuses the launch.
 
 The runtime root holds a PID-marker registry of the created directories and
-their owners. Concurrent launches retain shared entries until their last owner
-exits. Boot and the next launch sweep entries whose recorded owners are gone,
+their owners. A directory is journalled as pending before it is created, so a
+crash in between leaves an entry the sweep can retire. A pending folder is
+removed only when it is empty, under its recorded parent, and newer than its
+entry. A journal that cannot be read refuses every launch by name until a
+restart. The boot sweep, which holds the host instance lock, sets it aside as
+`shell-placeholders.corrupt-<time>.json` and starts empty, with one notice that
+empty folders from before may remain.
+Concurrent launches retain shared entries until their last owner
+exits. A launch holds every tracked folder its rows equal or sit under. It
+denies another run's live placeholder under its own write roots, and validates
+its folders again when the command exits. A folder replaced on the host
+meanwhile is named in the result (`container-placeholder-changed`). Boot and the next launch sweep entries whose recorded owners are gone,
 checking process start identities to detect PID reuse. Cleanup only removes
 empty directories whose identities and parents still match. A parent containing
 an ordinary sibling written by the command stays in place. Linux shells use
@@ -3530,10 +3540,12 @@ container must read the listener's 403 refusal, and the host must record the
 nonce. The other targets are `192.0.2.1:443` and `[2001:db8::1]:443`, a
 just-closed port and a TCP arrival listener on the host's primary IPv4, and a
 UDP nonce sent to a host-side listener, which is checked by arrival only. `rawIp` is `blocked`
-only when the control passed, both documentation addresses were refused, and
-nothing reached the host. A refusal is local (EPERM or EACCES), or, for the IPv6
-target with no route, a network namespace holding only `lo`.
-The launcher's slirp4netns network drops direct connects rather than refusing
+only when the control passed, both documentation addresses were refused,
+nothing reached the host, and the UDP datagram was measured: sent and waited
+for, or refused locally. An unmeasured datagram leaves `udp-unmeasured`.
+No canary has observed a TCP policy refusal (EPERM or EACCES) through the
+launcher's slirp4netns network, so on it none counts as refused.
+That network drops direct connects rather than refusing
 them, so on it a timeout alone is never evidence. A dropped target counts as
 refused by arrival only when all of these hold:
 - a TCP listener on the host's primary IPv4 took an unconfined connect from Ave;
@@ -3543,9 +3555,20 @@ refused by arrival only when all of these hold:
   proxy. The container cannot read its own firewall, so Ave reads the restore
   payloads the launcher's network supervisor applied while the container runs.
 
+The arrival listener counts the connections it accepts: only one, the
+control's, is clean. A native control opens the container's firewall from the
+container's own user namespace and sees its connect arrive, so the path does
+deliver. A host whose primary IPv4 lies in slirp4netns' own network
+(`10.0.2.0/24`) would not, so it publishes `unknown` (`arrival-unprovable`).
+The launcher writes no IPv6 restore payload on a kernel without an IPv6 stack,
+so such a host reads no firewall and is always `unknown`. The payloads are read
+through one descriptor each, opened without following links, and count only
+when this account owns them and nobody else can write them or their folder;
+the canary's launcher runs under umask 077 for that reason.
+
 Any arrival, at either listener, makes the verdict `unknown`, and a listener
 that cannot bind leaves it `unknown` without making the container unavailable.
-The published evidence kind is `measured`, `structural` or `arrival`.
+The published evidence kind is `arrival` for this backend.
 The verdict lives in memory for the boot. An unmeasured or unavailable
 container reports `unknown`. Settings names
 missing packages and provides distribution-specific install commands. An
@@ -3553,9 +3576,24 @@ unavailable shell route applies the existing no-confinement floor, including
 its session waiver and exact saved host-command rule when the floor is the only
 reason to ask. Headless runs deny. A failed contained launch is refused.
 
+The request carries no environment, because the launcher would put it on
+bwrap's command line, where any local process can read it. The shell's
+environment is a 0600 script beside the request under the runtime root. The
+launch hands it over on descriptor 9, and the contained shell sources it and
+closes it before the command. The filter helper closes every other inherited
+descriptor, among them one to the launcher's user namespace. Once its filter is
+on, it writes one byte on descriptor 4 just before the command. A launcher error
+with no such byte is a refused start. A launcher error after it is a failed run
+(`container-run-failed`): its output is returned, because the command may have
+run in part.
+
 Cancellation sends TERM to the launcher and escalates to its process group
 after two seconds if necessary. The launcher also enforces the command deadline,
-and a run it ends that way is reported as timed out. Git quarantine runs after
+and a run it ends that way is reported as timed out. A launcher stopped by a
+signal cannot remove its own `/tmp/mxc-bwrap-proxy-*` state folder, so the
+launch removes it afterwards. The launch reads the folder's path from the argv
+of that launcher's network supervisor while the command runs. It never sweeps
+any other folder. Git quarantine runs after
 every launch. The command shares stderr with the launcher, so an error line
 there is never read as the launcher's verdict. A refused start is read only
 from the launcher's own log, which it writes into the request's staging folder

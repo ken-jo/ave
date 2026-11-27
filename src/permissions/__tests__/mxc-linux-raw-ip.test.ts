@@ -125,7 +125,7 @@ describe("Linux raw-IP verdict rules", () => {
       .toEqual(unknown("raw-ip-reachable", ["udp"], "arrived"));
   });
 
-  it("reads the launcher firewall only in the exact shape the pinned launcher writes", () => {
+  it("reads the launcher firewall only in the exact shape the pinned launcher writes, across appended transactions", () => {
     expect(linuxFirewallPayloadDrops(V4_PAYLOAD, 4, 12345)).toBe(true);
     expect(linuxFirewallPayloadDrops(V6_PAYLOAD, 6, 12345)).toBe(true);
     // The proxy rule must name this canary's proxy, and IPv6 carries none.
@@ -146,6 +146,8 @@ describe("Linux raw-IP verdict rules", () => {
     ];
     for (const payload of variants) expect(linuxFirewallPayloadDrops(payload, 4, 12345), payload).toBe(false);
     // A later transaction appends after the closing DROP; it still reads as drop while it only repeats those rules.
+    // Only one transaction per family has been observed. Accepting more is safe because the launcher applies each
+    // payload with `iptables-restore -n` (no flush), so a later one can only append, and an append is read here too.
     expect(linuxFirewallPayloadDrops(`${V4_PAYLOAD}\n${V4_PAYLOAD.replace("-A OUTPUT -j MXC_EGRESS\n", "")}`, 4, 12345)).toBe(true);
   });
 
