@@ -3,10 +3,12 @@ vi.mock("../../shared/windows-configuration-handles.js", async original => (awai
 vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
 
 /** Check each Windows substrate combination and the boot outcome reported to Settings. */
-import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type BetterSqlite3 from "better-sqlite3";
 import { afterQueuedCallbacks, deferred } from "../../__tests__/support/deferred.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import {
@@ -149,6 +151,12 @@ const RELEASE_EVIDENCE = {
 };
 
 let harness: SandboxBootHarness;
+
+beforeAll(() => {
+  // Cache the host's native binding before the boot cases impersonate win32.
+  const Database = createRequire(import.meta.url)("better-sqlite3") as typeof BetterSqlite3;
+  new Database(":memory:").close();
+});
 
 beforeEach(() => {
   harness = createSandboxBootHarness();
