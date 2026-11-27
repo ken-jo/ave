@@ -132,7 +132,7 @@ export interface EgressAskDeps {
   readonly terminalAskTimeoutMs?: number;
 }
 
-// Fixed refusal reasons, so the model and the audit log read the same words.
+// Fixed refusal reasons for the caller.
 export const EGRESS_DENY_REASONS = {
   controllerRevoked: "remote-controller-revoked",
   unattributed: "unattributed connection",
@@ -652,7 +652,7 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
         reason: decision.reason === null ? null : maskSensitiveData(decision.reason).masked,
       });
     } catch {
-      // The audit sink reports its own failures; a row that could not be written must not turn an answer into a different one.
+      // Logging cannot change the egress decision.
     }
     if (decision.allow) return true;
     const reason = decision.reason ?? EGRESS_DENY_REASONS.failed;

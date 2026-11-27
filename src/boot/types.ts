@@ -146,7 +146,6 @@ export interface AppServices {
   memoryConsolidationService?: MemoryConsolidationService;
   memoryMaintenanceCoordinator?: MemoryMaintenanceCoordinator;
   bashAstValidator: BashAstValidator;
-  /** A3; structured audit logger (JSONL, ~/.ave/audit/) */
   postTurnHookChain: PostTurnHookChain;
   /** B1: approval gate, created after mainWindow is ready. */
   approvalGate?: ApprovalGate;
