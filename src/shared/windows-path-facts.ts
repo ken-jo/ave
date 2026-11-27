@@ -311,7 +311,7 @@ export function holdWindowsDirectory(path: string): Promise<HeldWindowsDirectory
     let deadline: NodeJS.Timeout | undefined;
     let record = "";
     const [, , , relay, report, control] = launcher.stdio as readonly (Duplex | null | undefined)[];
-    let policyConfirmed = false;
+    let resumeAuthorized = false;
     const verdict = new Promise<WindowsHoldVerdict>((resolve) => {
       finish = (result) => {
         if (done) return;
@@ -376,7 +376,7 @@ export function holdWindowsDirectory(path: string): Promise<HeldWindowsDirectory
     channel.once("close", () => relay.destroy());
     report.on("data", (chunk: Buffer) => { if (record.length <= HOLD_VERDICT_LIMIT) record += chunk.toString("latin1"); });
     launcher.once("exit", (code) => {
-      if (policy !== undefined && !policyConfirmed) failPolicy();
+      if (policy !== undefined && !resumeAuthorized) failPolicy();
       const read = (): void => {
         clearTimeout(drain);
         const ok = /^AVJ1 ok (\d{1,10}) ([01])\n$/.exec(record);
@@ -388,12 +388,12 @@ export function holdWindowsDirectory(path: string): Promise<HeldWindowsDirectory
     });
     if (policy !== undefined) {
       launcher.stdin?.on("error", failPolicy);
-      relay.once("close", failPolicy);
+      relay.once("close", () => { if (!resumeAuthorized) failPolicy(); });
       if (control == null) failPolicy();
       else {
         let frame = Buffer.alloc(0);
         control.on("error", failPolicy);
-        const controlEnded = (): void => { if (!policyConfirmed) failPolicy(); };
+        const controlEnded = (): void => { if (!resumeAuthorized) failPolicy(); };
         control.once("end", controlEnded);
         control.once("close", controlEnded);
         control.on("data", (chunk: Buffer) => {
@@ -402,13 +402,13 @@ export function holdWindowsDirectory(path: string): Promise<HeldWindowsDirectory
           frame = Buffer.concat([frame, chunk]);
           if (frame.length !== HELD_POLICY_FRAME_BYTES) return;
           const pid = frame.readUInt32LE(4);
-          if (frame.toString("ascii", 0, 4) !== "AVP1" || pid === 0 || pid === launcherPid) { failPolicy(); return; }
+          if (frame.toString("latin1", 0, 4) !== "AVP1" || pid === 0 || pid === launcherPid) { failPolicy(); return; }
           const acknowledge = async (): Promise<void> => {
             await policy.bindReader(pid, failPolicy);
             if (done || deadline !== undefined || control.destroyed) return;
             const reply = Buffer.from(frame);
             reply.write("AVR1");
-            policyConfirmed = true;
+            resumeAuthorized = true;
             control.end(reply, () => control.destroy());
           };
           void acknowledge().catch(failPolicy);

@@ -182,7 +182,49 @@ static JobCleanup emptyJob(HANDLE job, bool requireCleanExit) {
   return cleanup;
 }
 
+#ifdef AVE_TEST_POLICY_READER
+static DWORD policyBytes(const wchar_t* name) {
+  HANDLE reader = CreateFileW(name, GENERIC_READ, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+  if (reader == INVALID_HANDLE_VALUE) return MAXDWORD;
+  DWORD total = 0;
+  char buffer[4096];
+  for (;;) {
+    DWORD read = 0;
+    if (!ReadFile(reader, buffer, sizeof(buffer), &read, nullptr)) {
+      const DWORD error = GetLastError();
+      if (error != ERROR_BROKEN_PIPE && error != ERROR_PIPE_NOT_CONNECTED && error != ERROR_NO_DATA) total = MAXDWORD;
+      break;
+    }
+    if (!read) break;
+    total += read;
+  }
+  CloseHandle(reader);
+  return total;
+}
+
+static void measureOtherReaders(const wchar_t* self, STARTUPINFOEXW& startup) {
+  wchar_t pipe[128]{};
+  const DWORD length = GetEnvironmentVariableW(L"AVE_TEST_POLICY_READER_PIPE", pipe, _countof(pipe));
+  if (!length || length >= _countof(pipe)) return;
+  const DWORD launcherBytes = policyBytes(pipe);
+  std::wstring command = L"\"" + std::wstring(self) + L"\" --test-policy-reader " + pipe;
+  PROCESS_INFORMATION sibling{};
+  DWORD siblingBytes = MAXDWORD;
+  if (CreateProcessW(self, command.data(), nullptr, nullptr, TRUE, EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW,
+                     nullptr, nullptr, &startup.StartupInfo, &sibling)) {
+    if (WaitForSingleObject(sibling.hProcess, 5000) == WAIT_OBJECT_0) GetExitCodeProcess(sibling.hProcess, &siblingBytes);
+    CloseHandle(sibling.hProcess);
+    CloseHandle(sibling.hThread);
+  }
+  std::printf("other-readers %lu %lu\n", launcherBytes, siblingBytes);
+  std::fflush(stdout);
+}
+#endif
+
 int wmain(int argc, wchar_t** argv) {
+#ifdef AVE_TEST_POLICY_READER
+  if (argc == 3 && wcscmp(argv[1], L"--test-policy-reader") == 0) ExitProcess(policyBytes(argv[2]));
+#endif
   // `--receipt <absolute path>` appends "0" to an existing registered receipt only
   // after the closed job is proven empty.
   const bool contained = argc >= 2 && wcscmp(argv[1], L"--receipt") == 0;
@@ -292,8 +334,13 @@ int wmain(int argc, wchar_t** argv) {
     if (held) endHeld(kUnconfirmed, 125);
     return 125;
   }
-  DeleteProcThreadAttributeList(attributes);
-  for (HANDLE handle : inherited) CloseHandle(handle);
+  const auto closeStartup = [&]() {
+    DeleteProcThreadAttributeList(attributes);
+    for (HANDLE handle : inherited) CloseHandle(handle);
+  };
+#ifndef AVE_TEST_POLICY_READER
+  closeStartup();
+#endif
   if (!heldPolicy) CloseHandle(child.hThread);
   // A NUL stdin has no owner to watch; a held command is then bound to the hold helper alone.
   const bool watched = !held || GetFileType(GetStdHandle(STD_INPUT_HANDLE)) == FILE_TYPE_PIPE;
@@ -310,6 +357,9 @@ int wmain(int argc, wchar_t** argv) {
     DWORD result = 1;
     const bool confirmed = confirm && WaitForMultipleObjects(3, startupWaits, FALSE, 10000) == WAIT_OBJECT_0 + 2 &&
         GetExitCodeThread(confirm, &result) && result == 0 && WaitForSingleObject(owner, 0) == WAIT_TIMEOUT;
+#ifdef AVE_TEST_POLICY_READER
+    if (confirmed) measureOtherReaders(argv[0], startup);
+#endif
     if (!confirmed || ResumeThread(child.hThread) != 1) {
       CloseHandle(job);
       endHeld(kUnconfirmed, 125);
@@ -318,6 +368,9 @@ int wmain(int argc, wchar_t** argv) {
     CloseHandle(policyChannel);
     CloseHandle(child.hThread);
   }
+#ifdef AVE_TEST_POLICY_READER
+  closeStartup();
+#endif
   HANDLE waits[]{child.hProcess, owner};
   DWORD result = WaitForMultipleObjects(watched ? 2 : 1, waits, FALSE, INFINITE);
   DWORD code = 125;
