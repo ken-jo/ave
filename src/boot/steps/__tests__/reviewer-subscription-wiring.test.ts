@@ -242,7 +242,7 @@ it("invalidates a cached windowless reviewer verdict on a live disconnect and re
     }, undefined, { lane: headless ? "headless" : "foreground-auto" });
     return { review, result: manager.resolveReviewedPermission(permission, review) };
   };
-  let dispose: (() => void) | void;
+  let dispose: (() => void) | undefined;
   let stopListening: (() => void) | undefined;
   try {
     const { wireReviewerAndPermissions } = await import("../reviewer-permission-wiring.js");
@@ -269,7 +269,7 @@ it("invalidates a cached windowless reviewer verdict on a live disconnect and re
     expect(subscriptionProviderFactory.mock.calls).toEqual([[selection], [selection]]);
     expect(context.settingsService.getSecret).not.toHaveBeenCalled();
   } finally {
-    if (typeof dispose === "function") dispose();
+    dispose?.();
     stopListening?.();
     for (const result of wired) await result.cache.flush();
     await runtime.stop();

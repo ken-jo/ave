@@ -20,7 +20,7 @@ import { getApi } from "../api-client.js";
 import { isIpcErrorResult } from "../types.js";
 import { modelCardChoices, type ModelCardChoice } from "../hooks/use-settings.js";
 import type { AveApi } from "../types.js";
-import { canUseLlmVendorWithoutApiKey, getLlmVendorSettings } from "../../../shared/llm-vendor-defaults.js";
+import { canUseLlmVendorWithoutApiKey, getLlmVendorSettings, type LLMVendor } from "../../../shared/llm-vendor-defaults.js";
 import { marketplaceProviderPresetSecretId } from "../../../shared/marketplace-package-assets.js";
 import type { RolePreset } from "../../../data/role-presets.js";
 import type { UserKeyboardIntentSnapshot } from "../../../shared/chat-origin.js";
@@ -760,10 +760,17 @@ function ModelQuickPicker({
   const chipRef = useRef<HTMLButtonElement>(null);
   const openedByChipRef = useRef(false);
   const [choices, setChoices] = useState<ModelCardChoice[]>([]);
+  const choicesRef = useRef<ModelCardChoice[]>([]);
   const billingId = useId();
   const [anyPinned, setAnyPinned] = useState(true);
   const runtimeRef = useRef<string>("api");
   const { level, levelLabels, currentLabel, custom, apply } = useReasoningLevel({ enabled: enableThinking, onToggle: onToggleThinking });
+  const setPickerOpen = (next: boolean) => {
+    choicesRef.current = [];
+    setChoices([]);
+    setAnyPinned(true);
+    setOpen(next);
+  };
 
   // Read on open and follow the broadcast while open: a pin added in Settings, or a pick made in another tile, shows up without reopening.
   useEffect(() => {
@@ -771,7 +778,7 @@ function ModelQuickPicker({
     let cancelled = false;
     let revision = 0;
     const api = getApi();
-    const take = async (settings: Awaited<ReturnType<AveApi["getSettings"]>>) => {
+    const take = (settings: Awaited<ReturnType<AveApi["getSettings"]>>) => {
       if (cancelled) return;
       const request = ++revision;
       const { llm, activeChatModel } = settings;
@@ -779,24 +786,42 @@ function ModelQuickPicker({
       setAnyPinned((llm.pinnedModels ?? []).length > 0);
       runtimeRef.current = llm.activeChatRuntime?.kind ?? "api";
       const vendors = new Set(nextChoices.flatMap((choice) => choice.kind === "api" ? [choice.vendor] : []));
-      const connectedVendors = new Set(await Promise.all([...vendors].map(async (vendor) => {
-        if (activeChatModel?.kind === "api" && activeChatModel.vendor === vendor) return vendor;
+      const connectedVendors = new Set<LLMVendor>();
+      const publishChoices = () => {
+        const visible = nextChoices.filter((choice) => choice.kind === "subscription" || connectedVendors.has(choice.vendor));
+        choicesRef.current = visible;
+        setChoices(visible);
+      };
+      for (const vendor of vendors) {
+        if (activeChatModel?.kind === "api" && activeChatModel.vendor === vendor) {
+          connectedVendors.add(vendor);
+          continue;
+        }
+        if (vendor === "vertex-ai") {
+          if (settings.vertexProjectConfigured) connectedVendors.add(vendor);
+          continue;
+        }
         const block = getLlmVendorSettings(llm.vendors, vendor);
-        if (vendor === "vertex-ai") return settings.vertexProjectConfigured ? vendor : null;
         const presetId = vendor === "openai-compatible" ? llm.marketplaceProviderPresetId : undefined;
         if (presetId) {
           const preset = settings.marketplace?.installedProviderPresets?.find((entry) => entry.providerId === presetId);
-          if (!preset) return null;
-          if (preset.requiresApiKey === false && preset.baseUrl.trim()) return vendor;
+          if (!preset) continue;
+          if (preset.requiresApiKey === false && preset.baseUrl.trim()) {
+            connectedVendors.add(vendor);
+            continue;
+          }
         } else if (canUseLlmVendorWithoutApiKey(vendor, block)) {
-          return vendor;
+          connectedVendors.add(vendor);
+          continue;
         }
         const credential = presetId ? marketplaceProviderPresetSecretId(presetId) : vendor;
-        return await api.hasApiKey(credential).catch(() => false) === true ? vendor : null;
-      })));
-      if (!cancelled && revision === request) {
-        setChoices(nextChoices.filter((choice) => choice.kind === "subscription" || connectedVendors.has(choice.vendor)));
+        void api.hasApiKey(credential).then((connected) => {
+          if (connected !== true || cancelled || revision !== request) return;
+          connectedVendors.add(vendor);
+          publishChoices();
+        }).catch(() => {});
       }
+      publishChoices();
     };
     void api.getSettings().then((settings) => {
       if (revision === 0) return take(settings);
@@ -806,8 +831,12 @@ function ModelQuickPicker({
   }, [open]);
 
   const pick = async (choice: Extract<ModelCardChoice, { kind: "api" }>) => {
-    if (choice.current) {
-      setOpen(false);
+    const currentChoice = choicesRef.current.find((candidate) =>
+      candidate.kind === "api" && candidate.vendor === choice.vendor && candidate.modelId === choice.modelId,
+    );
+    if (!currentChoice) return;
+    if (currentChoice.current) {
+      setPickerOpen(false);
       return;
     }
     const api = getApi();
@@ -825,12 +854,12 @@ function ModelQuickPicker({
     // A pinned model is an API model, so picking one is also choosing the API path when a subscription runtime was in use. That switch
     // has its own request; the settings patch refuses a runtime change on its own; and it is the same one the settings chooser sends.
     if (runtimeRef.current !== "api") await api.subscriptionUseApiForChat();
-    setOpen(false);
+    setPickerOpen(false);
   };
 
   const reasoningLabel = t("bottomActionRow.reasoning");
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover open={open} onOpenChange={setPickerOpen}>
       <PopoverTrigger asChild>
         <button
           type="button"
@@ -864,7 +893,7 @@ function ModelQuickPicker({
           title={`${reasoningLabel}: ${currentLabel}`}
           onClick={() => {
             openedByChipRef.current = !open;
-            setOpen(!open);
+            setPickerOpen(!open);
           }}
           className={`-m-1.5 flex shrink-0 cursor-pointer items-center p-1.5 transition-colors duration-(--motion-fast) ease-(--motion-ease-standard) hover:text-input-bar-action focus:outline-none focus-visible:ring-1 focus-visible:ring-input-bar-focus motion-reduce:transition-none ${level > 0 ? "text-input-bar-action" : "text-input-bar-placeholder"}`}
         >
@@ -947,7 +976,7 @@ function ModelQuickPicker({
         ) : null}
         <button
           type="button"
-          onClick={() => { setOpen(false); onOpenModelSettings(); }}
+          onClick={() => { setPickerOpen(false); onOpenModelSettings(); }}
           data-testid="model-quick-picker-more"
           className="flex w-full items-center justify-between border-t border-border/(--opacity-medium) px-3 py-2 text-sm hover:bg-accent focus:outline-none focus-visible:bg-accent"
         >

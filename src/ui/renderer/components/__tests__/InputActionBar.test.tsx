@@ -21,6 +21,7 @@ import { fakeAppSettings } from "../../../../../test/renderer/fake-app-settings.
 import { t } from "../../../../i18n/runtime.js";
 import { ApprovalSurfaceProvider, type ApprovalSurfaceContextValue } from "../../hooks/use-approval.js";
 import { HOME_FOLDER_REFUSED } from "../../../../shared/permissions-events.js";
+import { deferred } from "../../../../__tests__/support/deferred.js";
 
 const mockPreset: RolePreset = { id: "default", name: "기본", systemPromptAdd: "", isDefault: true };
 const codingPreset: RolePreset = { id: "coding", name: "코딩", systemPromptAdd: "Code carefully." };
@@ -808,6 +809,68 @@ describe("model card (status-row model cell)", () => {
     // Already on the API path: no runtime switch is sent.
     await waitFor(() => expect(queryByTestId("model-quick-picker")).toBeNull());
     expect(subscriptionUseApiForChat).not.toHaveBeenCalled();
+  });
+
+  it("applies a cross-window model change while credentials are pending and drops stale credential replies", async () => {
+    const settings = settingsWithPins();
+    const previous = {
+      ...settings,
+      llm: {
+        ...settings.llm,
+        pinnedModels: [...settings.llm.pinnedModels, "example-alternative", "example-ready-pin"],
+        modelListCache: {
+          ...settings.llm.modelListCache,
+          openai: { vendor: "openai", models: ["example-alternative"] },
+          claude: { vendor: "claude", models: ["example-ready-pin"] },
+        },
+      },
+    };
+    getSettings.mockResolvedValue(previous);
+    hasApiKey.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    const { getByTestId, findByTestId, queryByTestId } = renderBar();
+    fireEvent.click(getByTestId("iab-status-model"));
+    const alternativeId = "model-quick-picker-option:openai:example-alternative";
+    await findByTestId(alternativeId);
+    const card = getByTestId("model-quick-picker");
+    const checked = () => card.querySelector("[role='option'][aria-selected='true']");
+    const oldModel = "qwen3.8-27b-gguf";
+    const newModel = "qwen3.8-27b-nvfp4";
+    expect(checked()).toHaveTextContent(oldModel);
+    const [push] = onSettingsUpdated.mock.lastCall as unknown as [(settings: typeof previous) => void];
+    const olderCredential = deferred<boolean>();
+    const latestCredential = deferred<boolean>();
+    hasApiKey
+      .mockReturnValueOnce(olderCredential.promise).mockResolvedValueOnce(true)
+      .mockReturnValueOnce(latestCredential.promise).mockResolvedValueOnce(false);
+    const next = {
+      ...previous,
+      activeChatModel: { ...previous.activeChatModel, model: newModel },
+      llm: {
+        ...previous.llm,
+        vendors: {
+          ...previous.llm.vendors,
+          "openai-compatible": { ...previous.llm.vendors["openai-compatible"], model: newModel },
+        },
+      },
+    };
+    act(() => push(next));
+    expect(checked()).toHaveTextContent(newModel);
+    expect(queryByTestId(alternativeId)).toBeNull();
+    expect(await findByTestId("model-quick-picker-option:claude:example-ready-pin")).toBeEnabled();
+
+    act(() => push(next));
+    await act(async () => olderCredential.resolve(true));
+    expect(queryByTestId(alternativeId)).toBeNull();
+    expect(checked()).toHaveTextContent(newModel);
+
+    await act(async () => {
+      fireEvent.click(getByTestId(`model-quick-picker-option:openai-compatible:${oldModel}`));
+    });
+    expect(updateSettings).toHaveBeenCalledWith({
+      llm: { provider: "openai-compatible", vendors: { "openai-compatible": { model: oldModel } } },
+    });
+    await act(async () => latestCredential.resolve(true));
+    expect(queryByTestId("model-quick-picker")).toBeNull();
   });
 
   it("also leaves a subscription runtime for the API path when a pin is chosen", async () => {
