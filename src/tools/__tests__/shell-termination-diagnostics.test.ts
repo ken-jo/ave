@@ -120,8 +120,9 @@ it("waits for the conversation terminal teardown before reporting session cleanu
 });
 
 // The plain route and the ASRT wrap route ("sandbox"). POSIX shells are never ASRT-wrapped: a requested macOS or Linux
-// shell sandbox runs in its container, whose completion has its own block below. The wrap route is live only for
-// Windows shells, so it runs on a Windows host, as Windows, for both dialects.
+// shell sandbox runs in its container, whose completion has its own block below. The wrap route is live only for bash
+// on Windows, so it runs on a Windows host, as Windows. PowerShell has no live wrap route: on Windows its startup is
+// pinned only in the MXC container (`isPowerShellStartupPinned`), so a wrapped PowerShell is refused before it spawns.
 function routePlatform(route: "plain" | "sandbox", dialect: "bash" | "powershell"): NodeJS.Platform {
   if (route === "plain") return dialect === "powershell" ? "darwin" : HOST_PLATFORM;
   return "win32";
@@ -129,7 +130,7 @@ function routePlatform(route: "plain" | "sandbox", dialect: "bash" | "powershell
 const ROUTES = HOST_PLATFORM === "win32" ? ["plain", "sandbox"] as const : ["plain"] as const;
 
 describe.each(ROUTES)("%s shell completion", (route) => {
-  describe.each(["bash", "powershell"] as const)("%s", (dialect) => {
+  describe.each(route === "sandbox" ? ["bash"] as const : ["bash", "powershell"] as const)("%s", (dialect) => {
     beforeEach(() => { setProcessPlatform(routePlatform(route, dialect)); });
     const temporaryRoots = new Set<string>();
     async function start(captureFactory?: () => ToolOutputCapture, failure?: "abort" | "empty" | "sync-throw") {
