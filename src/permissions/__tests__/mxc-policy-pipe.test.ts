@@ -9,6 +9,7 @@ import { openMxcPolicyPipe } from "../mxc-policy-pipe.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import { requireMxcPolicyPipeHelper } from "../../__tests__/support/mxc-capability.js";
 import { createPolicyPipeHelper } from "../../__tests__/support/policy-pipe-helper.js";
+import { resolveWindowsJobLauncher } from "../../main/windows-job-launcher.js";
 
 const PIPE = String.raw`\\.\pipe\ave-mxc-0123456789abcdef0123456789abcdef`;
 
@@ -66,6 +67,62 @@ describe.skipIf(process.platform !== "win32")("native policy pipe EOF", () => {
       else expect(counts[0]).toBeGreaterThan(1);
       expect(counts[1]).toBeGreaterThan(1);
     } finally { await transport.release(); }
+  });
+});
+
+describe.skipIf(process.platform !== "win32")("native policy pipe reader identity", () => {
+  const READER = `
+    const fs = require("node:fs");
+    const pipe = process.argv[1];
+    try {
+      const fd = fs.openSync(pipe, "r");
+      const chunks = [];
+      const buffer = Buffer.alloc(4096);
+      for (;;) {
+        const count = fs.readSync(fd, buffer, 0, buffer.length, null);
+        if (count === 0) break;
+        chunks.push(Buffer.from(buffer.subarray(0, count)));
+      }
+      fs.closeSync(fd);
+      process.stdout.write(Buffer.concat(chunks).equals(Buffer.from("reader-policy-".repeat(500))) ? "ok" : "mismatch");
+    } catch (error) { process.stdout.write(String(error.code)); }
+  `;
+  type Reader = "launched" | "launcher-bound-as-reader" | "launcher-itself" | "child-of-reader";
+
+  async function read(mode: Reader): Promise<string> {
+    vi.restoreAllMocks();
+    configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
+    const pipe = String.raw`\\.\pipe\ave-mxc-${randomBytes(16).toString("hex")}`;
+    const transport = await openMxcPolicyPipe(Buffer.from("reader-policy-".repeat(500)), pipe);
+    try {
+      const env = { ...process.env, ELECTRON_RUN_AS_NODE: "1" };
+      const viaJob = mode === "launched" || mode === "launcher-bound-as-reader";
+      const args = mode === "child-of-reader"
+        ? ["-e", `require("node:child_process").execFileSync(process.execPath, ["-e", ${JSON.stringify(READER)}, process.argv[1]], { stdio: ["ignore", "inherit", "inherit"] })`, pipe]
+        : ["-e", READER, pipe];
+      const child = viaJob
+        ? childProcess.spawn(resolveWindowsJobLauncher(), [process.execPath, ...args], { env, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] })
+        : childProcess.spawn(process.execPath, args, { env, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+      let output = "";
+      child.stdout.on("data", (chunk: Buffer) => { output += chunk.toString(); });
+      child.stderr.resume();
+      const closed = new Promise<void>((resolveClosed) => child.once("close", () => resolveClosed()));
+      transport.bindChild(child, mode === "launched" || mode === "launcher-itself");
+      const timer = setTimeout(() => child.kill(), TOOL_TIMEOUT_POLICY.mxcRequestTransportMs);
+      await closed;
+      clearTimeout(timer);
+      return output;
+    } finally { await transport.release().catch(() => {}); }
+  }
+
+  it("serves the direct child of a bound job launcher", async (context) => {
+    requireMxcPolicyPipeHelper(context.skip);
+    expect(await read("launched")).toBe("ok");
+  });
+
+  it.for(["launcher-bound-as-reader", "launcher-itself", "child-of-reader"] as const)("refuses a reader that is not the bound one: %s", async (mode, { skip }) => {
+    requireMxcPolicyPipeHelper(skip);
+    expect(await read(mode)).not.toBe("ok");
   });
 });
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers(); });
@@ -254,6 +311,8 @@ describe("native policy pipe lifecycle", () => {
     expect(received.readUInt32LE(0)).toBe(6);
     expect(received.subarray(4, 10).toString()).toBe("policy");
     expect(received.readUInt32LE(10)).toBe(1234);
+    expect(received.readUInt32LE(14)).toBe(0);
+    expect(received).toHaveLength(18);
     expect(helperPath.withWindowsPathKindHelper).toHaveBeenCalledOnce();
     const resolvedHelper = String.raw`C:\Ave\ave-path-kind.exe`;
     expect(spawn.mock.calls[0]?.[0]).toBe(resolvedHelper);

@@ -14,6 +14,7 @@ pub const READ_ATTRIBUTES: u32 = 0x80;
 pub const DELETE: u32 = 0x10000;
 pub const READ_CONTROL: u32 = 0x20000;
 pub const SYNCHRONIZE: u32 = 0x100000;
+pub const QUERY_LIMITED: u32 = 0x1000;
 pub const DIRECTORY: u32 = 0x10;
 pub const REPARSE: u32 = 0x400;
 pub const SHARE_READ: u32 = 1;
@@ -193,6 +194,13 @@ unsafe extern "system" {
     pub fn ConnectNamedPipe(pipe: Raw, overlapped: Raw) -> i32;
     pub fn DisconnectNamedPipe(pipe: Raw) -> i32;
     pub fn GetNamedPipeClientProcessId(pipe: Raw, pid: *mut u32) -> i32;
+    pub fn GetProcessTimes(
+        process: Raw,
+        created: *mut u64,
+        exited: *mut u64,
+        kernel: *mut u64,
+        user: *mut u64,
+    ) -> i32;
 }
 
 #[link(name = "ntdll")]
@@ -211,6 +219,13 @@ unsafe extern "system" {
         ea_len: u32,
     ) -> i32;
     pub fn RtlNtStatusToDosError(status: i32) -> u32;
+    pub fn NtQueryInformationProcess(
+        process: Raw,
+        class: u32,
+        info: *mut c_void,
+        len: u32,
+        returned: *mut u32,
+    ) -> i32;
 }
 
 pub struct Handle(Raw);

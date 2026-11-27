@@ -1,5 +1,6 @@
 use crate::security::private_descriptor;
 use crate::windows::*;
+use std::ffi::c_void;
 use std::mem::size_of;
 use std::os::windows::io::AsRawHandle;
 use std::process::exit;
@@ -12,10 +13,18 @@ const MAX_POLICY: u32 = 4 * 1024 * 1024;
 const PIPE_INSTANCES: u32 = 4;
 const PIPE_PREFIX: &str = r"\\.\pipe\ave-mxc-";
 
+// The bound process, or with `launched` the job launcher whose direct child reads.
+struct Client {
+    pid: u32,
+    process: Handle,
+    launched: bool,
+    created: u64,
+}
+
 struct Delivery {
     bound: Handle,
     done: Handle,
-    client: OnceLock<(u32, Handle)>,
+    client: OnceLock<Client>,
     deadline: u64,
     accepted: AtomicU32,
     completed: AtomicU32,
@@ -46,20 +55,68 @@ fn read_u32() -> Result<u32, u32> {
     Ok(u32::from_le_bytes(bytes))
 }
 
+fn created(process: Raw) -> Option<u64> {
+    let mut times = [0; 4];
+    let [created, exited, kernel, user] = &mut times;
+    (unsafe { GetProcessTimes(process, created, exited, kernel, user) } != 0).then_some(times[0])
+}
+
+fn parent(process: Raw) -> Option<usize> {
+    // PROCESS_BASIC_INFORMATION: the last field is the parent process ID.
+    let mut info = [0usize; 6];
+    let status = unsafe {
+        NtQueryInformationProcess(
+            process,
+            0,
+            info.as_mut_ptr().cast::<c_void>(),
+            size_of::<[usize; 6]>() as u32,
+            null_mut(),
+        )
+    };
+    (status == 0).then_some(info[5])
+}
+
+// The held launcher handle keeps its PID from reuse; a later creation time excludes older
+// processes that recorded the same parent PID.
+fn admits(client: &Client, connected: u32) -> bool {
+    if !client.launched {
+        return connected == client.pid;
+    }
+    if connected == client.pid {
+        return false;
+    }
+    let Ok(reader) = (unsafe { Handle::from_raw(OpenProcess(QUERY_LIMITED, 0, connected)) }) else {
+        return false;
+    };
+    parent(reader.raw()) == Some(client.pid as usize)
+        && created(reader.raw()).is_some_and(|time| time >= client.created)
+}
+
 fn watch_owner(delivery: &Delivery) {
-    let Ok(pid) = read_u32() else {
+    let (Ok(pid), Ok(relation)) = (read_u32(), read_u32()) else {
         return;
     };
-    if pid == 0 {
+    if pid == 0 || relation > 1 {
         return;
     }
-    let Ok(client) = (unsafe { Handle::from_raw(OpenProcess(SYNCHRONIZE, 0, pid)) }) else {
+    let Ok(process) =
+        (unsafe { Handle::from_raw(OpenProcess(SYNCHRONIZE | QUERY_LIMITED, 0, pid)) })
+    else {
         return;
     };
-    if unsafe { WaitForSingleObject(client.raw(), 0) } != WAIT_TIMEOUT {
+    if unsafe { WaitForSingleObject(process.raw(), 0) } != WAIT_TIMEOUT {
         return;
     }
-    if delivery.client.set((pid, client)).is_err() {
+    let Some(created) = created(process.raw()) else {
+        return;
+    };
+    let client = Client {
+        pid,
+        process,
+        launched: relation == 1,
+        created,
+    };
+    if delivery.client.set(client).is_err() {
         return;
     }
     delivery.signal(&delivery.bound);
@@ -92,13 +149,13 @@ fn serve(pipe: Arc<Handle>, delivery: &Delivery) {
         if unsafe { WaitForSingleObject(delivery.bound.raw(), delivery.remaining()) } != 0 {
             return delivery.fail();
         }
-        let Some((pid, client)) = delivery.client.get() else {
+        let Some(client) = delivery.client.get() else {
             return delivery.fail();
         };
         let mut connected = 0;
         if unsafe { GetNamedPipeClientProcessId(pipe, &mut connected) } == 0
-            || connected != *pid
-            || unsafe { WaitForSingleObject(client.raw(), 0) } != WAIT_TIMEOUT
+            || !admits(client, connected)
+            || unsafe { WaitForSingleObject(client.process.raw(), 0) } != WAIT_TIMEOUT
         {
             unsafe {
                 DisconnectNamedPipe(pipe);

@@ -29,8 +29,8 @@ export interface MxcShellLaunch {
   readonly watchedNotice?: string | undefined;
   /** Admit connections after the final shell admission checks, immediately before spawn. */
   activate(): void;
-  /** Bind policy delivery immediately after spawning the launcher. */
-  bindChild(child: ChildProcess): void;
+  /** Bind policy delivery immediately after spawning the launcher; `launched` when a job launcher starts it. */
+  bindChild(child: ChildProcess, launched?: boolean): void;
 }
 
 /** A shell command's policy as the lists the shell composes. */
