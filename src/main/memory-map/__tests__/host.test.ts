@@ -459,7 +459,7 @@ describe('memory graph publication', () => {
     expect(stored).not.toBeNull();
     expect(await host.get(() => f.catalog)).toEqual(stored);
   });
-  it('withholds cached embedding progress after model admission expires during the saved graph read', async () => {
+  it('uses platform rules when model admission expires during the saved graph read', async () => {
     const f = await fixture();
     const reading = deferred<void>();
     const resume = deferred<void>();
@@ -485,8 +485,13 @@ describe('memory graph publication', () => {
     current = false;
     resume.resolve();
     const outcome = await building;
-    expect.soft(onProgress).not.toHaveBeenCalledWith(expect.objectContaining({ phase: 'embedding' }));
-    expect(outcome).toMatchObject({ code: 'local-runtime-unavailable' });
+    if (process.platform === 'win32') {
+      expect.soft(onProgress).not.toHaveBeenCalled();
+      expect(outcome).toMatchObject({ code: 'local-runtime-unavailable' });
+    } else {
+      expect.soft(onProgress.mock.calls).toEqual([[expect.objectContaining({ phase: 'embedding', completed: 1, total: 1 })]]);
+      expect(outcome).toMatchObject({ status: 'ready', coverage: { eligible: 1, embedded: 1, pending: 0 } });
+    }
   });
   it('writes no graph candidate when admission expires during directory preparation', async () => {
     const f = await fixture();
