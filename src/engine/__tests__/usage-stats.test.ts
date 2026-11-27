@@ -725,6 +725,31 @@ describe("computeMonthlyProjection", () => {
 });
 
 describe("saved turn usage", () => {
+  it("splits saved request input for usage totals and pricing", async () => {
+    const now = new Date(2026, 5, 16, 12);
+    const sessions = {
+      listSessions: () => [{ id: "saved" }] as ReturnType<Parameters<typeof getUsageRange>[0]["listSessions"]>,
+      loadSession: () => [{
+        role: "assistant",
+        meta: {
+          createdAt: now.getTime(),
+          turnSummary: {
+            usageByModel: [{
+              vendorProvider: "claude",
+              vendorModel: "claude-sonnet-4-6",
+              tokenUsage: { inputTokens: 100, outputTokens: 20, cacheReadTokens: 80, cacheWriteTokens: 10 },
+              pricing: { source: "user", rates: { inputPer1M: 10, outputPer1M: 20, cacheReadPer1M: 2, cacheWritePer1M: 15 } },
+            }],
+          },
+        },
+      }],
+    };
+
+    const { today } = await getUsageSummary(sessions, 1, now);
+    expect(today).toMatchObject({ inputTokens: 10, outputTokens: 20, cacheReadTokens: 80, cacheWriteTokens: 10, totalTokens: 120 });
+    expect(today.cost).toBeCloseTo(0.00081, 10);
+  });
+
   it("keeps measurable usage, excludes dates and duplicates, and flags partial coverage", async () => {
     const now = new Date(2026, 5, 16, 12);
     const priorDay = new Date(2026, 5, 15, 12);

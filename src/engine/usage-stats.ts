@@ -427,7 +427,10 @@ function toUsageTurn(sessionId: string, timestamp: string, summary: Record<strin
     : undefined;
   const pricing = isRecord(summary.modelSettings) ? parseResolvedModelPricing(summary.modelSettings.pricing) : undefined;
   return {
-    timestamp, sessionId, type: "turn", route, tokenUsage, usageByModel: segments,
+    timestamp, sessionId, type: "turn", route, tokenUsage, usageByModel: segments.map((segment) => ({
+      ...segment,
+      tokenUsage: normalizeAiSdkUsageForCost(segment.tokenUsage, segment.vendorProvider),
+    })),
     ...(pricing ? { modelSettings: { pricing } } : {}),
     subscriptionUsage: summary.subscriptionUsage,
   };
