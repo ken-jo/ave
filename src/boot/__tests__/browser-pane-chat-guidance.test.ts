@@ -83,8 +83,8 @@ describe("browser pane turn guidance", () => {
     expect(browserTabRegistry.pause(WINDOW_ID, PANE.tabId)).toBe(true);
     const paused = loop.buildSystemPromptForScope(SCOPE);
     const normalRouting = locale === "en" ? "Omit tabId to act in this tab." : "이 탭을 조작하려면 tabId를 생략하세요.";
-    expect(paused).toContain(mutation);
-    expect(paused).toContain(read);
+    expect.soft(paused).toContain(mutation);
+    expect.soft(paused).toContain(read);
     expect(paused).not.toContain(normalRouting);
     expect(browserTabRegistry.resume(WINDOW_ID, PANE.tabId)).toBe(true);
     expect(loop.buildSystemPromptForScope(SCOPE)).toContain(normalRouting);

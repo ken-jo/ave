@@ -113,7 +113,7 @@ describe("browser user captures", () => {
 
   it.each(["hide", "replace composer", "replace browser"] as const)("releases a staged capture if the user can %s while it is attaching", async (change) => {
     const groupId = "pane:capture-draft";
-    const { api, rerender } = mount(groupId);
+    const { api, capture, rerender } = mount(groupId);
     const image = { ok: true, path: "/work/capture.png", dataUrl: "data:image/png;base64,aW1hZ2U=", mimeType: "image/png", width: 200, height: 100, bytes: 5 };
     const staged = deferred<typeof image>();
     const saveClipboardImage = vi.fn(async () => change === "hide" ? staged.promise : image);
@@ -130,6 +130,7 @@ describe("browser user captures", () => {
     });
     const unregister = registerComposerTarget({ groupId, kind: "side-chat", getSessionIdentity, attach: () => true, attachImage: result.current.attachImage, available: () => true, element: () => dock });
     await choose("browser-capture-viewport");
+    expect(capture).toHaveBeenCalledOnce();
     expect(change === "hide" ? saveClipboardImage : readImage).toHaveBeenCalledOnce();
 
     const attachReplacement = vi.fn(async () => true);
@@ -148,7 +149,9 @@ describe("browser user captures", () => {
     expect.soft(result.current.attachments).toEqual([]);
     expect.soft(result.current.draft).toBe("");
     expect(attachReplacement).not.toHaveBeenCalled();
-    if (change !== "replace browser") expect(screen.getByRole("alert")).toHaveTextContent(t("browserCapture.attachmentFailed"));
+    if (change !== "replace browser") {
+      expect(screen.getByRole("alert").textContent).toBe(t("browserCapture.attachmentFailed"));
+    }
   });
 
   it("normalizes a host drag rectangle by the guest zoom without injecting an overlay", async () => {
