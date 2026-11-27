@@ -4670,8 +4670,7 @@ async function spawnPowerShellInMxc(
       }));
       closed = checkedShellClose(spawned, waitForClose, run);
       if (run === undefined) trackManagedChildProcess(spawned, { killProcessGroup: false, label: MXC_SHELL_LABEL });
-      // A held run starts the container launcher as the job launcher's direct child.
-      launch.bindChild(spawned, run !== undefined);
+      launch.bindChild(spawned);
       collector = createOutputCollector(spawned, { captureFactory: outputCaptureFactory, progress, observation });
       spawned.stdout.on("data", parserResponse === undefined ? collector.collect : parserResponse.collect);
       // The parser's stderr is drained, never kept.

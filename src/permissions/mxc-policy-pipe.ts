@@ -15,8 +15,7 @@ class PolicyHelperTerminationError extends Error {
 }
 
 export async function openMxcPolicyPipe(bytes: Buffer, pipe: string): Promise<{
-  /** `launched`: the child is a job launcher and only its direct child may read the pipe. */
-  bindChild(child: childProcess.ChildProcess, launched?: boolean): void;
+  bindChild(child: childProcess.ChildProcess): void;
   release(): Promise<void>;
 }> {
   if (!bytes.length || bytes.length > MAX_POLICY_BYTES) throw new Error("Windows sandbox policy frame length is invalid");
@@ -127,7 +126,7 @@ export async function openMxcPolicyPipe(bytes: Buffer, pipe: string): Promise<{
     });
     if (failure) throw failure;
     return {
-      bindChild: (child, launched = false) => {
+      bindChild: (child) => {
         if (bound !== undefined) throw new Error("Windows sandbox policy client is already bound");
         bound = child;
         child.once("error", () => { void release().catch(fail); });
@@ -136,9 +135,8 @@ export async function openMxcPolicyPipe(bytes: Buffer, pipe: string): Promise<{
           void fail(new Error("Windows sandbox policy client did not start"));
           return;
         }
-        const pid = Buffer.alloc(8);
+        const pid = Buffer.alloc(4);
         pid.writeUInt32LE(child.pid);
-        pid.writeUInt32LE(launched ? 1 : 0, 4);
         server.stdin.write(pid);
       },
       release,

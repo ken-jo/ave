@@ -753,7 +753,7 @@ async function policyContract() {
     child.stdin.write(framed);
     const [ready] = await once(child.stdout, "data");
     assert.deepEqual(ready, Buffer.from("ready\n"));
-    child.stdin.write(Buffer.concat([uint32(process.pid), uint32(0)]));
+    child.stdin.write(uint32(process.pid));
     for (let index = 0; index < 2; index += 1) {
       const connection = createConnection(name);
       try {

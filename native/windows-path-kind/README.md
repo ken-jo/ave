@@ -377,12 +377,9 @@ UTF-8 policy on private stdin, creates a first-instance, local-only pipe with
 a protected current-user-only descriptor, and writes `ready` on stdout.
 Four instances fill the fixed instance limit before readiness, so back-to-back
 opens can connect while another instance waits for binding or disconnects.
-The caller then sends the launched client's little-endian PID and a
-little-endian relation (0: that process reads; 1: it is a job launcher and only
-its direct child reads), and keeps stdin open for ownership. The helper
-retains a process handle and checks each connection's kernel-reported PID, or
-for relation 1 that the connection's parent PID is the launcher and that it was
-created no earlier than the launcher, before serving the policy. Rejected clients
+The caller then sends the launched client's little-endian PID and keeps stdin
+open for ownership. The helper retains a process handle and checks each
+connection's kernel-reported PID before serving the policy. Rejected clients
 receive no bytes and consume no reads. An atomic budget of two accepted
 connections accommodates an existence check followed by the policy read.
 Owner EOF, deadline or release closes the server. Rebuild the existing helper

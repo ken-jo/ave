@@ -678,7 +678,6 @@ describe("builtin shell — Windows MXC containers", () => {
 
   it.each(["parser", "command"] as const)("omits the launcher exit code when the held container %s has no verdict", async (phase) => {
     bootMxcShells();
-    mxcLaunchMock.bindChild.mockClear();
     const hold = vi.mocked(holdHostShellSpawnDirectory);
     const holdDirectory = hold.getMockImplementation();
     if (holdDirectory === undefined) throw new Error("no hold implementation");
@@ -695,8 +694,6 @@ describe("builtin shell — Windows MXC containers", () => {
     expect(result).toMatchObject({ isError: true, notice: expect.stringContaining("cwd-pin-unconfirmed") });
     expect(result.metadata).not.toHaveProperty("returncode");
     expect(result.output).not.toMatch(/exited with code|terminated by signal/u);
-    // Policy delivery admits only the held launcher's direct child.
-    expect(mxcLaunchMock.bindChild.mock.calls.map((call: unknown[]) => call[1])).toEqual(phase === "parser" ? [true] : [false, true]);
   });
 
   it("keeps a running launcher's abort watch after an error and releases only on close", async () => {

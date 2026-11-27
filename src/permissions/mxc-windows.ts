@@ -1131,8 +1131,7 @@ export function mxcRequestArgs(request: MxcContainerRequest, launcher: string, p
 
 export interface MxcRequestTransport {
   readonly args: readonly string[];
-  /** `launched`: the child is a job launcher whose direct child reads the request. */
-  bindChild(child: ChildProcess, launched?: boolean): void;
+  bindChild(child: ChildProcess): void;
   release(): Promise<void>;
 }
 
