@@ -1,5 +1,6 @@
-import { spawn } from "node:child_process";
-import { closeSync, mkdtempSync, openSync, rmSync, symlinkSync } from "node:fs";
+import { execFileSync, spawn } from "node:child_process";
+import { closeSync, mkdtempSync, openSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { createServer as createUnixServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { Readable } from "node:stream";
@@ -122,4 +123,145 @@ describe.runIf(NATIVE)("native Linux shell bootstrap under each POSIX sh", () =>
     const result = await run(shell, "readonly AVE_MARKER=fixed\nexport AVE_MARKER=changed\n");
     expect(result).toMatchObject({ code: LINUX_SHELL_ENVIRONMENT_FAILED_CODE, ready: "", stdout: "" });
   });
+});
+
+// The proxy bridge: the helper binds a loopback port in the command's network namespace, forks, and forwards each
+// connection to a Unix socket from the unfiltered parent. bwrap gives each case its own network and pid namespace.
+describe.runIf(NATIVE)("native Linux proxy bridge", () => {
+  let root: string;
+  beforeEach(() => { root = mkdtempSync(join(tmpdir(), "ave-proxy-bridge-")); });
+  afterEach(() => { rmSync(root, { recursive: true, force: true }); });
+
+  const PORT = 3128;
+
+  async function contained(helper: string, args: readonly string[], options: { readonly ready?: boolean } = {}) {
+    const child = spawn("/usr/bin/bwrap", [
+      "--unshare-net", "--unshare-pid", "--die-with-parent", "--dev-bind", "/", "/", "--proc", "/proc", "--", helper, ...args,
+    ], { stdio: ["ignore", "pipe", "pipe", "ignore", options.ready === false ? "ignore" : "pipe"] });
+    const [stdout, stderr, ready, code] = await Promise.all([
+      collect(child.stdout), collect(child.stderr), options.ready === false ? Promise.resolve("") : collect(child.stdio[4] as Readable),
+      new Promise<number | null>(done => child.once("close", done)),
+    ]);
+    return { stdout, stderr, ready, code };
+  }
+
+  it.each([
+    [["--proxy-bridge", "0", "/run/proxy.sock"], "a port from 1 to 65535"],
+    [["--proxy-bridge", "65536", "/run/proxy.sock"], "a port from 1 to 65535"],
+    [["--proxy-bridge", "port", "/run/proxy.sock"], "a port from 1 to 65535"],
+    [["--proxy-bridge", "3128", "relative.sock"], "absolute socket path"],
+    [["--proxy-bridge", "3128", `/${"s".repeat(107)}`], "at most 107 bytes"],
+    [["--proxy-bridge", "3128", "/a.sock", "--proxy-bridge", "3129", "/b.sock"], "unknown option --proxy-bridge"],
+  ] as const)("refuses %j and runs nothing", async (options, message) => {
+    const result = await contained(HELPER, [...options, "--", "/bin/sh", "-c", "echo ran"], { ready: false });
+    expect(result).toMatchObject({ code: 126, stdout: "" });
+    expect(result.stderr).toContain(message);
+  });
+
+  it("accepts a socket path of exactly 107 bytes", async () => {
+    const path = `/${"s".repeat(106)}`;
+    expect(Buffer.byteLength(path)).toBe(107);
+    expect(await contained(HELPER, ["--proxy-bridge", String(PORT), path, "--", "/bin/sh", "-c", "exit 0"], { ready: false }))
+      .toMatchObject({ code: 0 });
+  });
+
+  it.each([[0], [7], [143]])("exits with the command's status %s", async (status) => {
+    const result = await contained(HELPER, ["--proxy-bridge", String(PORT), join(root, "proxy.sock"), "--ready-fd", "4", "--",
+      "/bin/sh", "-c", `exit ${status}`]);
+    expect(result).toMatchObject({ code: status, ready: "\n" });
+  });
+
+  it("reports a command ended by a signal as 128 plus the signal", async () => {
+    const result = await contained(HELPER, ["--proxy-bridge", String(PORT), join(root, "proxy.sock"), "--", "/bin/sh", "-c", "kill -KILL $$"], { ready: false });
+    expect(result.code).toBe(128 + 9);
+  });
+
+  it("forwards the command's loopback connection to the socket outside its filter, both ways", async () => {
+    const socket = join(root, "proxy.sock");
+    const server = createUnixServer((connection) => {
+      connection.once("data", (data) => { connection.end(`echo:${data.toString()}`); });
+    });
+    await new Promise<void>(done => server.listen(socket, done));
+    try {
+      const result = await contained(HELPER, ["--close-other-fds", "--proxy-bridge", String(PORT), socket, "--", "/usr/bin/python3", "-c", [
+        "import socket",
+        `s = socket.create_connection(("127.0.0.1", ${PORT}))`,
+        's.sendall(b"ping"); s.shutdown(socket.SHUT_WR)',
+        "print(s.makefile().read())",
+        // The command's own Unix socket stays refused by its filter.
+        "try:",
+        `    socket.socket(socket.AF_UNIX).connect(${JSON.stringify(socket)})`,
+        "    print('unix connected')",
+        "except PermissionError:",
+        "    print('unix refused')",
+      ].join("\n")], { ready: false });
+      expect(result, result.stderr).toMatchObject({ code: 0, stdout: "echo:ping\nunix refused\n" });
+    } finally {
+      await new Promise<void>(done => server.close(() => done()));
+    }
+  });
+
+  // N19: the command attacks its bridge (its parent), then kills it.
+  const ATTACK = [
+    "import ctypes, os, signal, time",
+    "libc = ctypes.CDLL(None, use_errno=True)",
+    "bridge = os.getppid()",
+    "def call(result):",
+    "    return 'ok' if result >= 0 else os.strerror(ctypes.get_errno())",
+    "out = {}",
+    "out['attach'] = call(libc.ptrace(16, bridge, None, None))",
+    "out['seize'] = call(libc.ptrace(0x4206, bridge, None, None))",
+    "class iovec(ctypes.Structure):",
+    "    _fields_ = [('base', ctypes.c_void_p), ('len', ctypes.c_size_t)]",
+    "buffer = ctypes.create_string_buffer(8)",
+    "local = iovec(ctypes.cast(buffer, ctypes.c_void_p), 8)",
+    // An unmapped address: a permitted read fails with EFAULT, a refused one with EPERM first.
+    "remote = iovec(ctypes.c_void_p(0x10), 8)",
+    "libc.process_vm_readv.restype = ctypes.c_ssize_t",
+    "out['vm_readv'] = call(libc.process_vm_readv(bridge, ctypes.byref(local), 1, ctypes.byref(remote), 1, 0))",
+    "def attempt(name, action):",
+    "    try:",
+    "        action(); out[name] = 'ok'",
+    "    except OSError as error:",
+    "        out[name] = os.strerror(error.errno)",
+    "attempt('mem', lambda: open(f'/proc/{bridge}/mem', 'rb').close())",
+    "attempt('fd', lambda: os.listdir(f'/proc/{bridge}/fd'))",
+    "attempt('environ', lambda: open(f'/proc/{bridge}/environ', 'rb').read())",
+    "attempt('root', lambda: os.listdir(f'/proc/{bridge}/root'))",
+    "print(';'.join(f'{key}={value}' for key, value in out.items()), flush=True)",
+    "os.kill(bridge, signal.SIGKILL)",
+    "time.sleep(30)",
+    "print('outlived', flush=True)",
+  ].join("\n");
+
+  function attack(helper: string) {
+    return contained(helper, ["--close-other-fds", "--proxy-bridge", String(PORT), join(root, "proxy.sock"), "--", "/usr/bin/python3", "-c", ATTACK],
+      { ready: false });
+  }
+
+  function verdicts(stdout: string): Record<string, string> {
+    return Object.fromEntries((stdout.split("\n")[0] ?? "").split(";").map(pair => pair.split("=") as [string, string]));
+  }
+
+  it("refuses the command every route into its bridge, at this host's ptrace scope, and ends with it", async () => {
+    const scope = readFileSync("/proc/sys/kernel/yama/ptrace_scope", "utf8").trim();
+    const started = Date.now();
+    const result = await attack(HELPER);
+    expect(result.stdout, `ptrace_scope ${scope}`).not.toContain("outlived");
+    expect(Date.now() - started).toBeLessThan(10_000);
+    // bwrap ends when the bridge, its only child, is killed; the command does not outlive the namespace.
+    expect(result.code).toBe(128 + 9);
+    expect(verdicts(result.stdout), `ptrace_scope ${scope}`).toEqual({
+      attach: "Operation not permitted", seize: "Operation not permitted", vm_readv: "Operation not permitted",
+      mem: "Permission denied", fd: "Permission denied", environ: "Permission denied", root: "Permission denied",
+    });
+  }, 20_000);
+
+  it("is the non-dumpable step that closes /proc: a bridge built without it exposes fd and environ", async () => {
+    const target = join(root, "control-target");
+    execFileSync("cargo", ["build", "--manifest-path", "native/linux-shell-seccomp/Cargo.toml", "--locked", "--offline", "--release",
+      "--features", "dumpable-bridge-control", "--target-dir", target], { stdio: "ignore", timeout: 300_000 });
+    const result = await attack(join(target, "release", "apply-seccomp"));
+    expect(verdicts(result.stdout)).toMatchObject({ fd: "ok", environ: "ok", root: "ok" });
+  }, 320_000);
 });
