@@ -150,6 +150,13 @@ export function isAcpAuthenticationError(value: unknown): boolean {
     || /\b(?:invalid|expired|missing|revoked) (?:access token|credentials?|client registration)\b/.test(message);
 }
 
+export function supportsAcpAuthenticationMethod(initialized: unknown, requiredMethod: string): boolean {
+  const result = isRecord(initialized) ? initialized : null;
+  const methods = Array.isArray(result?.authMethods) ? result.authMethods : [];
+  return methods.some((method) => isRecord(method)
+    && (method.id === requiredMethod || method.methodId === requiredMethod));
+}
+
 function safeVersion(value: string): string | null {
   const match = value.match(/\bv?\d+(?:\.\d+){1,4}(?:[-+][0-9a-z.-]+)?\b/i);
   if (!match) return null;
@@ -355,8 +362,13 @@ class AcpAuthProbe {
   private readonly pending = new JsonRpcPendingRequests();
   private readonly reader: JsonLineReader;
   private closed = false;
+  private lossReported = false;
 
-  constructor(private readonly child: ChildProcess) {
+  constructor(
+    private readonly child: ChildProcess,
+    private readonly manifest: AcpSubscriptionRuntimeManifest,
+    private readonly onConnectionLost: (connection: AcpConnectionLoss) => void,
+  ) {
     if (!child.stdin || !child.stdout) {
       throw new AcpSubscriptionRuntimeError("acp-operation-failed");
     }
@@ -368,6 +380,7 @@ class AcpAuthProbe {
     child.stdout.on("data", (chunk: Buffer | string) => this.reader.write(chunk));
     child.stdout.once("error", () => this.close(new AcpSubscriptionRuntimeError("acp-operation-failed")));
     child.stdin.once("error", () => this.close(new AcpSubscriptionRuntimeError("acp-operation-failed")));
+    child.stdout.once("end", () => this.close(new AcpSubscriptionRuntimeError("acp-operation-failed")));
     // Drain but never retain or log diagnostic output. Provider CLIs can print device codes, URLs, account emails, and network details here.
     child.stderr?.on("data", () => {});
     child.stderr?.once("error", () => this.close(new AcpSubscriptionRuntimeError("acp-operation-failed")));
@@ -376,7 +389,6 @@ class AcpAuthProbe {
   }
 
   async authenticate(
-    manifest: AcpSubscriptionRuntimeManifest,
     clientVersion: string,
   ): Promise<AcpAuthenticationProbeResult> {
     const initialized = await this.request("initialize", {
@@ -385,23 +397,16 @@ class AcpAuthProbe {
       clientInfo: { name: "ave", version: clientVersion },
     });
     const promptCapabilities = acpSubscriptionPromptCapabilitiesFromInitialize(initialized);
-    if (manifest.requiresAuthenticationMethod) {
-      const result = isRecord(initialized) ? initialized : null;
-      const methods = Array.isArray(result?.authMethods) ? result.authMethods : [];
-      const hasRequiredMethod = methods.some((method) => {
-        if (!isRecord(method)) return false;
-        return method.id === manifest.requiresAuthenticationMethod
-          || method.methodId === manifest.requiresAuthenticationMethod;
-      });
-      if (!hasRequiredMethod) {
-        return {
-          connection: "signed-out",
-          promptCapabilities: DEFAULT_ACP_SUBSCRIPTION_PROMPT_CAPABILITIES,
-        };
-      }
+    if (this.manifest.requiresAuthenticationMethod
+      && !supportsAcpAuthenticationMethod(initialized, this.manifest.requiresAuthenticationMethod)) {
+      return {
+        connection: "signed-out",
+        promptCapabilities: DEFAULT_ACP_SUBSCRIPTION_PROMPT_CAPABILITIES,
+      };
     }
     try {
-      await this.request("authenticate", manifest.authenticateParams);
+      await this.request("authenticate", this.manifest.authenticateParams);
+      if (this.closed) throw new AcpSubscriptionRuntimeError("acp-operation-failed");
       return { connection: "connected", promptCapabilities };
     } catch (error) {
       if (error instanceof AcpRpcError && error.authenticationRequired) {
@@ -415,13 +420,15 @@ class AcpAuthProbe {
   }
 
   dispose(): void | Promise<void> {
-    this.close(new AcpSubscriptionRuntimeError("acp-operation-failed"));
+    this.close(new AcpSubscriptionRuntimeError("acp-operation-failed"), true);
     return forceKillManagedChildProcess(this.child, "acp subscription authentication probe");
   }
 
   private request(method: string, params: Record<string, unknown>): Promise<unknown> {
     if (this.closed || !this.child.stdin?.writable) {
-      return Promise.reject(new AcpSubscriptionRuntimeError("acp-operation-failed"));
+      const error = new AcpSubscriptionRuntimeError("acp-operation-failed");
+      this.close(error);
+      return Promise.reject(error);
     }
     const id = this.pending.nextRequestId;
     const payload = JSON.stringify({ jsonrpc: "2.0", id, method, params });
@@ -472,17 +479,30 @@ class AcpAuthProbe {
       const request = this.pending.take(message.id);
       if (!request) return;
       if (message.error !== undefined) {
-        request.reject(new AcpRpcError(isAcpAuthenticationError(message.error)));
+        const authLost = isAcpAuthenticationError(message.error);
+        if (authLost) this.reportLoss("signed-out");
+        request.reject(new AcpRpcError(authLost));
       } else {
+        const method = this.manifest.requiresAuthenticationMethod;
+        if (request.method === "initialize" && method && !supportsAcpAuthenticationMethod(message.result, method)) {
+          this.reportLoss("signed-out");
+        }
         request.resolve(message.result);
       }
       return;
     }
   }
 
-  private close(error: Error): void {
+  private reportLoss(connection: AcpConnectionLoss): void {
+    if (this.lossReported) return;
+    this.lossReported = true;
+    this.onConnectionLost(connection);
+  }
+
+  private close(error: Error, deliberate = false): void {
     if (this.closed) return;
     this.closed = true;
+    if (!deliberate) this.reportLoss("unknown");
     this.reader.close();
     this.pending.rejectAll(error);
   }
@@ -495,7 +515,7 @@ export class AcpSubscriptionRuntimeClient {
   private readonly platform: NodeJS.Platform;
   private readonly clientVersion: string;
   private executablePath: string | null;
-  private verifiedExecutable: string | null = null;
+  private observedExecutable: string | null;
   private status: AcpSubscriptionStatus;
   private pendingLogin: PendingLogin | null = null;
   private completedLoginError: AcpSubscriptionErrorCode | null = null;
@@ -509,15 +529,16 @@ export class AcpSubscriptionRuntimeClient {
       ?? ((candidate) => resolveAcpSubscriptionExecutable(candidate, this.platform));
     this.clientVersion = options.clientVersion ?? getAveAppVersion();
     this.executablePath = options.executablePath ?? null;
+    this.observedExecutable = this.executablePath;
     this.status = this.executablePath
       ? unverifiedStatus(options.provider)
       : configuredStatus(options.provider);
   }
 
   // Read-only status: this method never executes a user-selected program.
-  async getStatus(): Promise<AcpSubscriptionStatus> {
+  async getStatus(onExecutableLost?: () => void): Promise<AcpSubscriptionStatus> {
     return this.withOperationLock(async () => {
-      const status = await this.getStatusUnsafe();
+      const status = await this.getStatusUnsafe(onExecutableLost);
       const completedLoginError = this.completedLoginError;
       this.completedLoginError = null;
       if (completedLoginError) throw new AcpSubscriptionRuntimeError(completedLoginError);
@@ -525,7 +546,7 @@ export class AcpSubscriptionRuntimeClient {
     });
   }
 
-  private async getStatusUnsafe(): Promise<AcpSubscriptionStatus> {
+  private async getStatusUnsafe(onExecutableLost?: () => void): Promise<AcpSubscriptionStatus> {
     if (this.pendingLogin) return this.currentStatus();
     if (!this.executablePath) {
       this.status = configuredStatus(this.options.provider);
@@ -533,14 +554,15 @@ export class AcpSubscriptionRuntimeClient {
     }
     try {
       const executable = await this.resolveExecutable(this.executablePath);
-      if (this.verifiedExecutable === executable && this.status.runtime === "ready") {
+      if (this.observedExecutable === executable) {
         return this.currentStatus();
       }
-      this.verifiedExecutable = null;
+      const replaced = this.observedExecutable !== null;
+      this.observedExecutable = executable;
       this.status = unverifiedStatus(this.options.provider);
+      if (replaced) onExecutableLost?.();
     } catch {
-      this.verifiedExecutable = null;
-      this.status = unavailableStatus(this.options.provider);
+      this.observeMissingExecutable(onExecutableLost);
     }
     return this.currentStatus();
   }
@@ -550,7 +572,6 @@ export class AcpSubscriptionRuntimeClient {
   }
 
   recordConnectionLoss(connection: AcpConnectionLoss): void {
-    this.verifiedExecutable = null;
     this.status = acpSubscriptionStatus(this.options.provider, "unverified", connection);
   }
 
@@ -566,7 +587,7 @@ export class AcpSubscriptionRuntimeClient {
       await this.stopUnsafe();
       this.completedLoginError = null;
       this.executablePath = executable;
-      this.verifiedExecutable = null;
+      this.observedExecutable = executable;
       this.status = unverifiedStatus(this.options.provider);
       return this.currentStatus();
     });
@@ -577,30 +598,40 @@ export class AcpSubscriptionRuntimeClient {
       await this.stopUnsafe();
       this.completedLoginError = null;
       this.executablePath = null;
-      this.verifiedExecutable = null;
+      this.observedExecutable = null;
       this.status = configuredStatus(this.options.provider);
       return this.currentStatus();
     });
   }
 
   // Explicit verification is the only path that executes the selected binary.
-  async verify(): Promise<AcpSubscriptionStatus> {
+  async verify(
+    onConnectionLost?: (connection: AcpConnectionLoss) => void,
+    assertCurrent?: () => void,
+  ): Promise<AcpSubscriptionStatus> {
     return this.withOperationLock(async () => {
+      const reportLoss = (connection: AcpConnectionLoss) => {
+        this.recordConnectionLoss(connection);
+        onConnectionLost?.(connection);
+      };
+      assertCurrent?.();
       if (this.pendingLogin) throw new AcpSubscriptionRuntimeError("acp-login-in-progress");
-      const executable = await this.requireExecutable();
+      const executable = await this.requireExecutable(() => onConnectionLost?.("unknown"));
+      assertCurrent?.();
       try {
-        const version = await this.runCommand(executable, this.manifest.probeArgs, true);
+        const version = await this.runCommand(executable, this.manifest.probeArgs, true, () => reportLoss("unknown"));
         const reportedVersion = safeVersion(version);
         if (
           this.options.provider === "grok-build"
           && (!reportedVersion || !versionAtLeast(reportedVersion, GROK_BUILD_REQUIRED_MINIMUM_VERSION))
         ) {
-          this.verifiedExecutable = null;
-          this.status = unverifiedStatus(this.options.provider);
+          reportLoss("unknown");
           throw new AcpSubscriptionRuntimeError("acp-runtime-unavailable");
         }
-        const authentication = await this.probeAuthentication(executable);
-        this.verifiedExecutable = executable;
+        assertCurrent?.();
+        const authentication = await this.probeAuthentication(executable, reportLoss);
+        if (authentication.connection === "connected") assertCurrent?.();
+        this.observedExecutable = executable;
         this.status = acpSubscriptionStatus(
           this.options.provider,
           "ready",
@@ -614,6 +645,7 @@ export class AcpSubscriptionRuntimeClient {
         return this.currentStatus();
       } catch (error) {
         if (error instanceof AcpSubscriptionRuntimeError) throw error;
+        assertCurrent?.();
         this.status = acpSubscriptionStatus(this.options.provider, "ready", "unknown");
         throw new AcpSubscriptionRuntimeError("acp-operation-failed");
       }
@@ -650,7 +682,6 @@ export class AcpSubscriptionRuntimeClient {
       pending.timer.unref?.();
       this.pendingLogin = pending;
       this.completedLoginError = null;
-      this.verifiedExecutable = null;
       this.status = acpSubscriptionStatus(
         this.options.provider,
         "unverified",
@@ -705,7 +736,6 @@ export class AcpSubscriptionRuntimeClient {
         if (error instanceof AcpSubscriptionRuntimeError) throw error;
         throw new AcpSubscriptionRuntimeError("acp-operation-failed");
       }
-      this.verifiedExecutable = null;
       this.status = acpSubscriptionStatus(this.options.provider, "unverified", "signed-out");
       return this.currentStatus();
     });
@@ -717,14 +747,20 @@ export class AcpSubscriptionRuntimeClient {
     });
   }
 
-  private async requireExecutable(): Promise<string> {
+  private observeMissingExecutable(onExecutableLost?: () => void): void {
+    const lost = this.observedExecutable !== null;
+    this.observedExecutable = null;
+    this.status = unavailableStatus(this.options.provider);
+    if (lost) onExecutableLost?.();
+  }
+
+  private async requireExecutable(onExecutableLost?: () => void): Promise<string> {
     if (!this.executablePath) throw new AcpSubscriptionRuntimeError("acp-runtime-not-configured");
     await this.requireRuntimeDirectories();
     try {
       return await this.resolveExecutable(this.executablePath);
     } catch {
-      this.verifiedExecutable = null;
-      this.status = unavailableStatus(this.options.provider);
+      this.observeMissingExecutable(onExecutableLost);
       throw new AcpSubscriptionRuntimeError("acp-runtime-invalid-executable");
     }
   }
@@ -767,11 +803,19 @@ export class AcpSubscriptionRuntimeClient {
     executable: string,
     args: readonly string[],
     captureStdout: boolean,
+    onTransportLost?: () => void,
   ): Promise<string> {
-    const child = this.launch(executable, args);
+    let child: ChildProcess;
+    try {
+      child = this.launch(executable, args);
+    } catch (error) {
+      onTransportLost?.();
+      throw error;
+    }
     const stdoutStream = child.stdout;
     const stderrStream = child.stderr;
     if (!stdoutStream || !stderrStream) {
+      onTransportLost?.();
       await forceKillManagedChildProcess(child, "acp subscription command missing output streams");
       throw new AcpSubscriptionRuntimeError("acp-operation-failed");
     }
@@ -779,10 +823,12 @@ export class AcpSubscriptionRuntimeClient {
       let settled = false;
       let stdout = "";
       let termination: void | Promise<void>;
-      const finish = (error?: Error): void => {
+      const finish = (error?: Error, terminateFor?: string): void => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        if (error) onTransportLost?.();
+        if (terminateFor) termination = forceKillManagedChildProcess(child, terminateFor);
         const settle = (): void => {
           if (error) rejectCommand(error);
           else resolveCommand(stdout);
@@ -791,22 +837,19 @@ export class AcpSubscriptionRuntimeClient {
         else settle();
       };
       const timer = setTimeout(() => {
-        termination = forceKillManagedChildProcess(child, "acp subscription command timeout");
-        finish(new AcpSubscriptionRuntimeError("acp-runtime-unavailable"));
+        finish(new AcpSubscriptionRuntimeError("acp-runtime-unavailable"), "acp subscription command timeout");
       }, PROBE_TIMEOUT_MS);
       timer.unref?.();
       stdoutStream.on("data", (chunk: Buffer | string) => {
         if (!captureStdout || settled) return;
         stdout += String(chunk);
         if (Buffer.byteLength(stdout, "utf8") > MAX_VERSION_LENGTH * 4) {
-          termination = forceKillManagedChildProcess(child, "acp subscription command output limit");
-          finish(new AcpSubscriptionRuntimeError("acp-operation-failed"));
+          finish(new AcpSubscriptionRuntimeError("acp-operation-failed"), "acp subscription command output limit");
         }
       });
       stderrStream.on("data", () => {});
       child.once("error", () => {
-        termination = forceKillManagedChildProcess(child, "acp subscription command error");
-        finish(new AcpSubscriptionRuntimeError("acp-runtime-unavailable"));
+        finish(new AcpSubscriptionRuntimeError("acp-runtime-unavailable"), "acp subscription command error");
       });
       child.once("close", (code: number | null) => {
         if (code === 0) finish();
@@ -815,12 +858,21 @@ export class AcpSubscriptionRuntimeClient {
     });
   }
 
-  private async probeAuthentication(executable: string): Promise<AcpAuthenticationProbeResult> {
-    const child = this.launch(executable, this.manifest.acpArgs);
+  private async probeAuthentication(
+    executable: string,
+    onConnectionLost: (connection: AcpConnectionLoss) => void,
+  ): Promise<AcpAuthenticationProbeResult> {
+    let child: ChildProcess;
+    try {
+      child = this.launch(executable, this.manifest.acpArgs);
+    } catch (error) {
+      onConnectionLost("unknown");
+      throw error;
+    }
     let probe: AcpAuthProbe | null = null;
     try {
-      probe = new AcpAuthProbe(child);
-      return await probe.authenticate(this.manifest, this.clientVersion);
+      probe = new AcpAuthProbe(child, this.manifest, onConnectionLost);
+      return await probe.authenticate(this.clientVersion);
     } catch (error) {
       if (error instanceof AcpSubscriptionRuntimeError || error instanceof AcpRpcError) throw error;
       throw new AcpSubscriptionRuntimeError("acp-operation-failed");
@@ -828,6 +880,7 @@ export class AcpSubscriptionRuntimeClient {
       if (probe) {
         await probe.dispose();
       } else {
+        onConnectionLost("unknown");
         await forceKillManagedChildProcess(child, "acp subscription invalid authentication probe");
       }
     }
@@ -966,7 +1019,6 @@ export class AcpSubscriptionRuntimeClient {
     pending.verificationUrl = null;
     pending.deviceCode = null;
     await forceKillManagedChildProcess(pending.child, `acp subscription login ${outcome}`);
-    this.verifiedExecutable = null;
     this.status = acpSubscriptionStatus(
       this.options.provider,
       "unverified",

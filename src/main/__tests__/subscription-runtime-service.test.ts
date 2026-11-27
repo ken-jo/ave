@@ -454,6 +454,36 @@ describe("SubscriptionRuntimeService", () => {
     });
   });
 
+  it.each([false, true])("orders ACP proof after a passive status read (executable lost: %s)", async (lost) => {
+    const preparation = deferred<void>();
+    const preparing = deferred<void>();
+    const registry = {
+      getStatus: vi.fn(async (_provider, onExecutableLost?: () => void): Promise<AcpSubscriptionStatus> => {
+        if (lost) onExecutableLost?.();
+        return { ...KIMI_CONNECTED, runtime: lost ? "unavailable" : "unverified", connection: "unknown" };
+      }),
+      verify: vi.fn(async () => {
+        preparing.resolve();
+        await preparation.promise;
+        return KIMI_CONNECTED;
+      }),
+      stopAll: vi.fn(async () => undefined),
+    } as unknown as AcpSubscriptionRuntimeRegistry;
+    const service = await runtimeService(registry);
+    const verification = service.verify("kimi-code").catch((error: unknown) => error);
+    try {
+      await preparing.promise;
+      await expect(service.getStatus("kimi-code")).resolves.toMatchObject({ capabilities: { chat: false } });
+      preparation.resolve();
+      await expect(verification).resolves.toMatchObject(lost
+        ? { code: "subscription-status-superseded" }
+        : { connection: "connected", capabilities: { chat: true } });
+    } finally {
+      preparation.resolve();
+      await service.stop();
+    }
+  });
+
   it("stops a raw ACP session that resolves after an executable mutation", async () => {
     const rawSession = {
       provider: "kimi-code" as const,

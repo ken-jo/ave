@@ -18,6 +18,7 @@ import {
   isAcpAuthenticationError,
   resolveAcpSubscriptionExecutable,
   sanitizedAcpSubscriptionEnvironment,
+  supportsAcpAuthenticationMethod,
   type AcpConnectionLoss,
   type AcpSubscriptionRuntimeManifest,
 } from "./acp-subscription-runtime-client.js";
@@ -785,7 +786,8 @@ export class AcpSubscriptionSessionClient {
         if (authLost) this.abortTransport(error, undefined, "signed-out");
         pending.reject(error);
       } else if (Object.prototype.hasOwnProperty.call(message, "result")) {
-        if (pending.method === "initialize" && !this.supportsAuthenticationMethod(message.result)) {
+        const authMethod = this.manifest.requiresAuthenticationMethod;
+        if (pending.method === "initialize" && (!authMethod || !supportsAcpAuthenticationMethod(message.result, authMethod))) {
           const error = new AcpSubscriptionSessionError("acp-session-authentication-required");
           this.abortTransport(error, undefined, "signed-out");
           pending.reject(error);
@@ -952,17 +954,6 @@ export class AcpSubscriptionSessionClient {
         };
       },
     };
-  }
-
-  private supportsAuthenticationMethod(initialize: unknown): boolean {
-    const root = isRecord(initialize) ? initialize : null;
-    const methods = Array.isArray(root?.authMethods) ? root.authMethods : [];
-    const requiredMethod = this.manifest.requiresAuthenticationMethod;
-    if (!requiredMethod) return false;
-    return methods.some((method) => {
-      if (!isRecord(method)) return false;
-      return method.id === requiredMethod || method.methodId === requiredMethod;
-    });
   }
 
   private normalizeStartError(error: unknown): AcpSubscriptionSessionError {
