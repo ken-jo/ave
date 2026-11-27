@@ -16,6 +16,7 @@ import { ToolRegistry } from "../registry.js";
 import { createDynamicTool } from "../base.js";
 
 const CANARY = "NESTED_SECRET_CANARY_ba5c1a";
+const CREDENTIAL_SHAPED_ID = "ghp_" + "aB1cD2eF3gH4jK5mN6pQ7rS8tU9vW0xY1zA2";
 const roots: string[] = [];
 
 afterEach(async () => {
@@ -74,7 +75,7 @@ it("does not change execution or repeat an effect when the logger throws", async
   expect(failing).toHaveBeenCalledWith(expect.objectContaining({ event: "permission_decision", decision: "allow" }));
 });
 
-it("keeps the nested canary out of production console, file and support bundle logs", async () => {
+it("keeps the credential-shaped tool-call ID and nested canary out of production console, file and support bundle logs", async () => {
   const root = mkdtempSync(join(tmpdir(), "ave-permission-log-sink-"));
   roots.push(root);
   const logsDir = join(root, "logs");
@@ -89,18 +90,18 @@ it("keeps the nested canary out of production console, file and support bundle l
     "import { join } from \"node:path\";",
     "import { configureHostResources } from \"./src/main/host-resources.ts\";",
     "configureHostResources({ resourcePath: join(process.cwd(), \"resources\"), isPackaged: false });",
-    "const [root, logs, canary] = process.argv.slice(1);",
+    "const [root, logs, canary, toolUseId] = process.argv.slice(1);",
     "if (!initFileLogSink({ dir: logs })) throw new Error(\"Missing file sink\");",
     "const manager = new PermissionManager(join(root, \"permissions.json\"));",
     "manager.checkDetailed = () => ({ decision: \"allow\", reason: canary, provenance: RULE_PROVENANCE });",
     "const registry = new ToolRegistry();",
     "registry.register(createDynamicTool({ name: \"allow_probe\", description: \"probe\", category: \"read\", source: \"builtin\", isReadOnly: () => true, jsonSchema: { type: \"object\" }, execute: async () => ({ output: canary, isError: false }) }));",
-    "const [result] = await new ToolExecutor(registry, undefined, manager).executeAll([{ id: \"sink-probe\", name: \"allow_probe\", input: { nested: { command: canary } } }], { sessionId: \"permission-session\", permissionContext: { trustOrigin: \"user-keyboard\" } });",
-    "if (result.is_error || result.content !== canary) throw new Error(\"Unexpected effect result\");",
+    "const [result] = await new ToolExecutor(registry, undefined, manager).executeAll([{ id: toolUseId, name: \"allow_probe\", input: { nested: { command: canary } } }], { sessionId: \"permission-session\", permissionContext: { trustOrigin: \"user-keyboard\" } });",
+    "if (result.is_error || result.content !== canary || result.tool_use_id !== toolUseId) throw new Error(\"Unexpected effect result\");",
     "closeFileLogSink();",
   ].join("\n");
   const { stdout, stderr } = await promisify(execFile)(process.execPath, [
-    "--import", "tsx", "--input-type=module", "-e", script, "--", root, logsDir, CANARY,
+    "--import", "tsx", "--input-type=module", "-e", script, "--", root, logsDir, CANARY, CREDENTIAL_SHAPED_ID,
   ], { env: { ...inherited, AVE_HOME: root, ELECTRON_RUN_AS_NODE: "1", NODE_ENV: "production", LOG_LEVEL: "info" }, windowsHide: true });
   const file = readdirSync(logsDir).map((name) => readFileSync(join(logsDir, name), "utf8")).join("\n");
   const bundle = new AdmZip(await buildDiagnosticsBundle({
@@ -111,8 +112,9 @@ it("keeps the nested canary out of production console, file and support bundle l
   for (const output of [stdout, file, bundleLogs]) {
     const decisions = output.split("\n").filter((line) => line.includes("\"event\":\"permission_decision\""));
     expect(decisions).toHaveLength(1);
-    expect(decisions[0]).toContain("sink-probe");
+    expect(output).not.toContain(CREDENTIAL_SHAPED_ID);
     expect(output).not.toContain(CANARY);
   }
   expect(stderr).not.toContain(CANARY);
+  expect(stderr).not.toContain(CREDENTIAL_SHAPED_ID);
 });

@@ -1,3 +1,4 @@
+import { maskSensitiveData } from "../shared/dlp.js";
 import { createLogger } from "./logger.js";
 
 const log = createLogger("permissions");
@@ -16,6 +17,7 @@ export function logPermissionEvent(
 
 export function permissionLogId(value: unknown): string | undefined {
   return typeof value === "string" && /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/.test(value)
+    && maskSensitiveData(value).detections.length === 0
     ? value
     : undefined;
 }
