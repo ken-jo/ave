@@ -935,12 +935,12 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     if (out === undefined) throw new Error("the run has no output folder");
     // Whether a file is at a path of the output folder, asked of the held folder level by level: a level that is no real folder holds
     // none, and an output folder that is no longer the one the run made is not asked at all.
-    const fileInOut = (path: string): boolean => {
+    const outputFileVersion = (path: string): string | undefined => {
       const segments = path.split("/");
       try {
-        return out.walk(segments.slice(0, -1))?.isFile(segments.at(-1) as string) === true;
+        return out.walk(segments.slice(0, -1))?.fileVersion(segments.at(-1) as string);
       } catch (error) {
-        if (error instanceof OwnedFsError && error.reason === "not-plain") return false;
+        if (error instanceof OwnedFsError && error.reason === "not-plain") return undefined;
         throw error;
       }
     };
@@ -998,13 +998,13 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     const files: ConflictFile[] = [];
     for (const [path, stages] of [...contested].sort(([a], [b]) => a < b ? -1 : 1)) {
       // A file the user put at the contested path is the resolution: it stays, and no stage's copy replaces it.
-      const onDisk = fileInOut(path) ? await hashSeedFile(out, path) : undefined;
+      const onDisk = outputFileVersion(path) === undefined ? undefined : await hashSeedFile(out, path);
       const recorded = file.out[path]?.sha256;
       if (onDisk !== undefined && onDisk.sha256 !== recorded) next.set(path, { ...onDisk, stageId: [...stages].at(-1) as string });
       else files.push({ path, stageIds: [...stages] });
     }
     if (files.length > 0) return conflictOf(run, joinId, "same-path", files, Object.fromEntries(stageIds.map(id => [id, file.stages[id]?.manifest ?? []])));
-    const wanted: typeof copies = [];
+    const wanted: { copy: (typeof copies)[number]; version: string | undefined }[] = [];
     const keepUserOutput = (copy: (typeof copies)[number], there: { sha256: string; size: number }): boolean => {
       if (there.sha256 === copy.sha256 || there.sha256 === file.out[copy.path]?.sha256) return false;
       next.set(copy.path, { ...there, stageId: copy.stageId });
@@ -1014,8 +1014,9 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     for (const copy of copies) {
       if (contested.has(copy.path)) continue;
       if ((await hashSeedFile(stageDir(copy.stageId), copy.path)).sha256 !== copy.sha256) throw new Error("a sealed stage file changed before it was collected");
-      const there = fileInOut(copy.path) ? await hashSeedFile(out, copy.path) : undefined;
-      if (there === undefined || !keepUserOutput(copy, there)) wanted.push(copy);
+      const version = outputFileVersion(copy.path);
+      const there = version === undefined ? undefined : await hashSeedFile(out, copy.path);
+      if (there === undefined || !keepUserOutput(copy, there)) wanted.push({ copy, version });
     }
     const assertAuthority = () => authority?.throwIfAborted();
     assertAuthority();
@@ -1025,21 +1026,23 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
       if (staged) {
         // Prepare the verified bytes off the output tree. An interrupted read leaves the previous output intact.
         const prepared = [];
-        for (const copy of wanted) {
+        for (const { copy, version } of wanted) {
           assertAuthority();
           const [source] = await copySeedFiles(stageDir(copy.stageId), staged, [copy.path], new Map([[copy.path, copy.sha256]]), false, authority);
           if (source === undefined) throw new Error("a staged copy is missing");
-          prepared.push({ copy, source });
+          prepared.push({ copy, source, version });
         }
         // Publish without yielding. A failed rename leaves the last destination intact.
         const keptUserOutput = Symbol();
-        for (const { copy, source } of prepared) {
+        for (const { copy, source, version } of prepared) {
           const segments = copy.path.split("/");
           const leaf = segments.pop() as string;
           assertAuthority();
           const destination = out.ensurePath(segments);
           try {
             destination.replaceFileFrom(leaf, source.directory, leaf, source.id, () => {
+              assertAuthority();
+              if (destination.fileVersion(leaf) === version) return;
               let there: ReturnType<OwnedDir["hashFile"]>;
               try { there = destination.hashFile(leaf); }
               catch (error) {

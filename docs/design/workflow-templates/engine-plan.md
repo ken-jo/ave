@@ -599,7 +599,7 @@ Chosen by `open` for every other case, a run with no project included.
 | `seal` | Record the manifest (relative path, size, sha256) of the files matching the stage's `outputs` globs (default `**`). |
 | `integrate` | Copy each sealed stage's manifest files into `_out` at the same relative paths. The same path from two stages with different content is a `conflict`; nothing is copied for that join. |
 
-If a destination changes while the host reads its hash immediately before publication, the user’s edit stays and the host records no digest for that path.
+If a destination changes while the host reads its hash immediately before publication, the user’s edit stays and the host records no digest for that path. Publication only rehashes a destination when its file identity, modification time or change time differs from the asynchronous precheck.
 | `release` | Remove stage folders. `_out` and `_run.json` stay. |
 | `discard` | Remove everything under the run folder, `_out` and `_run.json` included, of each run that has no record and whose item is gone (§3.1, R6). A run whose item is still listed keeps `_out`. |
 
