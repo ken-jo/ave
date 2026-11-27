@@ -1155,8 +1155,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: ave
-          fetch-depth: 2
-          fetch-tags: true
+          # The Class A test compares against origin/main, including on tag pushes.
+          fetch-depth: 0
           persist-credentials: false
       - *windows-node
       - *windows-docs-impact
@@ -1517,7 +1517,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: ave
-          fetch-depth: 2
+          # The Class A test compares against origin/main, including on tag pushes.
+          fetch-depth: 0
           persist-credentials: false
       # Pin Node 24 rather than whichever Node the runner image ships. The
       # docs classifier below runs on it.

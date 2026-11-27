@@ -17,13 +17,8 @@ function resolveMainBaseline(): string {
   const originMain = resolveCommit("rev-parse", "--verify", "refs/remotes/origin/main^{commit}");
   if (originMain) return originMain;
 
-  // A checkout of the CI merge ref has the main tip as its first parent.
-  if (process.env.GITHUB_EVENT_NAME === "pull_request" && process.env.GITHUB_BASE_REF === "main"
-    && /^refs\/pull\/\d+\/merge$/.test(process.env.GITHUB_REF ?? "")
-    && resolveCommit("rev-parse", "--verify", "HEAD") === process.env.GITHUB_SHA
-    && resolveCommit("rev-parse", "--verify", "HEAD^2")) {
-    const pullRequestBase = resolveCommit("merge-base", "HEAD", "HEAD^1");
-    if (pullRequestBase) return pullRequestBase;
+  if (process.env.GITHUB_ACTIONS === "true") {
+    throw new Error("Cannot resolve origin/main for the Class A gate. The CI checkout must fetch refs/remotes/origin/main.");
   }
 
   const mergeBase = resolveCommit("merge-base", "HEAD", "refs/heads/main");
