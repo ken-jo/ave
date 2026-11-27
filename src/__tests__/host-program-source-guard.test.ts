@@ -64,6 +64,7 @@ const LAUNCH_FILES = [
   "permissions/asrt-sandbox.ts",
   "permissions/asrt-windows-support.ts",
   "permissions/confined-child.ts",
+  "permissions/holder-label-sweep.ts", // macOS holder sweep: the pinned helper's absolute resource path, empty env
   "permissions/judge/external-judge.ts",
   "permissions/mxc-extension-process.ts",
   "permissions/mxc-policy-pipe.ts",
@@ -71,6 +72,8 @@ const LAUNCH_FILES = [
   "permissions/mxc-shell-supervisor-client.ts", // macOS shell supervisor: process.execPath as Node, safe env without loader overrides
   "permissions/mxc-windows.ts",
   "permissions/offline-process-sandbox.ts",
+  "permissions/seatbelt-holder-boot.ts", // macOS holder boot check and watcher: the pinned helper and /bin/sleep by absolute path
+  "permissions/seatbelt-holder-launch.ts", // macOS holder chain: /bin/sh launch gate, /usr/bin/sandbox-exec, the admitted command
   "permissions/srt-win-integrity.ts",
   "permissions/verified-shell-command.ts",
   "permissions/windows-acl-grant-holder.ts",
