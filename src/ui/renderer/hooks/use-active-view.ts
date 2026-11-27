@@ -81,6 +81,8 @@ export function useActiveView(
         const parsed = parseInlineViewKey(stored);
         // Unparseable, or a key with no inline form: stay home, silently.
         if (!parsed) return;
+        if (parsed.key === "settings" && settings.activeChatModel?.kind === "none"
+          && settings.activeChatModel.reason === "no-connected-provider") return;
         // Terminals and web pages are put back by the saved main layout (`use-main-layout.ts`), which knows which surface each
         // pane held; the bare view key does not, so it is not acted on here.
         if (isInstanceViewKey(parsed.key)) return;

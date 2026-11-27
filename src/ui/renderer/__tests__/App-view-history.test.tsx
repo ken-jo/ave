@@ -13,6 +13,7 @@ import {
 } from "../../../../test/renderer/helpers.js";
 import { MOCK_DEFAULT_SETTINGS } from "../../../../test/renderer/mock-ave-api.js";
 import { TEST_IDS, testIdSelector } from "../../../shared/test-ids.js";
+import { t } from "../../../i18n/runtime.js";
 
 /** Assert real localized path labels through sidebar and toolbar actions; stack-only tests cannot verify routing. */
 /** Which pane the window is ON — the one the frame marks focused. */
@@ -279,6 +280,25 @@ describe("App view history after a restored launch location", () => {
     await waitFor(() => expect(path(container)).toContain("권한"));
     const back = container.querySelector(testIdSelector(TEST_IDS.viewPathBack)) as HTMLButtonElement;
     expect(back.disabled).toBe(true);
+  });
+
+  it("opens chat when the saved model's provider is disconnected", async () => {
+    const stored = settingsWithActiveView("settings", "llm");
+    const { container } = await renderApp({
+      hasApiKey: false,
+      settings: {
+        ...stored,
+        llm: { ...stored.llm, activeChatRuntime: { kind: "subscription", provider: "codex", model: "example-model" } },
+        activeChatModel: { kind: "none", reason: "no-connected-provider" },
+      },
+    });
+    await settle();
+    const settingsRow = container.querySelector('[data-testid="sidebar-settings"]');
+    expect(settingsRow).not.toHaveAttribute("aria-current", "page");
+    expect(screen.getByPlaceholderText(t("llmTab.modelPlaceholderNoProvider"))).toBeTruthy();
+    expect(screen.queryByTestId("iab-status-model")).toBeNull();
+    fireEvent.click(screen.getByTestId("iab-status-model-setup"));
+    await waitFor(() => expect(settingsRow).toHaveAttribute("aria-current", "page"));
   });
 
   it("records normally once the user navigates from the restored location", async () => {
