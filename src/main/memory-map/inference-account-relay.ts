@@ -1,10 +1,10 @@
-import { spawn } from 'node:child_process';
 import type { Socket } from 'node:net';
 import { win32 } from 'node:path';
 import { acceptHostOverLoopback } from '../../plugins/isolation/child-loopback-link.js';
 import { raceWithAbort, sleep } from '../../shared/abortable-deadline.js';
 import { TOOL_TIMEOUT_POLICY } from '../../shared/tool-timeout-policy.js';
 import { runWithCeiling } from '../../tools/executor-ceiling.js';
+import { spawnInferenceRelayTarget } from '../managed-child-processes.js';
 import { writeInferenceAccountExitReceipt } from './inference-request.js';
 
 const BASIC_LIMIT_INFORMATION = 2;
@@ -100,15 +100,10 @@ export async function runInferenceAccountTarget(socket: Socket, env: Readonly<Re
     read();
   });
   if (!first || socket.destroyed || socket.readableEnded) return;
-  const entry = process.argv[1];
-  if (entry === undefined) throw new Error('Inference target entry is missing');
   const overrides = { ...env, ELECTRON_RUN_AS_NODE: '1' };
   const overrideKeys = new Set(Object.keys(overrides).map(name => name.toUpperCase()));
   const inherited = Object.fromEntries(Object.entries(process.env).filter(([name]) => !overrideKeys.has(name.toUpperCase())));
-  const child = spawn(process.execPath, [...process.execArgv, entry], {
-    env: { ...inherited, ...overrides },
-    stdio: ['pipe', 'pipe', 'ignore'], shell: false, windowsHide: true,
-  });
+  const child = spawnInferenceRelayTarget({ ...inherited, ...overrides });
   child.on('error', () => {});
   child.stdin.on('error', () => {});
   const closed = new Promise<void>(resolve => child.once('close', () => resolve()));

@@ -1,6 +1,6 @@
-import { spawn, spawnSync, type ChildProcess, type SpawnOptions } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess, type ChildProcessByStdio, type SpawnOptions } from "node:child_process";
 import { createInterface } from "node:readline";
-import { Writable } from "node:stream";
+import { type Readable, Writable } from "node:stream";
 import { readFile, rm } from "node:fs/promises";
 import { parse, resolve, sep } from "node:path";
 import { win32SystemBinary } from "../shared/windows-system-path.js";
@@ -183,6 +183,17 @@ export function trackManagedChildProcess(
   options: TrackManagedChildProcessOptions = {},
 ): () => void {
   return trackChild(child, options);
+}
+
+/** Launch the relay's own entry within the Windows job it already holds. */
+export function spawnInferenceRelayTarget(env: NodeJS.ProcessEnv): ChildProcessByStdio<Writable, Readable, null> {
+  const entry = process.argv[1];
+  if (entry === undefined) throw new Error("Inference target entry is missing");
+  return spawnManaged(process.execPath, [...process.execArgv, entry], {
+    env,
+    stdio: ["pipe", "pipe", "ignore"],
+    shell: false,
+  }, { label: "memory-inference-relay-target" }) as ChildProcessByStdio<Writable, Readable, null>;
 }
 
 function trackChild(

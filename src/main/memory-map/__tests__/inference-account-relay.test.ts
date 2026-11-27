@@ -120,7 +120,10 @@ describe('account relay job evidence', () => {
         expect(spawn).not.toHaveBeenCalled();
         expect(receipt).toBeDefined();
       } else {
-        expect(spawn).toHaveBeenCalledOnce();
+        expect(spawn).toHaveBeenCalledExactlyOnceWith(process.execPath, [...process.execArgv, process.argv[1]], {
+          env: expect.objectContaining({ ELECTRON_RUN_AS_NODE: '1' }),
+          stdio: ['pipe', 'pipe', 'ignore'], shell: false, windowsHide: true,
+        });
         expect(receipt).toBeUndefined();
       }
     } finally {
