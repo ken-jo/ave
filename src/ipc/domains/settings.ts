@@ -574,10 +574,13 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     const rebindSettledReviewer = async (): Promise<void> => {
       if (reconfiguration === undefined || transitionRevision !== activeChatRuntimeTransitionRevision) return;
       permissionManager?.settleChatRuntimeReviewerReconfiguration(reconfiguration);
-      try {
-        await deps.rewireReviewerAgent?.();
-      } catch {
-        // A later successful rewire of this settled generation can release the hold.
+      for (let attempt = 0; attempt < 2 && transitionRevision === activeChatRuntimeTransitionRevision; attempt++) {
+        try {
+          await deps.rewireReviewerAgent?.();
+          return;
+        } catch {
+          // Only a successful rewire of this settled generation can release the hold.
+        }
       }
     };
     const persistSelection = settingsService.patch({ llm: { activeChatRuntime } });

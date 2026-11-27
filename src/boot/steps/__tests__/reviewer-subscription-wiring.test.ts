@@ -194,6 +194,8 @@ it.each([false, true])("blocks existing reviewer authority before a production c
       llmFetch: vi.fn(), singleHopNetworkFetch: vi.fn(), getMainWindow: () => null, bootAuditLogger: { log: vi.fn() }, subscriptionProviderFactory: vi.fn(),
       rewireReviewerAgent: undefined as (() => Promise<void>) | undefined };
     await wireReviewerAndPermissions(context as never);
+    const rewire = context.rewireReviewerAgent;
+    if (!rewire) throw new Error("Missing reviewer rewire");
     const classify = vi.fn(() => ({ level: "low" as const, reason: "Previously configured reviewer" }));
     manager.setReviewer({ classifier: { classify }, cache: reviewer.cache, model: "fixture-model" });
     wireJudgeForTest(manager);
@@ -217,7 +219,7 @@ it.each([false, true])("blocks existing reviewer authority before a production c
     }
     classify.mockClear();
     failure = new Error("Catalog read failed before reviewer installation");
-    await expect(context.rewireReviewerAgent!()).rejects.toThrow(failure);
+    await expect(rewire()).rejects.toThrow(failure);
     expect(begin).toHaveBeenCalledTimes(2);
     expect(complete).toHaveBeenCalledOnce();
     expect(wireReviewerAgent).toHaveBeenCalledOnce();
@@ -229,7 +231,7 @@ it.each([false, true])("blocks existing reviewer authority before a production c
     expect(classify).not.toHaveBeenCalled();
     expect(oldJudge).not.toHaveBeenCalled();
     failure = undefined;
-    await context.rewireReviewerAgent!();
+    await rewire();
     expect(complete).toHaveBeenCalledTimes(2);
   } finally {
     await reviewer.cache.flush();
@@ -659,6 +661,54 @@ it("keeps review fenced until Settings rebinds the restored route after a failed
   });
 });
 
+it.each(["rollback", "switch"])("recovers automatic review after one post-save credential read fails during a %s", async (operation) => {
+  await withLiveReviewer("api", async ({ apiReply, dispatch, registerRouteSelection }) => {
+    const apiBound = deferred<void>();
+    const finishSave = deferred<void>();
+    const wildcard = vi.fn();
+    const { invoke, getSelection, getSecret } = await registerRouteSelection(async () => {}, wildcard, async (route) => {
+      if (route.kind === "api") await finishSave.promise;
+    });
+    if (operation === "switch") {
+      await expect(invoke(CHANNELS.settings.subscriptionUseForChat, "grok-build")).resolves.toMatchObject({ ok: true });
+    } else {
+      wildcard.mockImplementationOnce(() => { throw new Error("Wildcard refresh failed"); });
+    }
+    wildcard.mockImplementationOnce(() => apiBound.resolve());
+
+    const pending = operation === "switch"
+      ? invoke(CHANNELS.settings.subscriptionUseApiForChat)
+      : invoke(CHANNELS.settings.subscriptionUseForChat, "grok-build");
+    await apiBound.promise;
+    const failRead = vi.fn(() => { throw new Error("Credential store unavailable"); });
+    const inspectRetry = vi.fn(async () => [
+      (await dispatch(false)).result.decision,
+      (await dispatch(true)).result.decision,
+    ]);
+    try {
+      expect(getSelection()?.kind).toBe("api");
+      expect((await dispatch(true)).result.decision).toBe("deny");
+      getSecret.mockImplementationOnce(failRead).mockImplementationOnce(async () => {
+        await inspectRetry();
+        return "fixture-key";
+      });
+    } finally {
+      finishSave.resolve();
+      await expect(pending).resolves.toMatchObject(operation === "switch"
+        ? { ok: true }
+        : { ok: false, error: "subscription-operation-failed" });
+    }
+
+    expect(failRead).toHaveBeenCalledOnce();
+    const { review, result } = await dispatch(true);
+    expect(result.decision).toBe("allow");
+    expect(review.outcome).toBe("fresh");
+    expect(apiReply).toHaveBeenCalledOnce();
+    expect(inspectRetry).toHaveBeenCalledOnce();
+    await expect(inspectRetry.mock.results[0]?.value).resolves.toEqual(["ask", "deny"]);
+  });
+});
+
 it("recovers automatic review on an ordinary rewire after both selection and rollback rebinds fail", async () => {
   await withLiveReviewer("api", async ({ apiReply, getCache, dispatch, registerRouteSelection }) => {
     const { invoke, getSelection, getSecret, rewire } = await registerRouteSelection(async () => {});
@@ -670,7 +720,7 @@ it("recovers automatic review on an ordinary rewire after both selection and rol
     await expect(invoke(CHANNELS.settings.subscriptionUseForChat, "grok-build"))
       .resolves.toMatchObject({ ok: false, error: "subscription-operation-failed" });
     expect(getSelection()?.kind).toBe("api");
-    expect(getSecret).toHaveBeenCalledTimes(3);
+    expect(getSecret).toHaveBeenCalledTimes(4);
     expect((await dispatch(false)).result.decision).toBe("ask");
     expect((await dispatch(true)).result.decision).toBe("deny");
 
