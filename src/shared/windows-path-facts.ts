@@ -325,24 +325,28 @@ export function holdWindowsDirectory(path: string): Promise<HeldWindowsDirectory
         void release().then(() => resolve(result));
       };
     });
-    const stop = (): Promise<WindowsHoldVerdict> => {
+    const stopRun = (closeControl: boolean): Promise<WindowsHoldVerdict> => {
       if (!done && deadline === undefined) {
         deadline = setTimeout(() => finish({ kind: "unconfirmed" }), TOOL_TIMEOUT_POLICY.windowsHoldStopMs);
         launcher.stdin?.destroy();
         if (policy !== undefined) {
-          control?.destroy();
+          if (closeControl) control?.destroy();
           // A held policy stop revokes the invocation at once instead of at the verdict.
           queueMicrotask(policy.onFailure);
         }
       }
       return verdict;
     };
+    const stop = (): Promise<WindowsHoldVerdict> => stopRun(true);
     run = { verdict, stop };
     const failPolicy = (): void => {
       if (done || deadline !== undefined) return;
       void stop();
     };
-    onLost = policy === undefined ? stop : failPolicy;
+    // A lost hold leaves the control pipe open so the launcher reaches admission and reports the loss;
+    // the deadline already withholds the resume reply.
+    const holdLost = (): void => { void stopRun(false); };
+    onLost = policy === undefined ? stop : holdLost;
     for (const stream of [launcher.stdin, relay, report, channel]) stream?.on("error", () => {});
     launcher.on("error", () => {
       // A start without a process has nothing to wait for; a failed operation on a live one is a stop request.
@@ -362,7 +366,7 @@ export function holdWindowsDirectory(path: string): Promise<HeldWindowsDirectory
     const stopAdmission = (): void => {
       relay.destroy();
       if (policy === undefined) void stop();
-      else failPolicy();
+      else holdLost();
     };
     let challenged = false;
     const relayPolicyAdmission = (): void => {
@@ -418,7 +422,7 @@ export function holdWindowsDirectory(path: string): Promise<HeldWindowsDirectory
     });
     if (policy !== undefined) {
       launcher.stdin?.on("error", failPolicy);
-      relay.once("close", () => { if (!resumeAuthorized) failPolicy(); });
+      relay.once("close", () => { if (!resumeAuthorized) holdLost(); });
       if (control == null || readerReport == null) failPolicy();
       else {
         let frame = Buffer.alloc(0);
