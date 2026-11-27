@@ -32,6 +32,10 @@ import { _mxcShellStandbyPidForTest, dropMxcShellStandbys, mxcShellSupervisorLoc
 import { buildPolicyModel, policyFloorRow, policyGrantRow, type PolicyModel } from "../policy-model.js";
 
 const NATIVE = process.platform === "darwin" && process.arch === "arm64";
+// The macOS permission job requires its cases: a macOS runner this suite cannot use fails here instead of skipping all of them.
+if (process.platform === "darwin" && !NATIVE && process.env.AVE_REQUIRE_SANDBOX_CASES === "1") {
+  throw new Error(`AVE_REQUIRE_SANDBOX_CASES=1 but this macOS host is ${process.arch}: the container boundary suite runs only on arm64`);
+}
 let supervisor: Awaited<ReturnType<typeof buildNativeShellSupervisor>>;
 
 if (NATIVE) {
