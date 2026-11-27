@@ -348,6 +348,15 @@ it('keeps a stored pause across release evidence withdrawal without opening SQLi
   let preference = true;
   const repository = new SessionRepository({ aveDir, ...sessionSearchIndexPolicySource(() => preference) });
   try {
+    // The first database open selects and caches the native binding for process.platform.
+    const nativeIndex = new SessionSearchIndex(aveDir);
+    setProcessPlatform(HOST_PLATFORM);
+    try {
+      expect(nativeIndex.open()).toBe(true);
+    } finally {
+      nativeIndex.close();
+      setProcessPlatform('win32');
+    }
     await repository.saveSession(sessionId, [{ role: 'user', content: 'Indexed before pause' }]);
     await repository.searchIndexIdle();
     expect(await repository.searchSessionsWithCurrentPolicy('Indexed before pause')).toHaveLength(1);
