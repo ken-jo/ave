@@ -3702,15 +3702,20 @@ in its directory.
   random loopback destination and a matching refusal recorded by the host
   invocation proxy. The script attempts direct TCP connections to
   `192.0.2.1:443`, `[2001:db8::1]:443`, and the host's primary LAN IPv4 on a
-  port selected from those without a listener. The budget is three seconds
-  per target and twelve seconds for the script's measurements.
+  port selected from those without a listener. The host lookup and the
+  contained start share a sixty-second deadline. Measurement uses up to
+  three seconds per target and twelve seconds overall, leaving one second for
+  a successful exit. If the measured start fails, the plain exit check gets
+  its original budget.
   `rawIp: "blocked"` requires the control to pass and a local `10013` refusal
   for both public test addresses. A successful connection or remote refusal
   on any target yields `rawIp: "unknown"` and a `raw-ip-reachable` warning.
-  Missing evidence, a failed control, and an IPv6 no-route result also leave
-  coverage unknown. Shell availability follows the PowerShell exit result.
-  Coverage stays in memory for the current boot and is reported on Windows
-  MXC shell plans and in the Windows substrate snapshot. The container request
+  The host accepts a single complete evidence frame with its launch identifier.
+  Missing evidence, a failed control, and an IPv6 no-route result leave coverage
+  unknown. Shell availability follows the PowerShell exit result. File logs
+  record the launcher hash, schema, network section, Windows build, and the
+  reachability warning. Coverage stays in memory for the current boot and is
+  reported on Windows MXC shell plans and in the Windows substrate snapshot. The container request
   and host proxy enforce the network policy. Extension plans retain
   `rawIp: "unknown"`. Direct UDP and ICMP remain unverified.
 - **Inbound.** Proxy mode requires `ingress.default: "allow"`, which grants

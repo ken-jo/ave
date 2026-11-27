@@ -137,6 +137,27 @@ describe("raw IP startup observation", () => {
     expect(request.runtimeConfig.networkProxy).toBe("http://127.0.0.1:9");
   });
 
+  it("caps the LAN lookup and retries a failed measurement with the full plain start budget", async () => {
+    const epoch = 1_800_000_000_000;
+    const clock = vi.spyOn(Date, "now").mockReturnValue(epoch);
+    const run = vi.fn<DetectMxcSupportDeps["run"]>()
+      .mockResolvedValueOnce({ code: 0, stdout: "", stderr: "" })
+      .mockRejectedValueOnce(new Error("Measured launcher timed out"))
+      .mockResolvedValueOnce({ code: 0, stdout: "", stderr: "" });
+    try {
+      await expect(probeMxcPowerShellStart(makeDeps(run), async () => {
+        clock.mockReturnValue(epoch + 57_000);
+        return { port: 49153, url: "http://127.0.0.1:49153", close: async () => {} };
+      })).resolves.toMatchObject({ state: "available", rawIpProbe: { rawIp: "unknown", reason: "no-evidence" } });
+    } finally {
+      clock.mockRestore();
+    }
+    expect(run.mock.calls.map(([, , timeout]) => timeout)).toEqual([2_000, 8_000, 65_000]);
+    const request = JSON.parse(Buffer.from(run.mock.calls[2]?.[1][1] ?? "", "base64").toString("utf8"));
+    expect(request.process.timeout).toBe(60_000);
+    expect(request.runtimeConfig.networkProxy).toBe("http://127.0.0.1:9");
+  });
+
   it("keeps MXC available when PowerShell exits successfully with no evidence", async () => {
     const run = async () => ({ code: 0, stdout: "", stderr: "" });
     await expect(probeMxcPowerShellStart(makeDeps(run), openInvocationProxyListener)).resolves.toMatchObject({

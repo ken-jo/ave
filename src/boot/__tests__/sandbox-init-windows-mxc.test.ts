@@ -761,6 +761,49 @@ describe("initSandboxGate — Windows MXC substrate", () => {
     expect(getHostShellExecutionPlan().egressProtocolCoverage).toEqual(coverage);
   });
 
+  it("publishes available MXC with unknown coverage after a late successful start", async () => {
+    const { probeMxcPowerShellStart } = await vi.importActual<typeof import("../../permissions/mxc-windows.js")>(
+      "../../permissions/mxc-windows.js",
+    );
+    h.checkDeps.mockResolvedValue(SRT_WIN_MISSING);
+    h.detectMxc.mockResolvedValue(MXC_OK);
+    const epoch = 1_800_000_000_000;
+    const run = vi.fn<import("../../permissions/mxc-windows.js").DetectMxcSupportDeps["run"]>();
+    h.startProbe.mockImplementation(async () => {
+      const clock = vi.spyOn(Date, "now").mockReturnValue(epoch);
+      try {
+        run.mockImplementation(async (_file, args, timeout) => {
+          if (args[0] !== "--config-base64") {
+            expect(timeout).toBe(6_000);
+            clock.mockReturnValue(epoch + 5_000);
+            return { code: 0, stdout: "", stderr: "" };
+          }
+          const request: import("../../permissions/mxc-windows.js").MxcContainerRequest =
+            JSON.parse(Buffer.from(args[1] ?? "", "base64").toString("utf8"));
+          const script = Buffer.from(request.process.commandLine.split(" ").at(-1) ?? "", "base64").toString("utf16le");
+          const deadline = Number(/(\d{13}) - \[DateTimeOffset\]::UtcNow/.exec(script)?.[1]);
+          const ready = epoch + 5_000 + request.process.timeout - 100;
+          const exits = script.endsWith("exit 0") || (script.includes("if ($probeBudget -le 0) { exit 0 }") && ready >= deadline);
+          return { code: exits ? 0 : 1, stdout: "", stderr: exits ? "" : "launcher timeout" };
+        });
+        return await probeMxcPowerShellStart({
+          platform: "win32", arch: "x64", resourcePath: "C:/example/resources", windowsBuild: MXC_OK.windowsBuild,
+          probeDirectory: "C:/example/scratch", systemRoot: "C:/Windows", exists: () => true, sha256: async () => "", run,
+        }, async () => ({ port: 49153, url: "http://127.0.0.1:49153", close: async () => {} }));
+      } finally {
+        clock.mockRestore();
+      }
+    });
+
+    await initSandboxGate(harness.context(true, false));
+    await vi.waitFor(() => expect(getWindowsSandboxSubstrate()).toMatchObject({
+      mxc: { state: "available" }, shells: "mxc", shellEgressProtocolCoverage: { rawIp: "unknown" },
+    }));
+    expect(getHostShellExecutionPlan().egressProtocolCoverage).toEqual({ dns: "host-resolver", rawIp: "unknown" });
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(run.mock.calls[1]?.[2]).toBe(60_000);
+  });
+
   it("keeps the approved route and records the reason when PowerShell cannot start in a container", async () => {
     h.checkDeps.mockResolvedValue(SRT_WIN_MISSING);
     h.detectMxc.mockResolvedValue(MXC_OK);

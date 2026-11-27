@@ -145,6 +145,8 @@ export interface DetectMxcSupportDeps {
 const MXC_PROBE_TIMEOUT_MS = 20_000;
 // A cold Windows PowerShell start inside a fresh container.
 const MXC_START_PROBE_TIMEOUT_MS = 60_000;
+const MXC_START_LAUNCHER_GRACE_MS = 5_000;
+const MXC_START_EXIT_RESERVE_MS = 1_000;
 const MXC_RAW_IP_TARGET_TIMEOUT_MS = 3_000;
 const MXC_RAW_IP_PROBE_TIMEOUT_MS = 12_000;
 const MXC_LAN_TARGET_LOOKUP_TIMEOUT_MS = 6_000;
@@ -207,12 +209,10 @@ export function classifyMxcRawIpProbe(evidence: MxcRawIpProbeEvidence | undefine
   return reason === undefined ? { rawIp: "blocked", reason: "blocked", reachableTargets } : unknown(reason);
 }
 
-function buildMxcRawIpProbeScript(probeId: string, port: number, controlHost: string, lan: MxcLanProbeTarget | undefined): string {
+function buildMxcRawIpProbeScript(probeId: string, port: number, controlHost: string, lan: MxcLanProbeTarget | undefined, deadline: number): string {
   return String.raw`
-$ErrorActionPreference = 'Stop'
-$probeClock = [Diagnostics.Stopwatch]::StartNew()
 function Get-Remaining($targetClock) {
-  [int][Math]::Min(${MXC_RAW_IP_TARGET_TIMEOUT_MS} - $targetClock.ElapsedMilliseconds, ${MXC_RAW_IP_PROBE_TIMEOUT_MS} - $probeClock.ElapsedMilliseconds)
+  [int][Math]::Min(${MXC_RAW_IP_TARGET_TIMEOUT_MS} - $targetClock.ElapsedMilliseconds, $probeBudget - $probeClock.ElapsedMilliseconds)
 }
 function Invoke-Tcp([string] $address, [int] $port, [string] $controlHost) {
   $clock = [Diagnostics.Stopwatch]::StartNew()
@@ -266,17 +266,22 @@ function Invoke-Tcp([string] $address, [int] $port, [string] $controlHost) {
   }
 }
 try {
+  $ErrorActionPreference = 'Stop'
+  $probeBudget = [Math]::Min([long]${MXC_RAW_IP_PROBE_TIMEOUT_MS}, ${deadline} - [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())
+  if ($probeBudget -le 0) { exit 0 }
+  $probeClock = [Diagnostics.Stopwatch]::StartNew()
   $control = (Invoke-Tcp '127.0.0.1' ${port} '${controlHost}') -ceq 'refused'
   $t4 = Invoke-Tcp '192.0.2.1' 443
   $t6 = Invoke-Tcp '2001:db8::1' 443
   $tl = ${lan === undefined ? "'other'" : `Invoke-Tcp '${lan.address}' ${lan.port}`}
+  if ($probeClock.ElapsedMilliseconds -ge $probeBudget) { exit 0 }
   $evidence = [ordered]@{ control = $control; t4 = $t4; t6 = $t6; tl = $tl } | ConvertTo-Json -Compress
   [Console]::WriteLine('${MXC_RAW_IP_EVIDENCE_MARKER}${probeId} ' + $evidence)
 } catch {} finally { exit 0 }
 `;
 }
 
-async function findMxcLanProbeTarget(deps: DetectMxcSupportDeps): Promise<MxcLanProbeTarget | undefined> {
+async function findMxcLanProbeTarget(deps: DetectMxcSupportDeps, timeoutMs: number): Promise<MxcLanProbeTarget | undefined> {
   const shell = win32SystemBinary("WindowsPowerShell/v1.0/powershell", { SystemRoot: deps.systemRoot });
   const command = `
 $ErrorActionPreference = 'Stop'
@@ -292,7 +297,7 @@ $port = 49152..65535 | Where-Object { $_ -notin $listening } | Select-Object -Fi
 if ($port) { [Console]::WriteLine(('{0}:{1}' -f $address, $port)) }
 `;
   try {
-    const result = await deps.run(shell, [...WIN32_POWERSHELL_STARTUP_ARGS, "-EncodedCommand", Buffer.from(command, "utf16le").toString("base64")], MXC_LAN_TARGET_LOOKUP_TIMEOUT_MS);
+    const result = await deps.run(shell, [...WIN32_POWERSHELL_STARTUP_ARGS, "-EncodedCommand", Buffer.from(command, "utf16le").toString("base64")], timeoutMs);
     const match = /^([\d.]+):(\d+)$/.exec(result.stdout.trim());
     if (result.code !== 0 || match === null) return undefined;
     const [, address = "", portText] = match;
@@ -403,17 +408,8 @@ export async function probeMxcPowerShellStart(
   });
   const wxcExec = wxcExecPathFor(deps.resourcePath, deps.arch);
   if (wxcExec === undefined) return unavailable("unsupported-arch", `arch ${deps.arch}`);
-  const measure = deps.platform === "win32" && openListener !== undefined;
-  const probeId = randomBytes(16).toString("hex");
-  const controlHost = `127.${[...randomBytes(3)].join(".")}`;
-  let controlRefused = false;
-  const listener = measure ? await openListener({
-    upstream: () => undefined,
-    onRefused: (destination) => { if (destination === controlHost) controlRefused = true; },
-  }).catch(() => undefined) : undefined;
-  try {
-    const script = listener === undefined ? "exit 0" : buildMxcRawIpProbeScript(probeId, listener.port, controlHost, await findMxcLanProbeTarget(deps));
-    const startRequest = buildMxcShellRequest({
+  const launch = async (script: string, proxyUrl: string, timeoutMs: number) => {
+    const request = buildMxcShellRequest({
       commandLine: powerShellMxcCommandLine(deps.systemRoot, script, deps.probeDirectory),
       cwd: deps.probeDirectory,
       grants: { readwrite: [deps.probeDirectory], readonly: [], denied: [] },
@@ -424,27 +420,60 @@ export async function probeMxcPowerShellStart(
         TMP: deps.probeDirectory,
         PATH: `${win32SystemBinary("", { SystemRoot: deps.systemRoot })};${deps.systemRoot}`,
       },
-      proxyUrl: listener?.url ?? "http://127.0.0.1:9",
-      timeoutMs: MXC_START_PROBE_TIMEOUT_MS,
+      proxyUrl,
+      timeoutMs,
     });
-    const started = await deps.run(wxcExec, mxcRequestArgs(startRequest, wxcExec), MXC_START_PROBE_TIMEOUT_MS + 5_000);
+    const started = await deps.run(wxcExec, mxcRequestArgs(request, wxcExec), timeoutMs + MXC_START_LAUNCHER_GRACE_MS);
+    return { request, started };
+  };
+
+  const measure = deps.platform === "win32" && openListener !== undefined;
+  const available = { state: "available", windowsBuild: deps.windowsBuild } as const;
+  let rawIpProbe: MxcRawIpProbeVerdict = { rawIp: "unknown", reason: "listener-unavailable", reachableTargets: [] };
+  let result: Awaited<ReturnType<typeof launch>> | undefined;
+  if (measure) {
+    const deadline = Date.now() + MXC_START_PROBE_TIMEOUT_MS;
+    const measurementDeadline = deadline - MXC_START_EXIT_RESERVE_MS;
+    let listener: Awaited<ReturnType<typeof openListener>> | undefined;
+    try {
+      const probeId = randomBytes(16).toString("hex");
+      const controlHost = `127.${[...randomBytes(3)].join(".")}`;
+      let controlRefused = false;
+      listener = await openListener({
+        upstream: () => undefined,
+        onRefused: (destination) => { if (destination === controlHost) controlRefused = true; },
+      });
+      rawIpProbe = classifyMxcRawIpProbe(undefined, false);
+      const lookupBudget = Math.min(MXC_LAN_TARGET_LOOKUP_TIMEOUT_MS, measurementDeadline - Date.now());
+      const lan = lookupBudget > 0 ? await findMxcLanProbeTarget(deps, lookupBudget) : undefined;
+      const startBudget = deadline - Date.now();
+      if (startBudget > MXC_START_EXIT_RESERVE_MS) {
+        const script = buildMxcRawIpProbeScript(probeId, listener.port, controlHost, lan, measurementDeadline);
+        result = await launch(script, listener.url, startBudget);
+        if (result.started.code === 0) {
+          const evidence = parseMxcRawIpProbeEvidence(result.started.stdout, probeId, result.started.stderr);
+          rawIpProbe = classifyMxcRawIpProbe(evidence, controlRefused);
+        }
+      }
+    } catch {
+      // Optional measurement errors leave the plain startup check authoritative.
+    } finally {
+      await listener?.close().catch(error => log.warn({ error }, "MXC startup measurement listener cleanup failed"));
+    }
+  }
+
+  try {
+    if (result?.started.code !== 0) result = await launch("exit 0", "http://127.0.0.1:9", MXC_START_PROBE_TIMEOUT_MS);
+    const { request, started } = result;
     const start = classifyMxcStartProbe(started.code, started.stdout, started.stderr);
-    if (!start.ok) return unavailable(start.reason, listener === undefined ? start.detail : `exit ${String(started.code)}`);
-    const available = { state: "available", windowsBuild: deps.windowsBuild } as const;
+    if (!start.ok) return unavailable(start.reason, start.detail);
     if (!measure) return available;
-    const evidence = listener === undefined ? undefined : parseMxcRawIpProbeEvidence(started.stdout, probeId, started.stderr);
-    const rawIpProbe: MxcRawIpProbeVerdict = listener === undefined
-      ? { rawIp: "unknown", reason: "listener-unavailable", reachableTargets: [] }
-      : classifyMxcRawIpProbe(evidence, controlRefused);
-    log.info({ launcherSha256: pinnedWxcExecSha256(deps.arch), schema: startRequest.version,
-      network: startRequest.network, windowsBuild: deps.windowsBuild },
-      "MXC raw IP startup measurement");
+    log.info({ launcherSha256: pinnedWxcExecSha256(deps.arch), schema: request.version,
+      network: request.network, windowsBuild: deps.windowsBuild }, "MXC raw IP startup measurement");
     if (rawIpProbe.reachableTargets.length > 0) log.warn("raw-ip-reachable");
     return { ...available, rawIpProbe };
   } catch (error) {
-    return unavailable("powershell-start-failed", listener === undefined ? errorMessage(error) : "Measurement launcher failed");
-  } finally {
-    await listener?.close().catch(error => log.warn({ error }, "MXC startup measurement listener cleanup failed"));
+    return unavailable("powershell-start-failed", errorMessage(error));
   }
 }
 
