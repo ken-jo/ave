@@ -2561,7 +2561,7 @@ async function runToolInvocationAttempt(
     if (!brokeredFileRouteSelected && editSubject?.kind === "edit" && services.permissionManager) {
       await services.permissionManager.ensureProjectRulesLoaded(executionCwd);
       const editDecision = services.permissionManager.checkDetailed(toolUse.name, source, invocationCategory, overlayTriggerOrigin, {
-        ...invocationPermissionContext, ruleSubject: editSubject, projectRulesCwd: executionCwd,
+        ...invocationPermissionContext, sessionId, ruleSubject: editSubject, projectRulesCwd: executionCwd,
       });
       if (editDecision.decision === "allow" && services.permissionManager.checkScopedRules(editSubject, executionCwd).decision === "allow") {
         invocationAllowedScope = { directories: [...invocationAllowedScope.directories, ...canonicalTargets.map((target) => target.canonicalPath)] };

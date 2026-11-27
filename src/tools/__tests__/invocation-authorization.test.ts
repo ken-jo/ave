@@ -21,6 +21,8 @@ import {
 import { runWithToolExecutionCwd } from "../execution-context.js";
 import { ToolExecutor } from "../executor.js";
 import { ToolRegistry } from "../registry.js";
+import { endUnattendedStage, registerUnattendedStage } from "../../permissions/unattended-lane-registry.js";
+import { WriteFileTool } from "../file-tools.js";
 import { BashTool } from "../shell-tools.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
 import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
@@ -191,4 +193,39 @@ describe("shell review requires a risk judgment", () => {
       expect(requestAndWait).toHaveBeenCalledOnce();
     }
   });
+});
+
+it("routes the sealed edit-subject check through the unattended lane", async () => {
+  vi.stubEnv("AVE_HOME", directory);
+  const manager = new PermissionManager(join(directory, "permissions.json"));
+  manager.setMode("allow");
+  const check = vi.spyOn(manager, "checkDetailed");
+  const registry = new ToolRegistry();
+  const tool = new WriteFileTool();
+  const execute = vi.spyOn(tool, "execute");
+  registry.register(tool);
+  const executor = new ToolExecutor(registry, undefined, manager);
+  const sessionId = "unattended-edit";
+  registerUnattendedStage(sessionId, {
+    runKey: "run", stageId: "stage", workspaceRoot: directory, isolation: { proven: false },
+    envelope: {
+      tools: [tool.name], readRoots: [], writePaths: ["**"], commands: [], network: [],
+      mcpReadOnlyTools: [], mcpGenerationTools: [], pluginGenerationTools: [],
+      outputs: [], budget: { rounds: 1, minutes: 1, costUsd: 0 },
+    },
+  });
+  try {
+    await runWithToolExecutionCwd(directory, () => executor.executeAll([
+      { id: "lane-edit", name: tool.name, input: { path: "report.txt", content: "report" } },
+    ], { sessionId, permissionContext: userPermissionContext() }));
+    const editCheck = check.mock.calls.findIndex(call => call[4]?.ruleSubject?.kind === "edit");
+    expect(editCheck).toBeGreaterThanOrEqual(0);
+    expect(check.mock.calls[editCheck][4]?.sessionId).toBe(sessionId);
+    expect(check.mock.results[editCheck]?.value).toMatchObject({
+      decision: "deny", reasonCode: "forbidden-unattended", pipelineRequest: { unattended: { stageId: "stage" } },
+    });
+    expect(execute).not.toHaveBeenCalled();
+  } finally {
+    endUnattendedStage(sessionId);
+  }
 });
