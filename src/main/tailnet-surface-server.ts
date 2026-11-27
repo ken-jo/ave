@@ -5,7 +5,6 @@ import { createTailnetOwnerIdentityPolicy, probeTailnetOwnerIdentityGuard } from
 import type { SecretEncryption } from "../data/secret-document-store.js";
 // The owner must enable the listener and approve the exact serve command; never retain admin credentials or mutate tailnet policy.
 import { readFile } from "node:fs/promises";
-import { createServer as createPortProbe } from "node:net";
 import { join } from "node:path";
 import { platform as hostPlatform } from "node:process";
 import {
@@ -23,8 +22,9 @@ import {
   DEFAULT_TAILNET_OBSERVER_PORT,
   isTailnetAppCapabilityKey,
   parseTailnetAuthorization,
-  TAILNET_PORT_CONFINED_WORKER_RANGE,
+  TAILNET_OBSERVER_PORT_BLOCKED,
   type TailnetAuthorization,
+  type TailnetObserverPortBlock,
 } from "../shared/tailnet-observer-config.js";
 import type { ConversationSurfaceRuntime } from "../engine/conversation-surface-runtime.js";
 import { isRecord } from "../shared/is-record.js";
@@ -46,7 +46,8 @@ import {
 } from "./tailnet-pairing-share-store.js";
 import { TAILNET_WORK_DECISION_PATH } from "../shared/tailnet-work-decisions.js";
 import type { AuditLogger } from "../audit/audit-logger.js";
-import { assertTailnetListenerPortAllowed, readTailnetListenerPortPolicy } from "../permissions/tailnet-listener-policy.js";
+import { assertTailnetListenerPortAllowed } from "../permissions/tailnet-listener-policy.js";
+import { getWindowsTailnetPortHint } from "./tailnet-port-hint.js";
 
 export interface TailnetObserverConfig {
   readonly port: number;
@@ -360,6 +361,7 @@ let stopped = false;
 
 let activeConfig: TailnetObserverConfig | null = null;
 let lastStartError: string | null = null;
+let portBlock: TailnetObserverPortBlock | null = null;
 // Retain composition inputs so saved configuration can restart the listener without requiring an app relaunch.
 let compositionOptions: StartTailnetObserverServerOptions | null = null;
 // Serializes restarts against each other; boot's own latch handles the first.
@@ -378,6 +380,7 @@ export interface TailnetObserverRuntimeState {
   // The kebab-case code of the last failed start. Boot logs this and continues, which is why "the observer is not up and I cannot tell why" used to
   // require reading the main-process log. It is kept here so a diagnostics surface can answer the question in the app.
   readonly lastStartError: string | null;
+  readonly portBlock: TailnetObserverPortBlock | null;
 }
 
 export function getTailnetObserverRuntimeState(): TailnetObserverRuntimeState {
@@ -385,41 +388,8 @@ export function getTailnetObserverRuntimeState(): TailnetObserverRuntimeState {
     listeningPort: activeServer?.port ?? null,
     activeConfig,
     lastStartError,
+    portBlock,
   });
-}
-
-// Probe the exact desired port before persisting; zero asks the OS for a free port and null reports bind refusal.
-function probeLoopbackBind(port: number): Promise<number | null> {
-  return new Promise((resolve) => {
-    const probe = createPortProbe();
-    probe.once("error", () => resolve(null));
-    probe.listen({ host: "127.0.0.1", port, exclusive: true }, () => {
-      const address = probe.address();
-      const bound = typeof address === "object" && address !== null ? address.port : null;
-      probe.close(() => resolve(bound));
-    });
-  });
-}
-
-// Persist the selected port so restart cannot move the serve target.
-// Probe-to-bind races remain explicit start failures, never silent fallback to a different port.
-export async function chooseObserverPort(preferred: number | null): Promise<number | null> {
-  const isAllowed = await readTailnetListenerPortPolicy();
-  if (preferred !== null) {
-    if (!isAllowed(preferred)) throw new Error(TAILNET_PORT_CONFINED_WORKER_RANGE);
-    if (await probeLoopbackBind(preferred) !== null) return preferred;
-  }
-  if (preferred !== DEFAULT_TAILNET_OBSERVER_PORT && isAllowed(DEFAULT_TAILNET_OBSERVER_PORT)) {
-    if (await probeLoopbackBind(DEFAULT_TAILNET_OBSERVER_PORT) !== null) return DEFAULT_TAILNET_OBSERVER_PORT;
-  }
-
-  const bound = await probeLoopbackBind(0);
-  if (bound === null || isAllowed(bound)) return bound;
-  // The ephemeral range may itself be covered by the permit. Try eligible unprivileged ports explicitly.
-  for (let candidate = 1024; candidate <= 65_535; candidate++) {
-    if (isAllowed(candidate) && await probeLoopbackBind(candidate) !== null) return candidate;
-  }
-  return null;
 }
 
 function dependencies(
@@ -607,6 +577,7 @@ async function startForBoot(
   options: StartTailnetObserverServerOptions,
   generation: number,
 ): Promise<TailnetObserverServer | null> {
+  portBlock = null;
   // This must run before listener construction. A disabled observer opens no port and starts no Tailnet-specific transport side effect.
   const resolved = dependencies(options.dependencies);
   const { config } = await loadTailnetObserverConfig({
@@ -677,6 +648,14 @@ async function startForBoot(
       } } : {}),
     } }),
     log: (message) => options.log?.("[tailnet-observer] " + message),
+  }).catch(async (error: unknown) => {
+    const code = isRecord(error) ? error.code : undefined;
+    if (code !== "EADDRINUSE" && code !== "EACCES") throw error;
+
+    const port = config.port;
+    const hint = await getWindowsTailnetPortHint(port);
+    if (generation === lifecycleGeneration) portBlock = Object.freeze({ code, port, hint });
+    throw new Error(TAILNET_OBSERVER_PORT_BLOCKED, { cause: error });
   });
   if (generation !== lifecycleGeneration) {
     await server.close();
@@ -785,6 +764,7 @@ export function reduceTailnetObserverCapabilities(config: TailnetObserverConfig)
 async function stopForShutdown(): Promise<void> {
   stopped = true;
   lifecycleGeneration += 1;
+  portBlock = null;
   activeConfig = null;
   activePairedSharingRuntime = null;
   const pending = startPromise;
@@ -826,6 +806,7 @@ export function resetTailnetObserverServerForTests(): void {
   stopped = false;
   activeConfig = null;
   lastStartError = null;
+  portBlock = null;
   activePairedSharingRuntime = null;
   compositionOptions = null;
   lifecycleChain = Promise.resolve();

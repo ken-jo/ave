@@ -182,16 +182,10 @@ the connect button reveals the full form inline, and a configured desktop can
 still reveal it from the status card. An app capability, a hand-picked port, and
 the controller are only reachable there.
 
-**The port rule.** Preference order is the port already in the file, then
-`DEFAULT_TAILNET_OBSERVER_PORT`, then whatever the OS hands out for
-`127.0.0.1:0`. The listener binds one fixed port with no fallback, so an
-occupied port is otherwise a start failure with nothing on screen that would
-fix it. The chosen port is persisted: a port re-rolled at each launch would
-move the target out from under Tailscale Serve every restart. A port this
-process is already listening on is kept without probing, because the restart
-releases it. If nothing binds, guided setup refuses with
-`tailnet-guided-setup-port-unavailable` rather than writing a configuration
-that cannot come up.
+**The port rule.** Guided setup uses the saved port or the shared default when
+the file has no port. The listener attempts one fixed port. A blocked bind
+reports its code and port in the Settings snapshot so the owner can choose
+another port in the manual form.
 
 **Gate.** The channel is `apply` plus `configureServe` in one press, so it
 carries exactly their gate — host-renderer sender plus a fresh local keyboard

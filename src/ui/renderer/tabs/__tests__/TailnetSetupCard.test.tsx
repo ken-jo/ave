@@ -1,5 +1,5 @@
 import "../../../../../test/renderer/setup.js";
-import { DEFAULT_TAILNET_OBSERVER_PORT } from "../../../../shared/tailnet-observer-config.js";
+import { DEFAULT_TAILNET_OBSERVER_PORT, TAILNET_OBSERVER_PORT_BLOCKED } from "../../../../shared/tailnet-observer-config.js";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getLocale, setLocale } from "../../../../i18n/runtime.js";
@@ -58,6 +58,7 @@ function snapshotOf(overrides: Partial<TailnetObserverSnapshot> = {}): TailnetOb
     },
     listeningPort: null,
     lastStartError: null,
+    portBlock: null,
     pairedSharingBootstrapFailed: false,
     ownDeviceAdmission: false,
     environment: READY_ENVIRONMENT,
@@ -239,19 +240,33 @@ describe("TailnetSetupCard", () => {
       await waitFor(() => expect(screen.getByTestId("tailnet-setup-connect")).toBeEnabled());
     });
 
-    it("keeps the manual escape hatch beside the sentence when no port can be opened", async () => {
-      const { api } = makeApi({
-        guidedSetup: { ok: false, error: "tailnet-guided-setup-port-unavailable", output: null },
+    it("shows the failed port and opens the editable port field", async () => {
+      const port = DEFAULT_TAILNET_OBSERVER_PORT;
+      const blocked = snapshotOf({
+        lastStartError: TAILNET_OBSERVER_PORT_BLOCKED,
+        portBlock: { code: "EACCES", port, hint: "excluded-range" },
+      });
+      const { api, apply } = makeApi({
+        snapshots: [snapshotOf(), snapshotOf(), blocked, blocked, configuredSnapshot()],
+        guidedSetup: { ok: false, error: TAILNET_OBSERVER_PORT_BLOCKED, output: null },
       });
       render(<TailnetSetupCard api={api} onCreateInvitation={() => undefined} />);
 
       fireEvent.click(await screen.findByTestId("tailnet-setup-connect"));
 
-      expect(await screen.findByTestId("tailnet-setup-error")).toHaveTextContent(
-        "No local port could be opened",
-      );
-      fireEvent.click(screen.getByTestId("tailnet-setup-manual-toggle"));
-      expect(await screen.findByTestId("tailnet-observer-apply")).toBeInTheDocument();
+      const notice = await screen.findByTestId("tailnet-setup-port-blocked");
+      expect(notice).toHaveTextContent("Port " + port + " is blocked or in use by another program.");
+      expect(notice).toHaveTextContent("The operating system has reserved this port.");
+      fireEvent.click(screen.getByRole("button", { name: "Change port" }));
+      const portInput = await screen.findByTestId("tailnet-observer-port");
+      expect(portInput).toHaveValue(port);
+      fireEvent.change(portInput, { target: { value: String(port + 1) } });
+      fireEvent.click(screen.getByTestId("tailnet-observer-apply"));
+
+      await waitFor(() => expect(apply).toHaveBeenCalledWith(expect.objectContaining({ port: port + 1 })));
+      await screen.findByTestId("tailnet-setup-status");
+      expect(screen.queryByTestId("tailnet-setup-port-blocked")).toBeNull();
+      expect(screen.queryByTestId("tailnet-setup-error")).toBeNull();
     });
 
     // The sentence for a failed Serve says its output is below. Dropping what Tailscale printed leaves that promise with

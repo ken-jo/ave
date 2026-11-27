@@ -60,6 +60,7 @@ function observerSnapshot() {
     provenance: UNSET,
     listeningPort: null,
     lastStartError: null,
+    portBlock: null,
     pairedSharingBootstrapFailed: false,
     ownDeviceAdmission: false,
     environment: {

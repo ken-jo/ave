@@ -40,6 +40,7 @@ function snapshotFixture() {
     },
     listeningPort: DEFAULT_TAILNET_OBSERVER_PORT,
     lastStartError: null,
+    portBlock: null,
     pairedSharingBootstrapFailed: false,
     ownDeviceAdmission: false,
     environment: {
@@ -181,6 +182,25 @@ describe("Tailnet observer configuration IPC boundary", () => {
   it("validates the snapshot it returns rather than trusting the service", async () => {
     await setup({ snapshot: async () => ({ ...snapshotFixture(), listeningPort: String(DEFAULT_TAILNET_OBSERVER_PORT) }) });
 
+    await expect(invokeFileIpcHandler(handlers, CHANNELS.tailnetObserver.snapshot))
+      .resolves.toEqual({ ok: false, error: "tailnet-observer-unavailable" });
+  });
+
+  it("returns a validated listener port block", async () => {
+    const portBlock = { code: "EACCES", port: DEFAULT_TAILNET_OBSERVER_PORT, hint: "excluded-range" };
+    const snapshot = { ...snapshotFixture(), listeningPort: null, portBlock };
+    await setup({ snapshot: async () => snapshot });
+
+    await expect(invokeFileIpcHandler(handlers, CHANNELS.tailnetObserver.snapshot))
+      .resolves.toEqual({ ok: true, snapshot });
+  });
+
+  it.each([
+    { code: "EIO", port: 1024, hint: null },
+    { code: "EADDRINUSE", port: 0, hint: null },
+    { code: "EACCES", port: 1024, hint: "unknown" },
+  ])("rejects an invalid listener port block: %j", async portBlock => {
+    await setup({ snapshot: async () => ({ ...snapshotFixture(), portBlock }) });
     await expect(invokeFileIpcHandler(handlers, CHANNELS.tailnetObserver.snapshot))
       .resolves.toEqual({ ok: false, error: "tailnet-observer-unavailable" });
   });

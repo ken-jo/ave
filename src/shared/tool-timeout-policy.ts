@@ -31,6 +31,7 @@ export const TOOL_TIMEOUT_POLICY = {
   browserDownloadHelperStallMs: 30_000,
   // A fresh local identity probe bounds synchronous remote authority checks.
   tailnetIdentityProbeMs: 5_000,
+  tailnetPortHintMs: 2_000,
   // The path-kind helper answers drive and Documents queries from the OS in milliseconds; this bound only ends a stalled start.
   windowsPathKindQueryMs: 15_000,
   windowsDriveLocalityMs: 5_000,

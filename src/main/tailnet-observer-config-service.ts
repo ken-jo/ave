@@ -1,7 +1,6 @@
 // Revalidate renderer proposals with the boot resolver and persist in the tailnet namespace; settings cannot grant this authority.
 import { assertTailnetListenerPortAllowed } from "../permissions/tailnet-listener-policy.js";
 import {
-  chooseObserverPort,
   configureTailscaleServe,
   getTailnetObserverRuntimeState,
   isTailnetOwnDeviceAdmissionEnabled,
@@ -56,8 +55,6 @@ export interface TailnetObserverConfigServiceOptions {
   readonly restartListener?: () => Promise<unknown>;
   // @internal deterministic injection for tests.
   readonly runServe?: typeof configureTailscaleServe;
-  // @internal deterministic injection for tests.
-  readonly choosePort?: typeof chooseObserverPort;
   // @internal deterministic injection for tests.
   readonly readOwnDeviceAdmission?: () => Promise<boolean>;
   // @internal deterministic injection for tests.
@@ -170,7 +167,6 @@ export function createTailnetObserverConfigService(
   const probeEnvironment = options.probeEnvironment ?? (() => probeTailscaleEnvironment());
   const restartListener = options.restartListener ?? restartTailnetObserverServer;
   const runServe = options.runServe ?? configureTailscaleServe;
-  const choosePort = options.choosePort ?? chooseObserverPort;
   const readOwnDeviceAdmission = options.readOwnDeviceAdmission
     ?? (() => isTailnetOwnDeviceAdmissionEnabled());
   const writeOwnDeviceAdmission = options.writeOwnDeviceAdmission
@@ -215,6 +211,7 @@ export function createTailnetObserverConfigService(
         provenance: resolution.provenance,
         listeningPort: state.listeningPort,
         lastStartError: state.lastStartError,
+        portBlock: state.portBlock,
         pairedSharingBootstrapFailed: options.pairedSharingBootstrapFailed(),
         ownDeviceAdmission: await readOwnDeviceAdmission(),
         environment: environmentView(environment),
@@ -271,20 +268,16 @@ export function createTailnetObserverConfigService(
         file = null;
       }
 
-      const preferred = file?.port ?? null;
-      const reusable = preferred ?? DEFAULT_TAILNET_OBSERVER_PORT;
-      // A port this process is already listening on is not a conflict — the restart below releases it — and probing it would move a working setup to a new
-      // port every time the owner pressed the button.
-      let port: number | null;
       try {
-        port = runtimeState().listeningPort === reusable ? reusable : await choosePort(preferred);
-        if (port === null) return guidedFailure("tailnet-guided-setup-port-unavailable");
         await saveAndRestart(
-          proposalToFile(recommendedConfig(port), tailnetWebOriginFor(environment.dnsName)),
+          proposalToFile(recommendedConfig(file?.port ?? DEFAULT_TAILNET_OBSERVER_PORT), tailnetWebOriginFor(environment.dnsName)),
         );
       } catch (err) {
         return guidedFailure(guidedErrorCode(err));
       }
+
+      const { listeningPort: port } = runtimeState();
+      if (port === null) return guidedFailure("tailnet-serve-not-listening");
 
       // Serve already pointing at this exact port is the finished state, not a reason to run a command: re-running it is harmless but asks Tailscale for a
       // certificate the owner may not be able to obtain.

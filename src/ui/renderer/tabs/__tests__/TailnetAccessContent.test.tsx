@@ -49,6 +49,7 @@ function observerSnapshot() {
     },
     listeningPort: null,
     lastStartError: null,
+    portBlock: null,
     pairedSharingBootstrapFailed: false,
     ownDeviceAdmission: false,
     environment: {

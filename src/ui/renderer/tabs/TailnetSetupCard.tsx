@@ -5,12 +5,13 @@ import { useTranslation } from "../../../i18n/react.js";
 import { Badge } from "../../../components/ui/badge.js";
 import { Button } from "../../../components/ui/button.js";
 import { SettingsSection } from "../components/PageShell.js";
-import type { TailnetObserverSnapshot } from "../../../shared/tailnet-observer-config.js";
+import { TAILNET_OBSERVER_PORT_BLOCKED, type TailnetObserverSnapshot } from "../../../shared/tailnet-observer-config.js";
 import { useCopyFlash } from "../hooks/use-copy-flash.js";
 import {
   TailnetObserverSection,
   tailnetEnvironmentText,
   tailnetObserverErrorText,
+  tailnetObserverPortBlockText,
 } from "./TailnetObserverSection.js";
 import type { AveApi } from "../types.js";
 
@@ -150,7 +151,9 @@ export function TailnetSetupCard({ api, onCreateInvitation, onSetupClosed }: Tai
       setErrorOutput(result.output);
       // Tailscale stopped being usable between this press's own probe and the command, so re-reading is what turns the card back
       // into the sentence that says how.
-      if (result.error === "tailnet-guided-setup-not-ready") await readSnapshot();
+      if (result.error === "tailnet-guided-setup-not-ready" || result.error === TAILNET_OBSERVER_PORT_BLOCKED) {
+        await readSnapshot();
+      }
     }
     setBusy(false);
   }, [api, busy, readSnapshot]);
@@ -171,6 +174,9 @@ export function TailnetSetupCard({ api, onCreateInvitation, onSetupClosed }: Tai
   // those can finish setup, so a save made from the status card refreshes the facts and leaves the form open.
   const finishFromManualForm = useCallback(async () => {
     const next = await readSnapshot();
+    if (next?.portBlock === null) {
+      setError(current => current === TAILNET_OBSERVER_PORT_BLOCKED ? null : current);
+    }
     if (!showSetup || !isConfigured(next)) return;
     setShowSetup(false);
     setShowManualForm(false);
@@ -224,7 +230,8 @@ export function TailnetSetupCard({ api, onCreateInvitation, onSetupClosed }: Tai
   const serveOn = snapshot.environment.serveConfigured
     && snapshot.environment.serveTargetPort === listeningPort;
 
-  const failure = error === null ? null : (
+  const portBlockText = tailnetObserverPortBlockText(snapshot, t);
+  const failure = error === null || (error === TAILNET_OBSERVER_PORT_BLOCKED && portBlockText !== null) ? null : (
     <>
       <p className="text-sm text-destructive" data-testid="tailnet-setup-error">
         {tailnetObserverErrorText(error, t)}
@@ -302,7 +309,9 @@ export function TailnetSetupCard({ api, onCreateInvitation, onSetupClosed }: Tai
       onClick={() => setShowManualForm((shown) => !shown)}
       data-testid="tailnet-setup-manual-toggle"
     >
-      {showManualForm ? t("tailnetSetup.manualHide") : t("tailnetSetup.manualShow")}
+      {showManualForm
+        ? t("tailnetSetup.manualHide")
+        : t(snapshot.portBlock === null ? "tailnetSetup.manualShow" : "tailnetObserver.changePort")}
     </Button>
   );
 
@@ -318,6 +327,11 @@ export function TailnetSetupCard({ api, onCreateInvitation, onSetupClosed }: Tai
       title={t("tailnetSetup.sectionTitle")}
       description={t("tailnetSetup.sectionDescription")}
     >
+      {portBlockText !== null && !showManualForm ? (
+        <p className="mb-3 text-sm text-destructive" role="alert" data-testid="tailnet-setup-port-blocked">
+          {portBlockText}
+        </p>
+      ) : null}
       {!showSetup ? (
         <div className="min-w-0 space-y-3" data-testid="tailnet-setup-status">
           <p className="text-sm font-medium">{t("tailnetSetup.statusTitle")}</p>
@@ -461,7 +475,11 @@ export function TailnetSetupCard({ api, onCreateInvitation, onSetupClosed }: Tai
               this desktop's Tailscale and goes on to connect the moment that
               read comes back usable. No failure sentence is drawn beside it —
               the box above already says which way Tailscale is not ready. */}
-          <ConnectButton busy={busy} label={t("tailnetSetup.connect")} onConnect={connect} t={t} />
+          <div className="flex flex-wrap items-center gap-2">
+            <ConnectButton busy={busy} label={t("tailnetSetup.connect")} onConnect={connect} t={t} />
+            {snapshot.portBlock !== null || showManualForm ? manualToggle : null}
+          </div>
+          {manualForm}
         </div>
       )}
     </SettingsSection>

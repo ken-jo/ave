@@ -2,6 +2,7 @@
  * configuration. */
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "../../../i18n/react.js";
+import type { TranslateFn } from "../../../i18n/translate.js";
 import { Button } from "../../../components/ui/button.js";
 import { Input } from "../../../components/ui/input.js";
 import { Switch } from "../../../components/ui/switch.js";
@@ -9,6 +10,7 @@ import { SettingsSection, type SettingsSectionFeedback } from "../components/Pag
 import {
   DEFAULT_TAILNET_OBSERVER_PORT,
   TAILNET_OBSERVER_CONFIG_KEYS,
+  TAILNET_OBSERVER_PORT_BLOCKED,
   TAILNET_CONFINED_RANGE_UNVERIFIED,
   TAILNET_PORT_CONFINED_WORKER_RANGE,
   type TailnetObserverConfigKeyView,
@@ -99,8 +101,8 @@ export function tailnetObserverErrorText(code: string, t: (key: string) => strin
       return t("tailnetObserver.errorServeCommandFailed");
     case "tailnet-guided-setup-not-ready":
       return t("tailnetSetup.errorNotReady");
-    case "tailnet-guided-setup-port-unavailable":
-      return t("tailnetSetup.errorPortUnavailable");
+    case TAILNET_OBSERVER_PORT_BLOCKED:
+      return t("tailnetObserver.errorPortBlocked");
     case "tailnet-own-device-admission-unavailable":
       return t("tailnetSetup.errorOwnDeviceAdmissionUnavailable");
     case "tailnet-own-device-admission-login-unreadable":
@@ -144,6 +146,22 @@ function sourceLabel(
   return snapshot.provenance[key] === "env-override"
     ? t("tailnetObserver.sourceEnvOverride")
     : null;
+}
+
+export function tailnetObserverPortBlockText(
+  snapshot: TailnetObserverSnapshot,
+  t: TranslateFn,
+): string | null {
+  const block = snapshot.portBlock;
+  if (block === null) return null;
+
+  const message = [t("tailnetObserver.portBlocked", { port: block.port })];
+  if (block.hint === "excluded-range") message.push(t("tailnetObserver.portExcludedHint"));
+  if (block.hint === "mirrored-range") message.push(t("tailnetObserver.portMirroredHint"));
+  message.push(t(snapshot.provenance.port === "env-override"
+    ? "tailnetObserver.changePortOverride"
+    : "tailnetObserver.changePortHint"));
+  return message.join(" ");
 }
 
 export function TailnetObserverSection({ api, onHostStateChanged }: TailnetObserverSectionProps) {
@@ -190,6 +208,9 @@ export function TailnetObserverSection({ api, onHostStateChanged }: TailnetObser
       await refresh();
       onHostStateChanged?.();
       setFeedback({ tone: "success", text: t("tailnetObserver.saved") });
+    } else if (result.error === TAILNET_OBSERVER_PORT_BLOCKED) {
+      await refresh();
+      onHostStateChanged?.();
     } else {
       setFeedback({ tone: "error", text: tailnetObserverErrorText(result.error, t) });
     }
@@ -252,6 +273,8 @@ export function TailnetObserverSection({ api, onHostStateChanged }: TailnetObser
     );
   }
 
+  const startErrorText = tailnetObserverPortBlockText(snapshot, t)
+    ?? (snapshot.lastStartError === null ? null : tailnetObserverErrorText(snapshot.lastStartError, t));
   const envOverridden = TAILNET_OBSERVER_CONFIG_KEYS.filter(
     (key) => snapshot.provenance[key] === "env-override",
   );
@@ -328,9 +351,9 @@ export function TailnetObserverSection({ api, onHostStateChanged }: TailnetObser
         </div>
       ) : null}
 
-      {snapshot.lastStartError !== null ? (
-        <p className="mt-2 text-xs text-destructive" data-testid="tailnet-observer-start-error">
-          {tailnetObserverErrorText(snapshot.lastStartError, t)}
+      {startErrorText !== null ? (
+        <p className="mt-2 text-xs text-destructive" role="alert" data-testid="tailnet-observer-start-error">
+          {startErrorText}
         </p>
       ) : null}
 

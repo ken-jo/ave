@@ -1,15 +1,15 @@
 async function runGuardedOwnerOperation<T>(guard: () => void, operation: () => Promise<T>): Promise<T> { guard(); const result = await operation(); guard(); return result; }
 import { refuseNamespaceFileCreation } from "../../__tests__/support/feature-namespace.js";
-import { DEFAULT_TAILNET_OBSERVER_PORT } from "../../shared/tailnet-observer-config.js";
+import { DEFAULT_TAILNET_OBSERVER_PORT, TAILNET_OBSERVER_PORT_BLOCKED } from "../../shared/tailnet-observer-config.js";
 import { unavailableSecretEncryption } from "../../__tests__/support/host-runtime.js";
-import { createServer } from "node:net";
-import { occupyLoopbackPort as occupy, useTempDirs as trackTempDirs } from "../../__tests__/test-helpers.js";
+import { useTempDirs as trackTempDirs } from "../../__tests__/test-helpers.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as windowsRuntime from "@anthropic-ai/sandbox-runtime";
 import * as windowsIntegrity from "../../permissions/srt-win-integrity.js";
 import * as sandboxCapability from "../../permissions/sandbox-capability.js";
 import * as aveHome from "../../shared/ave-home.js";
 import * as sandbox from "../../permissions/asrt-sandbox.js";
+import * as portHints from "../tailnet-port-hint.js";
 import type { ConversationSurfaceRuntime } from "../../engine/conversation-surface-runtime.js";
 import type { TailnetPairedSharingRuntime } from "../tailnet-paired-sharing-runtime.js";
 import { writeJsonAtomic, type FeatureNamespaceHandle } from "../storage/feature-namespace.js";
@@ -18,7 +18,6 @@ import type { TailnetShareActorId } from "../tailnet-pairing-share-store.js";
 import type { AuditLogger } from "../../audit/audit-logger.js";
 import type { TailnetPairingDeviceStatus } from "../../api/tailnet-surface-server.js";
 import {
-  chooseObserverPort,
   configureTailscaleServe,
   getTailnetObserverRuntimeState,
   getTailnetPairedSharingRuntime,
@@ -929,100 +928,47 @@ describe("Tailnet observer restart", () => {
   });
 });
 
-describe("choosing a loopback port for the observer", () => {
-  it("refuses an overlapping preferred port before probing it", async () => {
-    const port = DEFAULT_TAILNET_OBSERVER_PORT - 1;
-    const platform = vi.spyOn(process, "platform", "get").mockReturnValue("win32");
-    const range = vi.spyOn(sandbox, "getWindowsProxyPortRange").mockReturnValue([port, port + 1]);
-    try {
-      await expect(chooseObserverPort(port)).rejects.toThrow("tailnet-observer-port-confined-worker-range");
-    } finally {
-      range.mockRestore();
-      platform.mockRestore();
-    }
-  });
-
-  // A port nothing holds right now, learned from the OS rather than guessed.
-  async function freePort(): Promise<number> {
-    const probe = createServer();
-    const port = await new Promise<number>((resolve, reject) => {
-      probe.once("error", reject);
-      probe.listen({ host: "127.0.0.1", port: 0, exclusive: true }, () => {
-        const address = probe.address();
-        if (typeof address === "object" && address !== null) resolve(address.port);
-        else reject(new Error("no-address"));
-      });
+describe("blocked Tailnet listener ports", () => {
+  it.each(["EADDRINUSE", "EACCES"] as const)("reports %s and only retries the port the owner chose", async code => {
+    const port = 28_243;
+    const replacementPort = port + 1;
+    let file: TailnetObserverConfigFile = { enabled: true, authorization: APP_CAPABILITY, port };
+    const f = options({});
+    const hint = code === "EACCES" ? "excluded-range" : null;
+    const getHint = vi.spyOn(portHints, "getWindowsTailnetPortHint").mockResolvedValue(hint);
+    const settings = createTailnetObserverConfigService({
+      pairedSharingBootstrapFailed: () => false,
+      env: {},
+      readConfigFile: async () => file,
+      writeConfigFile: async next => { file = next; },
+      readOwnDeviceAdmission: async () => false,
+      probeEnvironment: async () => tailscaleEnvironment(null),
     });
-    await new Promise<void>((resolve) => probe.close(() => resolve()));
-    return port;
-  }
+    f.startServer.mockRejectedValueOnce(Object.assign(new Error("listen failed"), { code }));
+    f.input.dependencies.readConfigFile = async () => file;
 
-  it("keeps a preferred port that is free", async () => {
-    const free = await freePort();
-
-    expect(await chooseObserverPort(free)).toBe(free);
-  });
-
-  it("asks for the shared default when nothing is preferred", async () => {
-    const release = await occupy(DEFAULT_TAILNET_OBSERVER_PORT);
     try {
-      // Occupied here, so the answer is a different port — which is itself the evidence the default is what was asked for first.
-      const chosen = await chooseObserverPort(null);
-      expect(chosen).not.toBeNull();
-      expect(chosen).not.toBe(DEFAULT_TAILNET_OBSERVER_PORT);
-    } finally {
-      await release();
-    }
-  });
+      await expect(maybeStartTailnetObserverServer(f.input)).rejects.toThrow(TAILNET_OBSERVER_PORT_BLOCKED);
+      expect(f.startServer.mock.calls.map(([input]) => input.port)).toEqual([port]);
+      await expect(settings.snapshot()).resolves.toMatchObject({
+        listeningPort: null,
+        lastStartError: TAILNET_OBSERVER_PORT_BLOCKED,
+        portBlock: { port, code, hint },
+        saved: { port },
+      });
+      expect(getHint).toHaveBeenCalledWith(port);
 
-  it("skips an excluded automatic default after an eligible preferred port is occupied", async () => {
-    const preferred = await freePort();
-    const release = await occupy(preferred);
-    const excluded = DEFAULT_TAILNET_OBSERVER_PORT;
-    const platform = vi.spyOn(process, "platform", "get").mockReturnValue("win32");
-    const range = vi.spyOn(sandbox, "getWindowsProxyPortRange").mockReturnValue([excluded, excluded]);
-    try {
-      const chosen = await chooseObserverPort(preferred);
-      expect(chosen).not.toBeNull();
-      expect(chosen).not.toBe(excluded);
-      expect(chosen).not.toBe(preferred);
-      if (chosen === null) throw new Error("No eligible free port");
-      const releaseChosen = await occupy(chosen);
-      await releaseChosen();
+      const { saved } = await settings.snapshot();
+      await settings.apply({ ...saved, port: replacementPort });
+      expect(f.startServer.mock.calls.map(([input]) => input.port)).toEqual([port, replacementPort]);
+      await expect(settings.snapshot()).resolves.toMatchObject({
+        listeningPort: replacementPort,
+        lastStartError: null,
+        portBlock: null,
+        saved: { port: replacementPort },
+      });
     } finally {
-      range.mockRestore();
-      platform.mockRestore();
-      await release();
-    }
-  });
-
-  it("falls from an occupied preference to the default", async () => {
-    const taken = await freePort();
-    const releasePreferred = await occupy(taken);
-    try {
-      const chosen = await chooseObserverPort(taken);
-      // The default may itself be busy on the machine running this; what must never happen is silently handing back the port that is already held.
-      expect(chosen).not.toBe(taken);
-      expect(chosen).not.toBeNull();
-    } finally {
-      await releasePreferred();
-    }
-  });
-
-  it("hands out an OS-assigned port when preference and default are both taken", async () => {
-    const taken = await freePort();
-    const releasePreferred = await occupy(taken);
-    const releaseDefault = await occupy(DEFAULT_TAILNET_OBSERVER_PORT);
-    try {
-      const chosen = await chooseObserverPort(taken);
-      expect(chosen).not.toBeNull();
-      expect(chosen).not.toBe(taken);
-      expect(chosen).not.toBe(DEFAULT_TAILNET_OBSERVER_PORT);
-      // Usable, not merely a number: the whole point is that the listener can bind what this returned.
-      expect(await chooseObserverPort(chosen)).toBe(chosen);
-    } finally {
-      await releaseDefault();
-      await releasePreferred();
+      getHint.mockRestore();
     }
   });
 });
