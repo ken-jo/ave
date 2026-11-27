@@ -1,3 +1,4 @@
+import { withLocalityDecision } from "../shared/local-path-io.js";
 import type { Stats } from "node:fs";
 import { stat } from "node:fs/promises";
 
@@ -218,20 +219,22 @@ export function retainedDescendantWorkspaceRoots(
   removedRoot: string,
   candidates: readonly string[],
 ): string[] {
-  const root = caseFoldForMatch(canonicalizePathForMatch(removedRoot)).replace(/\/+$/g, "") || "/";
-  const seen = new Set<string>();
-  const retained: string[] = [];
-  for (const candidate of candidates) {
-    const canonical = canonicalizePathForMatch(candidate);
-    const key = caseFoldForMatch(canonical).replace(/\/+$/g, "") || "/";
-    const descendant = key !== root && (root === "/"
-      ? key.startsWith("/")
-      : key.startsWith(`${root}/`));
-    if (!descendant || seen.has(key)) continue;
-    seen.add(key);
-    retained.push(canonical);
-  }
-  return retained;
+  return withLocalityDecision(() => {
+    const root = caseFoldForMatch(canonicalizePathForMatch(removedRoot)).replace(/\/+$/g, "") || "/";
+    const seen = new Set<string>();
+    const retained: string[] = [];
+    for (const candidate of candidates) {
+      const canonical = canonicalizePathForMatch(candidate);
+      const key = caseFoldForMatch(canonical).replace(/\/+$/g, "") || "/";
+      const descendant = key !== root && (root === "/"
+        ? key.startsWith("/")
+        : key.startsWith(`${root}/`));
+      if (!descendant || seen.has(key)) continue;
+      seen.add(key);
+      retained.push(canonical);
+    }
+    return retained;
+  });
 }
 
 export interface WorkspaceRootRemovalExecution {

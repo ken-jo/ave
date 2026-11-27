@@ -40,9 +40,11 @@ import { hostScriptWriteDenyPaths } from "../main/host-script-runtime.js";
 import { compileSensitivePathGlob } from "./sensitive-path-glob.js";
 import { isWindowsNetworkOrDevicePath, localDriveAlias, modelShellPath, withoutStreamSuffixes } from "../shared/shell-native-path.js";
 import {
-  admitLocalPath, admitLocalRoute, admitRouteAncestor, createRunLocality, type LocalFilesystemFacts, localFs, type LocalityDecision,
-  type LocalRoute, unprovenLookup, withLocalityDecision,
+  admitLocalPath, admitLocalRoute, admitRouteAncestor, decisionMemo, isLocalityFailure, type LocalFilesystemFacts, localFs, matcherMemo,
+  type LocalRoute, openLocalityDecision, rethrowLocalityFailure, unprovenLookup, withLocalityDecision,
 } from "../shared/local-path-io.js";
+import { isWindowsPathKindHelperUnavailable } from "../main/windows-path-kind-launcher.js";
+import { projectLocalWindowsFilesystemPath } from "../shared/shell-filesystem-path.js";
 import { classifyWindowsSpelling } from "../shared/windows-path-spelling.js";
 
 // Bounded walk-up depth used by canonicalizePathForMatch when the input path does not yet exist on disk. We try `realpathSync.native` on progressively higher ancestors until we find one that exists, then compose `<resolvedAncestor>/<remainder>`. Capped to defend against adversarial inputs (deep paths, symlink cycles).
@@ -50,48 +52,61 @@ export const MAX_WALK_UP = 64;
 
 const NO_RUNTIME_SECRET_KEY_PATHS: readonly string[] = Object.freeze([]);
 let runtimeSecretKeyPaths: { configured: string; paths: readonly string[] } | undefined;
-
-const runtimeSettingsScopes = new Map<symbol, ReadonlySet<string>>();
+const runtimeSettingsScopes = new Map<symbol, { targets: ReadonlySet<string>; canonicalKnown: boolean }>();
 
 /** Protect one live host's settings file and its directory until that host closes. */
-export function protectRuntimeSettingsPath(path: string): () => void {
+export function protectRuntimeSettingsPath(path: string, resourcePath?: string): () => void {
   if (!isAbsolute(path) || path.includes("\0")) throw new Error("Settings path must be absolute");
+  const lexical = process.platform === "win32" ? foldCanonicalPathSeparators(pathResolve(path)) : pathResolve(path);
+  let canonical: string | undefined;
+  try {
+    canonical = withLocalityDecision(
+      () => process.platform === "win32"
+        ? foldCanonicalPathSeparators(projectLocalWindowsFilesystemPath(pathResolve(path), MAX_WALK_UP))
+        : canonicalizePathForMatch(path),
+      process.platform === "win32" && resourcePath !== undefined ? openLocalityDecision(resourcePath) : undefined,
+    );
+  } catch (error) {
+    const refusedRoute = !isLocalityFailure(error) && (error as NodeJS.ErrnoException | undefined)?.code === "ENETWORKSHAREPATH";
+    if (process.platform !== "win32" || !isWindowsPathKindHelperUnavailable(error) && !refusedRoute) throw error;
+    // The lexical deny still applies. Native writes must wait for a host that can also protect the physical path.
+  }
   const targets = new Set<string>();
-  for (const file of [canonicalizePathForMatch(path), pathResolve(path)]) {
-    for (const target of [file, dirname(file)]) {
-      targets.add(caseFoldForMatch(target).replace(/\/+$/u, ""));
-    }
+  for (const file of canonical === undefined ? [lexical] : [canonical, lexical]) {
+    for (const target of [file, dirname(file)]) targets.add(caseFoldForMatch(target).replace(/\/+$/u, ""));
   }
   const scope = Symbol();
-  runtimeSettingsScopes.set(scope, targets);
+  runtimeSettingsScopes.set(scope, { targets, canonicalKnown: canonical !== undefined });
   return () => { runtimeSettingsScopes.delete(scope); };
 }
 
 // The native host's configured external key is secret regardless of its name or workspace grants. Both the host guard and the OS deny floor consume these same literal paths. Host startup resolves them before exposing tools; retain that target if a directory symlink changes later. The host owns this process environment setting and keeps it unchanged for the encryption lifetime.
 export function getRuntimeSensitiveKeyPaths(): readonly string[] {
-  const configured = process.env.AVE_SECRET_KEY_FILE;
-  if (configured === undefined) return NO_RUNTIME_SECRET_KEY_PATHS;
-  if (runtimeSecretKeyPaths?.configured === configured) return runtimeSecretKeyPaths.paths;
-  if (!isAbsolute(configured) || configured.includes("\0")) {
-    throw new Error("AVE_SECRET_KEY_FILE must be an absolute file path");
-  }
-  // ASRT interprets these characters as patterns, including within a literal filename. Refuse an unrepresentable key path instead of losing its deny.
-  const assertSandboxLiteral = (path: string): void => {
-    if (/[*?\[\]]/.test(path)) {
-      throw new Error("AVE_SECRET_KEY_FILE must not contain sandbox glob characters");
+  return withLocalityDecision(() => {
+    const configured = process.env.AVE_SECRET_KEY_FILE;
+    if (configured === undefined) return NO_RUNTIME_SECRET_KEY_PATHS;
+    if (runtimeSecretKeyPaths?.configured === configured) return runtimeSecretKeyPaths.paths;
+    if (!isAbsolute(configured) || configured.includes("\0")) {
+      throw new Error("AVE_SECRET_KEY_FILE must be an absolute file path");
     }
-  };
-  assertSandboxLiteral(configured);
-  let canonical: string;
-  try {
-    canonical = withLocalityDecision(() => localFs.realpathNative(admitLocalRoute(configured).verdict));
-  } catch {
-    throw new Error("AVE_SECRET_KEY_FILE could not be resolved safely");
-  }
-  assertSandboxLiteral(canonical);
-  const paths = Object.freeze([...new Set([pathResolve(configured), canonical])]);
-  runtimeSecretKeyPaths = { configured, paths };
-  return paths;
+    // Refuse paths the sandbox would interpret as patterns.
+    const assertSandboxLiteral = (path: string): void => {
+      if (/[*?\[\]]/.test(path)) {
+        throw new Error("AVE_SECRET_KEY_FILE must not contain sandbox glob characters");
+      }
+    };
+    assertSandboxLiteral(configured);
+    let canonical: string;
+    try {
+      canonical = localFs.realpathNative(admitLocalRoute(configured).verdict);
+    } catch {
+      throw new Error("AVE_SECRET_KEY_FILE could not be resolved safely");
+    }
+    assertSandboxLiteral(canonical);
+    const paths = Object.freeze([...new Set([pathResolve(configured), canonical])]);
+    runtimeSecretKeyPaths = { configured, paths };
+    return paths;
+  });
 }
 
 // Where a SensitiveEntry's segments hang off. - `ave-home` — below the Ave home root (`~/.ave` unless `AVE_HOME`). - `home` — below the real user home (`os.homedir`). - `root` — below the filesystem root (`/etc/…`). The host-tool guard is anchor-INSENSITIVE by design: it matches a canonicalized absolute path with an anchor-free `**\/` prefix, so a credential store dropped outside the user's home (a copied `.ssh` under `/tmp`, a second `HOME` in a container mount) is still caught. The anchor also identifies the literal runtime roots. Both enforcement points resolve `ave-home` rows at call time so a relocated profile retains its protection.
@@ -482,6 +497,7 @@ function resolveLocalPathForPolicy(rawPath: string, spend?: () => void, facts?: 
   let route: LocalRoute;
   try { route = admitLocalRoute(canonical, { maxSymlinkHops: MAX_WALK_UP, facts }); }
   catch (error) {
+    rethrowLocalityFailure(error);
     // Matching stays lexical for opaque network identities, as for direct operands: a link to one is judged by the spelling
     // it reaches, never the local spelling before it. Physical shell resolution separately propagates the error.
     return reachedSpelling(error, canonical);
@@ -491,7 +507,8 @@ function resolveLocalPathForPolicy(rawPath: string, spend?: () => void, facts?: 
   spend?.();
   try {
     canonical = localFs.realpathNative(route.verdict);
-  } catch {
+  } catch (error) {
+    rethrowLocalityFailure(error);
     let parent = canonical;
     let resolved = false;
     for (let depth = 0; depth < MAX_WALK_UP; depth++) {
@@ -506,7 +523,8 @@ function resolveLocalPathForPolicy(rawPath: string, spend?: () => void, facts?: 
         canonical = remainder ? pathResolve(realParent, remainder) : realParent;
         resolved = true;
         break;
-      } catch {
+      } catch (error) {
+        rethrowLocalityFailure(error);
         // keep walking
       }
     }
@@ -523,7 +541,7 @@ function resolveLocalPathForPolicy(rawPath: string, spend?: () => void, facts?: 
 // existing descendant; sibling paths reuse that fact without filesystem retries.
 export function createPathCanonicalizer(): (rawPath: string, normalized?: boolean) => string {
   type PathFact = { canonical: string; folded: string; missing: boolean };
-  const paths = new Map<string, PathFact>();
+  const owner = {};
   const append = (parent: string, name: string): string => parent.endsWith(sep) ? `${parent}${name}` : `${parent}${sep}${name}`;
   const missing = (path: string, ancestor: PathFact | undefined): PathFact => {
     const name = basename(path);
@@ -533,7 +551,7 @@ export function createPathCanonicalizer(): (rawPath: string, normalized?: boolea
       : foldCanonicalPathSeparators(canonical);
     return { canonical, folded, missing: true };
   };
-  const resolvePath = (path: string, depth: number, route: LocalRoute): PathFact => {
+  const resolvePath = (path: string, depth: number, route: LocalRoute, paths: Map<string, PathFact>): PathFact => {
     const known = paths.get(path);
     if (known !== undefined) return known;
     const parent = dirname(path);
@@ -552,39 +570,30 @@ export function createPathCanonicalizer(): (rawPath: string, normalized?: boolea
       catch (error) { throw unprovenLookup(path, [], error); }
     }
     const result: PathFact = canonical !== undefined ? { canonical, folded: foldCanonicalPathSeparators(canonical), missing: false }
-      : missing(path, parent === path || depth >= MAX_WALK_UP ? undefined : resolvePath(parent, depth + 1, route));
+      : missing(path, parent === path || depth >= MAX_WALK_UP ? undefined : resolvePath(parent, depth + 1, route, paths));
     paths.set(path, result);
     return result;
   };
-  // Recorded facts serve only the decision that observed them.
-  const locality = createRunLocality();
-  let observedIn: LocalityDecision | undefined;
-  return (rawPath, normalized = false) => {
+  return (rawPath, normalized = false) => withLocalityDecision(() => {
     if (isOpaqueNativePath(rawPath)) return foldCanonicalPathSeparators(rawPath);
     const local = localDriveAlias(rawPath);
     const path = local !== undefined ? pathResolve(local) : normalized ? rawPath : pathResolve(rawPath);
-    const decision = locality();
-    if (decision !== observedIn) {
-      paths.clear();
-      observedIn = decision;
-    }
-    return withLocalityDecision(() => {
-      try {
-        const route = admitLocalRoute(path, {
-          maxSymlinkHops: MAX_WALK_UP,
-          facts: {
-            knownPath: (prefix) => paths.get(prefix),
-            onLocalPath: (prefix, canonical, absent) => {
-              paths.set(prefix, { canonical, folded: foldCanonicalPathSeparators(canonical), missing: absent });
-            },
+    const paths = decisionMemo<PathFact>(owner);
+    try {
+      const route = admitLocalRoute(path, {
+        maxSymlinkHops: MAX_WALK_UP,
+        facts: {
+          knownPath: (prefix) => paths.get(prefix),
+          onLocalPath: (prefix, canonical, absent) => {
+            paths.set(prefix, { canonical, folded: foldCanonicalPathSeparators(canonical), missing: absent });
           },
-        });
-        return resolvePath(path, 0, route).folded;
-      } catch (error) {
-        return foldCanonicalPathSeparators(reachedSpelling(error, path));
-      }
-    }, decision);
-  };
+        },
+      });
+      return resolvePath(path, 0, route, paths).folded;
+    } catch (error) {
+      return foldCanonicalPathSeparators(reachedSpelling(error, path));
+    }
+  });
 }
 
 // Steps 3–5 of canonicalizePathForMatch: separator folding, duplicate collapse, NFC, and the win32 drive-letter case fold. Exported with an explicit `platform` because the Windows shapes cannot be exercised through canonicalizePathForMatch anywhere else: `resolve` and `realpath` follow the HOST's rules, so a `\\server\share\…` input is just a filename with backslashes in it on macOS/Linux, and a win32-only assertion would never run on the machines this is developed and CI'd on.
@@ -622,35 +631,38 @@ export const PROTECTED_ROOT_ENTRIES = [
 ] as const;
 
 export function protectedControlEntryFor(path: string, canonicalize: (path: string) => string = canonicalizePathForMatch, options: { inspectHostFiles?: boolean } = {}): string | undefined {
-  const local = withoutStreamSuffixes(localDriveAlias(path) ?? path);
-  const normalized = normalizePath(local).normalize("NFC").toLowerCase().replace(/\/+$/u, "");
-  const segments = normalized.split("/").filter(Boolean);
-  const entry = PROTECTED_ROOT_ENTRIES.find((entry) => {
-    const parts = entry.split("/");
-    return segments.some((_, index) => parts.every((part, offset) => segments[index + offset] === part));
-  });
-  if (entry) return entry;
-  if (options.inspectHostFiles === false) {
-    if (segments.includes(".ave")) return "application-home";
-    if ([...runtimeSettingsScopes.values()].some(targets => [...targets].some(target =>
-      normalizePath(target).normalize("NFC").toLowerCase() === normalized))) return "runtime-settings-file";
+  return withLocalityDecision(() => {
+    const local = withoutStreamSuffixes(localDriveAlias(path) ?? path);
+    const normalized = normalizePath(local).normalize("NFC").toLowerCase().replace(/\/+$/u, "");
+    const segments = normalized.split("/").filter(Boolean);
+    const entry = PROTECTED_ROOT_ENTRIES.find((entry) => {
+      const parts = entry.split("/");
+      return segments.some((_, index) => parts.every((part, offset) => segments[index + offset] === part));
+    });
+    if (entry) return entry;
+    if (options.inspectHostFiles === false) {
+      if (segments.includes(".ave")) return "application-home";
+      if ([...runtimeSettingsScopes.values()].some(({ targets }) => [...targets].some(target =>
+        normalizePath(target).normalize("NFC").toLowerCase() === normalized))) return "runtime-settings-file";
+      return undefined;
+    }
+    if ([...runtimeSettingsScopes.values()].some(({ canonicalKnown }) => !canonicalKnown)) return "runtime-settings-file";
+    const homes = [pathResolve(aveHome()), canonicalize(aveHome()), pathResolve(homedir(), ".config", "ave")]
+      .map((home) => normalizePath(home).normalize("NFC").toLowerCase().replace(/\/+$/u, ""));
+    // The exception keys on the platform's case rule and never applies to an uncollapsed `..` spelling.
+    const folded = caseFoldForMatch(normalizePath(local).normalize("NFC")).replace(/\/+$/u, "");
+    const workspace = segments.includes("..") ? undefined : [pathResolve(aveHome()), canonicalize(aveHome())]
+      .map((home) => caseFoldForMatch(normalizePath(home).normalize("NFC")).replace(/\/+$/u, "") + "/workspace")
+      .find((base) => folded === base || folded.startsWith(base + "/"));
+    if (!workspace && homes.some((base) => normalized === base || normalized.startsWith(base + "/"))) return "application-home";
+    if ([...runtimeSettingsScopes.values()].some(({ targets }) => [...targets].some((target) => {
+      const base = normalizePath(target).toLowerCase();
+      return normalized === base;
+    }))) return "runtime-settings-file";
+    // The managed workspace is user data; nested control homes remain protected.
+    if ((workspace ? folded.slice(workspace.length).toLowerCase().split("/") : segments).includes(".ave")) return "application-home";
     return undefined;
-  }
-  const homes = [pathResolve(aveHome()), canonicalize(aveHome()), pathResolve(homedir(), ".config", "ave")]
-    .map((home) => normalizePath(home).normalize("NFC").toLowerCase().replace(/\/+$/u, ""));
-  // The exception keys on the platform's case rule and never applies to an uncollapsed `..` spelling.
-  const folded = caseFoldForMatch(normalizePath(local).normalize("NFC")).replace(/\/+$/u, "");
-  const workspace = segments.includes("..") ? undefined : [pathResolve(aveHome()), canonicalize(aveHome())]
-    .map((home) => caseFoldForMatch(normalizePath(home).normalize("NFC")).replace(/\/+$/u, "") + "/workspace")
-    .find((base) => folded === base || folded.startsWith(base + "/"));
-  if (!workspace && homes.some((base) => normalized === base || normalized.startsWith(base + "/"))) return "application-home";
-  if ([...runtimeSettingsScopes.values()].some((targets) => [...targets].some((target) => {
-    const base = normalizePath(target).toLowerCase();
-    return normalized === base;
-  }))) return "runtime-settings-file";
-  // The managed workspace is user data; nested control homes remain protected.
-  if ((workspace ? folded.slice(workspace.length).toLowerCase().split("/") : segments).includes(".ave")) return "application-home";
-  return undefined;
+  });
 }
 
 export interface PermissionPathEvidence {
@@ -683,17 +695,22 @@ export function createProjectMembership(projectRoot: string, canonicalize: (path
   // A current-drive or drive-relative root has no independent filesystem identity.
   // Resolving it against the host's drive must not turn it into a project alias.
   const hasNativeRoot = process.platform !== "win32" || modelShellPath(projectRoot, { dialect: "native" }).nativePath !== undefined;
-  let realRoot: string | undefined;
-  return (canonical) => {
+  const owner = {};
+  return canonical => withLocalityDecision(() => {
     if (!hasNativeRoot) return false;
     const target = normalize(canonical);
     if (within(target, root)) return true;
-    realRoot ??= normalize(canonicalize(projectRoot));
+    const memo = matcherMemo<string>(owner);
+    let realRoot = memo.get("root");
+    if (realRoot === undefined) {
+      realRoot = normalize(canonicalize(projectRoot));
+      memo.set("root", realRoot);
+    }
     return within(target, realRoot);
-  };
+  });
 }
 
-/** Snapshot matcher roots once for a decision, while retaining every lexical/canonical target. */
+/** Reuse matcher roots according to the platform's memo lifetime while retaining every lexical and canonical target. */
 export function createPermissionPathEvidence(
   projectRoot: string,
   canonicalize?: (path: string) => string,
@@ -707,8 +724,9 @@ export function createPermissionPathEvidence(
   const within = (value: string) => value === root || value.startsWith(root + "/");
   const inProject = inspectHostFiles ? createProjectMembership(projectRoot, matchingCanonicalize) : (target: string) => within(normalize(target));
   const matchers = new Map<PathEffect, { secret: (path: string) => string | null; admission: (path: string) => string | null }>();
-  const observations = new Map<string, Pick<PermissionPathEvidence, "secret" | "admissionDenial" | "protectedControl" | "projectEscape">>();
-  return path => {
+  const owner = {};
+  return path => withLocalityDecision(() => {
+    const observations = matcherMemo<Pick<PermissionPathEvidence, "secret" | "admissionDenial" | "protectedControl" | "projectEscape">>(owner);
     const lexical = normalize(path.lexical);
     const canonical = normalize(path.canonical);
     // A device or share spelling is judged as the drive path it names and, since no spelling proves that identity, also as
@@ -759,7 +777,7 @@ export function createPermissionPathEvidence(
     // Content and inode can change at an unchanged native name; only name-based evidence is reusable.
     if (native === undefined) observations.set(key, observation);
     return { lexical: path.lexical, canonical: path.canonical, effect: path.effect, ...observation };
-  };
+  });
 }
 
 /** Match filesystem roots, the OS home and project roots or their ancestors in either spelling.
@@ -796,17 +814,19 @@ export function policyMatchPaths(filePath: string): readonly string[] {
 
 // Resolve only the primary session namespace, without materializing it.
 export function getConfiguredSessionReadRoot(): string | undefined {
-  const home = canonicalizePathForMatch(aveHome());
-  const lexicalRoot = foldCanonicalPathSeparators(sessionStorePath(home));
-  const canonicalRoot = canonicalizePathForMatch(lexicalRoot);
-  // A relocated application root is valid. A sessions-directory link must not turn that single namespace into a grant for some other host directory.
-  if (caseFoldForMatch(canonicalRoot) !== caseFoldForMatch(lexicalRoot)) return undefined;
-  // The native filesystem policy interprets these as patterns, not literals.
-  if (/[\0\r\n*?\[\]]/.test(canonicalRoot)) return undefined;
-  // A configured application root inside a credential store cannot turn that store into an allowed native read subtree.
-  if (policyMatchPaths(caseFoldForMatch(canonicalRoot)).some((candidate) =>
-    SENSITIVE_PATH_PATTERNS.some((pattern) => !READ_ONLY_NAMESPACE_PATTERNS.has(pattern) && globMatch(candidate, pattern)))) return undefined;
-  return canonicalRoot;
+  return withLocalityDecision(() => {
+    const home = canonicalizePathForMatch(aveHome());
+    const lexicalRoot = foldCanonicalPathSeparators(sessionStorePath(home));
+    const canonicalRoot = canonicalizePathForMatch(lexicalRoot);
+    // A relocated application root is valid. A sessions-directory link must not turn that single namespace into a grant for some other host directory.
+    if (caseFoldForMatch(canonicalRoot) !== caseFoldForMatch(lexicalRoot)) return undefined;
+    // The native filesystem policy interprets these as patterns, not literals.
+    if (/[\0\r\n*?\[\]]/.test(canonicalRoot)) return undefined;
+    // A configured application root inside a credential store cannot turn that store into an allowed native read subtree.
+    if (policyMatchPaths(caseFoldForMatch(canonicalRoot)).some((candidate) =>
+      SENSITIVE_PATH_PATTERNS.some((pattern) => !READ_ONLY_NAMESPACE_PATTERNS.has(pattern) && globMatch(candidate, pattern)))) return undefined;
+    return canonicalRoot;
+  });
 }
 
 // Membership only: callers must still apply every other sensitive-path rule.
@@ -815,13 +835,14 @@ export function isConfiguredSessionReadPath(canonicalPath: string): boolean {
   return isSessionReadPathUnderRoot(canonicalPath, root);
 }
 
-// Snapshot the namespace once for one permission decision.
+// Reuse the namespace within the platform's matcher memo lifetime.
 export function createConfiguredSessionReadPathMatcher(): (canonicalPath: string) => boolean {
-  let snapshot: { root: string | undefined } | undefined;
-  return (canonicalPath) => {
-    snapshot ??= { root: getConfiguredSessionReadRoot() };
-    return isSessionReadPathUnderRoot(canonicalPath, snapshot.root);
-  };
+  const owner = {};
+  return canonicalPath => withLocalityDecision(() => {
+    const memo = matcherMemo<string | undefined>(owner);
+    if (!memo.has("root")) memo.set("root", getConfiguredSessionReadRoot());
+    return isSessionReadPathUnderRoot(canonicalPath, memo.get("root"));
+  });
 }
 
 function isSessionReadPathUnderRoot(canonicalPath: string, root: string | undefined): boolean {
@@ -862,23 +883,29 @@ function sensitiveSearchAnchors(canonicalize: (path: string) => string = canonic
     paths.push(pathResolve(home, ...segments));
   }
   paths.push("/proc");
-  return paths.map((path) => caseFoldForMatch(canonicalize(path)));
+  return withLocalityDecision(() => paths.map((path) => caseFoldForMatch(canonicalize(path))));
 }
 
 // Cache the secret-holding location reached by each recursive-search root in one request.
 export function createSensitiveLocationMatcher(canonicalize: (path: string) => string = canonicalizePathForMatch): (directory: string) => string | null {
-  let anchors: readonly string[] | undefined;
-  const results = new Map<string, string | null>();
-  return (directory) => {
+  const anchorOwner = {};
+  const resultOwner = {};
+  return directory => withLocalityDecision(() => {
+    const results = matcherMemo<string | null>(resultOwner);
     const cached = results.get(directory);
     if (cached !== undefined) return cached;
-    anchors ??= sensitiveSearchAnchors(canonicalize);
+    const memo = matcherMemo<readonly string[]>(anchorOwner);
+    let anchors = memo.get("anchors");
+    if (anchors === undefined) {
+      anchors = sensitiveSearchAnchors(canonicalize);
+      memo.set("anchors", anchors);
+    }
     const trimmed = directory.length > 1 ? directory.replace(/\/+$/, "") : directory;
     const prefix = trimmed.endsWith("/") ? trimmed : `${trimmed}/`;
     const result = anchors.find((anchor) => anchor === trimmed || anchor.startsWith(prefix)) ?? null;
     results.set(directory, result);
     return result;
-  };
+  });
 }
 
 /**
@@ -904,11 +931,9 @@ export function isSensitivePath(absPath: string, effect: PathEffect = "write", a
  * their own checks.
  */
 export function createSensitivePathCheck(effect: PathEffect = "write", audience: KeyMaterialAudience = "agent"): (absPath: string) => string | null {
-  const decision = createRevalidatingCanonicalizer();
-  // Rows of one synchronous run share drive answers; the first row after an await reads them again.
-  const locality = createRunLocality();
-  return (absPath) => absPath
-    ? withLocalityDecision(() => createPathSensitivityMatcher(effect, undefined, decision(), false, audience)(absPath), locality())
+  const canonicalizeForRow = createRevalidatingCanonicalizer();
+  return absPath => absPath
+    ? withLocalityDecision(() => createPathSensitivityMatcher(effect, undefined, canonicalizeForRow(), false, audience)(absPath))
     : null;
 }
 
@@ -967,10 +992,10 @@ function recordResolutionChain(path: string, read: (path: string) => ChainEntry 
 // Share witness samples across cache lookups for one row. Validate both the requested and canonical chains.
 // Seeding a cache entry compares the recorded witness with a fresh read after resolution.
 function createRevalidatingCanonicalizer(): () => (path: string) => string {
-  const seen = new Set<string>();
+  const owner = {};
   type ResolutionWitness = { canonical: string; entries: Array<[string, ChainEntry]>; direct: boolean };
-  const resolved = new Map<string, ResolutionWitness>();
   return () => {
+    const resolved = matcherMemo<ResolutionWitness | null>(owner);
     const readings = new Map<string, ChainEntry | undefined>();
     const read = (path: string): ChainEntry | undefined => {
       if (!readings.has(path)) readings.set(path, readChainEntry(path));
@@ -1008,12 +1033,9 @@ function createRevalidatingCanonicalizer(): () => (path: string) => string {
     };
     return (path) => {
       const cached = resolved.get(path);
-      if (cached !== undefined && holds(cached)) return cached.canonical;
-      resolved.delete(path);
-      if (!seen.has(path)) {
-        seen.add(path);
-        return canonicalizePathForMatch(path);
-      }
+      if (cached && holds(cached)) return cached.canonical;
+      resolved.set(path, null);
+      if (cached === undefined) return canonicalizePathForMatch(path);
       const entries = new Map<string, ChainEntry>();
       const recorded = !isWindowsNetworkOrDevicePath(path) && recordResolutionChain(path, read, entries);
       const canonical = canonicalizePathForMatch(path);
@@ -1041,7 +1063,7 @@ export function isSensitiveContent(absPath: string, bytes: Buffer, size = bytes.
   return absPath ? createPathSensitivityMatcher("read", undefined, canonicalizePathForMatch, false, "agent", bytes, size)(absPath) : null;
 }
 
-// Snapshot policy roots and compiled globs once for one permission decision.
+// Reuse policy roots and compiled globs within the platform's matcher memo lifetime.
 interface SensitivePattern {
   pattern: string;
   insensitive: boolean;
@@ -1293,35 +1315,67 @@ function createPathSensitivityMatcher(
   // Resolve the caller's operand before folding its identity for grants. Only the native resolution names the file to
   // inspect: normalization and case matching must not select a different stored entry. Network and device paths remain
   // opaque, and content is inspected only where a grant covers its resolved identity.
-  let boundEvidence: "none" | "key" | "unknown" | undefined;
-  const mayHoldPrivateKey = (spelled: string): boolean => {
+  const mayHoldPrivateKey = (spelled: string, state: MatcherDecision): boolean => {
     if (isWindowsNetworkOrDevicePath(spelled)) return true;
     const local = onLocalFilesystem(nativeInspectionPath ?? spelled);
     const native = local ? nativeInspectionPath ?? (options.resolveNativePath ?? resolvePathForPolicy)(spelled) : undefined;
     const folded = caseFoldForMatch(foldCanonicalPathSeparators(canonicalize(native ?? spelled)));
     const inspectable = [...keyMaterialInspectionGrants].some((grant) => grant(folded));
-    if (inspectable && content === undefined && native !== undefined && nativeInspectionPath !== undefined && boundEvidence === undefined) {
-      boundEvidence = keyMaterialEvidence(native);
+    if (inspectable && content === undefined && native !== undefined && nativeInspectionPath !== undefined && state.boundEvidence === undefined) {
+      state.boundEvidence = keyMaterialEvidence(native);
     }
     const evidence = !inspectable ? "unknown"
       : content !== undefined ? keyMaterialEvidenceOf(content, contentSize)
       : native === undefined ? "unknown"
-      : nativeInspectionPath === undefined ? keyMaterialEvidence(native) : boundEvidence ?? "unknown";
+      : nativeInspectionPath === undefined ? keyMaterialEvidence(native) : state.boundEvidence ?? "unknown";
     const result = !inspectable || evidence === "key" || (audience === "agent" && evidence === "unknown");
     return result;
   };
   type ApplicationPath = { entry: SensitiveEntry; base: string };
   interface ApplicationNode { children: Map<string, ApplicationNode>; directories: ApplicationPath[] }
-  let roots: { session?: string; keys: readonly string[] } | undefined;
-  let applicationPaths: ApplicationPath[] | undefined;
-  let applicationExact: Map<string, ApplicationPath[]> | undefined;
-  let applicationRotations: Map<string, ApplicationPath[]> | undefined;
-  const applicationRoot: ApplicationNode = { children: new Map(), directories: [] };
-  const applicationParents = new Map<string, ApplicationPath[]>();
-  const applicationAt = (path: string): ApplicationPath[] => {
-    const cached = applicationParents.get(path);
+  const buildApplicationIndex = () => {
+    const root: ApplicationNode = { children: new Map(), directories: [] };
+    const home = matchingCanonicalize(aveHome());
+    const paths = (admissionOnly ? ADMISSION_PATH_ENTRIES : SENSITIVE_PATH_ENTRIES).filter((entry) => entry.anchor === "ave-home").map((entry) => ({
+      entry, base: caseFoldForMatch(matchingCanonicalize(pathResolve(home, ...entry.segments))),
+    }));
+    const exact = new Map<string, ApplicationPath[]>();
+    const rotations = new Map<string, ApplicationPath[]>();
+    for (const path of paths) {
+      if (path.entry.kind === "dir") {
+        let node = root;
+        for (const segment of path.base.split("/")) {
+          let child = node.children.get(segment);
+          if (child === undefined) {
+            child = { children: new Map(), directories: [] };
+            node.children.set(segment, child);
+          }
+          node = child;
+        }
+        node.directories.push(path);
+      }
+      const entries = exact.get(path.base) ?? [];
+      entries.push(path);
+      exact.set(path.base, entries);
+      if (path.entry.rotations) {
+        const parent = path.base.slice(0, path.base.lastIndexOf("/"));
+        const entries = rotations.get(parent) ?? [];
+        entries.push(path);
+        rotations.set(parent, entries);
+      }
+    }
+    return { root, exact, rotations, parents: new Map<string, ApplicationPath[]>() };
+  };
+  interface MatcherDecision {
+    roots?: { session: string | undefined; keys: readonly string[] };
+    application?: ReturnType<typeof buildApplicationIndex>;
+    boundEvidence?: "none" | "key" | "unknown";
+  }
+  const memoOwner = {};
+  const applicationAt = (index: ReturnType<typeof buildApplicationIndex>, path: string): ApplicationPath[] => {
+    const cached = index.parents.get(path);
     if (cached !== undefined) return cached;
-    let node = applicationRoot;
+    let node = index.root;
     const directories: ApplicationPath[] = [];
     for (const segment of path.split("/")) {
       const child = node.children.get(segment);
@@ -1329,11 +1383,11 @@ function createPathSensitivityMatcher(
       node = child;
       directories.push(...node.directories);
     }
-    applicationParents.set(path, directories);
+    index.parents.set(path, directories);
     return directories;
   };
   // `spelled` is the caller's own spelling, in which the path is resolved; `candidates` are for matching names.
-  const matchSpelling = (absPath: string, spelled: string): string | null => {
+  const matchSpelling = (absPath: string, spelled: string, state: MatcherDecision): string | null => {
     const candidates = policyMatchPaths(absPath);
     const normalizedPath = candidates[0]!;
     const eligible = candidatesFor(normalizedPath);
@@ -1348,17 +1402,20 @@ function createPathSensitivityMatcher(
     }
     if (!admissionOnly && effect === "write" && candidates.some((candidate) => {
       const target = caseFoldForMatch(candidate).replace(/\/+$/u, "");
-      return [...runtimeSettingsScopes.values()].some((targets) => targets.has(target));
+      return [...runtimeSettingsScopes.values()].some(({ targets, canonicalKnown }) => (!nameOnly && !canonicalKnown) || targets.has(target));
     })) {
       return "runtime-settings-file";
     }
-    roots ??= {
-      session: !nameOnly && effect === "read" ? getConfiguredSessionReadRoot() : undefined,
-      keys: (nameOnly
-        ? runtimeSecretKeyPaths?.configured === process.env.AVE_SECRET_KEY_FILE ? runtimeSecretKeyPaths?.paths ?? []
-          : process.env.AVE_SECRET_KEY_FILE === undefined ? [] : [pathResolve(process.env.AVE_SECRET_KEY_FILE)]
-        : getRuntimeSensitiveKeyPaths()).map((path) => caseFoldForMatch(foldCanonicalPathSeparators(path))),
-    };
+    if (state.roots === undefined) {
+      state.roots = {
+        session: !nameOnly && effect === "read" ? getConfiguredSessionReadRoot() : undefined,
+        keys: (nameOnly
+          ? runtimeSecretKeyPaths?.configured === process.env.AVE_SECRET_KEY_FILE ? runtimeSecretKeyPaths?.paths ?? []
+            : process.env.AVE_SECRET_KEY_FILE === undefined ? [] : [pathResolve(process.env.AVE_SECRET_KEY_FILE)]
+          : getRuntimeSensitiveKeyPaths()).map((path) => caseFoldForMatch(foldCanonicalPathSeparators(path))),
+      };
+    }
+    const roots = state.roots;
     const sessionRoot = roots.session === undefined ? undefined : caseFoldForMatch(roots.session);
     const foldedPath = caseFoldForMatch(normalizedPath);
     const canReadSession = sessionRoot !== undefined
@@ -1376,7 +1433,7 @@ function createPathSensitivityMatcher(
         if (!(canReadSession && readOnly) && test(candidate)) {
           if (KEY_MATERIAL_PATTERNS.has(pattern)) {
             if (options.includeKeyMaterial === false) continue;
-            if (options.inspectKeyMaterial !== false && !mayHoldPrivateKey(spelled)) continue;
+            if (options.inspectKeyMaterial !== false && !mayHoldPrivateKey(spelled, state)) continue;
           }
           return pattern;
         }
@@ -1384,41 +1441,12 @@ function createPathSensitivityMatcher(
     }
     if (nameOnly) return null;
     // A relocated application root need not contain a literal namespace segment.
-    if (applicationPaths === undefined) {
-      const home = matchingCanonicalize(aveHome());
-      applicationPaths = (admissionOnly ? ADMISSION_PATH_ENTRIES : SENSITIVE_PATH_ENTRIES).filter((entry) => entry.anchor === "ave-home").map((entry) => ({
-        entry, base: caseFoldForMatch(matchingCanonicalize(pathResolve(home, ...entry.segments))),
-      }));
-      applicationExact = new Map();
-      applicationRotations = new Map();
-      for (const path of applicationPaths) {
-        if (path.entry.kind === "dir") {
-          let node = applicationRoot;
-          for (const segment of path.base.split("/")) {
-            let child = node.children.get(segment);
-            if (child === undefined) {
-              child = { children: new Map(), directories: [] };
-              node.children.set(segment, child);
-            }
-            node = child;
-          }
-          node.directories.push(path);
-        }
-        const exact = applicationExact.get(path.base) ?? [];
-        exact.push(path);
-        applicationExact.set(path.base, exact);
-        if (path.entry.rotations) {
-          const parent = path.base.slice(0, path.base.lastIndexOf("/"));
-          const entries = applicationRotations.get(parent) ?? [];
-          entries.push(path);
-          applicationRotations.set(parent, entries);
-        }
-      }
-    }
+    state.application ??= buildApplicationIndex();
+    const application = state.application;
     const parent = foldedPath.slice(0, foldedPath.lastIndexOf("/"));
-    const directories = applicationAt(parent);
-    const exact = applicationExact!.get(foldedPath);
-    const rotations = applicationRotations!.get(parent);
+    const directories = applicationAt(application, parent);
+    const exact = application.exact.get(foldedPath);
+    const rotations = application.rotations.get(parent);
     if (directories.length === 0 && exact === undefined && rotations === undefined) return null;
     const applicationCandidates = new Set(directories);
     for (const path of exact ?? []) applicationCandidates.add(path);
@@ -1430,11 +1458,17 @@ function createPathSensitivityMatcher(
     return null;
   };
   // A stream names data of its file, and a device or loopback share alias the drive path, which are judged as well.
-  return (absPath) => {
+  return (absPath) => withLocalityDecision(() => {
     if (!absPath) return null;
+    const memo = matcherMemo<MatcherDecision>(memoOwner);
+    let state = memo.get("matcher");
+    if (state === undefined) {
+      state = {};
+      memo.set("matcher", state);
+    }
     const named = withoutStreamSuffixes(localDriveAlias(absPath) ?? absPath);
-    return matchSpelling(absPath, absPath) ?? (named === absPath ? null : matchSpelling(named, absPath));
-  };
+    return matchSpelling(absPath, absPath, state) ?? (named === absPath ? null : matchSpelling(named, absPath, state));
+  });
 }
 
 // Internal glob matcher

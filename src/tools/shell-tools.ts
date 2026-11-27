@@ -55,6 +55,7 @@ import { buildHostShellChildEnv, buildSafeChildEnv, buildSandboxedChildEnv } fro
 import { assertPreparedShellAvailable, prepareShellInvocation, matchesPreparedShellInvocation, preparedShellFacts, preparedShellToolUseId, preparedShellCommand, preparedShellCwdProbe, bindPreparedShellExecutableReadPaths, preparedShellExecutableReadPaths, preparedSandboxBootstrap, preparedSandboxEnvironment, disposePreparedShellInvocation, claimPreparedShellInvocation, transferPreparedShellInvocation, type PreparedShellInvocation } from "./prepared-shell-invocation.js";
 import { POWER_SHELL_AST_PARSER, normalizePowerShellAstSummary, type PowerShellArgument, type PowerShellAstSummary } from "./powershell-ast.js";
 import { resolveShellFilesystemPath } from "../shared/shell-filesystem-path.js";
+import { withLocalityDecision } from "../shared/local-path-io.js";
 import {
   isDefinitePowerShellRecursion,
   isPowerShellParameterPrefix,
@@ -2007,7 +2008,9 @@ export class BashTool extends ZodTool<typeof BashToolInputSchema> {
         executionMode: input.executionMode ?? "default",
         justification: input.justification,
         runInBackground: input.run_in_background ?? false,
-        allowedDirectories: canonicalizeHostShellAllowedDirectories(ctx.extraAllowedDirectories),
+        allowedDirectories: process.platform === "win32"
+          ? () => canonicalizeHostShellAllowedDirectories(ctx.extraAllowedDirectories)
+          : canonicalizeHostShellAllowedDirectories(ctx.extraAllowedDirectories),
       });
       if (spawnAuthorization === undefined) {
         return {
@@ -3851,7 +3854,9 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
           executionMode: input.executionMode ?? "default",
           justification: input.justification,
           runInBackground: input.run_in_background ?? false,
-          allowedDirectories: canonicalizeHostShellAllowedDirectories(ctx.extraAllowedDirectories),
+          allowedDirectories: process.platform === "win32"
+            ? () => canonicalizeHostShellAllowedDirectories(ctx.extraAllowedDirectories)
+            : canonicalizeHostShellAllowedDirectories(ctx.extraAllowedDirectories),
         });
         if (spawnAuthorization === undefined) {
           throw new Error(HOST_SHELL_AUTHORIZATION_REVOKED_ERROR);
@@ -4091,7 +4096,11 @@ function isPowerShellForce(parameter: PowerShellParameter): boolean {
   return isPowerShellParameterPrefix(parameter, "force", 2) && isPowerShellSwitchEnabled(parameter);
 }
 
-export function findPowerShellAstPathViolation(
+export function findPowerShellAstPathViolation(...args: Parameters<typeof findPowerShellAstPathViolationInDecision>): ShellPathPolicyViolation | null {
+  return withLocalityDecision(() => findPowerShellAstPathViolationInDecision(...args));
+}
+
+function findPowerShellAstPathViolationInDecision(
   ast: PowerShellAstSummary, cwd: string, sandboxRoot: string, extraAllowedDirectories: readonly string[],
   blockReadsOutsideWorkingDirectories: boolean,
   source?: string,
@@ -4179,10 +4188,26 @@ function powerShellHostScriptReadPaths(ast: PowerShellAstSummary, source?: strin
 }
 
 export async function findPowerShellCommandPathViolation(
-  command: string, cwd: string, sandboxRoot: string, extraAllowedDirectories: readonly string[],
+  input: string | readonly string[], cwd: string, sandboxRoot: string, extraAllowedDirectories: readonly string[],
   blockReadsOutsideWorkingDirectories: boolean,
 ): Promise<ShellPathPolicyViolation | null> {
-  return findPowerShellAstPathViolation(await parsePowerShellAst(command), cwd, sandboxRoot, extraAllowedDirectories, blockReadsOutsideWorkingDirectories, command);
+  const commands = typeof input === "string" ? [input] : input;
+  if (process.platform !== "win32") {
+    for (const command of commands) {
+      const violation = findPowerShellAstPathViolation(await parsePowerShellAst(command), cwd, sandboxRoot, extraAllowedDirectories, blockReadsOutsideWorkingDirectories, command);
+      if (violation) return violation;
+    }
+    return null;
+  }
+  const parsed: { command: string; ast: PowerShellAstSummary }[] = [];
+  for (const command of commands) parsed.push({ command, ast: await parsePowerShellAst(command) });
+  return withLocalityDecision(() => {
+    for (const { command, ast } of parsed) {
+      const violation = findPowerShellAstPathViolationInDecision(ast, cwd, sandboxRoot, extraAllowedDirectories, blockReadsOutsideWorkingDirectories, command);
+      if (violation) return violation;
+    }
+    return null;
+  });
 }
 
 function savedSessionReadNotices(root: string | undefined, readPaths: readonly string[]): readonly string[] {
@@ -4675,10 +4700,15 @@ async function spawnPowerShellInMxc(
     if (detectMxcShellCapability() === undefined) throw new Error("Container shell route is no longer available");
     const [cmd, ...args] = launch.argv;
     if (cmd === undefined) throw new Error("Container launcher is missing");
-    launch.activate();
+    boundarySnapshot.run(() => launch.activate(() => {
+      try {
+        assertHostShellSpawnDirectory(spawnAuthorization);
+        cwdHold.assertHeld();
+      } catch (error) {
+        throw error instanceof HostShellDirectoryHoldError ? error : launcherError(error);
+      }
+    }));
     try {
-      assertHostShellSpawnDirectory(spawnAuthorization);
-      cwdHold.assertHeld();
       const bindHeldPolicy = launch.bindHeldPolicy;
       const holdStdio = cwdHold.stdio;
       if (bindHeldPolicy !== undefined && holdStdio === undefined) throw new Error("Windows sandbox policy requires a directory hold");

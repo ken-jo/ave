@@ -2,6 +2,7 @@
 import type { FilesystemConfig, FilesystemPathEntry } from "@anthropic-ai/sandbox-runtime";
 import { admittedWindowsEntry, expandWindowsFsPaths, type AdmittedWindowsEntry } from "@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js";
 import { win32 } from "node:path";
+import { routeLocality, withLocalityDecision } from "../shared/local-path-io.js";
 import { admitWindowsReparse, pinWindowsPaths, windowsObjectKey, type WindowsPathFacts } from "../shared/windows-path-facts.js";
 import { assertWindowsGrantGrammar, expandWindowsGrantPath, pinWindowsGrantTargets, windowsGrantBase, type ExpandedWindowsGrant } from "./windows-grant-targets.js";
 import { isPlainWindowsStampPath } from "../shared/windows-path-spelling.js";
@@ -54,11 +55,13 @@ function guardedStampLiterals(paths: string[], pins: readonly WindowsPathFacts[]
     }
   };
   paths.forEach((path, index) => inspect(path, pins[index]!, true));
-  const verify = (): void => {
+  const verify = (): void => withLocalityDecision(() => {
     if (paths.length === 0) return;
+    const refused = paths.find(path => routeLocality(path) !== "local");
+    if (refused !== undefined) throw new Error(`Sandbox stamp target names no proven local path: ${refused}`);
     const current = pinWindowsPaths(paths);
     paths.forEach((path, index) => inspect(path, current[index]!, false));
-  };
+  });
   verify();
   // The runtime reads marked paths after its async lookups; keep this check on that consumption boundary.
   return paths.map((path, index) => {
@@ -104,7 +107,7 @@ function windowsStampPrefix(grant: ExpandedWindowsGrant): string {
 
 export function pinWindowsFilesystemConfig<T extends Partial<FilesystemConfig> | undefined>(filesystem: T): T {
   if (process.platform !== "win32" || filesystem === undefined) return filesystem;
-  return { ...filesystem, ...pinWindowsGrantRequests(expandWindowsGrantRequests(filesystem)) };
+  return withLocalityDecision(() => ({ ...filesystem, ...pinWindowsGrantRequests(expandWindowsGrantRequests(filesystem)) }));
 }
 
 export interface WindowsGrantRequests {
@@ -121,32 +124,34 @@ export function expandWindowsGrantRequests(filesystem: Partial<FilesystemConfig>
 }
 
 export function pinWindowsGrantRequests(requests: WindowsGrantRequests): Pick<FilesystemConfig, "allowRead" | "allowWrite"> {
-  const grants = [requests.allowRead, requests.allowWrite];
-  const prefixes = grants.flatMap(entries => entries.map(windowsStampPrefix));
-  if (AVE_HOME_ISOLATION_GUARD_ACTIVE) checkSandboxStampTargets(prefixes);
-  const prefixPins = pinWindowsGrantTargets(prefixes, { allowMissing: true, validatePath: assertPlainWindowsStampPath });
-  const prefixPaths = prefixPins.map(pin => stripExtendedPathPrefix(pin.canonical!));
-  if (AVE_HOME_ISOLATION_GUARD_ACTIVE) checkSandboxStampTargets(prefixPaths);
-  const prefixLiterals = guardedStampLiterals(prefixPaths, prefixPins);
-  // Retain match spellings during expansion so every possible grant identity is checked.
-  const lists = grants.map(entries => entries.flatMap(({ entry }) => expandWindowsFsPaths([entry], { mode: "deny" }))
-      .map(path => path.replace(/\//g, "\\")));
-  for (const entry of prefixLiterals) if (typeof entry !== "string") void entry.path;
-  const snapshots = pinWindowsGrantTargets(lists.flat(), { allowMissing: true, validatePath: assertPlainWindowsStampPath });
-  let snapshotIndex = 0;
-  const pin = (paths: readonly string[]): FilesystemPathEntry[] =>
-    paths.flatMap(() => {
-      const snapshot = snapshots[snapshotIndex++]!;
-      const canonical = stripExtendedPathPrefix(snapshot.canonical!).replace(/^(.*[^:])\\$/, "$1");
-      assertPlainWindowsStampPath(canonical);
-      const literals = [canonical];
-      const entries = guardedStampLiterals(literals, [snapshot]);
-      // Missing grants still need policy checks and control denies; omit them only at native handoff.
-      if (!snapshot.exists) for (const entry of entries) if (typeof entry !== "string") missingWindowsGrants.add(entry);
-      return entries;
-    });
-  return {
-    allowRead: pin(lists[0]!),
-    allowWrite: pin(lists[1]!),
-  };
+  return withLocalityDecision(() => {
+    const grants = [requests.allowRead, requests.allowWrite];
+    const prefixes = grants.flatMap(entries => entries.map(windowsStampPrefix));
+    if (AVE_HOME_ISOLATION_GUARD_ACTIVE) checkSandboxStampTargets(prefixes);
+    const prefixPins = pinWindowsGrantTargets(prefixes, { allowMissing: true, validatePath: assertPlainWindowsStampPath });
+    const prefixPaths = prefixPins.map(pin => stripExtendedPathPrefix(pin.canonical!));
+    if (AVE_HOME_ISOLATION_GUARD_ACTIVE) checkSandboxStampTargets(prefixPaths);
+    const prefixLiterals = guardedStampLiterals(prefixPaths, prefixPins);
+    // Retain match spellings during expansion so every possible grant identity is checked.
+    const lists = grants.map(entries => entries.flatMap(({ entry }) => expandWindowsFsPaths([entry], { mode: "deny" }))
+        .map(path => path.replace(/\//g, "\\")));
+    for (const entry of prefixLiterals) if (typeof entry !== "string") void entry.path;
+    const snapshots = pinWindowsGrantTargets(lists.flat(), { allowMissing: true, validatePath: assertPlainWindowsStampPath });
+    let snapshotIndex = 0;
+    const pin = (paths: readonly string[]): FilesystemPathEntry[] =>
+      paths.flatMap(() => {
+        const snapshot = snapshots[snapshotIndex++]!;
+        const canonical = stripExtendedPathPrefix(snapshot.canonical!).replace(/^(.*[^:])\\$/, "$1");
+        assertPlainWindowsStampPath(canonical);
+        const literals = [canonical];
+        const entries = guardedStampLiterals(literals, [snapshot]);
+        // Missing grants still need policy checks and control denies; omit them only at native handoff.
+        if (!snapshot.exists) for (const entry of entries) if (typeof entry !== "string") missingWindowsGrants.add(entry);
+        return entries;
+      });
+    return {
+      allowRead: pin(lists[0]!),
+      allowWrite: pin(lists[1]!),
+    };
+  });
 }

@@ -4,10 +4,10 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { IpcMainInvokeEvent } from "electron";
+import { table } from "../../__tests__/support/preview-table-fixture.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { configureHostResources } from "../host-resources.js";
 import type { DocumentObservationEvent, DocumentObservationEngine } from "../../shared/agent-observation.js";
-import type { PreviewTableDocument } from "../../shared/preview-document.js";
 import { observeAgentDocumentMutation, runWithAgentObservationInvocation, runWithAgentObservationTurn } from "../../tools/agent-observation-context.js";
 import { createSandboxProcessHome } from "../../permissions/sandbox-process-home.js";
 import { parseObservedTextDocument } from "../../observation/text-document.js";
@@ -25,11 +25,6 @@ import { DocumentObservationRuntime } from "../document-observation.js";
 
 beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 
-function table(value: string): PreviewTableDocument {
-  return { format: "csv", needsRecalculation: false, sheetNames: ["Sheet1"], totalSheets: 1, sheetsTruncated: false,
-    sheet: { index: 0, name: "Sheet1", rows: [[value]], firstRow: 0, firstColumn: 0, totalRows: 1, totalColumns: 1,
-      rowsTruncated: false, columnsTruncated: false, cellsTruncated: false, clippedCells: [] } };
-}
 const engine: DocumentObservationEngine = { id: "table-reader", parse: async (bytes) => table(bytes.toString("utf8")) };
 let runtime: DocumentObservationRuntime;
 let path: string;

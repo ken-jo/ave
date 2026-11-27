@@ -2859,15 +2859,15 @@ describe("SubAgentRunner A2A bus facade", () => {
 
 describe("SubAgentRunner workspace lifecycle", () => {
   it("revokes every active child and surfaces an aggregate child failure", () => {
-    const first = vi.fn(() => ({
+    const first = vi.fn((_root: string, _options: unknown) => ({
       sessionDirectoriesRemoved: 2,
       turnDirectoriesRemoved: 1,
       projectRebound: false,
     }));
-    const failing = vi.fn(() => {
+    const failing = vi.fn((_root: string, _options: unknown) => {
       throw new Error("isolated child failure");
     });
-    const last = vi.fn(() => ({
+    const last = vi.fn((_root: string, _options: unknown) => ({
       sessionDirectoriesRemoved: 0,
       turnDirectoriesRemoved: 4,
       projectRebound: true,
@@ -2880,13 +2880,13 @@ describe("SubAgentRunner workspace lifecycle", () => {
     ).activeChildren;
     const child = (
       childSessionId: string,
-      revokeWorkspaceRoot: ReturnType<typeof vi.fn>,
+      revokeWorkspaceRoot: typeof first | typeof failing | typeof last,
     ) => ({
       lease: Symbol(childSessionId),
       childSessionId,
       title: childSessionId,
       background: true,
-      loop: { revokeWorkspaceRoot },
+      loop: { revokeWorkspaceRoot, planWorkspaceRootRevocation: (root: string, options: unknown) => () => revokeWorkspaceRoot(root, options) },
     });
     activeChildren.set("child-one", child("child-one", first));
     activeChildren.set("child-failing", child("child-failing", failing));
@@ -3039,6 +3039,18 @@ describe("SubAgentRunner workspace lifecycle", () => {
       hasProviderSpy.mockRestore();
       runTurnSpy.mockRestore();
     }
+  });
+
+  it.skipIf(process.platform === "win32")("returns the durable POSIX detach count when child cancellation throws", async () => {
+    const detachSessionsFromProject = vi.fn(async () => 2);
+    const runner = new SubAgentRunner({ subAgentMemoryManager: { sessions: { detachSessionsFromProject } } } as never);
+    const root = join(tmpdir(), "removed-subagent-workspace");
+    const activeChildren = (runner as unknown as { activeChildren: Map<string, unknown> }).activeChildren;
+    const abortCurrentTurn = vi.fn(() => { throw new Error("child cancellation failed"); });
+    activeChildren.set("wire-child", { childSessionId: "wire-child", wireProjectRoot: root, loop: { abortCurrentTurn } });
+
+    await expect(runner.detachSessionsFromProject(root)).resolves.toBe(2);
+    expect(abortCurrentTurn).toHaveBeenCalledOnce();
   });
 
   it("delegates project detach and re-add to the isolated metadata store", async () => {

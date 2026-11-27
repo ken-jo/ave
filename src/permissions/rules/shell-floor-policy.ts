@@ -43,6 +43,7 @@ export function shellFloorBudgetSignals(): ShellFloorSignals {
 export function shellFloorParserBudgetExceeded(reason: string): boolean {
   return SHELL_PARSER_BUDGET_ERRORS.has(reason) || /^(?:\d+:\d+: )?shell (?:parser recursion|total token) limit exceeded$/.test(reason);
 }
+import { matcherMemo, withLocalityDecision } from "../../shared/local-path-io.js";
 import { caseFoldForMatch, createConfiguredSessionReadPathMatcher, createKeyMaterialPathMatcher, createPathCanonicalizer, createSensitiveLocationMatcher, createSensitivePathMatcher, foldCanonicalPathSeparators, MAX_WALK_UP } from "../sensitive-paths.js";
 import { MAX_SHELL_ANALYSIS_TOKENS } from "../../shared/shell-analysis-limits.js";
 import { type ShellPathDialect } from "../../shared/shell-native-path.js";
@@ -77,45 +78,53 @@ export class ShellFloorContext {
   readonly requiresContentInspection = createKeyMaterialPathMatcher();
   private matchNames: ReturnType<typeof createSensitivePathMatcher> | undefined;
   private matchOpaqueNames: ReturnType<typeof createSensitivePathMatcher> | undefined;
-  private readonly matches = new Map<string, string | null>();
-  private readonly nameMatches = new Map<string, string | null>();
+  private readonly pathMatchOwner = {};
+  private readonly nameMatchOwner = {};
 
   get contentInspectionCount(): number { return this.contentInspections.count; }
 
   createChild(dialect: ShellPathDialect): ShellFloorContext {
     const child = new ShellFloorContext(dialect, { inspectHostFiles: this.inspectHostFiles });
-    child.contentInspections = this.contentInspections;
+    if (process.platform !== "win32") child.contentInspections = this.contentInspections;
     return child;
   }
 
   matchPath(path: string): string | null {
-    if (this.requiresContentInspection(path)) {
-      if (this.inspectHostFiles) this.contentInspections.count += 1;
-      return this.match(path);
-    }
-    const cached = this.matches.get(path);
-    if (cached !== undefined) return cached;
-    const hit = this.match(path);
-    this.matches.set(path, hit);
-    return hit;
+    const match = (): string | null => {
+      if (this.requiresContentInspection(path)) {
+        if (process.platform !== "win32" && this.inspectHostFiles) this.contentInspections.count += 1;
+        return this.match(path);
+      }
+      const matches = matcherMemo<string | null>(this.pathMatchOwner);
+      const cached = matches.get(path);
+      if (cached !== undefined) return cached;
+      const hit = this.match(path);
+      matches.set(path, hit);
+      return hit;
+    };
+    return process.platform === "win32" ? withLocalityDecision(match) : match();
   }
 
   matchName(path: string, includeKeyMaterial = false): string | null {
-    const folded = caseFoldForMatch(foldCanonicalPathSeparators(path));
-    const key = JSON.stringify([includeKeyMaterial, folded]);
-    const cached = this.nameMatches.get(key);
-    if (cached !== undefined) return cached;
-    let matcher: ReturnType<typeof createSensitivePathMatcher>;
-    if (includeKeyMaterial) {
-      if (this.matchOpaqueNames === undefined) this.matchOpaqueNames = createSensitivePathMatcher("read", undefined, undefined, { inspectKeyMaterial: false });
-      matcher = this.matchOpaqueNames;
-    } else {
-      if (this.matchNames === undefined) this.matchNames = createSensitivePathMatcher("read", undefined, undefined, { includeKeyMaterial: false });
-      matcher = this.matchNames;
-    }
-    const hit = matcher(folded);
-    this.nameMatches.set(key, hit);
-    return hit;
+    const match = (): string | null => {
+      const folded = caseFoldForMatch(foldCanonicalPathSeparators(path));
+      const key = JSON.stringify([includeKeyMaterial, folded]);
+      const matches = matcherMemo<string | null>(this.nameMatchOwner);
+      const cached = matches.get(key);
+      if (cached !== undefined) return cached;
+      let matcher: ReturnType<typeof createSensitivePathMatcher>;
+      if (includeKeyMaterial) {
+        if (this.matchOpaqueNames === undefined) this.matchOpaqueNames = createSensitivePathMatcher("read", undefined, undefined, { inspectKeyMaterial: false });
+        matcher = this.matchOpaqueNames;
+      } else {
+        if (this.matchNames === undefined) this.matchNames = createSensitivePathMatcher("read", undefined, undefined, { includeKeyMaterial: false });
+        matcher = this.matchNames;
+      }
+      const hit = matcher(folded);
+      matches.set(key, hit);
+      return hit;
+    };
+    return process.platform === "win32" ? withLocalityDecision(match) : match();
   }
 }
 

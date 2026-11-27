@@ -25,6 +25,7 @@ import { JudgeContractError, JudgeFailure, isSameOrStricter, type JudgeLane, typ
 import { resolveJudge, type JudgeEngineDeps, type JudgeGate, type JudgeOutcome } from "./judge/judge-engine.js";
 import { DEFAULT_JUDGE_SETTINGS, type JudgeBreakerSettings } from "./judge/judge-settings.js";
 import { dirname, resolve } from "node:path";
+import { createHash } from "node:crypto";
 import type { DenyRule, ToolCategory, ToolSource, ToolTrustOrigin } from "../tools/types.js";
 import type { RemoteControllerAuthority } from "../shared/chat-origin.js";
 import type { ApprovalPersistenceGuard } from "./approval-persistence-guard.js";
@@ -111,7 +112,7 @@ import { errorMessage } from "../shared/error-message.js";
 import type { ExecutionMode } from "../shared/permission-mode.js";
 import type { ApprovalSurface } from "../shared/authorization-required.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
-import { withLocalityDecision } from "../shared/local-path-io.js";
+import { rethrowLocalityFailure, withLocalityDecision } from "../shared/local-path-io.js";
 import { t } from "../i18n/index.js";
 import { windowsDenyUnenforceableAtBoot, windowsObligationsApply } from "./admitted-obligation.js";
 import { createSerialQueue } from "../lib/with-file-lock.js";
@@ -583,7 +584,8 @@ function pathGrantRemovalMatcher(root: string, preserveRoots: readonly string[] 
         return [];
       }
       return [{ canonical, raw }];
-    } catch {
+    } catch (error) {
+      rethrowLocalityFailure(error);
       return [];
     }
   });
@@ -789,35 +791,37 @@ export class PermissionManager {
     outOfAllowed: { filePath: string; canonicalPath: string } | null;
     readOutsideScope: { filePath: string; canonicalPath: string } | null;
   } {
-    let sensitiveHit: { filePath: string; pattern: string } | null = null;
-    for (const target of args.canonicalTargets) {
-      const pattern = isAdmissionDeniedPath(target.canonicalPath, args.effect);
-      if (pattern) {
-        sensitiveHit = { filePath: target.filePath, pattern };
-        break;
+    return withLocalityDecision(() => {
+      let sensitiveHit: { filePath: string; pattern: string } | null = null;
+      for (const target of args.canonicalTargets) {
+        const pattern = isAdmissionDeniedPath(target.canonicalPath, args.effect);
+        if (pattern) {
+          sensitiveHit = { filePath: target.filePath, pattern };
+          break;
+        }
       }
-    }
-    const scope = {
-      directories: args.allowedDirectories,
-      blockReadsOutsideWorkingDirectories: args.blockReadsOutsideWorkingDirectories,
-    };
-    let outOfAllowed: { filePath: string; canonicalPath: string } | null = null;
-    let readOutsideScope: { filePath: string; canonicalPath: string } | null = null;
-    for (const target of args.canonicalTargets) {
-      if (!isPathAllowedForEffect(target.canonicalPath, scope, args.effect)) {
-        outOfAllowed = { filePath: target.filePath, canonicalPath: target.canonicalPath };
-        break;
+      const scope = {
+        directories: args.allowedDirectories,
+        blockReadsOutsideWorkingDirectories: args.blockReadsOutsideWorkingDirectories,
+      };
+      let outOfAllowed: { filePath: string; canonicalPath: string } | null = null;
+      let readOutsideScope: { filePath: string; canonicalPath: string } | null = null;
+      for (const target of args.canonicalTargets) {
+        if (!isPathAllowedForEffect(target.canonicalPath, scope, args.effect)) {
+          outOfAllowed = { filePath: target.filePath, canonicalPath: target.canonicalPath };
+          break;
+        }
+        // The same target asked as a write. When the two answers differ, the directory list did refuse this path and only the read/write asymmetry admitted it — which is the fact the audit row records.
+        if (
+          readOutsideScope === null &&
+          args.effect === "read" &&
+          !isPathAllowedForEffect(target.canonicalPath, scope, "write")
+        ) {
+          readOutsideScope = { filePath: target.filePath, canonicalPath: target.canonicalPath };
+        }
       }
-      // The same target asked as a write. When the two answers differ, the directory list did refuse this path and only the read/write asymmetry admitted it — which is the fact the audit row records.
-      if (
-        readOutsideScope === null &&
-        args.effect === "read" &&
-        !isPathAllowedForEffect(target.canonicalPath, scope, "write")
-      ) {
-        readOutsideScope = { filePath: target.filePath, canonicalPath: target.canonicalPath };
-      }
-    }
-    return { sensitiveHit, outOfAllowed, readOutsideScope };
+      return { sensitiveHit, outOfAllowed, readOutsideScope };
+    });
   }
 
   // Boot propagates the persisted reviewer preference without creating another routing policy.
@@ -1428,9 +1432,13 @@ export class PermissionManager {
     root: string,
     options?: { preserveRoots?: readonly string[] },
   ): Promise<number> {
-    const isUnderRoot = pathGrantRemovalMatcher(root, options?.preserveRoots);
+    const posixMatcher = process.platform !== "win32"
+      ? withLocalityDecision(() => pathGrantRemovalMatcher(root, options?.preserveRoots)) : undefined;
     const file = await readPermissionsFile(this.permissionsFilePath);
-    return (file?.rules ?? []).filter((r) => r.action === "allow" && !r.source && isUnderRoot(r.pattern)).length;
+    return withLocalityDecision(() => {
+      const isUnderRoot = posixMatcher ?? pathGrantRemovalMatcher(root, options?.preserveRoots);
+      return (file?.rules ?? []).filter((r) => r.action === "allow" && !r.source && isUnderRoot(r.pattern)).length;
+    });
   }
 
   // Removing a root must also prune its inclusive single-path allow grants so re-add cannot revive revoked authority; preserve separately registered descendants, non-path allows and denies. Compare canonical and raw stored forms to cover symlinks/case without changing hot-path identity. Return redacted per-pattern audit provenance; only the count crosses IPC.
@@ -1438,24 +1446,42 @@ export class PermissionManager {
     root: string,
     options?: { preserveRoots?: readonly string[] },
   ): Promise<PrunedGrant[]> {
-    const isUnderRoot = pathGrantRemovalMatcher(root, options?.preserveRoots);
     // The persisted file is the SOT for path grants: addAlwaysAllowedPersist writes the allow rule to the file + the in-memory alwaysAllowed Map, but NOT to `this.rules` (that array is only hydrated from the file at boot via loadRulesFromFile). Scan the file, not `this.rules`, so a grant made this session is still pruned. Do the read + filter inside ONE updatePermissionsFile pass (atomic under the store lock) and collect the pruned grants so in-memory state (rules + alwaysAllowed) is reconciled and the caller can audit per-pattern tuples.
     const pruned: PrunedGrant[] = [];
-    await this.updateRulesFile((file) => {
+    const posixMatcher = process.platform !== "win32"
+      ? withLocalityDecision(() => pathGrantRemovalMatcher(root, options?.preserveRoots)) : undefined;
+    const prunedPatterns = new Set<string>();
+    await this.updateRulesFile((file) => withLocalityDecision(() => {
+      const isUnderRoot = posixMatcher ?? pathGrantRemovalMatcher(root, options?.preserveRoots);
       file.rules = file.rules.filter((r) => {
         if (r.action === "allow" && !r.source && isUnderRoot(r.pattern)) {
+          if (posixMatcher === undefined) prunedPatterns.add(r.pattern);
           pruned.push(describePrunedGrant(r.pattern, r.tier));
           return false;
         }
         return true;
       });
-    });
+    }));
     // Reconcile by scope on every retry, not only by patterns removed in this disk pass. A prior attempt may have committed the file shrink and then thrown while broadcasting/revoking bearers; the retry must still remove stale live cache entries and re-run the revoke signal.
-    this.rules = this.rules.filter(
-      (r) => !(r.action === "allow" && !r.source && isUnderRoot(r.pattern)),
-    );
-    for (const pattern of [...this.alwaysAllowed.keys()]) {
-      if (isUnderRoot(pattern)) this.alwaysAllowed.delete(pattern);
+    if (posixMatcher !== undefined) {
+      this.rules = this.rules.filter(
+        (r) => !(r.action === "allow" && !r.source && posixMatcher(r.pattern)),
+      );
+      for (const pattern of [...this.alwaysAllowed.keys()]) {
+        if (posixMatcher(pattern)) this.alwaysAllowed.delete(pattern);
+      }
+    } else {
+      // Judge first, then change the live caches, so a failed judgment leaves both untouched.
+      const { rules, revokedAllows } = withLocalityDecision(() => {
+        const isUnderRoot = pathGrantRemovalMatcher(root, options?.preserveRoots);
+        const shouldRevoke = (pattern: string): boolean => prunedPatterns.has(pattern) || isUnderRoot(pattern);
+        return {
+          rules: this.rules.filter((r) => !(r.action === "allow" && !r.source && shouldRevoke(r.pattern))),
+          revokedAllows: [...this.alwaysAllowed.keys()].filter(shouldRevoke),
+        };
+      });
+      this.rules = rules;
+      for (const pattern of revokedAllows) this.alwaysAllowed.delete(pattern);
     }
 
     this.policyGeneration += 1;
@@ -2258,7 +2284,10 @@ export class PermissionManager {
       userApprovalIdentity,
       input.executionCwd,
       input.sessionId,
-    ).catch(() => null); // storage failure must not block tool execution
+    ).catch((error: unknown) => {
+      rethrowLocalityFailure(error);
+      return null;
+    });
     // Only a decision made on exactly these arguments short-circuits review
     // here. A target-wide hit on other arguments is classified as a fresh
     // request; the foreground memory skip may reuse it only after that review.
@@ -2266,6 +2295,14 @@ export class PermissionManager {
       ? rememberedDecision
       : null;
 
+    // Sample live confinement and rebuild the provider's exact view before accepting cached provider output.
+    sandboxCacheState = readSandboxCacheState();
+    const reviewerContext = process.platform === "win32" ? buildReviewerContext() : undefined;
+    const preparedReview = reviewerContext !== undefined && userApproval?.verdictAtApproval == null
+      ? options.tracingClassifier.prepareWindowsReview?.(reviewerContext)
+      : undefined;
+    const providerPromptHash = preparedReview?.providerPrompt === undefined
+      ? undefined : createHash("sha256").update(preparedReview.providerPrompt).digest("hex");
     const buildCacheContext = (sandboxCacheState: ReviewerSandboxCacheState) => {
       const sandboxScope = sandboxCacheState.capability;
       return {
@@ -2279,13 +2316,13 @@ export class PermissionManager {
           sandboxKind: sandboxScope.kind,
           sandboxConfidence: sandboxScope.confidence,
           hostShellExecutionPlan: sandboxCacheState.hostShellExecutionPlan ?? null,
+          ...(preparedReview === undefined ? {} : { providerPromptHash: providerPromptHash ?? null }),
         },
         sandboxWrapState: sandboxCacheState,
       };
     };
 
     // Include the sandbox capability in the cache scope so a change to OS isolation invalidates stale verdicts produced under different sandbox assumptions. Capture this live state immediately before cache lookup: no await may sit between wrap-state sampling and cache lookup, or a worker un-wrap could replay a verdict relaxed under stale confinement.
-    sandboxCacheState = readSandboxCacheState();
     const cacheCtx = buildCacheContext(sandboxCacheState);
     const cacheResult = cache.lookup(lookupKey, cacheCtx);
     let verdict: RiskVerdict;
@@ -2328,15 +2365,18 @@ export class PermissionManager {
         scope: userApproval.scope,
         verdictAtApproval: userApproval.verdictAtApproval,
       });
-    } else if (cacheResult.hit && cacheResult.verdict) {
-      const ruleClassifier = new RuleBasedRiskClassifier();
-      ruleVerdictForAudit = ruleClassifier.classify(buildReviewerContext()).level;
-      verdict = cacheResult.verdict;
+    } else if ((!preparedReview || providerPromptHash !== undefined) && cacheResult.hit && cacheResult.verdict) {
+      const ruleVerdict = preparedReview?.ruleVerdict ?? new RuleBasedRiskClassifier().classify(reviewerContext ?? buildReviewerContext());
+      ruleVerdictForAudit = ruleVerdict.level;
+      verdict = preparedReview ? maxVerdict(ruleVerdict, cacheResult.verdict) : cacheResult.verdict;
       outcome = "cache";
     } else {
-      const ctx = buildReviewerContext();
+      const ctx = reviewerContext ?? buildReviewerContext();
       try {
-        const trace = await options.tracingClassifier.classifyWithTrace(ctx, { abortSignal: options.abortSignal });
+        const reviewOptions = { abortSignal: options.abortSignal };
+        const trace = preparedReview
+          ? await preparedReview.classify(reviewOptions)
+          : await options.tracingClassifier.classifyWithTrace(ctx, reviewOptions);
         assertRiskClassificationTrace(trace);
         verdict = trace.finalVerdict;
         outcome = trace.outcome;
@@ -2359,17 +2399,19 @@ export class PermissionManager {
           outcome = "sandbox-state-changed";
         } else {
           // Only a successful fresh classification may become a base-cache entry. malformed/error/timeout fallback verdicts remain fail-safe for this invocation and can never reappear as an eligible "cache" rationale outcome on the next call.
-          if (outcome === "fresh") {
+          const cacheVerdict = preparedReview ? (providerPromptHash === undefined ? null : trace.llmVerdict) : verdict;
+          if (outcome === "fresh" && cacheVerdict !== null) {
             // The verdict cache is the one sink written BEFORE the common redaction point below, so it redacts its own copy. A cache hit then replays an already-masked reason.
-            await cache.store(lookupKey, cacheCtx, redactVerdictReason(verdict));
+            await cache.store(lookupKey, cacheCtx, redactVerdictReason(cacheVerdict));
           }
         }
       } catch (err) {
+        rethrowLocalityFailure(err);
         if (err instanceof JudgeContractError) throw err;
         const message = errorMessage(err);
         verdict = { level: "high", reason: `reviewer error — ${message}` };
         outcome = "error";
-        ruleVerdictForAudit = new RuleBasedRiskClassifier().classify(ctx).level;
+        ruleVerdictForAudit = (preparedReview?.ruleVerdict ?? new RuleBasedRiskClassifier().classify(ctx)).level;
         llmVerdictForAudit = null;
       }
     }

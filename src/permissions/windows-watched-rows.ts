@@ -2,9 +2,10 @@ import { type BigIntStats, lstatSync, readdirSync, readFileSync, rmdirSync, type
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { t } from "../i18n/index.js";
 import { createLogger } from "../lib/logger.js";
-import { renameFileOnce } from "../lib/transient-fs-lock-retry.js";
+import { renameFileOnce, renameFileOnceSync } from "../lib/transient-fs-lock-retry.js";
 import { errorMessage } from "../shared/error-message.js";
 import { setHostWorkspaceGuard } from "../shared/host-workspace-gate.js";
+import { admitLocalPath, admitLocalRoute, assertLocalityDecisionUsable, isLocalityFailure, rethrowLocalityFailure, withLocalityDecision } from "../shared/local-path-io.js";
 import { admitWindowsReparse, pinWindowsPaths } from "../shared/windows-path-facts.js";
 import type { MxcWatchedRow } from "./mxc-windows.js";
 import { createSandboxQuarantine, sandboxQuarantineRoot } from "./sandbox-quarantine.js";
@@ -42,6 +43,16 @@ interface WatchedRow extends AnchorPin {
   restored?: boolean;
 }
 
+interface StoredFileIdentity {
+  readonly dev: string;
+  readonly ino: string;
+}
+
+interface RestoreIdentity {
+  readonly source: StoredFileIdentity;
+  readonly parent: StoredFileIdentity;
+}
+
 interface ManifestEntry {
   readonly original: string;
   readonly quarantined: string;
@@ -51,9 +62,10 @@ interface ManifestEntry {
   readonly sessionId?: string;
   readonly command?: string;
   restored?: string;
+  readonly restoreIdentity?: RestoreIdentity;
 }
 
-export interface WatchedQuarantineEntry extends ManifestEntry {
+export interface WatchedQuarantineEntry extends Omit<ManifestEntry, "restoreIdentity"> {
   readonly slot: string;
   readonly index: number;
 }
@@ -91,11 +103,23 @@ function overlaps(a: string, b: string): boolean {
   return within(a, b) || within(b, a);
 }
 
+function admitWatchedEntry(path: string): void {
+  if (process.platform !== "win32") return;
+  admitLocalPath(path);
+  admitLocalRoute(dirname(path));
+}
+
 function entryAt(path: string, bigint: true): BigIntStats | undefined;
 function entryAt(path: string): Stats | undefined;
 function entryAt(path: string, bigint = false): Stats | BigIntStats | undefined {
-  try { return bigint ? lstatSync(path, { bigint: true }) : lstatSync(path); }
+  try {
+    return withLocalityDecision(() => {
+      admitWatchedEntry(path);
+      return bigint ? lstatSync(path, { bigint: true }) : lstatSync(path);
+    });
+  }
   catch (error) {
+    rethrowLocalityFailure(error);
     const code = (error as NodeJS.ErrnoException).code;
     if (code === "ENOENT" || code === "ENOTDIR") return undefined;
     throw error;
@@ -108,41 +132,54 @@ function entryAt(path: string, bigint = false): Stats | BigIntStats | undefined 
  * it again checks that folder and the name instead of pinning afresh.
  */
 export function watchAbsentProtectedRow(path: string, roots: readonly string[], exact = false, claim?: symbol): void {
+  withLocalityDecision(() => prepareAbsentProtectedWatch(path, roots, exact, claim))?.();
+}
+
+export function prepareAbsentProtectedWatch(path: string, roots: readonly string[], exact: boolean, claim?: symbol): (() => void) | undefined {
   const target = plain(path);
   const id = key(target);
   if (excepted.has(id) && !exact) return;
   const known = watched.get(id);
   if (exact) {
     const own = claim === undefined ? undefined : known?.pins.get(claim);
+    let pinned: AnchorPin | undefined;
     if (known !== undefined && own !== undefined) {
       if (!anchorsIntact(known) || entryAt(target) !== undefined) throw refusal(target);
     } else {
-      const pinned = pinAbsentWatchAnchor(target);
+      const observed = pinAbsentWatchAnchor(target);
       if (known === undefined) {
-        excepted.delete(id);
-        watched.set(id, { path: target, ...pinned, recordedAt: new Date().toISOString(), roots: new Set(roots), holders: new Set(),
-          pins: new Map(claim === undefined ? [] : [[claim, pinned]]), exact });
-        return;
+        return () => {
+          excepted.delete(id);
+          watched.set(id, { path: target, ...observed, recordedAt: new Date().toISOString(), roots: new Set(roots), holders: new Set(),
+            pins: new Map(claim === undefined ? [] : [[claim, observed]]), exact });
+        };
       }
       if (!anchorsIntact(known)) throw refusal(target);
-      if (claim !== undefined) known.pins.set(claim, pinned);
+      pinned = observed;
     }
-    known.exact = true;
-    for (const root of roots) known.roots.add(root);
-    delete known.restored;
-    return;
+    return () => {
+      if (claim !== undefined && pinned !== undefined) known.pins.set(claim, pinned);
+      known.exact = true;
+      for (const root of roots) known.roots.add(root);
+      delete known.restored;
+    };
   }
   if (known) {
-    for (const root of roots) known.roots.add(root);
-    return;
+    return () => { for (const root of roots) known.roots.add(root); };
   }
   let anchor = dirname(target);
   for (;;) {
     const entry = entryAt(anchor, true);
     if (entry?.isDirectory()) {
-      watched.set(id, { path: target, anchor, anchorIdentity: { dev: entry.dev, ino: entry.ino }, recordedAt: new Date().toISOString(),
-        roots: new Set(roots), holders: new Set(), pins: new Map(), exact });
-      return;
+      const pin = { anchor, anchorIdentity: { dev: entry.dev, ino: entry.ino } };
+      return () => {
+        const published = watched.get(id);
+        if (published !== undefined) {
+          for (const root of roots) published.roots.add(root);
+        } else {
+          watched.set(id, { path: target, ...pin, recordedAt: new Date().toISOString(), roots: new Set(roots), holders: new Set(), pins: new Map(), exact });
+        }
+      };
     }
     const parent = dirname(anchor);
     // No existing ancestor (an absent drive): nothing below it can be created.
@@ -153,6 +190,7 @@ export function watchAbsentProtectedRow(path: string, roots: readonly string[], 
 
 function pinAbsentWatchAnchor(path: string): AnchorPin {
   try {
+    if (process.platform === "win32") admitLocalPath(path);
     const [facts] = pinWindowsPaths([path]);
     const parent = facts?.ancestors.findLast(component => component.exists === true);
     if (facts?.exists === false && admitWindowsReparse(facts) === true && parent?.directory
@@ -172,7 +210,7 @@ function pinAbsentWatchAnchor(path: string): AnchorPin {
 export interface WatchedRowClaim {
   /** The launch's last synchronous check before its process is created. A name that now exists, or an anchor that is no longer the
    * admitted folder, refuses the launch naming the protected path and registers nothing. */
-  start(): void;
+  start(assertStillValid?: () => void): void;
   /** After the process tree has ended: quarantine what a started launch's names now hold, and drop the claim. */
   release(): Promise<string | undefined>;
 }
@@ -189,30 +227,34 @@ export function claimMxcWatchedRows(rows: readonly MxcWatchedRow[], context: Wat
   const holder = Symbol();
   let started = false;
   return {
-    start: () => {
+    start: (assertStillValid) => {
       if (started) return;
-      const checked = rows.map((row) => {
-        const target = plain(row.path);
-        const anchor = plain(row.anchor);
-        let identity: FileIdentity | undefined;
-        try {
-          // The folder the ranker admitted, by the helper's identity, read between two looks at the same object.
-          const before = entryAt(anchor, true);
-          const [facts] = pinWindowsPaths([anchor]);
-          const known = watched.get(key(target));
-          if (before?.isDirectory() === true && !before.isSymbolicLink() && sameIdentity(anchor, before)
-            && facts?.volumeSerial === row.volumeSerial && facts.fileId === row.fileId
-            && within(anchor, target) && key(anchor) !== key(target)
-            // Still as ranked: once the first missing folder exists the name can carry an exact deny, so a stale ranking is refused.
-            && entryAt(join(anchor, relative(anchor, target).split(/[\\/]/)[0] ?? "")) === undefined
-            && (known === undefined || (known.anchorIdentity.dev === before.dev && known.anchorIdentity.ino === before.ino))) {
-            identity = { dev: before.dev, ino: before.ino };
+      const checked = withLocalityDecision(() => {
+        const anchors = rows.map((row) => {
+          const target = plain(row.path);
+          const anchor = plain(row.anchor);
+          let identity: FileIdentity | undefined;
+          try {
+            // The folder the ranker admitted, by the helper's identity, read between two looks at the same object.
+            const before = entryAt(anchor, true);
+            const [facts] = pinWindowsPaths([anchor]);
+            const known = watched.get(key(target));
+            if (before?.isDirectory() === true && !before.isSymbolicLink() && sameIdentity(anchor, before)
+              && facts?.volumeSerial === row.volumeSerial && facts.fileId === row.fileId
+              && within(anchor, target) && key(anchor) !== key(target)
+              // Still as ranked: once the first missing folder exists the name can carry an exact deny, so a stale ranking is refused.
+              && entryAt(join(anchor, relative(anchor, target).split(/[\\/]/)[0] ?? "")) === undefined
+              && (known === undefined || (known.anchorIdentity.dev === before.dev && known.anchorIdentity.ino === before.ino))) {
+              identity = { dev: before.dev, ino: before.ino };
+            }
+          } catch (error) {
+            throw refusal(row.path, error);
           }
-        } catch (error) {
-          throw refusal(row.path, error);
-        }
-        if (identity === undefined) throw refusal(row.path);
-        return { target, anchor, identity };
+          if (identity === undefined) throw refusal(row.path);
+          return { target, anchor, identity };
+        });
+        assertStillValid?.();
+        return anchors;
       });
       for (const { target, anchor, identity } of checked) {
         const id = key(target);
@@ -261,13 +303,14 @@ export function watchedProtectedRows(): readonly string[] {
 }
 
 // A fresh check beneath the recorded folder: the folder must still be the recorded object before the name is looked up in it.
-function rowState(row: WatchedRow): "absent" | "present" | "unverifiable" {
+function rowState(row: WatchedRow, rootCount = row.roots.size): "absent" | "present" | "unverifiable" {
   try {
     const present = entryAt(row.path) !== undefined;
     if (anchorsIntact(row)) return present ? "present" : "absent";
     // A replaced folder with nothing at the name leaves nothing to read once no contained process can still write there.
-    return present || row.holders.size > 0 || (row.exact && row.roots.size > 0) ? "unverifiable" : "absent";
-  } catch {
+    return present || row.holders.size > 0 || (row.exact && rootCount > 0) ? "unverifiable" : "absent";
+  } catch (error) {
+    rethrowLocalityFailure(error);
     return "unverifiable";
   }
 }
@@ -279,9 +322,14 @@ function createdRows(holder?: symbol): WatchedRow[] {
 /** Forget rows no live write root reaches, except a created row still awaiting its sweep. */
 export function pruneWatchedRows(liveWriteRoots: readonly string[]): void {
   const live = new Set(liveWriteRoots.map(key));
-  for (const [id, row] of watched) {
-    for (const root of row.roots) if (!live.has(key(root))) row.roots.delete(root);
-    if (row.roots.size === 0 && row.holders.size === 0 && rowState(row) === "absent") watched.delete(id);
+  const updates = withLocalityDecision(() => [...watched].map(([id, row]) => {
+    const dropped = [...row.roots].filter(root => !live.has(key(root)));
+    const remove = row.roots.size === dropped.length && row.holders.size === 0 && rowState(row, 0) === "absent";
+    return { id, row, dropped, remove };
+  }));
+  for (const { id, row, dropped, remove } of updates) {
+    for (const root of dropped) row.roots.delete(root);
+    if (remove) watched.delete(id);
   }
 }
 
@@ -294,19 +342,24 @@ let consumerSweep: Promise<void> | undefined;
  */
 export function isWatchedWorkspaceConsumable(workspace: string): boolean {
   try {
-    let consumable = true;
-    for (const [id, entry] of failClosed) {
-      if (entryAt(entry.path) === undefined) { failClosed.delete(id); continue; }
-      if (entry.roots.some(root => overlaps(root, workspace)) || overlaps(entry.path, workspace)) consumable = false;
-    }
-    let created = false;
-    for (const row of watched.values()) {
-      if (!overlaps(row.anchor, workspace) && !overlaps(row.path, workspace) && ![...row.roots].some(root => overlaps(root, workspace))) continue;
-      const state = rowState(row);
-      if (state === "absent") continue;
-      consumable = false;
-      created ||= state === "present" && row.restored !== true && quarantineFailureAt(sweepOriginal(row)) === undefined;
-    }
+    const { consumable, created, cleared } = withLocalityDecision(() => {
+      let consumable = true;
+      const cleared: string[] = [];
+      for (const [id, entry] of failClosed) {
+        if (entryAt(entry.path) === undefined) { cleared.push(id); continue; }
+        if (entry.roots.some(root => overlaps(root, workspace)) || overlaps(entry.path, workspace)) consumable = false;
+      }
+      let created = false;
+      for (const row of watched.values()) {
+        if (!overlaps(row.anchor, workspace) && !overlaps(row.path, workspace) && ![...row.roots].some(root => overlaps(root, workspace))) continue;
+        const state = rowState(row);
+        if (state === "absent") continue;
+        consumable = false;
+        created ||= state === "present" && row.restored !== true && quarantineFailureAt(sweepOriginal(row)) === undefined;
+      }
+      return { consumable, created, cleared };
+    });
+    for (const id of cleared) failClosed.delete(id);
     if (created && consumerSweep === undefined) {
       consumerSweep = quarantineCreatedRows({ commandId: "host-consumer" }, undefined, true)
         .then(() => {}, (error: unknown) => { if (!(error instanceof WatchedQuarantineError)) log.warn(errorMessage(error)); })
@@ -314,6 +367,7 @@ export function isWatchedWorkspaceConsumable(workspace: string): boolean {
     }
     return consumable;
   } catch {
+    assertLocalityDecisionUsable();
     return false;
   }
 }
@@ -329,6 +383,14 @@ function quarantineFailureAt(path: string): string | undefined {
     if (overlaps(entry.path, path)) return entry.failure;
   }
   return undefined;
+}
+
+function storeFileIdentity(identity: Pick<Stats | BigIntStats, "dev" | "ino">): StoredFileIdentity {
+  return { dev: identity.dev.toString(), ino: identity.ino.toString() };
+}
+
+function matchesStoredFileIdentity(identity: FileIdentity, expected: StoredFileIdentity): boolean {
+  return identity.dev.toString() === expected?.dev && identity.ino.toString() === expected.ino;
 }
 
 function sameIdentity(path: string, identity: FileIdentity): boolean {
@@ -355,6 +417,7 @@ export async function sweepWatchedRows(context: WatchedSweepContext): Promise<st
   let notice: string | undefined;
   try { notice = await quarantineCreatedRows(context); }
   catch (error) {
+    if (process.platform === "win32" && isLocalityFailure(error)) throw error;
     const receipts = pending();
     if (error instanceof WatchedQuarantineError && receipts.length > 0) throw new WatchedQuarantineError([...new Set([error.message, ...receipts])].join("\n"));
     throw error;
@@ -378,11 +441,15 @@ function quarantineCreatedRows(context: WatchedSweepContext, holder?: symbol, de
 }
 
 async function quarantineCreatedRowsNow(context: WatchedSweepContext, holder: symbol | undefined, deferReceipt: boolean): Promise<string | undefined> {
-  for (const [id, entry] of failClosed) {
-    try { if (entryAt(entry.path) === undefined) failClosed.delete(id); }
-    catch { /* An unreadable entry stays blocked. */ }
-  }
-  const created = createdRows(holder);
+  const { cleared, created } = withLocalityDecision(() => {
+    const cleared: string[] = [];
+    for (const [id, entry] of failClosed) {
+      try { if (entryAt(entry.path) === undefined) cleared.push(id); }
+      catch (error) { rethrowLocalityFailure(error); }
+    }
+    return { cleared, created: createdRows(holder) };
+  });
+  for (const id of cleared) failClosed.delete(id);
   if (created.length === 0) return undefined;
   const entries = new Map<string, { readonly original: string; readonly row: WatchedRow }>();
   for (const row of created) {
@@ -392,8 +459,14 @@ async function quarantineCreatedRowsNow(context: WatchedSweepContext, holder: sy
   const failures: string[] = [];
   const moved: ManifestEntry[] = [];
   let quarantine: Awaited<ReturnType<typeof createSandboxQuarantine>> | undefined;
-  try { quarantine = await createSandboxQuarantine(context.commandId); }
-  catch (error) { failures.push(errorMessage(error)); }
+  try {
+    withLocalityDecision(() => admitWatchedEntry(sandboxQuarantineRoot()));
+    quarantine = await createSandboxQuarantine(context.commandId);
+  }
+  catch (error) {
+    rethrowLocalityFailure(error);
+    failures.push(errorMessage(error));
+  }
   for (const [id, { original, row }] of entries) {
     const previousFailure = quarantineFailureAt(original);
     if (previousFailure !== undefined) {
@@ -402,19 +475,30 @@ async function quarantineCreatedRowsNow(context: WatchedSweepContext, holder: sy
     }
     let found = false;
     try {
-      if (!anchorsIntact(row)) throw new Error(`the folder ${JSON.stringify(changedAnchor(row))} changed identity`);
-      if (entryAt(original) === undefined) continue;
-      found = true;
-      if (quarantine === undefined) throw new Error(failures[0]);
-      const parent = lstatSync(dirname(original));
-      if (!parent.isDirectory() || parent.isSymbolicLink()) throw new Error("Sandbox quarantine parent is not a plain directory");
+      const preflight = withLocalityDecision(() => {
+        const changed = changedAnchor(row);
+        if (changed !== undefined) throw new Error(`the folder ${JSON.stringify(changed)} changed identity`);
+        const windows = process.platform === "win32";
+        const source = windows ? entryAt(original, true) : undefined;
+        if (windows ? source === undefined : entryAt(original) === undefined) return undefined;
+        found = true;
+        if (quarantine === undefined) throw new Error(failures[0]);
+        admitWatchedEntry(quarantine.slot);
+        const parent = source === undefined ? lstatSync(dirname(original)) : lstatSync(dirname(original), { bigint: true });
+        if (!parent.isDirectory() || parent.isSymbolicLink()) throw new Error("Sandbox quarantine parent is not a plain directory");
+        const restoreIdentity = source !== undefined
+          ? { source: storeFileIdentity(source), parent: storeFileIdentity(parent) } : undefined;
+        return { parent: { dev: Number(parent.dev), ino: Number(parent.ino) }, restoreIdentity };
+      });
+      if (preflight === undefined || quarantine === undefined) continue;
       const before = quarantine.moved.length;
-      quarantine.move(original, parent);
+      quarantine.move(original, preflight.parent);
       const landed = quarantine.moved[before];
       if (landed !== undefined) {
         row.restored = false;
         moved.push({ original, quarantined: landed.quarantined, row: row.path, time: new Date().toISOString(), commandId: context.commandId,
-          ...(context.sessionId ? { sessionId: context.sessionId } : {}), ...(context.command ? { command: context.command } : {}) });
+          ...(context.sessionId ? { sessionId: context.sessionId } : {}), ...(context.command ? { command: context.command } : {}),
+          ...(preflight.restoreIdentity === undefined ? {} : { restoreIdentity: preflight.restoreIdentity }) });
       }
     } catch (error) {
       const messageKey = found ? "sandboxPolicy.watchedQuarantineFailed" : "sandboxPolicy.watchedQuarantineUnverified";
@@ -475,21 +559,79 @@ export function listWatchedQuarantine(): WatchedQuarantineEntry[] {
     let entries: ManifestEntry[];
     try { entries = readManifest(slot); }
     catch { return []; }
-    return entries.map((entry, index) => ({ ...entry, slot, index }));
+    if (process.platform !== "win32") return entries.map((entry, index) => ({ ...entry, slot, index }));
+    return entries.map(({ restoreIdentity: _, ...entry }, index) => ({ ...entry, slot, index }));
   });
 }
 
 /** User action: move a quarantined entry back. The restored path is excepted from watching for this session, unless a live launch
  * still claims it: that claim and its fence on host consumers stay until the launch's release, which checks the name again. */
 export async function restoreWatchedQuarantine(slot: string, index: number): Promise<{ readonly restored: string }> {
-  const entries = readManifest(slot);
-  const entry = entries[index];
-  if (entry === undefined || !Number.isInteger(index)) throw new Error("Unknown quarantine entry");
-  if (entry.restored !== undefined) throw new Error("Entry was already restored");
-  if (basename(dirname(entry.quarantined)) !== slot) throw new Error("Quarantine entry is outside its slot");
-  if (entryAt(entry.original) !== undefined) throw new Error(`${entry.original} exists; move it aside before restoring`);
-  if (!entryAt(dirname(entry.original))?.isDirectory()) throw new Error(`The folder of ${entry.original} no longer exists`);
-  await renameFileOnce(entry.quarantined, entry.original);
+  let entries: ManifestEntry[];
+  let entry: ManifestEntry | undefined;
+  if (process.platform !== "win32") {
+    entries = readManifest(slot);
+    entry = entries[index];
+    if (entry === undefined || !Number.isInteger(index)) throw new Error("Unknown quarantine entry");
+    if (entry.restored !== undefined) throw new Error("Entry was already restored");
+    if (basename(dirname(entry.quarantined)) !== slot) throw new Error("Quarantine entry is outside its slot");
+    if (entryAt(entry.original) !== undefined) throw new Error(`${entry.original} exists; move it aside before restoring`);
+    if (!entryAt(dirname(entry.original))?.isDirectory()) throw new Error(`The folder of ${entry.original} no longer exists`);
+    await renameFileOnce(entry.quarantined, entry.original);
+  } else {
+    ({ entries, entry } = withLocalityDecision(() => {
+      const manifest = manifestPath(slot);
+      const slotPath = dirname(manifest);
+      const slotEntry = entryAt(slotPath, true);
+      const physicalSlot = admitLocalRoute(slotPath).physical;
+      const manifestEntry = entryAt(manifest, true);
+      if (slotEntry?.isDirectory() !== true || physicalSlot === undefined || manifestEntry?.isFile() !== true) {
+        throw new Error("Quarantine slot or manifest is unavailable");
+      }
+      const entries = readManifest(slot);
+      const entry = entries[index];
+      if (entry === undefined || !Number.isInteger(index)) throw new Error("Unknown quarantine entry");
+      if (entry.restored !== undefined) throw new Error("Entry was already restored");
+      const source = entry.quarantined;
+      const destination = entry.original;
+      const parent = dirname(destination);
+      admitLocalPath(source);
+      admitLocalPath(destination);
+      if (basename(dirname(source)) !== slot || key(dirname(source)) !== key(physicalSlot)) {
+        throw new Error("Quarantine entry is outside its slot");
+      }
+      if (entryAt(destination) !== undefined) throw new Error(`${destination} exists; move it aside before restoring`);
+      const sourceEntry = entryAt(source, true);
+      if (sourceEntry === undefined || (entry.restoreIdentity !== undefined && !matchesStoredFileIdentity(sourceEntry, entry.restoreIdentity.source))) {
+        throw new Error("Quarantined entry changed identity");
+      }
+      const parentEntry = entryAt(parent, true);
+      const row = watched.get(key(entry.row));
+      if (parentEntry?.isDirectory() !== true || (row !== undefined && !anchorsIntact(row))
+        || (entry.restoreIdentity !== undefined && !matchesStoredFileIdentity(parentEntry, entry.restoreIdentity.parent))) {
+        throw new Error("Quarantine restore destination folder changed identity");
+      }
+      const currentManifest = entryAt(manifest, true);
+      const currentSource = entryAt(source, true);
+      if (!sameIdentity(slotPath, slotEntry) || currentManifest?.dev !== manifestEntry.dev || currentManifest.ino !== manifestEntry.ino
+        || currentSource?.dev !== sourceEntry.dev || currentSource.ino !== sourceEntry.ino) {
+        throw new Error("Quarantine source changed identity");
+      }
+      if (entryAt(destination) !== undefined || !sameIdentity(parent, parentEntry)) {
+        throw new Error("Quarantine restore destination folder changed identity");
+      }
+
+      renameFileOnceSync(source, destination);
+      const restored = entryAt(destination, true);
+      if (restored?.dev !== sourceEntry.dev || restored.ino !== sourceEntry.ino || entryAt(source) !== undefined) {
+        throw new Error("Quarantine restored entry changed identity");
+      }
+      if (!sameIdentity(parent, parentEntry)) {
+        throw new Error("Quarantine restore destination folder changed identity");
+      }
+      return { entries, entry };
+    }));
+  }
   const row = watched.get(key(entry.row));
   if (row?.exact && row.roots.size > 0) {
     // The ACL grant can still write to this name, so the next sweep must check it.
@@ -514,8 +656,8 @@ export function resetWatchedRows(): void {
 
 /** Zero-byte files at protected rows, the shape an earlier native stamp left. Ave keeps no record of its own placeholders, so none is removed: the caller lists them. */
 export function placeholderLeftovers(rows: readonly string[]): string[] {
-  return rows.filter(row => {
+  return withLocalityDecision(() => rows.filter(row => {
     const entry = entryAt(row);
     return entry?.isFile() === true && entry.size === 0;
-  });
+  }));
 }

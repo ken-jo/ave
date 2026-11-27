@@ -1,3 +1,4 @@
+import { withLocalityDecision } from "../../shared/local-path-io.js";
 import { effectiveShellWords } from "../../shared/shell-effective-command.js";
 import { literalShellBodies, literalShellFlow, recordLiteralShellFlow, type LiteralBodyBudget } from "../../shared/shell-literal-bodies.js";
 import { homedir } from "node:os";
@@ -208,48 +209,52 @@ function globPathFloor(segments: readonly string[], sessionRead: boolean, contex
   return null;
 }
 export function sensitivePathInArgumentText(text: string, cwd: string | undefined, context = new ShellFloorContext()): string | null {
-  context.visits.staticChars += text.length;
-  if (!/[\/\\~.@=$*?[\]{}]/.test(text)
-    && !SENSITIVE_PATH_ENTRIES.some((entry) => entry.segments.includes(text.replace(/["']/g, "")))) return null;
-  const homes = /(?:^|[^\\])~(?=\/|$)|\$\{HOME\}|\$HOME\b/.test(text)
-    ? [homedir(), ...expandShellTildePaths("~")] : [""];
-  for (const home of homes) for (const candidate of pathCandidates(normalizeVisiblePath(text, home))) {
-    const globSource = candidate.replace(/^[\\/]{1,2}\?[\\/](?:UNC[\\/])?/i, prefix => /UNC/i.test(prefix) ? "//" : "");
-    if (!/[*?[\]]/.test(globSource)) {
-      const { hit } = nativePathProbe(candidate, cwd, context); if (hit) return hit;
-      continue;
+  return withLocalityDecision(() => {
+    context.visits.staticChars += text.length;
+    if (!/[\/\\~.@=$*?[\]{}]/.test(text)
+      && !SENSITIVE_PATH_ENTRIES.some((entry) => entry.segments.includes(text.replace(/["']/g, "")))) return null;
+    const homes = /(?:^|[^\\])~(?=\/|$)|\$\{HOME\}|\$HOME\b/.test(text)
+      ? [homedir(), ...expandShellTildePaths("~")] : [""];
+    for (const home of homes) for (const candidate of pathCandidates(normalizeVisiblePath(text, home))) {
+      const globSource = candidate.replace(/^[\\/]{1,2}\?[\\/](?:UNC[\\/])?/i, prefix => /UNC/i.test(prefix) ? "//" : "");
+      if (!/[*?[\]]/.test(globSource)) {
+        const { hit } = nativePathProbe(candidate, cwd, context); if (hit) return hit;
+        continue;
+      }
+      const modeled = context.inspectHostFiles ? modelShellPath(candidate, { dialect: context.pathDialect, location: cwd ?? process.cwd() })
+        : { nativePath: undefined, normalizedPath: posix.normalize(candidate), floorPaths: [] };
+      if (context.inspectHostFiles && modeled.nativePath === undefined) context.unresolvedPath = true;
+      // Anchor on the unfolded absolute operand so a link prefix resolves before its "..".
+      const absolute = modeled.nativePath ?? modeled.normalizedPath;
+      const originalSegments = foldCanonicalPathSeparators(globSource).split("/"), first = originalSegments.findIndex((segment) => /[*?[\]]/.test(segment));
+      if (first > 0) {
+        let literal = originalSegments.slice(0, first).join("/");
+        if (/^[A-Za-z]:$/.test(literal)) literal += "/";
+        const { hit } = nativePathProbe(literal || "/", cwd, context); if (hit) return hit;
+      }
+      const sessionRead = modeled.nativePath !== undefined && context.isSessionReadPath(caseFoldForMatch(context.canonicalize(modeled.nativePath, true)));
+      for (const path of new Set([absolute, ...lexicalFloorPaths(absolute, modeled.normalizedPath, modeled.floorPaths)])) {
+        const hit = globPathFloor(foldCanonicalPathSeparators(path).split("/"), sessionRead, context); if (hit) return hit;
+      }
     }
-    const modeled = context.inspectHostFiles ? modelShellPath(candidate, { dialect: context.pathDialect, location: cwd ?? process.cwd() })
-      : { nativePath: undefined, normalizedPath: posix.normalize(candidate), floorPaths: [] };
-    if (context.inspectHostFiles && modeled.nativePath === undefined) context.unresolvedPath = true;
-    // Anchor on the unfolded absolute operand so a link prefix resolves before its "..".
-    const absolute = modeled.nativePath ?? modeled.normalizedPath;
-    const originalSegments = foldCanonicalPathSeparators(globSource).split("/"), first = originalSegments.findIndex((segment) => /[*?[\]]/.test(segment));
-    if (first > 0) {
-      let literal = originalSegments.slice(0, first).join("/");
-      if (/^[A-Za-z]:$/.test(literal)) literal += "/";
-      const { hit } = nativePathProbe(literal || "/", cwd, context); if (hit) return hit;
-    }
-    const sessionRead = modeled.nativePath !== undefined && context.isSessionReadPath(caseFoldForMatch(context.canonicalize(modeled.nativePath, true)));
-    for (const path of new Set([absolute, ...lexicalFloorPaths(absolute, modeled.normalizedPath, modeled.floorPaths)])) {
-      const hit = globPathFloor(foldCanonicalPathSeparators(path).split("/"), sessionRead, context); if (hit) return hit;
-    }
-  }
-  return null;
+    return null;
+  });
 }
 
 export function sensitivePathInLiteralArgumentText(text: string, cwd: string | undefined, context = new ShellFloorContext()): string | null {
-  context.visits.staticChars += text.length;
-  if (!/[\/\\.@=]/.test(text) && !SENSITIVE_PATH_ENTRIES.some((entry) => entry.segments.includes(text))) return null;
-  for (const candidate of pathCandidates(text)) {
-    // PowerShell opens the extended form of a local drive path as that path, so it is probed as the drive path.
-    const extendedDrive = sep === "\\" && context.pathDialect === "powershell" && /^[\\/]{2}\?[\\/][A-Za-z]:[\\/]/u.test(candidate)
-      && !isWindowsNetworkOrDevicePath(candidate);
-    if (!extendedDrive && /(?:^|[=:])(?:\\\\|\/\/)(?:\?\\UNC\\)?[^\\/]+[\\/][^\\/]+/i.test(candidate)) return "visible UNC path";
-    const { hit } = nativePathProbe(candidate, cwd, context);
-    if (hit) return hit;
-  }
-  return null;
+  return withLocalityDecision(() => {
+    context.visits.staticChars += text.length;
+    if (!/[\/\\.@=]/.test(text) && !SENSITIVE_PATH_ENTRIES.some((entry) => entry.segments.includes(text))) return null;
+    for (const candidate of pathCandidates(text)) {
+      // PowerShell opens the extended form of a local drive path as that path, so it is probed as the drive path.
+      const extendedDrive = sep === "\\" && context.pathDialect === "powershell" && /^[\\/]{2}\?[\\/][A-Za-z]:[\\/]/u.test(candidate)
+        && !isWindowsNetworkOrDevicePath(candidate);
+      if (!extendedDrive && /(?:^|[=:])(?:\\\\|\/\/)(?:\?\\UNC\\)?[^\\/]+[\\/][^\\/]+/i.test(candidate)) return "visible UNC path";
+      const { hit } = nativePathProbe(candidate, cwd, context);
+      if (hit) return hit;
+    }
+    return null;
+  });
 }
 
 function optionValue(argv: readonly (string | undefined)[], index: number): string | undefined {
@@ -270,55 +275,57 @@ function curlShortFileOption(token: string): { kind: "data" | "form" | "upload" 
 }
 export interface LiteralShellArgvFacts { sensitive: string | null; exfiltration: string | null; network: boolean; readsPath: boolean }
 export function inspectLiteralShellArgvFacts(argv: readonly (string | undefined)[], cwd: string | undefined, context = new ShellFloorContext(), payloadIndexes: ReadonlySet<number> = new Set(), evaluation?: NativeArgvBoundary): LiteralShellArgvFacts {
-  let sensitive: string | null = null, exfiltration: string | null = null;
-  let curl = false, wget = false, scp = false, rsync = false, scripted = false, socat = false, network = false, reader = false, readsPath = false;
-  let transferOperands = 0, transferDestinationRemote = false;
-  let pendingCurlFile: "data" | "form" | "upload" | "header" | undefined;
-  const heads = evaluation ?? literalNativeBoundary(argv, context);
-  context.visits.staticViews += 1;
-  for (let index = 0; index < argv.length; index += 1) {
-    context.visits.staticTokens += 1;
-    if (payloadIndexes.has(index)) continue;
-    const originalToken = argv[index]; if (originalToken === undefined) continue;
-    const token: string = curl ? fileTransferOption(originalToken) : originalToken;
-    context.visits.staticArguments += 1; context.visits.staticChars += token.length;
-    const name: string | undefined = heads.headNames?.get(index) ?? programName(token);
-    const isHead = heads.headIndexes.has(index) || inRange(heads.headRange, index);
-    curl ||= isHead && name === "curl"; wget ||= isHead && name === "wget"; scp ||= isHead && name === "scp"; rsync ||= isHead && name === "rsync"; scripted ||= isHead && (name === "sftp" || name === "ftp" || name === "lftp" || name === "tftp"); socat ||= isHead && name === "socat";
-    network ||= isHead && name !== undefined && NETWORK_PROGRAMS.has(name);
-    if (isHead && name !== undefined && PATH_READERS.has(name)) reader = true;
-    else if (reader && !token.startsWith("-")) readsPath = true;
-    sensitive ??= sensitivePathInLiteralArgumentText(token, cwd, context);
-    if (pendingCurlFile !== undefined) {
-      if (pendingCurlFile === "upload") exfiltration ??= "curl upload of a file";
-      else if (/^@/.test(token) || (pendingCurlFile === "form" && /(?:^|=)[@<]/.test(token))) exfiltration ??= `curl ${pendingCurlFile} from a file`;
-      pendingCurlFile = undefined;
+  return withLocalityDecision(() => {
+    let sensitive: string | null = null, exfiltration: string | null = null;
+    let curl = false, wget = false, scp = false, rsync = false, scripted = false, socat = false, network = false, reader = false, readsPath = false;
+    let transferOperands = 0, transferDestinationRemote = false;
+    let pendingCurlFile: "data" | "form" | "upload" | "header" | undefined;
+    const heads = evaluation ?? literalNativeBoundary(argv, context);
+    context.visits.staticViews += 1;
+    for (let index = 0; index < argv.length; index += 1) {
+      context.visits.staticTokens += 1;
+      if (payloadIndexes.has(index)) continue;
+      const originalToken = argv[index]; if (originalToken === undefined) continue;
+      const token: string = curl ? fileTransferOption(originalToken) : originalToken;
+      context.visits.staticArguments += 1; context.visits.staticChars += token.length;
+      const name: string | undefined = heads.headNames?.get(index) ?? programName(token);
+      const isHead = heads.headIndexes.has(index) || inRange(heads.headRange, index);
+      curl ||= isHead && name === "curl"; wget ||= isHead && name === "wget"; scp ||= isHead && name === "scp"; rsync ||= isHead && name === "rsync"; scripted ||= isHead && (name === "sftp" || name === "ftp" || name === "lftp" || name === "tftp"); socat ||= isHead && name === "socat";
+      network ||= isHead && name !== undefined && NETWORK_PROGRAMS.has(name);
+      if (isHead && name !== undefined && PATH_READERS.has(name)) reader = true;
+      else if (reader && !token.startsWith("-")) readsPath = true;
+      sensitive ??= sensitivePathInLiteralArgumentText(token, cwd, context);
+      if (pendingCurlFile !== undefined) {
+        if (pendingCurlFile === "upload") exfiltration ??= "curl upload of a file";
+        else if (/^@/.test(token) || (pendingCurlFile === "form" && /(?:^|=)[@<]/.test(token))) exfiltration ??= `curl ${pendingCurlFile} from a file`;
+        pendingCurlFile = undefined;
+      }
+      const short = curl ? curlShortFileOption(token) : null;
+      if (curl && (CURL_UPLOAD.test(token) || /^--upload-f/.test(token))) {
+        const value = optionValue(argv, index); if (token.includes("=") || /^-T.+/.test(token)) exfiltration ??= "curl upload of a file"; else if (value !== undefined) pendingCurlFile = "upload";
+      }
+      else if (curl && CURL_DATA.test(token)) { const value = optionValue(argv, index); if (/^@/.test(value ?? "") || (/^--data-urlencode/.test(token) && /@/.test(value ?? ""))) exfiltration ??= "curl body from a file"; else if (!token.includes("=")) pendingCurlFile = "data"; }
+      else if (curl && CURL_FORM.test(token)) { const value = optionValue(argv, index); if (/(?:^|=)[@<]/.test(value ?? "")) exfiltration ??= "curl form from a file"; else if (!token.includes("=")) pendingCurlFile = "form"; }
+      else if (curl && /^--(?:header|proxy-header)(?:=|$)/.test(token)) { const value = optionValue(argv, index); if (/^@/.test(value ?? "")) exfiltration ??= "curl header from a file"; else if (!token.includes("=")) pendingCurlFile = "header"; }
+      else if (short?.kind === "upload") { if (short.attached) exfiltration ??= "curl upload of a file"; else pendingCurlFile = "upload"; }
+      else if (short?.kind === "data") { if (/^@/.test(short.attached)) exfiltration ??= "curl body from a file"; else if (!short.attached) pendingCurlFile = "data"; }
+      else if (short?.kind === "form") { if (/(?:^|=)[@<]/.test(short.attached)) exfiltration ??= "curl form from a file"; else if (!short.attached) pendingCurlFile = "form"; }
+      else if (short?.kind === "header") { if (/^@/.test(short.attached)) exfiltration ??= "curl header from a file"; else if (!short.attached) pendingCurlFile = "header"; }
+      else if (wget && (WGET_UPLOAD.test(token) || /^--(?:post-f|body-f)/.test(token))) exfiltration ??= "wget body from a file";
+      else if (wget && ((token.startsWith("-e") && wgetFileSetting(token.slice(2)))
+        || (token.startsWith("--execute=") && wgetFileSetting(token.slice(10)))
+        || ((token === "-e" || token === "--execute") && wgetFileSetting(argv[index + 1] ?? "")))) exfiltration ??= "wget body from a file";
+      else if (scripted && /^(?:-b|--batch-file|--input-file)(?:=|$)/.test(token)) exfiltration ??= "scripted transfer from a file";
+      else if (socat && /^(?:FILE|OPEN|GOPEN):/i.test(token)) exfiltration ??= "socat reads a file";
+      if ((scp || rsync) && name !== "scp" && name !== "rsync" && !token.startsWith("-")) {
+        transferOperands += 1;
+        transferDestinationRemote = /^(?:[^@\s]+@)?[^:\s]+:/.test(token);
+      }
     }
-    const short = curl ? curlShortFileOption(token) : null;
-    if (curl && (CURL_UPLOAD.test(token) || /^--upload-f/.test(token))) {
-      const value = optionValue(argv, index); if (token.includes("=") || /^-T.+/.test(token)) exfiltration ??= "curl upload of a file"; else if (value !== undefined) pendingCurlFile = "upload";
-    }
-    else if (curl && CURL_DATA.test(token)) { const value = optionValue(argv, index); if (/^@/.test(value ?? "") || (/^--data-urlencode/.test(token) && /@/.test(value ?? ""))) exfiltration ??= "curl body from a file"; else if (!token.includes("=")) pendingCurlFile = "data"; }
-    else if (curl && CURL_FORM.test(token)) { const value = optionValue(argv, index); if (/(?:^|=)[@<]/.test(value ?? "")) exfiltration ??= "curl form from a file"; else if (!token.includes("=")) pendingCurlFile = "form"; }
-    else if (curl && /^--(?:header|proxy-header)(?:=|$)/.test(token)) { const value = optionValue(argv, index); if (/^@/.test(value ?? "")) exfiltration ??= "curl header from a file"; else if (!token.includes("=")) pendingCurlFile = "header"; }
-    else if (short?.kind === "upload") { if (short.attached) exfiltration ??= "curl upload of a file"; else pendingCurlFile = "upload"; }
-    else if (short?.kind === "data") { if (/^@/.test(short.attached)) exfiltration ??= "curl body from a file"; else if (!short.attached) pendingCurlFile = "data"; }
-    else if (short?.kind === "form") { if (/(?:^|=)[@<]/.test(short.attached)) exfiltration ??= "curl form from a file"; else if (!short.attached) pendingCurlFile = "form"; }
-    else if (short?.kind === "header") { if (/^@/.test(short.attached)) exfiltration ??= "curl header from a file"; else if (!short.attached) pendingCurlFile = "header"; }
-    else if (wget && (WGET_UPLOAD.test(token) || /^--(?:post-f|body-f)/.test(token))) exfiltration ??= "wget body from a file";
-    else if (wget && ((token.startsWith("-e") && wgetFileSetting(token.slice(2)))
-      || (token.startsWith("--execute=") && wgetFileSetting(token.slice(10)))
-      || ((token === "-e" || token === "--execute") && wgetFileSetting(argv[index + 1] ?? "")))) exfiltration ??= "wget body from a file";
-    else if (scripted && /^(?:-b|--batch-file|--input-file)(?:=|$)/.test(token)) exfiltration ??= "scripted transfer from a file";
-    else if (socat && /^(?:FILE|OPEN|GOPEN):/i.test(token)) exfiltration ??= "socat reads a file";
-    if ((scp || rsync) && name !== "scp" && name !== "rsync" && !token.startsWith("-")) {
-      transferOperands += 1;
-      transferDestinationRemote = /^(?:[^@\s]+@)?[^:\s]+:/.test(token);
-    }
-  }
-  if (transferOperands >= 2 && transferDestinationRemote) exfiltration ??= `${scp ? "scp" : "rsync"} to a remote target`;
-  if (sensitive && (curl || wget || scp || rsync || scripted)) exfiltration ??= `sensitive path argument (${sensitive})`;
-  return { sensitive, exfiltration, network, readsPath };
+    if (transferOperands >= 2 && transferDestinationRemote) exfiltration ??= `${scp ? "scp" : "rsync"} to a remote target`;
+    if (sensitive && (curl || wget || scp || rsync || scripted)) exfiltration ??= `sensitive path argument (${sensitive})`;
+    return { sensitive, exfiltration, network, readsPath };
+  });
 }
 export function inspectLiteralShellArgv(argv: readonly (string | undefined)[], cwd: string | undefined, context = new ShellFloorContext(), payloadIndexes: ReadonlySet<number> = new Set()): { sensitive: string | null; exfiltration: string | null } {
   const { sensitive, exfiltration } = inspectLiteralShellArgvFacts(argv, cwd, context, payloadIndexes);
@@ -554,6 +561,7 @@ function inspectStatement(statement: ShellStatement, cwd: string | undefined, co
 }
 
 const floorContexts = new WeakMap<ParsedShellCommand, ShellFloorContext>();
+
 export function parseShellFloorCommand(input: ShellCommandInput, maxInputLength = 8_000): ParsedShellCommand {
   if ((typeof input === "string" ? input : input.command).length > maxInputLength && shellFloorInputExceeded(input)) throw new ShellFloorLimitError(SHELL_FLOOR_BUDGET_REASON);
   if (typeof input !== "string" && (input.analysis.ok || input.analysis.reason !== "literal command length limit exceeded")) {
@@ -565,48 +573,59 @@ export function parseShellFloorCommand(input: ShellCommandInput, maxInputLength 
   catch (parserError) { return { command, analysis: { ok: false, reason: "shell parser failed" }, parserError, facts: new Map() }; }
 }
 function parsedWithContext(input: ShellCommandInput, context: ShellFloorContext): ParsedShellCommand {
-  if (typeof input !== "string") { floorContexts.set(input, context); return input; }
+  if (typeof input !== "string") {
+    if (process.platform !== "win32") floorContexts.set(input, context);
+    return input;
+  }
   const key = `bash-parse\0${input}`; let parsed = context.facts.get(key) as ParsedShellCommand | undefined;
   if (!parsed) { context.visits.lexes += 1; parsed = parseShellFloorCommand(input); context.facts.set(key, parsed); }
-  floorContexts.set(parsed, context); return parsed;
+  if (process.platform !== "win32") floorContexts.set(parsed, context);
+  return parsed;
 }
 type PowerShellBodyInspector = (command: string, cwd: string | undefined, budget: LiteralBodyBudget, executionPlan?: HostShellExecutionPlan, context?: ShellFloorContext) => ShellFloorSignals;
 
 export function inspectPosixShellCommand(input: ShellCommandInput, cwd: string | undefined, supplied: ShellFloorContext | undefined, budget: LiteralBodyBudget, inspectPowerShellBody: PowerShellBodyInspector): ShellFloorSignals {
-  if (shellFloorInputExceeded(input)) return shellFloorBudgetSignals();
-  const context = supplied ?? (typeof input === "string" ? new ShellFloorContext() : floorContexts.get(input) ?? new ShellFloorContext());
-  try {
-    if (budget.depth >= 16) return shellFloorBudgetSignals();
-    const parsed = parsedWithContext(input, context);
-    if (parsed.analysis.ok) budget.tokens.count += parsed.analysis.totalTokens ?? 0;
-    if (budget.tokens.count > MAX_SHELL_ANALYSIS_TOKENS) return shellFloorBudgetSignals();
-    const factKey = `static-floor\0${cwd ?? ""}\0${context.inspectHostFiles}`;
-    const contentInspections = context.contentInspectionCount;
-    const result = shellFact<ShellFloorSignals>(parsed, factKey, () => {
-      if (!parsed.analysis.ok) {
-        const limited = shellFloorParserBudgetExceeded(parsed.analysis.reason);
-        let sensitive: string | null = null;
-        for (const match of parsed.command.matchAll(/"[^"\n]*"|'[^'\n]*'|[^\s;|&()<>]+/g)) {
-          sensitive ??= sensitivePathInArgumentText(match[0], cwd, context);
+  const windows = process.platform === "win32";
+  const inspect = (): ShellFloorSignals => {
+    if (shellFloorInputExceeded(input)) return shellFloorBudgetSignals();
+    const previous = windows || typeof input === "string" ? undefined : floorContexts.get(input);
+    const context = supplied ?? previous ?? new ShellFloorContext();
+    try {
+      if (budget.depth >= 16) return shellFloorBudgetSignals();
+      const parsed = parsedWithContext(input, context);
+      if (parsed.analysis.ok) budget.tokens.count += parsed.analysis.totalTokens ?? 0;
+      if (budget.tokens.count > MAX_SHELL_ANALYSIS_TOKENS) return shellFloorBudgetSignals();
+      const evaluate = (): ShellFloorSignals => withLocalityDecision(() => {
+        if (!parsed.analysis.ok) {
+          const limited = shellFloorParserBudgetExceeded(parsed.analysis.reason);
+          let sensitive: string | null = null;
+          for (const match of parsed.command.matchAll(/"[^"\n]*"|'[^'\n]*'|[^\s;|&()<>]+/g)) {
+            sensitive ??= sensitivePathInArgumentText(match[0], cwd, context);
+          }
+          const exfiltration = UNPARSED_UPLOAD.test(parsed.command) ? "curl/wget body from a file (unparsed)" : null;
+          return { ...(limited ? shellFloorBudgetSignals() : {}), outcome: sensitive || exfiltration ? "visible-floor" : "unproven", sensitive, exfiltration, ordinaryAsk: limited ? SHELL_FLOOR_BUDGET_REASON : parsed.analysis.reason };
         }
-        const exfiltration = UNPARSED_UPLOAD.test(parsed.command) ? "curl/wget body from a file (unparsed)" : null;
-        return { ...(limited ? shellFloorBudgetSignals() : {}), outcome: sensitive || exfiltration ? "visible-floor" : "unproven", sensitive, exfiltration, ordinaryAsk: limited ? SHELL_FLOOR_BUDGET_REASON : parsed.analysis.reason };
-      }
-      const root = parsed.analysis.program, single = root.kind === "command" || (root.kind === "sequence" && root.statements.length === 1 && root.statements[0]?.kind === "command");
-      const statement = root.kind === "sequence" && root.statements.length === 1 ? root.statements[0]! : root;
-      const pass = inspectStatement(statement, cwd, context, single, budget, inspectPowerShellBody);
-      if (context.unresolvedPath) {
-        pass.unproven ??= "Shell path namespace is unresolved";
-        pass.exactLiteralEvaluation = undefined;
-      }
-      const encodedReason = encodedPowerShellExecutionReason([parsed.command]);
-      if (encodedReason !== null) { pass.unproven = encodedReason; pass.exactLiteralEvaluation = undefined; }
-      if (pass.commandCount > 1 && pass.changesState) pass.unproven ??= SHELL_RUNTIME_EVALUATION_REASON;
-      if (pass.sensitive && pass.network) pass.exfiltration ??= `sensitive path (${pass.sensitive}) with a network transport`;
-      const visible = pass.sensitive !== null || pass.exfiltration !== null;
-      return recordLiteralShellFlow({ outcome: visible ? "visible-floor" as const : pass.unproven ? "unproven" as const : "static-complete" as const, sensitive: pass.sensitive, exfiltration: pass.exfiltration, ...(pass.unproven ? { ordinaryAsk: pass.unproven } : {}), ...(pass.exactLiteralEvaluation ? { exactLiteralEvaluation: true as const } : {}) }, { network: pass.network, readsPath: pass.readsPath });
-    });
-    if (context.contentInspectionCount !== contentInspections) parsed.facts.delete(factKey);
-    return result;
-  } catch (error) { if (error instanceof ShellFloorLimitError) return shellFloorBudgetSignals(); throw error; }
+        const root = parsed.analysis.program, single = root.kind === "command" || (root.kind === "sequence" && root.statements.length === 1 && root.statements[0]?.kind === "command");
+        const statement = root.kind === "sequence" && root.statements.length === 1 ? root.statements[0]! : root;
+        const pass = inspectStatement(statement, cwd, context, single, budget, inspectPowerShellBody);
+        if (context.unresolvedPath) {
+          pass.unproven ??= "Shell path namespace is unresolved";
+          pass.exactLiteralEvaluation = undefined;
+        }
+        const encodedReason = encodedPowerShellExecutionReason([parsed.command]);
+        if (encodedReason !== null) { pass.unproven = encodedReason; pass.exactLiteralEvaluation = undefined; }
+        if (pass.commandCount > 1 && pass.changesState) pass.unproven ??= SHELL_RUNTIME_EVALUATION_REASON;
+        if (pass.sensitive && pass.network) pass.exfiltration ??= `sensitive path (${pass.sensitive}) with a network transport`;
+        const visible = pass.sensitive !== null || pass.exfiltration !== null;
+        return recordLiteralShellFlow({ outcome: visible ? "visible-floor" as const : pass.unproven ? "unproven" as const : "static-complete" as const, sensitive: pass.sensitive, exfiltration: pass.exfiltration, ...(pass.unproven ? { ordinaryAsk: pass.unproven } : {}), ...(pass.exactLiteralEvaluation ? { exactLiteralEvaluation: true as const } : {}) }, { network: pass.network, readsPath: pass.readsPath });
+      });
+      if (windows) return evaluate();
+      const factKey = `static-floor\0${cwd ?? ""}\0${context.inspectHostFiles}`;
+      const contentInspections = context.contentInspectionCount;
+      const result = shellFact(parsed, factKey, evaluate);
+      if (context.contentInspectionCount !== contentInspections) parsed.facts.delete(factKey);
+      return result;
+    } catch (error) { if (error instanceof ShellFloorLimitError) return shellFloorBudgetSignals(); throw error; }
+  };
+  return windows ? withLocalityDecision(inspect) : inspect();
 }

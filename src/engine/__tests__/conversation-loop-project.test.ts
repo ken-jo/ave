@@ -206,6 +206,21 @@ describe("ConversationLoop project identity", () => {
     expect(broadcastPermissionConfigChanged).toHaveBeenCalledTimes(1);
   });
 
+  it.skipIf(process.platform === "win32")("reauthorizes a POSIX project after its owning turn aborts", () => {
+    const root = nativeProjectRoot("alpha");
+    const defaultRoot = nativeProjectRoot("default");
+    const authorizedRoots = new Set([root]);
+    const { loop } = makeRevocableProjectLoop(defaultRoot, authorizedRoots);
+    loop.initializeConversation("main", { projectRoot: root });
+    const controller = new AbortController();
+    loop.currentAbortController = controller;
+    controller.signal.addEventListener("abort", () => authorizedRoots.delete(root), { once: true });
+
+    expect(loop.revokeWorkspaceRoot(root).projectRebound).toBe(true);
+    expect(controller.signal.aborted).toBe(true);
+    expect(loop.getSessionExecutionCwd()).toBe(defaultRoot);
+  });
+
   it("keeps an independently authorized child project when its former parent is removed", async () => {
     const defaultRoot = "C:\\Users\\example\\.ave\\workspace";
     const parentRoot = "C:\\workspace";

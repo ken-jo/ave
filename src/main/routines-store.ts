@@ -1,4 +1,5 @@
 // Serialize read-modify-write operations within this process only; the scheduler owns timers and dispatch.
+import { withLocalityDecision } from "../shared/local-path-io.js";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { isValidCronExpression } from "../routines/cron-evaluator.js";
@@ -375,11 +376,18 @@ function routineScopeRetention(
       && key !== rootKey
       && isWorkspaceKeyAtOrBelow(rootKey, key),
     );
+  if (process.platform !== "win32") {
+    return (directories) => directories.filter((directory) => {
+      if (!isDirectoryAtOrBelow(rootKey, directory)) return true;
+      return preservedRootKeys.some(
+        (preservedRootKey) => isDirectoryAtOrBelow(preservedRootKey, directory),
+      );
+    });
+  }
   return (directories) => directories.filter((directory) => {
-    if (!isDirectoryAtOrBelow(rootKey, directory)) return true;
-    return preservedRootKeys.some(
-      (preservedRootKey) => isDirectoryAtOrBelow(preservedRootKey, directory),
-    );
+    const key = workspaceRootKey(directory);
+    if (!key || !isWorkspaceKeyAtOrBelow(rootKey, key)) return true;
+    return preservedRootKeys.some((preservedRootKey) => isWorkspaceKeyAtOrBelow(preservedRootKey, key));
   });
 }
 
@@ -715,21 +723,27 @@ export class RoutinesStore {
     directoriesRemoved: number;
   }> {
     if (!this.loaded) await this.load();
-    const retainedOf = routineScopeRetention(root, options?.preserveRoots);
-    if (!retainedOf) return { routinesUpdated: 0, directoriesRemoved: 0 };
+    const isWindows = process.platform === "win32";
+    const posixRetention = isWindows ? undefined : routineScopeRetention(root, options?.preserveRoots);
+    if (!isWindows && !posixRetention) return { routinesUpdated: 0, directoriesRemoved: 0 };
     return withInProcessFileQueue(this.filePath, async () => {
       const file = await readFileOrEmpty(this.filePath);
-      let routinesUpdated = 0;
-      let directoriesRemoved = 0;
-      for (const routine of file.routines) {
-        if (!routine.scope) continue;
-        const retained = retainedOf(routine.scope.directories);
-        const removed = routine.scope.directories.length - retained.length;
-        if (removed === 0) continue;
-        routine.scope.directories = retained;
-        routinesUpdated += 1;
-        directoriesRemoved += removed;
-      }
+      const { routinesUpdated, directoriesRemoved } = withLocalityDecision(() => {
+        const retainedOf = posixRetention ?? routineScopeRetention(root, options?.preserveRoots);
+        if (!retainedOf) return { routinesUpdated: 0, directoriesRemoved: 0 };
+        let routinesUpdated = 0;
+        let directoriesRemoved = 0;
+        for (const routine of file.routines) {
+          if (!routine.scope) continue;
+          const retained = retainedOf(routine.scope.directories);
+          const removed = routine.scope.directories.length - retained.length;
+          if (removed === 0) continue;
+          routine.scope.directories = retained;
+          routinesUpdated += 1;
+          directoriesRemoved += removed;
+        }
+        return { routinesUpdated, directoriesRemoved };
+      });
       if (directoriesRemoved > 0) {
         await this.persist(file);
       }
@@ -745,13 +759,18 @@ export class RoutinesStore {
     options?: { preserveRoots?: readonly string[] },
   ): Promise<number> {
     if (!this.loaded) await this.load();
-    const retainedOf = routineScopeRetention(root, options?.preserveRoots);
-    if (!retainedOf) return 0;
+    const isWindows = process.platform === "win32";
+    const posixRetention = isWindows ? undefined : routineScopeRetention(root, options?.preserveRoots);
+    if (!isWindows && !posixRetention) return 0;
     return withInProcessFileQueue(this.filePath, async () => {
       const file = await readFileOrEmpty(this.filePath);
-      return file.routines.filter((routine) =>
-        routine.scope ? retainedOf(routine.scope.directories).length !== routine.scope.directories.length : false,
-      ).length;
+      return withLocalityDecision(() => {
+        const retainedOf = posixRetention ?? routineScopeRetention(root, options?.preserveRoots);
+        if (!retainedOf) return 0;
+        return file.routines.filter((routine) =>
+          routine.scope ? retainedOf(routine.scope.directories).length !== routine.scope.directories.length : false,
+        ).length;
+      });
     });
   }
 

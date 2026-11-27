@@ -623,18 +623,19 @@ describe("discoverDirectoryInstructions", () => {
       vi.unstubAllEnvs();
     }
   });
-  it("asks git once per path for the session's repeated touches", async () => {
+  it("asks Git again for each Windows touch", async () => {
     initIgnoredBuild(project, "build/\n", "recursive");
     const verdicts = new Map<string, boolean>();
     const before = gitCalls.checkIgnore.length;
     for (let touch = 0; touch < 3; touch++) {
       expect(await discoverDirectoryInstructions(project, join("build", "x.js"), new Set(), { gitIgnoreVerdicts: verdicts })).toEqual([]);
     }
-    expect(gitCalls.checkIgnore.length - before).toBe(1);
+    const expected = process.platform === "win32" ? 3 : 1;
+    expect(gitCalls.checkIgnore.length - before).toBe(expected);
     // A new session starts with an empty memo and asks again.
     verdicts.clear();
     await discoverDirectoryInstructions(project, join("build", "x.js"), new Set(), { gitIgnoreVerdicts: verdicts });
-    expect(gitCalls.checkIgnore.length - before).toBe(2);
+    expect(gitCalls.checkIgnore.length - before).toBe(expected + 1);
   });
 
   it("does not query Git while unavailable and checks again for the same path when it appears", async () => {
@@ -689,7 +690,7 @@ describe("discoverDirectoryInstructions", () => {
       expect.soft(verdicts.size).toBe(0);
       gitCalls.intercept = () => { throw Object.assign(new Error("not ignored"), { code: 1 }); };
       expect(await discover(project, join("src", "handler.ts"), new Set(), opts)).toEqual(layers);
-      expect([...verdicts.values()]).toEqual([false]);
+      expect([...verdicts.values()]).toEqual(process.platform === "win32" ? [] : [false]);
       expect(gitCalls.checkIgnore.slice(before)).toEqual([fixtureGit, fixtureGit]);
     } finally {
       gitCalls.intercept = undefined;
@@ -713,15 +714,15 @@ describe("discoverDirectoryInstructions", () => {
     }
     expect(await discoverDirectoryInstructions(project, join("build", "x.js"), new Set(), { gitIgnoreVerdicts: verdicts })).toEqual([]);
     expect(gitCalls.checkIgnore.length - before).toBe(1);
-    expect([...verdicts.values()]).toEqual([true]);
+    expect([...verdicts.values()]).toEqual(process.platform === "win32" ? [] : [true]);
   });
 
-  it("uses a cached ignore verdict again only after the workspace hold is released", async () => {
+  it("checks the workspace hold before using an ignore verdict", async () => {
     initIgnoredBuild(project, "build/\n", "plain");
     const opts = { gitIgnoreVerdicts: new Map<string, boolean>() };
     const target = join("build", "x.js");
     expect(await discoverDirectoryInstructions(project, target, new Set(), opts)).toEqual([]);
-    expect([...opts.gitIgnoreVerdicts.values()]).toEqual([true]);
+    expect([...opts.gitIgnoreVerdicts.values()]).toEqual(process.platform === "win32" ? [] : [true]);
     const before = gitCalls.checkIgnore.length;
     const release = holdSandboxGitWrites([join(project, "build")]);
     try {
@@ -729,6 +730,6 @@ describe("discoverDirectoryInstructions", () => {
       expect(layers.map((layer) => layer.content)).toEqual(["generated rule"]);
     } finally { release(); }
     expect(await discoverDirectoryInstructions(project, target, new Set(), opts)).toEqual([]);
-    expect(gitCalls.checkIgnore).toHaveLength(before);
+    expect(gitCalls.checkIgnore).toHaveLength(before + (process.platform === "win32" ? 1 : 0));
   });
 });

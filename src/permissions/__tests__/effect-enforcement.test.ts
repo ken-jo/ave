@@ -4,7 +4,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import { answeredApprovalDecision, answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 import { randomUUID } from "node:crypto";
 import { AsyncResource } from "node:async_hooks";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PermissionManager, type PermissionCheckResult, type ReviewerDispatchResult } from "../permission-manager.js";
@@ -106,6 +106,51 @@ const deps = (
 });
 
 describe("mandatory effect policy and standalone lifecycle", () => {
+  it.runIf(process.platform === "win32")("keeps the storage root judged by the gate in the effect seal", async () => {
+    const root = mkdtempSync(join(tmpdir(), "effect-storage-root-"));
+    const { gate } = makeGate("allow-once");
+    const log: string[] = [];
+    const initial = join(root, "first");
+    const changed = join(root, "second");
+    let rootReads = 0;
+    const api = enforceMutatingEffects(makeApi(log), {
+      ...deps(gate),
+      standaloneScope: () => false,
+      resolveStoragePath: (relativePath) => relativePath === "."
+        ? (++rootReads === 1 ? initial : changed) : join(initial, relativePath),
+    });
+    try {
+      await expect(runWithEffectGateContext({ headless: false, standalone: true, toolName: "storage.write" },
+        () => api.storage.write("entry.txt", "x"))).rejects.toThrow("Effect target changed during approval");
+      expect(log).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.runIf(process.platform === "win32")("refuses a same-name replacement before calling the effect", async () => {
+    const root = mkdtempSync(join(tmpdir(), "effect-storage-identity-"));
+    const target = join(root, "entry.txt");
+    writeFileSync(target, "original");
+    const { gate } = makeGate("allow-once");
+    const log: string[] = [];
+    const api = enforceMutatingEffects(makeApi(log), {
+      ...deps(gate, () => {
+        renameSync(target, join(root, "old.txt"));
+        writeFileSync(target, "replacement");
+      }),
+      standaloneScope: () => true,
+      resolveStoragePath: (relativePath) => join(root, relativePath),
+    });
+    try {
+      await expect(runWithEffectGateContext({ headless: false, standalone: true, toolName: "storage.write" },
+        () => api.storage.write("entry.txt", "x"))).rejects.toThrow("Effect target changed during approval");
+      expect(log).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("each active mutating chokepoint receives its own permission", async () => {
     const log: string[] = [];
     const { gate, requests } = makeGate("allow-once");

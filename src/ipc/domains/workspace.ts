@@ -1,8 +1,9 @@
+import { admitLocalPath, admitLocalRoute, localFs, withLocalityDecision } from "../../shared/local-path-io.js";
 import { pickNativeFiles } from "../../main/desktop-approval-presentation.js";
 import { ipcMain, shell } from "electron";
 import { t } from "../../i18n/index.js";
 import { promises as fs, type Dirent } from "node:fs";
-import { isAbsolute as isAbsolutePath, join, resolve as resolvePath } from "node:path";
+import { isAbsolute as isAbsolutePath, dirname, join, resolve as resolvePath } from "node:path";
 import { randomBytes } from "node:crypto";
 import { validateHostRendererSender, auditUnauthorized } from "../gated.js";
 import { createLogger } from "../../lib/logger.js";
@@ -25,6 +26,7 @@ import {
 import {
   canonicalizePathForMatch,
   caseFoldForMatch,
+  foldCanonicalPathSeparators,
   resolvePathForPolicy,
   createSensitivePathCheck,
   allowKeyMaterialInspectionUnder,
@@ -239,12 +241,16 @@ export interface WorkspaceRevealResult {
 function currentScope(): { cwd: string; extraAllowed: string[] } {
   const cwd = getDefaultWorkspaceRoot();
   const additional = readPermissionSettings().permissions.additionalDirectories;
-  return { cwd, extraAllowed: buildRuntimeAllowedDirectories(additional) };
+  return { cwd, extraAllowed: buildRuntimeAllowedDirectories(additional, process.platform === "win32" ? cwd : undefined) };
 }
 
 /** Case-folded canonical form used for every root and containment comparison in this domain. */
 function matchKey(path: string): string {
   return caseFoldForMatch(canonicalizePathForMatch(path));
+}
+
+function admittedMatchKey(path: string): string {
+  return process.platform === "win32" ? caseFoldForMatch(foldCanonicalPathSeparators(path)) : matchKey(path);
 }
 
 /** Containment between two match keys, which use "/" on every platform (`foldCanonicalPathSeparators`). */
@@ -254,19 +260,23 @@ function keyWithin(rootKey: string, key: string): boolean {
 
 /** The registered root `projectRoot` names, compared canonically; null when it is not (or no longer) a project root. */
 function registeredRoot(projectRoot: string): WorkspaceRoot | null {
-  const key = matchKey(projectRoot);
-  return computeRoots().find((root) => matchKey(root.path) === key) ?? null;
+  return withLocalityDecision(() => {
+    const key = matchKey(projectRoot);
+    return computeRoots().find((root) => admittedMatchKey(root.path) === key) ?? null;
+  });
 }
 
 /** The innermost registered root containing `dir`; links in a folder outside every root count as outside. */
-function containingRoot(dir: string): { key: string; path: string } | null {
-  const dirKey = matchKey(dir);
-  let best: { key: string; path: string } | null = null;
-  for (const root of computeRoots()) {
-    const key = matchKey(root.path);
-    if (keyWithin(key, dirKey) && (best === null || key.length > best.key.length)) best = { key, path: root.path };
-  }
-  return best;
+function containingRoot(dir: string, roots?: readonly WorkspaceRoot[]): { key: string; path: string } | null {
+  return withLocalityDecision(() => {
+    const dirKey = admittedMatchKey(dir);
+    let best: { key: string; path: string } | null = null;
+    for (const root of roots ?? computeRoots()) {
+      const key = admittedMatchKey(root.path);
+      if (keyWithin(key, dirKey) && (best === null || key.length > best.key.length)) best = { key, path: root.path };
+    }
+    return best;
+  });
 }
 
 /**
@@ -329,7 +339,22 @@ async function linkPointsOutside(realDir: string, linkName: string, realRoot: st
 /** Map a filesystem failure to the folder view's stable codes. */
 /** A listing row's kind from its directory entry; a filesystem that does not report the kind there costs one lstat. Sockets,
  * pipes and devices are not listed. */
-async function listedEntryType(ent: Dirent, full: string): Promise<WorkspaceDirEntry["type"] | null> {
+function listedEntryType(ent: Dirent, full: string): WorkspaceDirEntry["type"] | null {
+  if (ent.isSymbolicLink()) return "link";
+  if (ent.isFile()) return "file";
+  if (ent.isDirectory()) return "directory";
+  if (ent.isFIFO() || ent.isSocket() || ent.isCharacterDevice() || ent.isBlockDevice()) return null;
+  try {
+    admitLocalRoute(dirname(full));
+    const info = localFs.lstat(admitLocalPath(full));
+    return info?.isSymbolicLink() ? "link" : info?.isFile() ? "file" : info?.isDirectory() ? "directory" : null;
+  } catch {
+    // Removed between readdir and lstat; it is no longer there to show.
+    return null;
+  }
+}
+
+async function listedPosixEntryType(ent: Dirent, full: string): Promise<WorkspaceDirEntry["type"] | null> {
   if (ent.isSymbolicLink()) return "link";
   if (ent.isFile()) return "file";
   if (ent.isDirectory()) return "directory";
@@ -351,18 +376,22 @@ function listDirFailure(err: unknown): "permission-denied" | "not-found" | "read
 }
 
 function computeRoots(): WorkspaceRoot[] {
-  const defaultRoot = getDefaultWorkspaceRoot();
-  const additional = readPermissionSettings().permissions.additionalDirectories;
-  const canonicalAdds = sanitizeRuntimeAllowedDirectories(additional);
-  const seen = new Set<string>([matchKey(defaultRoot)]);
-  const roots: WorkspaceRoot[] = [{ path: defaultRoot, isDefault: true }];
-  for (const dir of canonicalAdds) {
-    const key = matchKey(dir);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    roots.push({ path: resolvePathForPolicy(dir), isDefault: false });
-  }
-  return roots;
+  return withLocalityDecision(() => {
+    const defaultRoot = getDefaultWorkspaceRoot();
+    const additional = readPermissionSettings().permissions.additionalDirectories;
+    const canonicalAdds = sanitizeRuntimeAllowedDirectories(additional);
+    const seen = new Set<string>([admittedMatchKey(defaultRoot)]);
+    const roots: WorkspaceRoot[] = [{ path: defaultRoot, isDefault: true }];
+    for (const dir of canonicalAdds) {
+      const key = admittedMatchKey(dir);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const path = process.platform !== "win32" ? resolvePathForPolicy(dir)
+        : isWindowsNetworkOrDevicePath(dir) ? dir : resolvePath(dir).replace(/^[a-z]:/u, (drive) => drive.toUpperCase());
+      roots.push({ path, isDefault: false });
+    }
+    return roots;
+  });
 }
 
 export function registerWorkspaceHandlers(deps: IpcDeps): void {
@@ -723,10 +752,9 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
       }
       const current = readPermissionSettings().permissions.additionalDirectories;
       const runtimeKey = caseFoldForMatch(runtimeRoot);
-      const alreadyRegistered = current.some(
-        (candidate) =>
-          caseFoldForMatch(canonicalizePathForMatch(candidate)) === runtimeKey,
-      );
+      const alreadyRegistered = withLocalityDecision(() => current.some(
+        (candidate) => caseFoldForMatch(canonicalizePathForMatch(candidate)) === runtimeKey,
+      ));
       if (alreadyRegistered) return current;
       const preserveRoots = retainedDescendantWorkspaceRoots(runtimeRoot, current);
       await pruneWorkspaceRootGrants(runtimeRoot, source, preserveRoots);
@@ -1010,27 +1038,49 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
         const dirents = await fs.readdir(dir, { withFileTypes: true });
         const root = containingRoot(dir);
         // The listed folder's and its root's own physical paths, so link targets resolve against where the link really is.
-        const realDir = root === null ? null : await fs.realpath(dir).catch(() => null);
-        const realRoot = root === null ? null : await fs.realpath(root.path).catch(() => null);
+        const realDir = root === null ? null : process.platform === "win32" ? dir : await fs.realpath(dir).catch(() => null);
+        const realRoot = root === null ? null : process.platform === "win32" ? root.path : await fs.realpath(root.path).catch(() => null);
         // Classify from the directory entries alone, sort, then cap: the cap keeps the first rows of the sorted listing
         // (folders first), and only the kept rows cost an lstat.
         const isSensitiveEntry = createSensitivePathCheck("write", "person");
-        const candidates: Array<{ name: string; type: WorkspaceDirEntry["type"] }> = [];
-        let hidden = 0;
-        for (const ent of dirents) {
-          const full = join(dir, ent.name);
-          // A link's own entry is judged by its spelling in the folder: canonicalizing it would resolve through the link.
-          const link = ent.isSymbolicLink();
-          const sensitivePath = link ? join(realDir ?? dir, ent.name) : full;
-          // Filter sensitive entries using the file tools' policy. A key-extension file is hidden only when it holds a key:
-          // one whose content was not shown harmless stays listed for the person, and an agent read of it still asks.
-          if (isSensitiveEntry(sensitivePath)) {
-            hidden += 1;
-            continue;
+        let listing: { candidates: Array<{ name: string; type: WorkspaceDirEntry["type"] }>; hidden: number };
+        if (process.platform === "win32") {
+          listing = withLocalityDecision(() => {
+            const candidates: Array<{ name: string; type: WorkspaceDirEntry["type"] }> = [];
+            let hidden = 0;
+            for (const ent of dirents) {
+              const full = join(dir, ent.name);
+              // A link is judged at the name in the listed directory, before its target can affect the view.
+              const sensitivePath = ent.isSymbolicLink() ? join(realDir ?? dir, ent.name) : full;
+              if (isSensitiveEntry(sensitivePath)) {
+                hidden += 1;
+                continue;
+              }
+              const type = listedEntryType(ent, full);
+              if (type !== null) candidates.push({ name: ent.name, type });
+            }
+            return { candidates, hidden };
+          });
+        } else {
+          const candidates: Array<{ name: string; type: WorkspaceDirEntry["type"] }> = [];
+          let hidden = 0;
+          for (const ent of dirents) {
+            const full = join(dir, ent.name);
+            // A link's own entry is judged by its spelling in the folder: canonicalizing it would resolve through the link.
+            const link = ent.isSymbolicLink();
+            const sensitivePath = link ? join(realDir ?? dir, ent.name) : full;
+            // Filter sensitive entries using the file tools' policy. A key-extension file is hidden only when it holds a key:
+            // one whose content was not shown harmless stays listed for the person, and an agent read of it still asks.
+            if (withLocalityDecision(() => isSensitiveEntry(sensitivePath))) {
+              hidden += 1;
+              continue;
+            }
+            const type = await listedPosixEntryType(ent, full);
+            if (type !== null) candidates.push({ name: ent.name, type });
           }
-          const type = await listedEntryType(ent, full);
-          if (type !== null) candidates.push({ name: ent.name, type });
+          listing = { candidates, hidden };
         }
+        const { candidates, hidden } = listing;
         candidates.sort((a, b) => {
           if ((a.type === "directory") !== (b.type === "directory")) return a.type === "directory" ? -1 : 1;
           return a.name.localeCompare(b.name);
@@ -1088,29 +1138,63 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
       if (typeof rawQuery !== "string" || rawQuery.length > WORKSPACE_FILE_QUERY_MAX_CHARS) {
         return { ok: false, error: "invalid-query" };
       }
-      let scope: { cwd: string; extraAllowed: string[] };
-      let roots: WorkspaceRoot[];
+      if (process.platform !== "win32") {
+        let scope: { cwd: string; extraAllowed: string[] };
+        let roots: WorkspaceRoot[];
+        try {
+          scope = currentScope();
+          roots = computeRoots();
+        } catch (error) {
+          if (error instanceof PermissionSettingsUnreadableError) {
+            return { ok: false, error: "settings-unreadable" };
+          }
+          throw error;
+        }
+        let folder: { path: string; root: string } | undefined;
+        if (rawOptions !== undefined) {
+          const rawFolder = typeof rawOptions === "object" && rawOptions !== null ? (rawOptions as { folder?: unknown }).folder : undefined;
+          if (typeof rawFolder !== "string" || !isAbsolutePath(rawFolder)) return { ok: false, error: "invalid-query" };
+          const verdict = assertReadableFilePath(rawFolder, scope.cwd, scope.extraAllowed);
+          const root = verdict.ok ? containingRoot(verdict.resolved) : null;
+          if (!verdict.ok || root === null) return { ok: false, error: "folder-not-allowed" };
+          folder = { path: verdict.resolved, root: root.path };
+        }
+        const result = await searchWorkspaceFiles({
+          query: rawQuery,
+          roots: roots.map((root) => root.path),
+          cwd: scope.cwd,
+          extraAllowed: scope.extraAllowed,
+          ...(folder ? { folder } : {}),
+        });
+        return { ok: true, ...result };
+      }
+      // The scope, the roots and the folder's readability and membership are one judgment before the walk.
+      let judged: { scope: { cwd: string; extraAllowed: string[] }; nativeRoots: string[]; folder?: { path: string; root: string } } | "invalid-query" | "folder-not-allowed";
       try {
-        scope = currentScope();
-        roots = computeRoots();
+        judged = withLocalityDecision(() => {
+          const roots = computeRoots();
+          const nativeRoots = [...new Set(roots.map((root) => root.path))];
+          const [cwd, ...extraAllowed] = nativeRoots;
+          const scope = { cwd, extraAllowed };
+          if (rawOptions === undefined) return { scope, nativeRoots };
+          const rawFolder = typeof rawOptions === "object" && rawOptions !== null ? (rawOptions as { folder?: unknown }).folder : undefined;
+          if (typeof rawFolder !== "string" || !isAbsolutePath(rawFolder)) return "invalid-query";
+          const verdict = assertReadableFilePath(rawFolder, scope.cwd, scope.extraAllowed);
+          const root = verdict.ok ? containingRoot(verdict.resolved, roots) : null;
+          if (!verdict.ok || root === null) return "folder-not-allowed";
+          return { scope, nativeRoots, folder: { path: verdict.resolved, root: root.path } };
+        });
       } catch (error) {
         if (error instanceof PermissionSettingsUnreadableError) {
           return { ok: false, error: "settings-unreadable" };
         }
         throw error;
       }
-      let folder: { path: string; root: string } | undefined;
-      if (rawOptions !== undefined) {
-        const rawFolder = typeof rawOptions === "object" && rawOptions !== null ? (rawOptions as { folder?: unknown }).folder : undefined;
-        if (typeof rawFolder !== "string" || !isAbsolutePath(rawFolder)) return { ok: false, error: "invalid-query" };
-        const verdict = assertReadableFilePath(rawFolder, scope.cwd, scope.extraAllowed);
-        const root = verdict.ok ? containingRoot(verdict.resolved) : null;
-        if (!verdict.ok || root === null) return { ok: false, error: "folder-not-allowed" };
-        folder = { path: verdict.resolved, root: root.path };
-      }
+      if (typeof judged === "string") return { ok: false, error: judged };
+      const { scope, nativeRoots, folder } = judged;
       const result = await searchWorkspaceFiles({
         query: rawQuery,
-        roots: roots.map((root) => root.path),
+        nativeRoots,
         cwd: scope.cwd,
         extraAllowed: scope.extraAllowed,
         ...(folder ? { folder } : {}),
@@ -1130,15 +1214,28 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
         return { ok: false, error: "unauthorized" };
       }
       if (typeof rawPath !== "string" || rawPath.length === 0) return { ok: false, error: "invalid-path" };
-      const rootKey = (value: string) => caseFoldForMatch(canonicalizePathForMatch(resolvePath(value)));
-      const targetKey = rootKey(rawPath);
-      if (targetKey === rootKey(getDefaultWorkspaceRoot())) return { ok: false, error: "cannot-remove-default" };
-      const active = readPermissionSettings().permissions.additionalDirectories;
-      const stored = active.find((candidate) => rootKey(candidate) === targetKey);
-      if (!stored) return { ok: false, error: "not-an-additional-root" };
-      const runtimePath = canonicalizePathForMatch(resolvePath(stored));
-      // The context the removal itself hands each store and loop.
-      const context = workspaceRootRemovalContext(runtimePath, active);
+      const target = withLocalityDecision(() => {
+        const canonicalRoot = (value: string) => canonicalizePathForMatch(resolvePath(value));
+        const targetKey = caseFoldForMatch(canonicalRoot(rawPath));
+        const defaultRoot = getDefaultWorkspaceRoot();
+        const defaultKey = process.platform === "win32" ? admittedMatchKey(defaultRoot) : caseFoldForMatch(canonicalRoot(defaultRoot));
+        if (targetKey === defaultKey) return { ok: false, error: "cannot-remove-default" } as const;
+        const active = readPermissionSettings().permissions.additionalDirectories;
+        let admittedPath: string | undefined;
+        const stored = active.find((candidate) => {
+          const canonical = canonicalRoot(candidate);
+          if (caseFoldForMatch(canonical) !== targetKey) return false;
+          admittedPath = canonical;
+          return true;
+        });
+        if (!stored || admittedPath === undefined) return { ok: false, error: "not-an-additional-root" } as const;
+        const runtimePath = process.platform === "win32" ? admittedPath : canonicalRoot(stored);
+        // The context the removal itself hands each store and loop.
+        const context = workspaceRootRemovalContext(runtimePath, active);
+        return { ok: true, runtimePath, context } as const;
+      });
+      if (!target.ok) return target;
+      const { runtimePath, context } = target;
       const options = { preserveRoots: context.preserveRoots };
       try {
         const permissionManager = deps.conversationLoop?.permissionManager;
@@ -1302,7 +1399,7 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
         // The root is re-read each time: removing it between the click and the hand-off withdraws the authority.
         const current = registeredRoot(rootPath);
         if (!current) return "root-not-registered";
-        return keyWithin(matchKey(current.path), matchKey(real)) ? null : "outside-project";
+        return keyWithin(admittedMatchKey(current.path), admittedMatchKey(real)) ? null : "outside-project";
       },
     };
   }

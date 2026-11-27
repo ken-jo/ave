@@ -198,7 +198,7 @@ describe("workspace search path identities", () => {
   it("keeps the folder search response root native", async () => {
     const result = await searchWorkspaceFiles({
       query: "notes", roots: [FOLDED_ROOT], cwd: fixture.cwd, extraAllowed: [fixture.root],
-      folder: { path: `${fixture.root}\\src`, root: FOLDED_ROOT },
+      folder: { path: `${fixture.root}\\src`, root: resolvePathForPolicy(FOLDED_ROOT) },
     });
     expect(result.matches[0]?.root).toBe(fixture.root);
   });
@@ -208,12 +208,21 @@ describe("workspace search path identities", () => {
     const alias = "D:\\PROJECTS\\MIXED";
     expect(resolvePathForPolicy(FOLDED_ROOT)).toBe(fixture.root);
     expect(resolvePathForPolicy(alias)).toBe(fixture.root);
-    await Promise.all([
+    await searchWorkspaceFiles({ ...args, roots: [FOLDED_ROOT, alias] });
+    expect(fixture.collectFiles).toHaveBeenCalledTimes(1);
+    expect(fixture.collectFiles).toHaveBeenCalledWith(fixture.root, 20_000);
+  });
+
+  it("walks equivalent Windows roots independently across searches", async () => {
+    const args = { query: "notes", cwd: fixture.cwd, extraAllowed: [fixture.root] };
+    const alias = "D:\\PROJECTS\\MIXED";
+    const [left, right] = await Promise.all([
       searchWorkspaceFiles({ ...args, roots: [FOLDED_ROOT] }),
       searchWorkspaceFiles({ ...args, roots: [alias] }),
     ]);
-    expect(fixture.collectFiles).toHaveBeenCalledTimes(1);
-    expect(fixture.collectFiles).toHaveBeenCalledWith(fixture.root, 20_000);
+    expect(fixture.collectFiles).toHaveBeenCalledTimes(2);
+    expect(left?.matches[0]?.root).toBe(fixture.root);
+    expect(right).toEqual(left);
   });
 
   it("deduplicates returned file identities across different native spellings", async () => {
@@ -222,7 +231,8 @@ describe("workspace search path identities", () => {
       .mockResolvedValueOnce({ ok: true, value: { files: [{ path: "d:/projects/mixed/notes.md", relativePath: "notes.md", size: 1 }], truncated: false } });
     const result = await searchWorkspaceFiles({ query: "notes", roots: [fixture.root, fixture.cwd], cwd: fixture.cwd, extraAllowed: [fixture.root] });
     expect(result.matches).toEqual([{ path: `${fixture.root}\\notes.md`, relativePath: "notes.md", root: fixture.root, bytes: 1 }]);
-    expect(fixture.assertReadableFilePath).toHaveBeenCalledTimes(1);
+    // Both spellings are checked so the final guard supplies the native identity of each candidate.
+    expect(fixture.assertReadableFilePath).toHaveBeenCalledTimes(2);
   });
 
   it("still checks a candidate when an equivalent spelling was refused", async () => {

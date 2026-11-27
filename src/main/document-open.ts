@@ -88,12 +88,14 @@ export async function openDocumentForSession(path: string, context: ToolExecutio
   if (!verdict.ok) return { isError: true, output: JSON.stringify({ ok: false, opened: false, retryable: false, error: verdict.error, message: "Document is outside the panel preview scope." }) };
   const mode = settings.get("documents").openMode;
   if (mode === "link") {
+    context.fileTargetSeal?.verify();
     return { isError: false, output: JSON.stringify({ ok: true, path, mode, opened: false, fileLink: pathToFileURL(path).href }) };
   }
   const preparation = acquireDocumentEnginePreparation(sessionId, path, context.abortSignal ?? new AbortController().signal);
   try {
     if (preparation) await preparation.ready;
     if (context.abortSignal?.aborted || visibleSession(sessionId) !== sender) return unavailable();
+    context.fileTargetSeal?.verify();
     const requestId = randomUUID();
     const request: DocumentOpenRequest = { requestId, sessionId, path, expiresAt: Date.now() + TOOL_TIMEOUT_POLICY.documentPanelAckMs };
     const opened = await new Promise<boolean>((resolve) => {

@@ -1,8 +1,10 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { localFs } from "../../../shared/local-path-io.js";
 import { configureHostResources } from "../../../main/host-resources.js";
 import { mkdtempSync, mkdirSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, parse, resolve } from "node:path";
+import { setWindowsDriveQueryForTest } from "../../../shared/windows-drive-locality.js";
 import { EventEmitter } from "node:events";
 import { promises as fs } from "node:fs";
 import AdmZip from "adm-zip";
@@ -22,9 +24,11 @@ import { allowKeyMaterialInspectionUnder, canonicalizePathForMatch } from "../..
 import { observeAgentDocumentMutation, runWithAgentObservationInvocation, runWithAgentObservationTurn } from "../../../tools/agent-observation-context.js";
 import type { DocumentObservationEvent } from "../../../shared/agent-observation.js";
 
+vi.unmock("../../../shared/windows-drive-locality.js");
+
 const { handlers, additionalDirectories, childRuntime, defaultSession, messageBox, openPath } = vi.hoisted(() => ({
   handlers: new Map<string, (...args: unknown[]) => unknown>(),
-  additionalDirectories: { value: [] as string[] },
+  additionalDirectories: { paths: [] as string[], get value() { return this.paths; }, set value(value: string[]) { this.paths = value; } },
   childRuntime: { mainDir: "" },
   defaultSession: {},
   messageBox: vi.fn(),
@@ -141,12 +145,21 @@ afterEach(() => {
 });
 
 describe("preview:read-document handler", () => {
-  it.each(["completion", "abort"])("clears the owner watch interval on %s", async (outcome) => {
-    const clearTimer = globalThis.clearInterval;
+  it.each(["completion", "abort"])("clears the parse watch on %s and the receipt poll on teardown", async (outcome) => {
+    const clearWatch = globalThis.clearInterval;
+    const clearPoll = globalThis.clearTimeout;
     const intervals = vi.spyOn(globalThis, "setInterval");
-    const cleared = vi.spyOn(globalThis, "clearInterval");
-    const watchTimers = (): ReturnType<typeof setInterval>[] => intervals.mock.calls.flatMap(([, delay], index) =>
-      delay === PREVIEW_DOCUMENT_LIMITS.frameCheckIntervalMs ? [intervals.mock.results[index]!.value] : []);
+    const clearedWatches = vi.spyOn(globalThis, "clearInterval");
+    const timeouts = vi.spyOn(globalThis, "setTimeout");
+    const clearedPolls = vi.spyOn(globalThis, "clearTimeout");
+    const watchTimers = (): ReturnType<typeof setInterval>[] => intervals.mock.calls.flatMap(([, delay], index) => {
+      const result = intervals.mock.results[index];
+      return delay === PREVIEW_DOCUMENT_LIMITS.frameCheckIntervalMs && result?.type === "return" ? [result.value] : [];
+    });
+    const receiptPolls = (): ReturnType<typeof setTimeout>[] => timeouts.mock.calls.flatMap(([, delay], index) => {
+      const result = timeouts.mock.results[index];
+      return delay === PREVIEW_DOCUMENT_LIMITS.frameCheckIntervalMs && result?.type === "return" ? [result.value] : [];
+    });
     const event = documentEvent(OK_FRAME);
     try {
       const pending = readFromSender(event, join(root, "data", outcome === "abort" ? "cyclic.xls" : "people.csv"));
@@ -157,17 +170,21 @@ describe("preview:read-document handler", () => {
       const result = await pending;
       if (outcome === "abort") expect(result).toMatchObject({ ok: false, error: "superseded" });
       else expect(result).toMatchObject({ ok: true });
-      const timers = watchTimers();
-      expect(timers).toHaveLength(outcome === "completion" ? 2 : 1);
-      expect(cleared).toHaveBeenCalledWith(timers[0]);
+      const watches = watchTimers();
+      expect(watches).toHaveLength(1);
+      expect(clearedWatches).toHaveBeenCalledWith(watches[0]);
+
+      const polls = receiptPolls();
+      expect(polls).toHaveLength(outcome === "completion" ? 1 : 0);
       if (outcome === "completion") {
-        expect(cleared).not.toHaveBeenCalledWith(timers[1]);
+        expect(clearedPolls).not.toHaveBeenCalledWith(polls[0]);
         event.sender.emit("destroyed");
-        expect(cleared).toHaveBeenCalledWith(timers[1]);
+        expect(clearedPolls).toHaveBeenCalledWith(polls[0]);
       }
     } finally {
       event.sender.emit("destroyed");
-      for (const timer of watchTimers()) clearTimer(timer);
+      for (const watch of watchTimers()) clearWatch(watch);
+      for (const poll of receiptPolls()) clearPoll(poll);
     }
   });
 
@@ -449,8 +466,42 @@ describe("read-only observation sender boundary", () => {
     return result.observation;
   }
 
-  // Advance the receipt watch only when the case exercises a tick. Child deadlines stay on the real clock.
-  beforeEach(() => { vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] }); });
+  it.runIf(process.platform === "win32").each(["text", "table"] as const)(
+    "keeps the previous %s view and receipt when the final receipt query fails",
+    async (kind) => {
+      const event = documentEvent(OK_FRAME);
+      await registerSessionOwner(event);
+      const read = () => kind === "text"
+        ? handlers.get(CHANNELS.preview.readFile)!(event, join(root, "notes.txt"), { sessionId: "session-one" }) as Promise<PreviewReadFileResult>
+        : readFromSender(event, join(root, "data", "people.csv"), 0, "session-one");
+      try {
+        const previous = await read();
+        expect(previous.ok && previous.observation).toBeTruthy();
+        if (!previous.ok || !previous.observation) throw new Error("Expected an existing view");
+        const liveListeners = event.sender.listeners("destroyed");
+        const drive = parse(root).root.toUpperCase().startsWith("Z:") ? "Y:" : "Z:";
+        const query = vi.fn((letter: string) => {
+          if (letter === drive) throw new Error("Late receipt drive query failed");
+          return "\\Device\\HarddiskVolume1";
+        });
+        let reads = 0;
+        auditLog.mockImplementationOnce(() => {
+          setWindowsDriveQueryForTest(query);
+          vi.spyOn(additionalDirectories, "value", "get").mockImplementation(() =>
+            ++reads >= (kind === "text" ? 2 : 3) ? [root, `${drive}\\example`] : [root]);
+        });
+        const refused = await read();
+        expect(refused).toMatchObject({ ok: false, error: "read-failed", message: "Late receipt drive query failed" });
+        expect(query.mock.calls.filter(([letter]) => letter === drive)).toHaveLength(1);
+        vi.restoreAllMocks();
+        expect(event.sender.listeners("destroyed")).toEqual(liveListeners);
+        expect(await ack(event, previous.observation.targetId)).toEqual({ ok: true });
+      } finally {
+        setWindowsDriveQueryForTest();
+        event.sender.emit("destroyed");
+      }
+    },
+  );
 
   it("binds a full text preview to exactly its displayed bytes, frame and session", async () => {
     const event = documentEvent(OK_FRAME);
@@ -534,15 +585,27 @@ describe("read-only observation sender boundary", () => {
     const event = documentEvent(OK_FRAME);
     await registerSessionOwner(event);
     const result = await handlers.get(CHANNELS.preview.readFile)!(event, join(root, "notes.txt"), { sessionId: "session-one" }) as PreviewReadFileResult;
-    const realpath = fs.realpath;
     let resolves = 0;
-    // The second resolve is the pre-open re-check; the window disappears right after it.
-    vi.spyOn(fs, "realpath").mockImplementation(async (...args) => {
-      const target = await realpath(...args);
+    // The second resolution is the final authority pass.
+    const closeOnFinalResolution = () => {
       resolves += 1;
       if (resolves === 2) appWindows.length = 0;
-      return target;
-    });
+    };
+    if (process.platform === "win32") {
+      const realpath = localFs.realpath;
+      vi.spyOn(localFs, "realpath").mockImplementation(verdict => {
+        const target = realpath(verdict);
+        closeOnFinalResolution();
+        return target;
+      });
+    } else {
+      const realpath = fs.realpath;
+      vi.spyOn(fs, "realpath").mockImplementation(async (...args) => {
+        const target = await realpath(...args);
+        closeOnFinalResolution();
+        return target;
+      });
+    }
     expect(await handlers.get(CHANNELS.attach.openExternal)!(event, result.path)).toEqual({ ok: false, error: "unauthorized" });
     expect(openPath).not.toHaveBeenCalled();
     event.sender.emit("destroyed");
@@ -561,6 +624,8 @@ describe("read-only observation sender boundary", () => {
   });
 
   it("keeps at most sixteen frame-bound preview opener receipts", async () => {
+    // Advance one receipt poll after the text reads finish.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const event = documentEvent(OK_FRAME);
     try {
       const results: PreviewReadFileResult[] = [];

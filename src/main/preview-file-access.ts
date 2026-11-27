@@ -6,6 +6,7 @@ import { assertReadableFilePath } from "../tools/file-read-core.js";
 import { readPermissionSettings } from "../permissions/permission-settings-store.js";
 import { buildRuntimeAllowedDirectories } from "../permissions/allowed-directories.js";
 import { getProtectedReadDenyFloor, protectedReadDenyMatcher } from "../permissions/asrt-sandbox.js";
+import { withLocalityDecision } from "../shared/local-path-io.js";
 import { OBSERVATION_LIMITS } from "../shared/agent-observation.js";
 import { PREVIEW_DOCUMENT_LIMITS } from "../shared/preview-document.js";
 import { previewSupportsExternalOpen } from "../shared/preview-external-open.js";
@@ -13,6 +14,7 @@ import { previewSupportsExternalOpen } from "../shared/preview-external-open.js"
 type WindowRegistry = Pick<IpcDeps, "getMainWindow" | "getAppWindows">;
 interface PreviewFileOwner {
   event: IpcMainInvokeEvent;
+  frame: WebFrameMain;
   deps: WindowRegistry;
   keys: Set<string>;
   stop: () => void;
@@ -45,7 +47,7 @@ function principalIsCurrent(event: IpcMainInvokeEvent, deps: WindowRegistry, pat
   return validateAppWindowMainFrameSender(event, deps)
     && previewSupportsExternalOpen(path)
     && (sessionId === undefined || findSessionMainWindowContents(sessionId) === event.sender)
-    && currentScopeCovers(path, scope());
+    && withLocalityDecision(() => currentScopeCovers(path, scope()));
 }
 
 function isCurrent(receipt: PreviewFileReceipt, deps = receipt.owner.deps, scope?: () => ReadScope): boolean {
@@ -60,7 +62,8 @@ function revoke(key: string): void {
   owner.keys.delete(key);
   if (owner.keys.size === 0) {
     owner.stop();
-    if (owner.event.senderFrame) owners.delete(owner.event.senderFrame);
+    if (process.platform === "win32") owners.delete(owner.frame);
+    else if (owner.event.senderFrame) owners.delete(owner.event.senderFrame);
   }
 }
 
@@ -73,17 +76,41 @@ function ownerFor(event: IpcMainInvokeEvent, deps: WindowRegistry): PreviewFileO
     isMainFrame: boolean): void => { if (isMainFrame) release(); };
   const handleNavigationStart = (_event: unknown, _url: string, _inPlace: boolean,
     isMainFrame: boolean): void => { if (isMainFrame) release(); };
-  const timer = setInterval(() => {
-    let snapshot: ReadScope | undefined;
-    const scope = (): ReadScope => snapshot ??= currentReadScope();
-    for (const key of [...owner.keys]) {
-      const receipt = receipts.get(key);
-      if (receipt && !isCurrent(receipt, receipt.owner.deps, scope)) revoke(key);
+  let timer: ReturnType<typeof setTimeout>;
+  const recheckReceipts = (): void => {
+    withLocalityDecision(() => {
+      let snapshot: ReadScope | undefined;
+      const scope = (): ReadScope => snapshot ??= currentReadScope();
+      for (const key of [...owner.keys]) {
+        const receipt = receipts.get(key);
+        if (receipt && !isCurrent(receipt, receipt.owner.deps, scope)) revoke(key);
+      }
+    });
+  };
+  const recheck = (): void => {
+    if (process.platform !== "win32") {
+      try {
+        recheckReceipts();
+      } finally {
+        if (owner.keys.size > 0) scheduleRecheck();
+      }
+      return;
     }
-  }, PREVIEW_DOCUMENT_LIMITS.frameCheckIntervalMs);
-  timer.unref();
-  const owner: PreviewFileOwner = { event, deps, keys: new Set(), stop: () => {
-    clearInterval(timer);
+    try {
+      recheckReceipts();
+    } catch {
+      release();
+      return;
+    }
+    // Leave time for IPC when checking the receipts takes longer than the polling delay.
+    if (owner.keys.size > 0) scheduleRecheck();
+  };
+  const scheduleRecheck = (): void => {
+    timer = setTimeout(recheck, PREVIEW_DOCUMENT_LIMITS.frameCheckIntervalMs);
+    timer.unref();
+  };
+  const owner: PreviewFileOwner = { event, frame, deps, keys: new Set(), stop: () => {
+    clearTimeout(timer);
     event.sender.removeListener("destroyed", release);
     event.sender.removeListener("render-process-gone", release);
     event.sender.removeListener("did-frame-navigate", handleNavigation);
@@ -94,11 +121,20 @@ function ownerFor(event: IpcMainInvokeEvent, deps: WindowRegistry): PreviewFileO
   event.sender.on("did-frame-navigate", handleNavigation);
   event.sender.on("did-start-navigation", handleNavigationStart);
   owners.set(frame, owner);
+  scheduleRecheck();
   return owner;
 }
 
 /** Successful preview reads grant only this frame's bounded default-app action. */
 export function recordPreviewFileAccess(event: IpcMainInvokeEvent, deps: WindowRegistry, path: string, sessionId?: unknown): void {
+  const publish = process.platform === "win32"
+    ? withLocalityDecision(() => preparePreviewFileAccess(event, deps, path, sessionId))
+    : preparePreviewFileAccess(event, deps, path, sessionId);
+  publish?.();
+}
+
+export function preparePreviewFileAccess(event: IpcMainInvokeEvent, deps: WindowRegistry, path: string,
+  sessionId?: unknown): (() => void) | undefined {
   if (!validateAppWindowMainFrameSender(event, deps) || !Number.isSafeInteger(event.sender.id)
     || !Number.isSafeInteger(event.senderFrame?.processId) || !Number.isSafeInteger(event.senderFrame?.routingId)
     || !previewSupportsExternalOpen(path)
@@ -106,11 +142,13 @@ export function recordPreviewFileAccess(event: IpcMainInvokeEvent, deps: WindowR
   const session = typeof sessionId === "string" ? sessionId : undefined;
   if (!principalIsCurrent(event, deps, path, session)) return;
   const key = keyOf(event, path);
-  revoke(key);
-  const owner = ownerFor(event, deps);
-  owner.keys.add(key);
-  receipts.set(key, { owner, path, ...(session === undefined ? {} : { sessionId: session }) });
-  while (receipts.size > OBSERVATION_LIMITS.maxViews) revoke(receipts.keys().next().value!);
+  return () => {
+    revoke(key);
+    const owner = ownerFor(event, deps);
+    owner.keys.add(key);
+    receipts.set(key, { owner, path, ...(session === undefined ? {} : { sessionId: session }) });
+    while (receipts.size > OBSERVATION_LIMITS.maxViews) revoke(receipts.keys().next().value!);
+  };
 }
 
 export function previewFileReadAuthorizes(event: IpcMainInvokeEvent, deps: WindowRegistry, path: string): boolean {
