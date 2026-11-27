@@ -47,17 +47,15 @@ describe("packaged launcher inventory", () => {
     expect(() => assertPackagedLauncher(resources, target)).toThrow(/hash mismatch/u);
   });
 
-  it.runIf(process.platform !== "win32")("fails the macOS post-sign hook if signing changed the launcher bytes", async () => {
-    const appOutDir = createTemporaryDirectory(path.join(tmpdir(), "ave-launcher-after-sign-"));
+  it("fails the macOS post-sign hook if signing changed the library bytes", async () => {
+    const appOutDir = createTemporaryDirectory(path.join(tmpdir(), "ave-library-after-sign-"));
     roots.push(appOutDir);
     const productFilename = "App";
     const resources = path.join(appOutDir, `${productFilename}.app`, "Contents", "Resources");
-    const directory = path.join(resources, "mxc", "arm64");
-    const { launcher } = PINS.targets["darwin-arm64"];
-    const binary = path.join(directory, path.basename(launcher.member));
-    mkdirSync(directory, { recursive: true });
-    copyFileSync(path.join("node_modules", PINS.package, launcher.member), binary);
-    chmodSync(binary, 0o755);
+    const { library } = PINS.targets["darwin-arm64"];
+    const binary = path.join(resources, "app.asar.unpacked/node_modules", PINS.package, library.member);
+    mkdirSync(path.dirname(binary), { recursive: true });
+    copyFileSync(path.join("node_modules", PINS.package, library.member), binary);
     const afterSign = createRequire(import.meta.url)("../../../scripts/electron-after-sign.cjs");
     const context = { appOutDir, electronPlatformName: "darwin", packager: { appInfo: { productFilename } } };
     await expect(afterSign(context)).resolves.toBeUndefined();
@@ -265,7 +263,7 @@ describe("SDK packaging source assertions", () => {
   });
 
   it("records runtime semantics for every source-pinned package manifest", () => {
-    const manifests = [...Object.keys(PINS.sdk.files), ...Object.values(PINS.sdk.architectures).flatMap(Object.keys)]
+    const manifests = [...Object.keys(PINS.sdk.files), ...Object.values(PINS.sdk.architectures).flatMap(Object.keys), ...Object.keys(PINS.sdk.darwinFiles)]
       .filter((file) => file.endsWith("/package.json"));
     expect(Object.keys(PINS.sdk.packageMetadata).sort()).toEqual(manifests.sort());
     const fields = ["name", "version", "main", "exports", "type", "imports"];

@@ -21,6 +21,7 @@ interface ManagedChildProcess {
   label: string;
   killProcessGroup: boolean;
   requireProcessGroupReaper?: boolean;
+  cooperativeStop?: () => void;
   processGroupId?: number;
   disposeTimer?: NodeJS.Timeout;
   groupForceTimer?: NodeJS.Timeout;
@@ -53,6 +54,7 @@ export interface TrackManagedChildProcessOptions {
   label?: string;
   killProcessGroup?: boolean;
   requireProcessGroupReaper?: boolean;
+  cooperativeStop?: () => void;
 }
 
 const PROCESS_GROUP_LAUNCH_GATE = [
@@ -197,6 +199,7 @@ function trackChild(
     label: options.label ?? "child-process",
     killProcessGroup: options.killProcessGroup === true,
     requireProcessGroupReaper: options.requireProcessGroupReaper,
+    cooperativeStop: options.cooperativeStop,
     processGroupId: resolveProcessGroupId(child, options),
     dispose: () => {},
     onSettled: () => {},
@@ -254,7 +257,7 @@ function trackChild(
     }
   }
   if (managedChildProcessAdmissionSealed && isKillable(entry)) {
-    if (process.platform === "win32") {
+    if (entry.cooperativeStop || process.platform === "win32") {
       void forceKillManagedChildProcess(child, "registered after admission seal");
     } else {
       try {
@@ -338,6 +341,10 @@ export function forceKillManagedChildProcesses(reason: string): number {
     }
 
     try {
+      if (entry.cooperativeStop) {
+        entry.cooperativeStop();
+        continue;
+      }
       const pid = child.pid;
       const remainingMs = treeKillDeadline === undefined ? undefined : Math.max(0, treeKillDeadline - Date.now());
       if (remainingMs === 0) {
@@ -430,6 +437,10 @@ export async function forceKillAndDrainManagedChildProcesses(
       }
     };
     try {
+      if (entry.cooperativeStop) {
+        entry.cooperativeStop();
+        continue;
+      }
       const completion = forceKillProcessTree(child, killProcessGroup, entry.processGroupId);
       if (completion) completions.push(completion.then(finish, handleError));
       else finish();
@@ -469,6 +480,9 @@ export async function forceKillAndDrainManagedChildProcesses(
       },
       "shutdown: managed child drain deadline expired",
     );
+  }
+  for (const entry of unresolved) {
+    if (entry.cooperativeStop) entry.dispose();
   }
   return { killedCount, unresolvedCount: unresolved.length };
 }
@@ -786,6 +800,10 @@ export function forceKillManagedChildProcess(child: ChildProcess, reason: string
     }
   };
   try {
+    if (entry?.cooperativeStop) {
+      entry.cooperativeStop();
+      return;
+    }
     // Only tracked children are owned through shutdown; an untracked tree kill must not keep a short-lived process alive.
     const completion = pending ?? forceKillProcessTree(child, entry?.killProcessGroup ?? false, entry?.processGroupId, entry !== undefined);
     if (completion) {

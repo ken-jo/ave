@@ -1,0 +1,12 @@
+diff --git a/out/MacUpdater.js b/out/MacUpdater.js
+--- a/out/MacUpdater.js
++++ b/out/MacUpdater.js
+@@ -28,7 +28,7 @@ class MacUpdater extends AppUpdater_1.AppUpdater {
+      * On arm64 Macs (including Rosetta), arm64 files are preferred when available.
+      * On x64 Macs, arm64 files are excluded. */
+     static filterFilesForArch(files, isArm64Mac) {
+-        const isArm64File = (file) => { var _a; return file.url.pathname.includes("arm64") || ((_a = file.info.url) === null || _a === void 0 ? void 0 : _a.includes("arm64")); };
++        const isArm64File = (file) => /-arm64(?:-mac)?\.zip$/i.test(path.posix.basename(file.url.pathname));
+         if (isArm64Mac && files.some(isArm64File)) {
+             return files.filter(file => isArm64Mac === isArm64File(file));
+         }

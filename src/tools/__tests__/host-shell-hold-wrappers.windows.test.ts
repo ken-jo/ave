@@ -12,7 +12,7 @@ vi.mock("node:child_process", async (importOriginal) => {
     spawn: vi.fn((...args: Parameters<typeof actual.spawn>) => {
       const argv = Array.isArray(args[1]) ? args[1].map(String) : [];
       boundary.spawns.push([String(args[0]), ...argv]);
-      if (String(args[0]).endsWith("ave-job.exe") && argv[0] === "--hold") {
+      if (String(args[0]).endsWith("ave-job.exe") && (argv[0] === "--hold" || argv[0] === "--hold-policy-v1")) {
         // A helper gone just before the launch refuses the launcher its hold.
         if (boundary.refuseHold) actual.execFileSync("taskkill", ["/PID", String(boundary.helper?.pid), "/F"], { stdio: "ignore", windowsHide: true });
         // This launcher cannot read its own job, so it can never confirm the run stopped.
@@ -173,7 +173,7 @@ describe.runIf(process.platform === "win32")("held working directory under the c
       expect(result.output).not.toContain("pinnedrun");
       expect(result.metadata).toMatchObject({ cwdPinLost: true });
       // The container's own startup probe runs before the hold; nothing starts after the refused launch.
-      const launch = boundary.spawns.findIndex((argv) => argv[0]?.endsWith("ave-job.exe") === true && argv[1] === "--hold");
+      const launch = boundary.spawns.findIndex((argv) => argv[0]?.endsWith("ave-job.exe") === true && (argv[1] === "--hold" || argv[1] === "--hold-policy-v1"));
       expect(launch).toBeGreaterThan(-1);
       expect(boundary.spawns.slice(launch + 1)).toEqual([]);
     } finally { boundary.refuseHold = false; }

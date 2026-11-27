@@ -3370,6 +3370,69 @@ release. macOS seatbelt patterns cover absent names directly.
 
 **Privacy helper.** The boot category helper-unavailable means the Windows path-kind or ACL helper did not answer.
 
+### macOS agent shells in containers
+
+The container route table selects shell tools and holders independently.
+
+| Platform | Shell tools | Holders |
+| --- | --- | --- |
+| macOS | On | Off |
+| Windows | On | On |
+| Linux | Off | Off |
+
+On macOS, Bash and PowerShell run through the pinned SDK's streaming handle
+with pipes and one invocation-specific profile. Hooks, extensions and the
+workspace terminal continue to use the existing wrap. Each command has its own
+shell supervisor: the Electron binary run as Node with a safe host environment
+and no loader overrides. It verifies the SDK and `libmxc_ffi.dylib` against
+their pins, runs koffi's asynchronous native calls on an 8 MiB stack (the
+main-thread stack the CLI forks on, needed for carved profiles), and owns
+exactly one run. One verified supervisor per bundle waits as a warm standby
+with no request and no authority; a command takes it and a replacement
+starts at once. Standbys are dropped on any sandbox status change and are
+not replaced once shutdown seals child admission. The command, its environment and `profileOverride` travel in a private request
+file under the container runtime root; the authenticated control channel
+carries only its path and SHA-256, and the supervisor refuses altered bytes.
+Each invocation keeps the isolated HOME and temp allocation used by the wrap.
+The host removes request staging after the supervisor exits.
+
+Ave owns the entire Seatbelt profile. Its baseline denies by default and
+allows process creation, same-sandbox signals, sysctl reads, selected
+system services, file metadata, and fixed system paths and devices. The
+ranker carves the broad read into existing children around the Ave home
+and other denied roots. It keeps a readable child when a deny is nested
+inside it and records that deny explicitly. A carved folder can serve as
+the working directory without a grant to list it. Enumeration is bounded
+at 2,000 entries and the final grant list at 400 rows. A folder withheld
+by that budget is named in the result.
+
+The profile orders the fixed baseline, ranked grants, socket allowances
+and the invocation's proxy allow before any access deny. The deny block
+restates read-only write floors and each read deny, including paths the
+baseline could otherwise expose through metadata and system reads.
+A carved deny exempts only admitted descendants and metadata for exact
+chain folders. Protected names, linked targets, access-time patterns and
+ancestor create and unlink pins preserve the write floor after start,
+including names created during the command. Shells ship with an empty
+Unix-socket allowlist. Direct IP and DNS are blocked and the proxy
+resolves names. Egress retains shared identity for approval scopes.
+
+Boot checks architecture, library presence and the private runtime root
+in order. It then runs one canary through the same supervisor and profile
+generator; the supervisor's pin check, and the SDK's typed refusal of a
+malformed request, decide the reason. A passing start requires
+admitted reads and writes alongside denied reads, metadata, writes,
+protected names, renames and network routes. macOS publishes the
+container shell plan on success and takes the permission tree's
+no-confinement floor on unavailability. Settings names the failed
+prerequisite. Ave never signals the workload. Cancel, the host watchdog,
+owner loss and quit send one stop to the supervisor, whose handle kill runs
+the backend's child kill and run-marker scan, which reaps descendants in
+other sessions; the request timeout is the SDK's own deadline with the same
+kill. A stop the backend did not confirm, or a supervisor that exits without
+a terminal receipt, is reported as an error that the command was stopped
+but its processes could not be confirmed gone, never as cancelled.
+
 ### Windows agent shells in Microsoft Execution Containers
 
 **Identity and network (measured 2026-11-11).** On the installed per-machine
@@ -3426,7 +3489,7 @@ Empty `node-pty/.bun-tag-<16 lowercase hex digits>` patch-install markers are de
 
 Before-pack source verification also requires the original package-manifest byte hashes; semantic verification applies to normalized packaged manifests. `bun run update:mxc-pins` regenerates file hashes, semantic manifest fields and both native architectures deterministically from installed sources. `bun run check:mxc-pins` (`node scripts/update-mxc-pins.mjs --check`) fails on drift without rewriting pins. Missing optional target addons are staged from their separately verified archives into temporary sources and cleaned up; `--no-download` requires all sources locally. Archive, launcher and license trust anchors remain explicit review inputs. The required CI aggregate includes generated pin checks and packages both Windows and both Linux launcher targets using lock-keyed runtime archive caches. The Windows native payload packaging job runs both targets under the containment launcher with a cached runtime download to cover the native-host collector path. Successful packaging checks delete their owned temporary trees, failures retain and report the exact path. Strict packaged inventory checks include the FFI, PTY and nested semver trees; unknown scripts, manifests, binaries and redirects fail closed. Retained source/declaration/license allowances are scoped by path and extension. Unused PTY local build/source directories and non-target prebuilds are declared packaging exclusions; unknown selected-target files remain available for rejection.
 
-**POSIX launcher packaging.** macOS arm64 ships `<resources>/mxc/arm64/mxc-exec-mac`. Linux ships `<resources>/mxc/<arch>/lxc-exec` for x64 and arm64. Packaging stages each launcher from the installed SDK when available and verifies the SHA-256 in its `targets` entry. The macOS signer excludes the launcher and the post-sign hook checks its bytes again. The POSIX library pins can be regenerated with `bun run update:mxc-pins --launchers-only --no-download` alongside the launcher pins. The library stays outside the packaged payload. Launcher packaging checks default to the host targets and accept `--target <platform-arch>` for explicit checks. macOS and Linux continue to use their existing shell and extension routes.
+**POSIX native packaging.** macOS arm64 ships no launcher. It ships the SDK's `libmxc_ffi.dylib` in `app.asar.unpacked`, excluded from signing so it keeps its Microsoft signature; the after-pack and after-sign hooks check its bytes against `targets.darwin-arm64.library`, and every shell supervisor checks it again at start. koffi's darwin addon is unpacked and signed by the app, so its upstream hash is pinned before signing and verified at packaging. The `targets.darwin-arm64.launcher` pin remains a record of the tarball. Linux ships `<resources>/mxc/<arch>/lxc-exec` for x64 and arm64; packaging stages it from the installed SDK when available and verifies the SHA-256 in its `targets` entry. The POSIX library pins can be regenerated with `bun run update:mxc-pins --launchers-only --no-download` alongside the launcher pins. Launcher packaging checks default to the host targets and accept `--target <platform-arch>` for explicit checks. The [macOS shell route](#macos-agent-shells-in-containers) uses its pinned library when boot proves containment. Linux keeps its existing routes.
 
 Windows x64 preparation runs the launcher ownership and path-classification proofs and the sandbox helper checks. It publishes checked helpers and the interpreter mirror for the regular and tier shards, which also consume the build job's exact-tree plan. The eight regular shards use two workers each. Payload packaging, script tests, and the development build and boot smoke run in separate contained jobs alongside the matrices when preparation is selected. All three results feed the required `build-and-test` aggregate.
 

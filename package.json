@@ -446,7 +446,13 @@
       }
     ],
     "mac": {
-      "files": ["!node_modules/onnxruntime-node/bin/napi-v6/!(darwin){,/**/*}"],
+      "files": [
+        "!node_modules/onnxruntime-node/bin/napi-v6/!(darwin){,/**/*}",
+        {
+          "from": ".",
+          "filter": ["node_modules/@microsoft/mxc-sdk/bin/arm64/libmxc_ffi.dylib"]
+        }
+      ],
       "category": "public.app-category.productivity",
       "target": [
         { "target": "dmg", "arch": ["arm64"] },
@@ -454,16 +460,18 @@
       ],
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist",
-      "minimumSystemVersion": "13.0",
-      "signIgnore": ["/Contents/Resources/mxc/arm64/mxc-exec-mac$"],
+      "minimumSystemVersion": "15.0",
+      "asarUnpack": ["node_modules/@koromix/koffi-darwin-arm64/**"],
+      "signIgnore": ["/Contents/Resources/app[.]asar[.]unpacked/node_modules/@microsoft/mxc-sdk/bin/arm64/libmxc_ffi[.]dylib$"],
       "extraResources": [
+        {
+          "from": "node_modules/@microsoft/mxc-sdk/node_modules/semver",
+          "to": "app.asar.unpacked/node_modules/@microsoft/mxc-sdk/node_modules/semver",
+          "filter": ["**/*"]
+        },
         {
           "from": "resources/macos-dir-ops/${arch}/ave-dir-ops",
           "to": "macos-dir-ops/${arch}/ave-dir-ops"
-        },
-        {
-          "from": "resources/mxc/${arch}/mxc-exec-mac",
-          "to": "mxc/${arch}/mxc-exec-mac"
         },
         {
           "from": "resources/licenses/mxc",
@@ -611,6 +619,7 @@
   "patchedDependencies": {
     "@anthropic-ai/sandbox-runtime@0.0.80": "patches/@anthropic-ai%2Fsandbox-runtime@0.0.80.patch",
     "app-builder-lib@26.18.0": "patches/app-builder-lib@26.18.0.patch",
+    "electron-updater@6.8.11": "patches/electron-updater@6.8.11.patch",
     "electron@45.3.4": "patches/electron@45.3.4.patch",
     "node-pty@1.1.0": "patches/node-pty@1.1.0.patch"
   }

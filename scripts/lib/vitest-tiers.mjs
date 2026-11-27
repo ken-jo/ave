@@ -6,6 +6,7 @@ export const NATIVE_TIER_TESTS = [
   "src/permissions/__tests__/mxc-extension-admission.windows.test.ts",
   "src/permissions/__tests__/mxc-runtime-root-floor.test.ts",
   "src/permissions/__tests__/mxc-runtime-root.test.ts",
+  "src/permissions/__tests__/mxc-macos-boundary.native.test.ts",
   "src/plugins/isolation/__tests__/confined-plugin-child.test.ts",
   "src/sandbox/__tests__/runtime-grant-native.test.ts",
   "src/shared/__tests__/ave-home-boundaries.windows.test.ts",

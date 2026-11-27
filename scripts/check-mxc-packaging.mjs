@@ -55,6 +55,7 @@ export function packagingCheckCache(work, environment = process.env) {
 export function packagingCheckConfiguration(sourcePackage, { project, electronCache, electronVersion }) {
   const build = sourcePackage.build;
   const launcherResources = (entry) => entry.to === "licenses/mxc" || entry.to.startsWith("mxc/");
+  const sdkResources = (entry) => launcherResources(entry) || entry.to.startsWith("app.asar.unpacked/node_modules/");
   return {
     ...build, extends: null, electronVersion,
     electronDownload: { ...build.electronDownload, cache: electronCache },
@@ -64,9 +65,9 @@ export function packagingCheckConfiguration(sourcePackage, { project, electronCa
     afterPack: require.resolve("./mxc-packaging-check-after-pack.cjs"),
     extraResources: [],
     win: { ...build.win, target: "dir", signAndEditExecutable: false, signExecutable: false,
-      extraResources: build.win.extraResources.filter((entry) => launcherResources(entry) || entry.to.startsWith("app.asar.unpacked/node_modules/")) },
+      extraResources: build.win.extraResources.filter(sdkResources) },
     mac: { ...build.mac, target: "dir", identity: null,
-      extraResources: build.mac.extraResources.filter(launcherResources) },
+      extraResources: build.mac.extraResources.filter(sdkResources) },
     linux: { ...build.linux, target: "dir",
       extraResources: build.linux.extraResources.filter(launcherResources) },
   };
@@ -137,7 +138,8 @@ async function main() {
       }
       await cp(path.join(ROOT, "bun.lock"), path.join(project, "bun.lock"));
       await cp(path.join(ROOT, "resources/licenses/mxc"), path.join(project, "resources/licenses/mxc"), { recursive: true });
-      await stageMxcLauncher({ target, projectRoot: project });
+      if (platform === "darwin") verifyMxcSdkSource(modules, arch, PINS, {}, platform);
+      else await stageMxcLauncher({ target, projectRoot: project });
       await mkdir(path.dirname(path.join(project, sourcePackage.main)), { recursive: true });
       await writeFile(path.join(project, sourcePackage.main), "// Packaging entry only; this application is never executed.\n");
       await writeFile(path.join(project, "package.json"), JSON.stringify(sourcePackage));
@@ -162,7 +164,8 @@ async function main() {
         ? "mac-arm64" : `${outputPrefix}${arch === "x64" ? "" : "-arm64"}-unpacked`);
       const resources = platform === "darwin"
         ? path.join(appOut, `${product}.app`, "Contents", "Resources") : path.join(appOut, "resources");
-      assertPackagedLauncher(resources, target);
+      if (platform === "darwin") assertPackagedMxcSdk(resources, arch, platform, true);
+      else assertPackagedLauncher(resources, target);
       assertNoPackagedBuildHeaders(resources);
       const observation = { target, arch, passed: true, appOut, builderArguments: args.slice(1),
         buildHeaders: { sourcePresent: true, sourceVersion: sourceHeaders.version, packagedAbsent: true }, afterPackVerified: true };

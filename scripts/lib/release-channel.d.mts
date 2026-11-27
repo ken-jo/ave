@@ -28,6 +28,7 @@ export interface CopyOperation {
 
 export type UploadOperation = PutOperation | CopyOperation;
 
+export declare const MAC_FEED_FILE: "latest-mac.yml";
 export declare const FEED_FILES: readonly string[];
 export declare const IMMUTABLE_CACHE: string;
 export declare const REVALIDATE_CACHE: string;
@@ -43,6 +44,6 @@ export declare function planR2Upload(input: {
   tag: string;
   files: readonly string[];
   readFeed: (name: string) => string;
-}): { channel: ReleaseChannel; version: string; operations: UploadOperation[] };
+}): { channel: ReleaseChannel; version: string; operations: UploadOperation[]; macFeed: string };
 
 export declare function missingSecrets(env: Record<string, string | undefined>): string[];

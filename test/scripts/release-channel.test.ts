@@ -1,9 +1,11 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import os from "node:os";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   FEED_FILES,
   IMMUTABLE_CACHE,
@@ -19,11 +21,12 @@ import {
 
 // Release script fixtures run under the suite launcher's plain interpreter.
 const nodeCommand = process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath;
+const require = createRequire(import.meta.url);
 const root = process.cwd();
 const SCRIPT = resolve(root, "scripts/upload-release-r2.mjs");
 const packageJson = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8")) as {
   version: string;
-  build: { productName: string; publish: unknown };
+  build: { productName: string; publish: unknown; mac: { minimumSystemVersion: string } };
 };
 const version = packageJson.version;
 const prefix = `${packageJson.build.productName}-${version}-`;
@@ -206,6 +209,7 @@ describe("upload-release-r2 dry run", () => {
   it.each([
     ["a feed naming a file that is not staged", { "latest.yml": feed(version, [`${prefix}windows-x64-setup-missing.exe`]) }, "names files that are not staged"],
     ["a feed for another version", { "latest.yml": feed("0.0.1", [`${prefix}windows-x64-setup.exe`]) }, "is for version"],
+    ["a conflicting macOS floor", { "latest-mac.yml": `${FEEDS["latest-mac.yml"]}minimumSystemVersion: 23.0.0\n` }, "must contain one minimumSystemVersion: 24.0.0 field"],
     ["a missing feed", { "latest-linux.yml": null }, "staging is missing latest-linux.yml"],
     ["an unversioned installer", { "Ave-mac-arm64.dmg": "x" }, "is not named"],
     ["an unknown file", { "notes.txt": "x" }, "is not an installer, blockmap or feed file"],
@@ -240,6 +244,7 @@ describe("upload-release-r2 upload", () => {
       '  if [ -f "$here/etag" ]; then printf \'{"ETag": "\\\\"%s\\\\""}\' "$(cat "$here/etag")"; exit 0; fi',
       '  echo "An error occurred (404) when calling the HeadObject operation: Not Found" >&2; exit 254',
       "fi",
+      'if [ "$2" = "put-object" ] && [ "$6" = "releases/latest-mac.yml" ]; then cp "$8" "$here/latest-mac.yml"; fi',
       "exit 0",
       "",
     ].join("\n");
@@ -255,6 +260,56 @@ describe("upload-release-r2 upload", () => {
     R2_SECRET_ACCESS_KEY: "secret-for-test",
     R2_BUCKET: "bucket-for-test",
   };
+
+  it.runIf(process.platform !== "win32")("offers the published macOS update on 15 and withholds it on 13 and 14", async () => {
+    const { createUpdateInfoTasks, writeUpdateInfoFiles } = require("app-builder-lib/out/publish/updateInfoBuilder.js");
+    const { Platform, Arch } = require("app-builder-lib");
+    const { AppUpdater } = require("electron-updater/out/AppUpdater.js");
+    const { parseUpdateInfo } = require("electron-updater/out/providers/Provider.js");
+    const dir = staging();
+    const packager = {
+      platform: Platform.MAC,
+      config: packageJson.build,
+      platformSpecificBuildOptions: packageJson.build.mac,
+      appInfo: { version },
+      info: { metadata: { dependencies: { "electron-updater": "6.8.11" } } },
+      getResource: async () => null,
+      emitArtifactCreated: async () => {},
+    };
+    const tasks = await createUpdateInfoTasks({
+      packager, target: { outDir: dir }, arch: Arch.arm64, file: join(dir, `${prefix}mac-arm64.zip`),
+    }, packageJson.build.publish);
+    await writeUpdateInfoFiles(tasks, packager);
+
+    const aws = fakeAws();
+    const result = run(["--dir", dir, "--tag", tag], { ...secrets, PATH: `${aws.bin}:${process.env.PATH ?? ""}` });
+    expect(result.stderr).toBe("");
+    expect(result.status).toBe(0);
+    const name = "latest-mac.yml";
+    const published = readFileSync(join(aws.bin, name), "utf8");
+    const retryPlan = planR2Upload({
+      packageJson, tag, files: [...INSTALLERS, ...BLOCKMAPS, ...FEED_FILES],
+      readFeed: filename => readFileSync(join(dir, filename), "utf8"),
+    });
+    expect(retryPlan.macFeed).toBe(published);
+    expect(readFileSync(join(dir, "latest.yml"), "utf8")).toBe(FEEDS["latest.yml"]);
+    expect(readFileSync(join(dir, "latest-linux.yml"), "utf8")).toBe(FEEDS["latest-linux.yml"]);
+    const info = parseUpdateInfo(published, name, new URL(`${releaseChannel(packageJson).feedUrl}/${name}`));
+    const updater = new AppUpdater(undefined, { version: "0.0.0" });
+    updater.logger = null;
+    const osRelease = vi.spyOn(os, "release");
+    try {
+      const offers = [];
+      for (const kernel of ["22.6.0", "23.6.0", "24.0.0"]) {
+        osRelease.mockReturnValue(kernel);
+        offers.push(await updater.isUpdateAvailable(info));
+      }
+      expect(offers).toEqual([false, false, true]);
+      expect(info.minimumSystemVersion).toBe("24.0.0");
+    } finally {
+      osRelease.mockRestore();
+    }
+  });
 
   it.runIf(process.platform !== "win32")("fails before any request when a secret is missing", () => {
     const aws = fakeAws();

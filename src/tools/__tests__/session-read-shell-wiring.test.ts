@@ -14,11 +14,14 @@ import { buildPerCommandSandboxCustomConfig, getBuiltinShellSessionReadPolicy, g
 import {
   __resetActiveSandboxCapabilityForTest,
   __resetSandboxRequestedAtBootForTest,
+  getHostShellExecutionPlan,
+  setContainerShellSubstrate,
   setActiveSandboxCapability,
   setShellSandboxRequestedAtBoot,
 } from "../../permissions/sandbox-capability.js";
 import { getConfiguredSessionReadPolicy } from "../../permissions/sensitive-paths.js";
 import { sessionStorePath } from "../../shared/session-store-path.js";
+import { prepareMxcPosixShellLaunch } from "../mxc-posix-shell-launch.js";
 import { PowerShellTool, spawnWithSandbox } from "../shell-tools.js";
 import { prepareSandboxFixture } from "./support/prepared-shell.js";
 
@@ -26,6 +29,10 @@ vi.mock("../../permissions/asrt-sandbox.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../permissions/asrt-sandbox.js")>(),
   // Stop at the wrapper boundary: this suite proves wiring, not OS isolation.
   wrapToolCommand: vi.fn(async () => { throw new Error("fixture wrapper boundary"); }),
+}));
+
+vi.mock("../mxc-posix-shell-launch.js", () => ({
+  prepareMxcPosixShellLaunch: vi.fn(async () => { throw new Error("fixture container boundary"); }),
 }));
 
 vi.mock("node:child_process", async (importOriginal) => {
@@ -91,6 +98,8 @@ async function invoke(dialect: "bash" | "powershell", extraAllowedDirectories: r
   }
   return new PowerShellTool().execute({ command: "Write-Output fixture", timeoutSeconds: 5 }, {
     cwd, extraAllowedDirectories, blockReadsOutsideWorkingDirectories: true, metadata: {},
+    // Exercise the issued wrap still used by hooks alongside the live shell route.
+    hostShellExecutionPlan: getHostShellExecutionPlan("default", "hook"),
   });
 }
 
@@ -164,6 +173,20 @@ describe.skipIf(process.platform === "win32")("saved-session native shell policy
     expect(filesystem.allowRead).not.toContain(outside);
     expect(filesystem.allowRead).not.toContain(profile);
     expect(filesystem.denyWrite).toContain(sessions);
+  });
+
+  it("chooses the proved macOS container for a PowerShell shell tool", async () => {
+    setProcessPlatform("darwin");
+    setContainerShellSubstrate({ state: "available" });
+    const result = await new PowerShellTool().execute({ command: "Write-Output fixture", timeoutSeconds: 5 }, {
+      cwd, extraAllowedDirectories: [], blockReadsOutsideWorkingDirectories: true, metadata: {},
+    });
+    expect(result.output).toContain("fixture container boundary");
+    expect(wrapToolCommand).not.toHaveBeenCalled();
+    expect(prepareMxcPosixShellLaunch).toHaveBeenCalledWith(expect.objectContaining({
+      cwd, allowRead: expect.arrayContaining([cwd, sessions]), floorPierces: [sessions],
+      commandLine: expect.stringContaining("Write-Output fixture"),
+    }), expect.anything());
   });
 
   it("keeps a protected alias of the session root outside the builtin exception", () => {

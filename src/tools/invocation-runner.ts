@@ -8,7 +8,7 @@ import { sandboxBlockForResult } from "../shared/sandbox-block.js";
 import { isAbsolute } from "node:path";
 import { expandLeadingTilde } from "../shared/home-tilde.js";
 import { selectDeclaredPathValues } from "../shared/dotted-field-value.js";
-import { isConfinedHostShellExecution } from "../permissions/host-shell-execution-plan.js";
+import { isConfinedHostShellExecution, isWindowsContainerShell } from "../permissions/host-shell-execution-plan.js";
 import { dispatchReviewerForHeadless, dispatchReviewerForInteractiveAuto } from "./pipeline/reviewer-dispatch.js";
 import { criticalDeleteTargetFor } from "../permissions/sensitive-paths.js";
 import { hookChainFromDispatch } from "./pipeline/audit-entries.js";
@@ -1649,7 +1649,7 @@ async function runToolInvocationAttempt(
         ...(invocationCategory === "shell" ? { ...(shellSubject ? { ruleSubject: shellSubject } : {}), hostShellExecutionPlan: hostShellExecutionPlan ?? hostTerminalFloorPlan,
           shellEscalated: true,
           shellExecution: { runsSandboxed: hostShellExecutionPlan !== undefined && isConfinedHostShellExecution(hostShellExecutionPlan, disposableSubstrate),
-            ...(isCanonicalBashTool(tool) && preparedShellInvocation !== undefined && hostShellExecutionPlan?.substrate !== "mxc"
+            ...(isCanonicalBashTool(tool) && preparedShellInvocation !== undefined && !isWindowsContainerShell(hostShellExecutionPlan)
               && invocationPermissionContext.disposableSubstrate === undefined && !brokeredHostShellRouteSelected()
               ? { environmentSnapshot: preparedShellFacts(preparedShellInvocation).environment } : {}),
           } } : {
@@ -2176,7 +2176,7 @@ async function runToolInvocationAttempt(
     };
 
     if ((hostShellToolName === "bash" || hostShellToolName === "powershell") && hostShellExecutionPlan !== undefined
-      && hostShellExecutionPlan.substrate !== "mxc" && invocationPermissionContext.disposableSubstrate === undefined
+      && !isWindowsContainerShell(hostShellExecutionPlan) && invocationPermissionContext.disposableSubstrate === undefined
       && !brokeredHostShellRouteSelected() && typeof finalInput.command === "string") {
       verifiedShellCommand = await prepareVerifiedShellCommand({ command: finalInput.command, dialect: hostShellToolName,
         cwd: resolveHostShellWorkingDirectory(executionCwd, typeof finalInput.cwd === "string" ? finalInput.cwd : undefined) }, hostShellExecutionPlan, abortSignal);
@@ -2230,7 +2230,7 @@ async function runToolInvocationAttempt(
           const resolvedCwd = resolveHostShellWorkingDirectory(executionCwd, typeof finalInput.cwd === "string" ? finalInput.cwd : undefined);
           // Unpinned startup cannot run a native host preflight. The tool repeats
           // this gate after host consent or parses inside the selected container.
-          for (const command of isPowerShellStartupPinned() && hostShellExecutionPlan?.substrate !== "mxc" ? extractShellCommands(finalInput) : []) {
+          for (const command of isPowerShellStartupPinned() && !isWindowsContainerShell(hostShellExecutionPlan) ? extractShellCommands(finalInput) : []) {
             shellPathViolation = await findPowerShellCommandPathViolation(command, resolvedCwd, executionCwd, invocationRuntimeAllowedDirectories, blockReadsOutsideWorkingDirectories);
             if (shellPathViolation) break;
           }
@@ -2708,7 +2708,7 @@ async function runToolInvocationAttempt(
       processCwd,
       hostShellAnswer,
       verifiedShellCommand,
-      ...(!brokeredHostShellRouteSelected() && hostShellExecutionPlan?.substrate !== "mxc"
+      ...(!brokeredHostShellRouteSelected() && !isWindowsContainerShell(hostShellExecutionPlan)
         && invocationPermissionContext.disposableSubstrate === undefined ? { preparedShellInvocation } : {}),
       finalInput,
       invocationAllowedScope,

@@ -22,6 +22,7 @@ import type { SandboxStartFailureCause } from "../../shared/sandbox-capability-i
 import { classifySandboxDependencyErrors } from "../../permissions/sandbox-start-failure.js";
 import { denyUnenforceableKind, isObligationRefusal, setWindowsDenyUnenforceableAtBoot } from "../../permissions/admitted-obligation.js";
 import { errorMessage } from "../../shared/error-message.js";
+import { isContainerShellRouteEnabled } from "../../shared/container-platform.js";
 import { checkSandboxSweepRoot } from "../../shared/ave-home-test-guard.js";
 import { removeOwnedPluginTree } from "../../plugins/installed-entry-fs.js";
 import { AVE_HOME_BOUNDARY_UNVERIFIED_ERROR_CODE, aveHomeBoundaryFailure, getAveHomePrivacyFailure, isAveHomePrivacyApprovable, setAveHomePrivacyAtBoot, setAveHomePrivacyRefusalReporter } from "../../shared/ave-home.js";
@@ -288,6 +289,19 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
               log.warn("boot: container runtime root unavailable: %s", errorMessage(error));
             }
           }
+          if (process.platform === "darwin" && shellRequested && isContainerShellRouteEnabled("darwin")) {
+            const [{ detectHostMxcMacShellSupport }, { setContainerShellSubstrate }, { getHostResources }] = await Promise.all([
+              import("../../permissions/mxc-macos.js"),
+              import("../../permissions/sandbox-capability.js"),
+              import("../../main/host-resources.js"),
+            ]);
+            const support = await detectHostMxcMacShellSupport(getHostResources(), startupSignal);
+            setContainerShellSubstrate(support);
+            if (support.state === "unavailable") {
+              if (shellExplicitEnv) throw new Error(`macOS container shell unavailable (${support.reason})`);
+              log.warn("boot: macOS container shell unavailable (%s)", support.reason);
+            }
+          }
           const sandboxTempRoot = useAppOwnedSandboxTempRoot();
           // Subscribe before starting the proxy so no deny precedes monitoring.
           {
@@ -482,7 +496,7 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
             if (failDecision.action === "abort") {
               // Explicit activation must fail closed on initialization errors.
               log.error(
-                `boot: OS tool sandbox is ON via ${explicitEnvLabel} but ASRT initialization failed — refusing to start. ` +
+                `boot: OS tool sandbox is ON via ${explicitEnvLabel} but sandbox initialization failed — refusing to start. ` +
                   `Cause: ${cause}`,
               );
               recordGate("abort", failureReason, [cause], failureCauses);

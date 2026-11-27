@@ -12,6 +12,7 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { ko } from "../messages/ko.js";
 import { messages } from "../messages/index.js";
 
 const SRC = resolve(import.meta.dirname, "../..");
@@ -39,6 +40,14 @@ function sourceFiles(dir: string, out: string[] = []): string[] {
 const LITERAL_KEY = /\bt\(\s*"([a-zA-Z][\w]*(?:\.[\w-]+)+)"/g;
 
 describe("i18n keys used in source", () => {
+  it.each([
+    "UnsupportedArch", "BinaryMissing", "LauncherMismatch", "RuntimeRootUnproved", "RequestRejected", "ShellStartFailed",
+  ])("defines the macOS container reason %s in both locales", (suffix) => {
+    const key = `permissionsTab.osSandboxMacContainerReason${suffix}`;
+    expect(Object.hasOwn(messages.en, key)).toBe(true);
+    expect(Object.hasOwn(ko, key)).toBe(true);
+  });
+
   it("all resolve to a real catalog entry", () => {
     // English is the fallback catalog and is loaded eagerly; Korean, the only
     // other supported locale, is lazy, and the parity check next door already

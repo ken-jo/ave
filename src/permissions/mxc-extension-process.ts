@@ -11,6 +11,7 @@ import { mxcStagingParent } from "./mxc-runtime-root.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { assertMxcExtensionRequest } from "./mxc-extension-request.js";
 import { MxcExtensionChannel } from "./mxc-extension-channel.js";
+import { isMxcSupervisorLoaderOverride } from "./mxc-supervisor-transport.js";
 import { MXC_STREAM_CHUNK_BYTES, type MxcExtensionStartRecord } from "./mxc-extension-protocol.js";
 import { MxcIntegrityError } from "../../scripts/lib/mxc-sdk-integrity.mjs";
 import { MxcCapabilityUnavailableError, MxcProcessCleanupError, MxcProcessContractError, MxcSupervisorLostError } from "./mxc-extension-errors.js";
@@ -302,7 +303,7 @@ export function mxcSupervisorEnvironment(base: Readonly<Record<string, string>> 
   let systemRoot: string | undefined, path = "";
   for (const [key, value] of Object.entries(base)) {
     const name = key.toUpperCase();
-    if (name.startsWith("MXC_") || name === "NODE_OPTIONS" || name === "NODE_PATH" || name === "LOCALAPPDATA") continue;
+    if (isMxcSupervisorLoaderOverride(name) || name === "LOCALAPPDATA") continue;
     if (name === "PATH") { path = value; continue; }
     if (name === "SYSTEMROOT") systemRoot = value;
     env[key] = value;

@@ -32,7 +32,7 @@ export function requireMxcPolicyPipeHelper(skip: TestContext["skip"]): void {
   const helper = resolveWindowsPathKindHelper();
   const sources = resolve("native/windows-path-kind");
   const built = statSync(helper).mtimeMs;
-  if (readdirSync(sources).filter((name) => /\.(cpp|h)$/.test(name))
+  if (readdirSync(sources, { encoding: "utf8", recursive: true }).filter((name) => /\.rs$|(?:^|[\\/])Cargo\.(?:toml|lock)$/.test(name))
     .some((name) => statSync(resolve(sources, name)).mtimeMs > built)) {
     skip("Native policy pipe helper is stale; owner must rebuild the Windows path-kind helper");
   }

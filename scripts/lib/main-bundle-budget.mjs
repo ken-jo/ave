@@ -23,6 +23,7 @@ export const MAIN_BUNDLE_ROOT_FILES = Object.freeze([
   // Resident worker thread for verified-shell repository evidence (git-repository-inspection-client.ts).
   "git-repository-inspection-worker.js",
   "mxc-extension-supervisor.js",
+  "mxc-shell-supervisor.js",
   "mxc-packaged-probe.js",
 ]);
 

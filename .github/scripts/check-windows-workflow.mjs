@@ -101,7 +101,7 @@ const UNCONTAINED_COMMANDS = new Map([
   ["node .github/scripts/python-archive-cache.mjs", "computes a cache key"],
   [X64_RUST_INSTALL, "installs the pinned compiler and target"],
   [X64_PATH_KIND_BUILD, "builds the classifier and its fixtures"],
-  ...["", " -FailureFixture", " -QueryFailureFixture"].map(option => [
+  ...["", " -FailureFixture", " -QueryFailureFixture", " -PolicyReaderFixture"].map(option => [
     `powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1${option}`,
     "builds the containment launcher and its native helpers",
   ]),

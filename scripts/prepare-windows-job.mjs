@@ -11,8 +11,8 @@ const BUILD_COMMAND = "bun run build:windows-job";
 const PATH_KIND_BUILD_COMMAND = "bun run build:windows-path-kind --fixture";
 const MSVC_COMPONENT = "Microsoft.VisualStudio.Component.VC.Tools.x86.x64";
 
-export function windowsJobLauncherPath(arch = process.arch) {
-  return path.join("resources", "windows-job", arch, "ave-job.exe");
+export function windowsJobLauncherPath(arch = process.arch, policyReaderFixture = false) {
+  return path.join("resources", "windows-job", arch, policyReaderFixture ? "ave-job-policy-reader-test.exe" : "ave-job.exe");
 }
 
 export function windowsJobSources(root) {
@@ -28,8 +28,8 @@ export function windowsJobSources(root) {
   return sources.sort();
 }
 
-export function windowsJobLauncherState(root, { platform = process.platform, arch = process.arch } = {}) {
-  const launcher = windowsJobLauncherPath(arch);
+export function windowsJobLauncherState(root, { platform = process.platform, arch = process.arch, policyReaderFixture = false } = {}) {
+  const launcher = windowsJobLauncherPath(arch, policyReaderFixture);
   if (platform !== "win32") return { state: "skip", launcher };
   if (!existsSync(path.join(root, launcher))) return { state: "missing", launcher };
   const built = statSync(path.join(root, launcher)).mtimeMs;
@@ -70,22 +70,26 @@ export function prepareWindowsJob({
 } = {}) {
   const job = windowsJobLauncherState(root, { platform, arch });
   if (job.state === "skip") return job;
-  if (job.state === "fresh") {
-    log(`[windows-job] up to date: ${job.launcher}`);
-  } else {
-    if (!findBuildTools()) throw new Error(missingBuildToolsMessage(job.launcher));
-    const reason = job.state === "stale" ? `older than ${job.newer}` : "missing";
-    log(`[windows-job] building ${job.launcher} (${reason})`);
-    const command = `${BUILD_COMMAND} -Arch ${arch}`;
-    const result = runSync("bun.exe", ["run", "build:windows-job", "-Arch", arch],
+  const prepareLauncher = (artifact, policyReaderFixture) => {
+    if (artifact.state === "fresh") {
+      log(`[windows-job] up to date: ${artifact.launcher}`);
+      return;
+    }
+    if (!findBuildTools()) throw new Error(missingBuildToolsMessage(artifact.launcher));
+    const reason = artifact.state === "stale" ? `older than ${artifact.newer}` : "missing";
+    log(`[windows-job] building ${artifact.launcher} (${reason})`);
+    const args = ["run", "build:windows-job", "-Arch", arch, ...(policyReaderFixture ? ["-PolicyReaderFixture"] : [])];
+    const result = runSync("bun.exe", args,
       { cwd: root, shell: false, stdio: "inherit", windowsHide: true });
     if (result.error || result.status !== 0) {
-      throw new Error(`${command} failed (${result.error?.message ?? `exit ${result.status}`})`);
+      throw new Error(`bun ${args.join(" ")} failed (${result.error?.message ?? `exit ${result.status}`})`);
     }
-    if (windowsJobLauncherState(root, { platform, arch }).state !== "fresh") {
-      throw new Error(`${command} did not produce an up-to-date ${job.launcher}`);
+    if (windowsJobLauncherState(root, { platform, arch, policyReaderFixture }).state !== "fresh") {
+      throw new Error(`bun ${args.join(" ")} did not produce an up-to-date ${artifact.launcher}`);
     }
-  }
+  };
+  prepareLauncher(job, false);
+  prepareLauncher(windowsJobLauncherState(root, { platform, arch, policyReaderFixture: true }), true);
 
   const launcher = windowsPathKindPath(arch);
   if (env.AVE_WINDOWS_TEST_PLAN !== undefined) {
