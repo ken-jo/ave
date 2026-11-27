@@ -12,6 +12,7 @@ import { describe, expect, it, vi } from "vitest";
 import { shellQuote } from "../../lib/shell-resolver.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { initializeAsrtSandbox, resetAsrtSandbox } from "../../permissions/asrt-sandbox.js";
+import { setFixtureOwner } from "../../__tests__/support/fixture-owner.js";
 import { requireMxcCapability } from "../../__tests__/support/mxc-capability.js";
 import { quotePowerShell } from "../../__tests__/support/powershell-literal.js";
 import { mxcShellCapability, planWindowsSandbox, windowsProxyOnlyCapability } from "../../boot/steps/windows-sandbox-plan.js";
@@ -20,11 +21,13 @@ import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootFor
 import { configureHostResources } from "../../main/host-resources.js";
 import { buildNativeShellSupervisor } from "../../__tests__/support/mxc-shell-supervisor-native.js";
 import { detectHostMxcMacShellSupport } from "../../permissions/mxc-macos.js";
+import { isWindowsPathAtOrUnder } from "../../permissions/mxc-windows.js";
 import { establishMxcRuntimeRoot } from "../../permissions/mxc-runtime-root.js";
 import * as policyHome from "../../shared/policy-home.js";
 import { hostScriptRuntimePaths } from "../../main/host-script-runtime.js";
 import { windowsPathKindHelperIn } from "../../main/windows-path-kind-launcher.js";
 import * as windowsPathFacts from "../../shared/windows-path-facts.js";
+import { win32SystemBinary } from "../../shared/windows-system-path.js";
 import { WINDOWS_WORKBOOK_IDENTITY_ENV, XLSX_EDIT_LIMITS } from "../../shared/xlsx-edit.js";
 import * as mxcShellLaunch from "../mxc-shell-launch.js";
 import { BashTool, PowerShellTool } from "../shell-tools.js";
@@ -85,10 +88,14 @@ describe("native governed XLSX command", () => {
       originalWorkbook = await zip.generateAsync({ type: "nodebuffer", compression: "STORE" });
       expect(originalWorkbook.length).toBeGreaterThan(XLSX_EDIT_LIMITS.backupBytes);
     }
-    writeFileSync(path, originalWorkbook);
-    writeFileSync(request, JSON.stringify({ sheet: 0, edits: [{ cell: "B1", value: 84 }] }));
+    const writeWorkbook = (target: string) => {
+      writeFileSync(target, originalWorkbook);
+      setFixtureOwner(target);
+    };
     try {
-      if (process.platform === "win32") {
+      writeWorkbook(path);
+      writeFileSync(request, JSON.stringify({ sheet: 0, edits: [{ cell: "B1", value: 84 }] }));
+      if (windows) {
         vi.stubEnv(WINDOWS_WORKBOOK_IDENTITY_ENV, "caller fixture");
         const started = await requireMxcCapability(testContext.skip);
         // Anchor the credential floor to a fixture home: the stamp guard refuses real-account deny targets.
@@ -106,6 +113,22 @@ describe("native governed XLSX command", () => {
         setActiveSandboxCapability({ kind: "asrt", confidence: "verified", platform: process.platform,
           reason: "Native startup workload succeeded", confines: { filesystem: true, process: true, network: true } });
       }
+      const readDacls = windowsPathFacts.readWindowsDacls;
+      const powerShellHome = windows ? dirname(win32SystemBinary("WindowsPowerShell/v1.0/powershell.exe")) : undefined;
+      // Supply the token for the workbooks and fixed shell installation while retaining their native ACLs.
+      const readTestDacls: typeof readDacls = (paths, options) => {
+        const rows = readDacls(paths, options);
+        return rows.map((facts, index) => {
+          const target = paths[index];
+          if (!target) return facts;
+          const workbook = options?.parent && options.access && target.endsWith(".xlsx")
+            && (isWindowsPathAtOrUnder(target, directory) || (windowsBuild && isWindowsPathAtOrUnder(target, windowsBuild)));
+          const installation = !options && powerShellHome !== undefined
+            && (isWindowsPathAtOrUnder(target, powerShellHome) || isWindowsPathAtOrUnder(powerShellHome, target));
+          return workbook || installation ? { ...facts, elevated: false } : facts;
+        });
+      };
+      const access = windows ? vi.spyOn(windowsPathFacts, "readWindowsDacls").mockImplementation(readTestDacls) : undefined;
       setShellSandboxRequestedAtBoot(true);
       const proveMacContainer = async () => {
         establishMxcRuntimeRoot();
@@ -170,11 +193,11 @@ describe("native governed XLSX command", () => {
         expect(records[1]).toMatchObject({ v: 1, kind: "cell", sheet: "Sheet", cell: "B1", before: "12", after: "84" });
         expect(records[2]).toMatchObject({ v: 1, kind: "commit" });
       }
-      if (windows) {
+      if (access) {
         if (!result.isError) expect(readFileSync(`${path}.ave-bak`).equals(originalWorkbook)).toBe(true);
         const inHelperAncestor = join(hostResources.resourcePath, "ancestor.xlsx");
         const ancestorRequest = join(hostResources.resourcePath, "edits.json");
-        writeFileSync(inHelperAncestor, originalWorkbook);
+        writeWorkbook(inHelperAncestor);
         copyFileSync(request, ancestorRequest);
         const ancestor = await tool.execute({ command: commandFor(inHelperAncestor, ancestorRequest), timeoutSeconds },
           { ...context, cwd: hostResources.resourcePath });
@@ -187,10 +210,9 @@ describe("native governed XLSX command", () => {
         }
 
         const target = join(directory, "gate.xlsx");
-        writeFileSync(target, originalWorkbook);
+        writeWorkbook(target);
         const prepareMxc = mxcShellLaunch.prepareMxcShellLaunch;
         const prepare = vi.spyOn(mxcShellLaunch, "prepareMxcShellLaunch");
-        const readDacls = windowsPathFacts.readWindowsDacls;
         const workspaceNames = readdirSync(directory).sort();
         type AccessDacl = windowsPathFacts.WindowsDacl & Required<Pick<windowsPathFacts.WindowsDacl, "sacl">>;
         const refusals: Array<{
@@ -210,11 +232,11 @@ describe("native governed XLSX command", () => {
           { name: "unusable file identity", unreadable: true, alter: facts => ({ ...facts, fileIndex: "0x0000000000000000" }) },
         ];
         for (const refusal of refusals) {
-          const dacl = vi.spyOn(windowsPathFacts, "readWindowsDacls").mockImplementation((paths, options) => {
-            if (paths.length !== 1 || paths[0] !== target || !options?.parent) return readDacls(paths, options);
+          access.mockImplementation((paths, options) => {
+            if (paths.length !== 1 || paths[0] !== target || !options?.parent || !options.access) return readTestDacls(paths, options);
             const alter = refusal.alter;
             if (!alter) throw new Error("Unreadable fixture");
-            return readDacls(paths, options).map(facts => {
+            return readTestDacls(paths, options).map(facts => {
               if (!facts.dacl?.sacl) throw new Error("Expected workbook access rules");
               return alter(facts, { ...facts.dacl, sacl: facts.dacl.sacl });
             });
@@ -229,10 +251,10 @@ describe("native governed XLSX command", () => {
             expect.soft(readFileSync(target).equals(originalWorkbook), refusal.name).toBe(true);
             if (!denied.isError) {
               rmSync(`${target}.ave-bak`, { force: true });
-              writeFileSync(target, originalWorkbook);
+              writeWorkbook(target);
             }
           } finally {
-            dacl.mockRestore();
+            access.mockImplementation(readTestDacls);
           }
         }
 
@@ -244,7 +266,7 @@ describe("native governed XLSX command", () => {
         execFileSync(icacls, [oldParent, "/grant", "*S-1-5-7:(OI)(R)"], { stdio: "ignore" });
         const oldPath = join(oldParent, "moved.xlsx");
         const movedPath = join(directory, "moved.xlsx");
-        writeFileSync(oldPath, originalWorkbook);
+        writeWorkbook(oldPath);
         renameSync(oldPath, movedPath);
         const [movedFacts] = readDacls([movedPath], { parent: true });
         if (!movedFacts) throw new Error("Expected facts for the moved workbook");
@@ -299,7 +321,7 @@ describe("native governed XLSX command", () => {
         rmSync(unlabelled);
         rmSync(`${unlabelled}.ave-bak`, { force: true });
         rmSync(labelledParent, { recursive: true });
-        writeFileSync(target, originalWorkbook);
+        writeWorkbook(target);
 
         const dacParent = join(directory, "dac-parent");
         createWithDescriptor(dacParent, 'S:(RA;OI;;;;WD;("Fixture",TS,0,"example"))');
@@ -321,21 +343,21 @@ describe("native governed XLSX command", () => {
         expect.soft(readdirSync(dacParent)).toEqual(dacNames);
         expect.soft(readFileSync(dacWorkbook).equals(originalWorkbook)).toBe(true);
         rmSync(dacParent, { recursive: true });
-        writeFileSync(target, originalWorkbook);
+        writeWorkbook(target);
 
         const redirectParent = join(directory, "redirect-parent");
         const parkedParent = join(directory, "parked-parent");
         const redirectWorkbook = join(redirectParent, "gate.xlsx");
         mkdirSync(redirectParent);
-        writeFileSync(redirectWorkbook, originalWorkbook);
+        writeWorkbook(redirectWorkbook);
         let redirectedBeforePin = false;
-        const access = vi.spyOn(windowsPathFacts, "readWindowsDacls").mockImplementation((paths, options) => {
+        access.mockImplementation((paths, options) => {
           if (paths[0] === redirectWorkbook && options?.access) {
             renameSync(redirectParent, parkedParent);
             symlinkSync(directory, redirectParent, "junction");
             redirectedBeforePin = true;
           }
-          return readDacls(paths, options);
+          return readTestDacls(paths, options);
         });
         try {
           prepare.mockClear();
@@ -349,7 +371,7 @@ describe("native governed XLSX command", () => {
           expect.soft(readdirSync(directory).sort()).toEqual([...workspaceNames, "parked-parent", "redirect-parent"].sort());
           expect.soft(readFileSync(target).equals(originalWorkbook)).toBe(true);
         } finally {
-          access.mockRestore();
+          access.mockImplementation(readTestDacls);
           if (redirectedBeforePin) rmdirSync(redirectParent);
           rmSync(redirectedBeforePin ? parkedParent : redirectParent, { recursive: true });
         }

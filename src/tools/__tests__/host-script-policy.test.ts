@@ -3,6 +3,7 @@ import { copyFileSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, realpath
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { setFixtureOwner } from "../../__tests__/support/fixture-owner.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import { windowsPathKindHelperIn } from "../../main/windows-path-kind-launcher.js";
 import { checkWindowsWorkbookAccess, hostScriptInvocationReadPaths, hostScriptRuntimePaths, isVerifiedHostScript } from "../../main/host-script-runtime.js";
@@ -110,14 +111,23 @@ describe("host-owned script roles", () => {
     expect(findPowerShellAstPathViolation(summary, workspace, workspace, [], true, powershellSource(summary))?.kind).toBe("sandbox-boundary");
   });
 
-  it.skipIf(process.platform !== "win32")("binds workbook approval to the descriptor from the pinned leaf", () => {
+  it.runIf(process.platform === "win32").each([false, true])("binds workbook approval to the descriptor from the pinned leaf (elevated=%s)", (elevated) => {
     const workbook = join(workspace, "book.xlsx");
     writeFileSync(workbook, "workbook fixture");
+    setFixtureOwner(workbook);
     const stats = lstatSync(workbook, { bigint: true });
-    const access = vi.spyOn(windowsPathFacts, "readWindowsDacls");
+    const readDacls = windowsPathFacts.readWindowsDacls;
+    const access = vi.spyOn(windowsPathFacts, "readWindowsDacls").mockImplementationOnce((paths, options) =>
+      readDacls(paths, options).map(facts => ({ ...facts, elevated })));
     const separate = vi.spyOn(windowsPathFacts, "readWindowsFileDacls");
     try {
       const decision = checkWindowsWorkbookAccess(workbook);
+      expect(access).toHaveBeenCalledExactlyOnceWith([workbook], { parent: true, access: true });
+      expect(separate).not.toHaveBeenCalled();
+      if (elevated) {
+        expect(decision).toEqual({ reason: expect.stringContaining("[workbook-acl-differs]") });
+        return;
+      }
       expect(decision).toHaveProperty("identity");
       if (!("identity" in decision)) throw new Error(decision.reason);
       const [device, inode, change] = decision.identity.split(":").map(value => BigInt(value));
@@ -125,8 +135,6 @@ describe("host-owned script roles", () => {
       expect(inode).toBe(stats.ino);
       if (change === undefined) throw new Error("Workbook identity has no change time");
       expect((change - 116444736000000000n) * 100n).toBe(stats.ctimeNs);
-      expect(access).toHaveBeenCalledExactlyOnceWith([workbook], { parent: true, access: true });
-      expect(separate).not.toHaveBeenCalled();
     } finally {
       access.mockRestore();
       separate.mockRestore();
