@@ -7,6 +7,11 @@
     "sandbox": [
       "src/sandbox/",
       "src/plugins/isolation/",
+      "src/permissions/__tests__/mxc-posix-ranking.test.ts",
+      "src/permissions/__tests__/mxc-linux.test.ts",
+      "src/permissions/__tests__/mxc-linux-raw-ip.test.ts",
+      "src/permissions/__tests__/mxc-linux-placeholders.test.ts",
+      "src/tools/__tests__/mxc-shell-source.test.ts",
       "src/tools/__tests__/bash-sandbox-home-integration.test.ts",
       "src/tools/__tests__/session-read-shell.test.ts",
       "src/tools/__tests__/xlsx-edit-sandbox.integration.test.ts",

@@ -10,6 +10,7 @@ import { buildHostShellExecutionPlan } from "../host-shell-execution-plan.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import {
   __resetActiveSandboxCapabilityForTest,
+  __resetContainerShellSubstrateForTest,
   __resetSandboxRequestedAtBootForTest,
   getIssuedHostShellExecutionPlanGeneration,
   getSandboxGeneration,
@@ -135,6 +136,7 @@ function issueDecidedGrant(plan: ExecutionPlan, binding: { toolUseId: string; to
 
 function resetSandbox(): void {
   __resetActiveSandboxCapabilityForTest();
+  __resetContainerShellSubstrateForTest();
   __resetSandboxRequestedAtBootForTest();
 }
 
@@ -197,13 +199,12 @@ function issuedPlain() {
   return getHostShellExecutionPlan();
 }
 
-// A contained shell on this host. macOS shells are contained only by the proven container (the boot canary's
-// "available"); ASRT alone does not serve them, so the fixture publishes that substrate there.
+// Publish the boot canary's shell proof on POSIX hosts that route tool calls through a container.
 function issuedAsrt(executionMode: "default" | "host" = "default") {
   resetSandbox();
   setShellSandboxRequestedAtBoot(true);
   setActiveSandboxCapability(fullAsrt);
-  if (process.platform === "darwin") setContainerShellSubstrate({ state: "available" });
+  if (process.platform === "darwin" || process.platform === "linux") setContainerShellSubstrate(process.platform, { state: "available" });
   return getHostShellExecutionPlan(executionMode);
 }
 
@@ -242,7 +243,7 @@ describe("execution router", () => {
     expect(executionRouteForHostShellPlan(blocked)).toBeNull();
 
     const contained = issuedAsrt();
-    expect(contained).toMatchObject({ mode: "asrt", substrate: process.platform === "darwin" ? "mxc" : "asrt" });
+    expect(contained).toMatchObject({ mode: "asrt", substrate: process.platform === "darwin" || process.platform === "linux" ? "mxc" : "asrt" });
     const plan = buildExecutionPlan({ legacyPlan: contained, effect: effect(), capability: capability() });
     expect(plan).toMatchObject({ decision: "selected", route: "workspace-sandbox", fallback: "none" });
     const projection = getExecutionPlanAuditProjection(plan);
@@ -308,14 +309,14 @@ describe("execution router", () => {
       resetSandbox();
       setShellSandboxRequestedAtBoot(true);
       setActiveSandboxCapability({ ...fullAsrt, platform: "darwin" });
-      setContainerShellSubstrate({ state: "unavailable", reason: "shell-start-failed" });
+      setContainerShellSubstrate("darwin", { state: "unavailable", reason: "shell-start-failed" });
       const unproven = getHostShellExecutionPlan();
       expect(unproven).toMatchObject({ mode: "plain", sandboxed: false, requiresExplicitUserApproval: true, fallbackReason: "active-sandbox-not-shell-contained" });
       expect(buildHostShellExecutionRouteProjection({
         legacyPlan: unproven, toolName: "bash", command: "printf ok", cwd: "/workspace", timeoutSeconds: 120, background: false,
       })).toMatchObject({ decision: "approval-required", route: "host", fallback: "active-sandbox-not-shell-contained" });
 
-      setContainerShellSubstrate({ state: "available" });
+      setContainerShellSubstrate("darwin", { state: "available" });
       const proven = getHostShellExecutionPlan();
       expect(proven).toMatchObject({ mode: "asrt", sandboxed: true, substrate: "mxc", requiresExplicitUserApproval: false, fallbackReason: "none" });
       expect(buildExecutionPlan({ legacyPlan: proven, effect: effect(), capability: capability() }))

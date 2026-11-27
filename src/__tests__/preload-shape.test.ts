@@ -655,6 +655,7 @@ describe("preload contextBridge world shape lock", () => {
           "onRoutineFired": "function",
           "onRoutineRunningFinished": "function",
           "onRoutineRunningStarted": "function",
+          "onRoutinesChanged": "function",
           "onSessionGoalChanged": "function",
           "onSessionTasksChanged": "function",
           "onSettingsUpdated": "function",

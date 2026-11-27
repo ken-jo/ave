@@ -392,6 +392,7 @@ export async function wireConversation(
       let paneLoop!: ConversationLoop;
       paneLoop = createSideChatConversationLoop({
         ...sideChatLoopDeps,
+        paneWindowId: windowId,
         sessionHeldElsewhere: sideSessionHeldElsewhereFor(() => paneLoop),
         ...createLoopRationaleBindings({
           service: rationaleHostService,

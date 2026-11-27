@@ -84,7 +84,7 @@ import {
   detectShellSandboxCapability,
   getHostShellExecutionPlan,
   getSandboxBootOutcome,
-  getMacContainerShellInfo,
+  getContainerShellInfo,
   getWindowsSandboxSubstrate,
   getSandboxHomesUnavailable,
   isShellSandboxRequestedAtBoot,
@@ -339,7 +339,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     // The route a default host shell takes right now; the same plan the bash and powershell tools run under,
     // so "on" means shells are contained, not merely that ASRT is running (Windows Plan B runs shells plain).
     const shellPlan = getHostShellExecutionPlan();
-    const containerShell = getMacContainerShellInfo();
+    const containerShell = getContainerShellInfo();
     const runtime = runtimeInfoFromCapability(containerShell === undefined ? detectShellSandboxCapability() : shellPlan.capability);
     const envForced = envForcedValueForSettingsPath("features.osToolSandbox") === true;
     let shell: ShellSandboxStatusInfo;

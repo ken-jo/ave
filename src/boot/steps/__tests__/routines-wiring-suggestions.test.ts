@@ -18,7 +18,7 @@ import type { BootContext } from "../../context.js";
 import { setRoutineChatWaker, type RoutineChatWakeResult } from "../../../main/app-state.js";
 import { sessionAuthorityWithheld, turnExtensionPolicyContext } from "../../../shared/turn-extension-policy.js";
 import { EgressGrantStore } from "../../../permissions/egress-grants.js";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sha256Hex } from "../../../lib/hex-digest-equal.js";
@@ -26,6 +26,8 @@ import { claimScheduledSkillEvidence, type SkillMemoryService } from "../../../m
 import { isSensitivePath } from "../../../permissions/sensitive-paths.js";
 import { aveHome } from "../../../shared/ave-home.js";
 import { requiredFixture } from "../../../__tests__/support/required-fixture.js";
+import { ChangeSignal } from "../../../lib/change-signal.js";
+import { mintHostDecisionProof } from "../../../main/workflow-template-decision.js";
 
 type Handler = (event: { routine: Record<string, unknown> }) => void;
 
@@ -37,6 +39,7 @@ function wire(
 ) {
   const handlers: { llm?: Handler; notification?: Handler } = {};
   const routinesStore = {
+    changed: new ChangeSignal(vi.fn()),
     recordNotificationRunMetrics: vi.fn(async () => ({})),
     update: vi.fn(async () => ({})), recordRunOutcome: vi.fn(async () => ({})),
     markOrphaned: vi.fn(async () => 1), markChatBusy: vi.fn(async () => ({})),
@@ -71,6 +74,24 @@ function wire(
   wireRoutinesScheduler(ctx);
   return { handlers, send, touchSessionTranscript, routinesStore, routinesScheduler, notificationService };
 }
+
+it("broadcasts a payload-free change after the schedule breaker pause is stored", withRoutinesStore(async ({ store, dir }) => {
+  const entry = await store.add({
+    createdBy: "user", trigger: "schedule", execution: "template-run",
+    schedule: { at: futureIso(), repeat: { kind: "daily" } },
+  }, mintHostDecisionProof("local-desktop"));
+  const { send } = wire(async () => ({ summary: "" }), {}, store);
+  const first = "2026-11-04T01:00:00.000Z";
+  const second = "2026-11-05T01:00:00.000Z";
+  await store.recordTemplateScheduleOutcome(entry.id, first, "failed");
+  send.mockClear();
+  send.mockImplementation(() => JSON.parse(readFileSync(join(dir, "routines.json"), "utf8")));
+  await store.recordTemplateScheduleOutcome(entry.id, second, "failed");
+  expect(send).toHaveBeenCalledExactlyOnceWith(ROUTINES.changed, undefined);
+  expect(send).toHaveReturnedWith(expect.objectContaining({
+    routines: [expect.objectContaining({ id: entry.id, pausedBy: "schedule-breaker", pausedAt: expect.any(String) })],
+  }));
+}));
 
 const routine = { id: "routine-a", trigger: { kind: "manual" }, execution: "llm-session", title: "Morning", lastFiredAt: "2026-11-04T01:00:00.000Z" };
 

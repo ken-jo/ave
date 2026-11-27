@@ -30,6 +30,7 @@ import type { IpcDeps } from "../../types.js";
 import { auditUnauthorized, UNAUTHORIZED_FRAME, validateHostRendererSender } from "../../gated.js";
 import { defaultWorkspaceProject, resolveAuthorizedWorkspaceProject } from "../../../main/project-root-authorization.js";
 import { resultHashOf } from "../../../shared/workflow-template-output.js";
+import { STAGE_TOOL_CALLS_REFUSED } from "../../../shared/workflow-template-types.js";
 import { MAX_PLAN_NOTE_LENGTH, type WorkItemCreateResult, workBoardOriginSessionId } from "../../../shared/work-board-types.js";
 import { registeredIpcHandlers } from "./test-helpers.js";
 
@@ -305,6 +306,29 @@ async function awaiting(h: Harness, finish: Parameters<Harness["children"][numbe
   await run;
   return { id, item: await h.item(id) };
 }
+
+it("retries a host-refused stage through IPC and persists the successful attempt", async () => {
+  const h = await stageRunHarness({ observeRunWork: true });
+  await h.runThenEnd(async () => {
+    const { id, item } = await awaiting(h, { ok: true, stopReason: "end_turn", toolCallCount: 1, allToolCallsRefused: true }, [autoStageOf("a")]);
+    expect(item.stageRuns[0]).toMatchObject({ status: "failed", failure: "error", failureReason: STAGE_TOOL_CALLS_REFUSED });
+    const owner = workBoardTestSender();
+    const window = { isDestroyed: () => false, webContents: owner };
+    registerWorkBoardHandlers({
+      workBoardStore: h.board, workBoardEngine: h.engine, settingsService: { get: () => undefined },
+      auditLogger: new AuditLogger(join(h.dir, "audit")), getMainWindow: () => window, getAppWindows: () => [window],
+    } as unknown as IpcDeps);
+    const event = { sender: owner, senderFrame: owner.mainFrame };
+    await bindDefaultProject(event);
+    await expect(decide(WORK_BOARD.retryStage, event, id, { runId: item.runId, stageId: "a", attempt: 1 })).resolves.toEqual({ ok: true });
+    (await h.untilLive(1))[0].finish({ summary: "Retried successfully" });
+    await h.until(id, row => row.runStatus === "completed");
+    const retried = await h.stageRun(id, "a");
+    expect(retried).toMatchObject({ attempt: 2, status: "passed", output: "Retried successfully" });
+    expect(retried).not.toHaveProperty("failure");
+    expect(retried).not.toHaveProperty("failureReason");
+  });
+});
 
 // The engine's own writes behind a stage decision and a template run's start go through the same copy as every board write.
 it.each<[string, string, Parameters<typeof stageRunHarness>[0], (h: Harness) => Promise<[string, unknown[]]>]>([

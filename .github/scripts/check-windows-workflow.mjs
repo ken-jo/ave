@@ -181,6 +181,7 @@ const WORKFLOW_EXECUTABLES = [
   "./node_modules/@anthropic-ai/sandbox-runtime/vendor/srt-win/x64/srt-win.exe",
 ];
 const TEST_COMMAND_NAME_RE = /\.(?:ts|tsx|mjs)$|\.test\./i;
+const PARSER_OUTPUT_BYTES_PER_GROUP = 1024 * 1024;
 const INSPECT_POWERSHELL_AST = String.raw`
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -210,26 +211,27 @@ $steps = @(foreach ($source in $inputData.steps) {
             ($element -is [System.Management.Automation.Language.CommandParameterAst] -and $null -eq $element.Argument) } }) } })
   }
 })
-$seenNames = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
-$resolved = @{
-  Cmdlet = [Collections.Generic.List[string]]::new()
-  Alias = [Collections.Generic.List[string]]::new()
-}
-foreach ($step in $steps) {
-  foreach ($command in $step.commands) {
-    $name = $command.name
-    if ($name -and $name -notmatch '[/\\:]' -and $inputData.executableNames -notcontains $name -and $seenNames.Add($name)) {
-      # Look up literal names, including punctuation aliases, without enumerating installed commands.
-      $info = $ExecutionContext.InvokeCommand.GetCommand($name, 'Cmdlet,Alias')
-      if ($info -and $info.Name -eq $name) { $resolved[[string]$info.CommandType].Add($info.Name) }
+$offset = 0
+$resolutions = @(foreach ($count in $inputData.groupSizes) {
+  $seenNames = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+  $resolved = @{
+    Cmdlet = [Collections.Generic.List[string]]::new()
+    Alias = [Collections.Generic.List[string]]::new()
+  }
+  $end = $offset + $count
+  for (; $offset -lt $end; $offset++) {
+    foreach ($command in $steps[$offset].commands) {
+      $name = $command.name
+      if ($name -and $name -notmatch '[/\\:]' -and $inputData.executableNames -notcontains $name -and $seenNames.Add($name)) {
+        # Look up literal names, including punctuation aliases, without enumerating installed commands.
+        $info = $ExecutionContext.InvokeCommand.GetCommand($name, 'Cmdlet,Alias')
+        if ($info -and $info.Name -eq $name) { $resolved[[string]$info.CommandType].Add($info.Name) }
+      }
     }
   }
-}
-$result = @{
-  cmdlets = $resolved.Cmdlet.ToArray()
-  aliases = $resolved.Alias.ToArray()
-  steps = $steps
-}
+  @{ cmdlets = $resolved.Cmdlet.ToArray(); aliases = $resolved.Alias.ToArray() }
+})
+$result = @{ resolutions = $resolutions; steps = $steps }
 ConvertTo-Json -InputObject $result -Depth 10 -Compress
 `;
 
@@ -251,15 +253,19 @@ export function directCommandProblems(steps) {
   });
 }
 
-function inspectPowerShell(shell, steps) {
+function inspectPowerShell(shell, steps, groupSizes) {
   const env = windowsPowerShellEnv();
   const executable = shell === "powershell" ? windowsPowerShellPath(env) : shell;
   const encoded = Buffer.from(INSPECT_POWERSHELL_AST, "utf16le").toString("base64");
+  const maxBuffer = PARSER_OUTPUT_BYTES_PER_GROUP * groupSizes.length;
   const result = spawnSync(executable, ["-NoProfile", "-NonInteractive", "-EncodedCommand", encoded], {
-    input: JSON.stringify({ steps, executableNames: WORKFLOW_EXECUTABLES }),
+    input: JSON.stringify({ steps, groupSizes, executableNames: WORKFLOW_EXECUTABLES }),
     encoding: "utf8", windowsHide: true, timeout: 15_000,
-    env,
+    maxBuffer, env,
   });
+  if (result.error?.code === "ENOBUFS") {
+    throw new Error(`${shell} parser output exceeded the ${maxBuffer}-byte buffer limit`, { cause: result.error });
+  }
   if (result.error) throw new Error(`Cannot launch required ${shell} parser`, { cause: result.error });
   if (result.status !== 0) throw new Error(`${shell} parser failed: ${result.stderr}`);
   return JSON.parse(result.stdout);
@@ -282,17 +288,41 @@ function containedCommandProblems(commands, manifest, wrapped, jobId) {
   });
 }
 
-export function powerShellCommandProblems(steps, inspect = inspectPowerShell, manifest = [], job = CONTAINED_JOB) {
+function inspectPowerShellGroups(groups, inspect = inspectPowerShell) {
+  const batches = groups.map(() => []);
+  for (const shell of ["pwsh", "powershell"]) {
+    const editionGroups = groups.map((steps, index) => ({
+      index, steps: steps.filter(step => step.shell.match(/^(pwsh|powershell)(?:\.exe)?(?:\s|$)/i)?.[1].toLowerCase() === shell),
+    })).filter(group => group.steps.length > 0);
+    const sources = editionGroups.flatMap(group => group.steps.map(step => step.run));
+    if (sources.length === 0) continue;
+    const { steps, resolutions } = inspect(shell, sources, editionGroups.map(group => group.steps.length));
+    if (!Array.isArray(steps) || steps.length !== sources.length
+      || !Array.isArray(resolutions) || resolutions.length !== editionGroups.length) {
+      throw new Error(`Incomplete ${shell} parser result`);
+    }
+    let offset = 0;
+    for (const [index, group] of editionGroups.entries()) {
+      const { cmdlets, aliases } = resolutions[index];
+      if (!Array.isArray(cmdlets) || !Array.isArray(aliases)) throw new Error(`Incomplete ${shell} parser result`);
+      const knownCommands = new Set([...WORKFLOW_EXECUTABLES, ...cmdlets, ...aliases].map(name => name.toLowerCase()));
+      const records = steps.slice(offset, offset + group.steps.length);
+      offset += group.steps.length;
+      batches[group.index].push({ steps: group.steps, records, knownCommands });
+    }
+  }
+  return batches;
+}
+
+export function powerShellCommandProblems(steps, inspect, manifest = [], job = CONTAINED_JOB) {
+  return inspectedCommandProblems(steps, inspectPowerShellGroups([steps], inspect)[0], manifest, job);
+}
+
+function inspectedCommandProblems(steps, batches, manifest = [], job = CONTAINED_JOB) {
   const failures = [];
   const wrapped = [];
-  for (const shell of ["pwsh", "powershell"]) {
-    const editionSteps = steps.filter(step => step.shell.match(/^(pwsh|powershell)(?:\.exe)?(?:\s|$)/i)?.[1].toLowerCase() === shell);
-    if (editionSteps.length === 0) continue;
-    const inspection = inspect(shell, editionSteps.map(step => step.run));
-    if (inspection.steps.length !== editionSteps.length) throw new Error(`Incomplete ${shell} parser result`);
-    const knownCommands = new Set([...WORKFLOW_EXECUTABLES, ...inspection.cmdlets, ...inspection.aliases]
-      .map(name => name.toLowerCase()));
-    for (const [index, { errors, functions, commands }] of inspection.steps.entries()) {
+  for (const { steps: editionSteps, records, knownCommands } of batches) {
+    for (const [index, { errors, functions, commands }] of records.entries()) {
       const unknownCommands = commands.flatMap(({ name, head, line, scopes }) => {
         const command = name?.toLowerCase();
         if (command && !TEST_COMMAND_NAME_RE.test(command) && (knownCommands.has(command)
@@ -627,17 +657,17 @@ export function checkWindowsWorkflow(workflow, inspect) {
     }
   }
   // Matrix copies share this exact template and receive distinct shard IDs.
+  const scopes = CONTAINED_JOBS.map(jobId => scopeContainedSteps(steps.filter(step => step.jobId === jobId), jobId));
+  const otherSteps = steps.filter(step => !CONTAINED_JOBS.includes(step.jobId));
+  const batches = inspectPowerShellGroups([...scopes, otherSteps], inspect);
   const failures = [
     ...directCommandProblems(steps),
-    ...CONTAINED_JOBS.flatMap(jobId => {
-      const scoped = scopeContainedSteps(steps.filter(step => step.jobId === jobId), jobId);
-      return [
-        ...scoped.filter(step => step.contained && !POWERSHELL_SHELL_RE.test(step.shell))
-          .map(({ name }) => `${name}: steps after job-root setup need a PowerShell shell`),
-        ...powerShellCommandProblems(scoped, inspect, containedSteps(workflow, jobId), jobId),
-      ];
-    }),
-    ...powerShellCommandProblems(steps.filter(step => !CONTAINED_JOBS.includes(step.jobId)), inspect),
+    ...CONTAINED_JOBS.flatMap((jobId, index) => [
+      ...scopes[index].filter(step => step.contained && !POWERSHELL_SHELL_RE.test(step.shell))
+        .map(({ name }) => `${name}: steps after job-root setup need a PowerShell shell`),
+      ...inspectedCommandProblems(scopes[index], batches[index], containedSteps(workflow, jobId), jobId),
+    ]),
+    ...inspectedCommandProblems(otherSteps, batches.at(-1)),
   ];
   if (failures.length) throw new Error(failures.join("\n"));
   const scriptSteps = jobs[SCRIPT_TEST_JOB].steps;

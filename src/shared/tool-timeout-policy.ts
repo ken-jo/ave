@@ -51,6 +51,12 @@ export const TOOL_TIMEOUT_POLICY = {
   mxcRawIpProbeMs: 12_000,
   mxcMacShellStopMs: 12_000,
   mxcMacShellOutputDrainMs: 1_000,
+  mxcLinuxShellProbeMs: 5_000,
+  mxcLinuxShellProbeConnectionMs: 750,
+  mxcLinuxShellStopMs: 2_000,
+  // The boot canary's raw-IP probe: each target's deadline, and the bound on the whole prober inside the container.
+  mxcLinuxRawIpTargetMs: 3_000,
+  mxcLinuxRawIpProbeMs: 12_000,
   // A holder's own start must report its ready-frame evidence inside this bound, from supervisor start, or it is refused.
   mxcExtensionReadinessMs: 30_000,
   // Share the exact workload-identity handshake budget with the protocol.

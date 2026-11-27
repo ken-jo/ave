@@ -540,7 +540,8 @@
         "libsecret-1-0",
         "libasound2t64 | libasound2",
         "git"
-      ]
+      ],
+      "recommends": ["bubblewrap", "slirp4netns", "iptables"]
     },
     "rpm": {
       "artifactName": "${productName}-${version}-linux-${arch}.${ext}",
@@ -555,7 +556,8 @@
         "(libuuid or libuuid1)",
         "alsa-lib",
         "git"
-      ]
+      ],
+      "fpm": ["--rpm-tag", "Recommends: bubblewrap, slirp4netns, iptables"]
     },
     "win": {
       "files": [
