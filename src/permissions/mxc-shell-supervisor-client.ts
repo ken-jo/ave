@@ -1,8 +1,8 @@
-import { spawn } from "node:child_process";
+import { type ChildProcessByStdio, spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import type { Duplex, Writable } from "node:stream";
+import type { Duplex, Readable, Writable } from "node:stream";
 import { finished } from "node:stream/promises";
 import { getHostResources, type HostResources } from "../main/host-resources.js";
 import { assertManagedChildProcessAdmissionOpen, trackManagedChildProcess } from "../main/managed-child-processes.js";
@@ -68,7 +68,7 @@ export function startMxcShellSupervisor(
   const child = spawn(process.execPath, [location.entry, location.nodeModules, generation,
     location.isPackaged ? "packaged" : "development"], {
     env: { ...env, ELECTRON_RUN_AS_NODE: "1" }, stdio: ["ignore", "pipe", "pipe", "pipe", "pipe"],
-  });
+  }) as ChildProcessByStdio<null, Readable, Readable>;
   const owner = child.stdio[3] as Writable;
   const control = child.stdio[4] as Duplex;
   const channel = new MxcExtensionChannel(control, control, generation, key, "host");

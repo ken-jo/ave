@@ -4,9 +4,10 @@ import { join, resolve } from "node:path";
 import { createMxcNativeProcess } from "../../__tests__/support/mxc-supervisor.js";
 import { describe, expect, it, vi } from "vitest";
 import { MxcNativeProcess } from "../mxc-native-process.js";
-import { MxcProcessCleanupError, MxcProcessContractError, MxcSupervisorLostError } from "../mxc-extension-errors.js";
+import { MxcCapabilityUnavailableError, MxcNativeCallStackError, MxcProcessCleanupError, MxcProcessContractError, MxcSupervisorLostError } from "../mxc-extension-errors.js";
 import { mxcModuleDiagnostics, encodeMxcFrame, MxcFrameDecoder, MXC_FRAME_MAX_BYTES, MXC_START_EVIDENCE_FIELDS, MXC_STREAM_CHUNK_BYTES, type MxcStreamFrame } from "../mxc-extension-protocol.js";
 import PINS from "../mxc-launcher-pins.json" with { type: "json" };
+import { assertMxcShellCallStack, MXC_SHELL_ASYNC_STACK_BYTES } from "../mxc-shell-supervisor-bootstrap.js";
 import { SEATBELT_CLEANUP_WARNING } from "../mxc-shell-supervisor-service.js";
 
 const GENERATION = "a".repeat(64);
@@ -41,6 +42,16 @@ describe("native shell supervisor protocol", () => {
   it("matches the exit cleanup warning in the pinned native library", () => {
     const library = join("node_modules", PINS.package, PINS.targets["darwin-arm64"].library.member);
     expect(readFileSync(library).includes(SEATBELT_CLEANUP_WARNING)).toBe(true);
+  });
+
+  it("refuses a supervisor whose SDK koffi instance keeps a different asynchronous call stack", () => {
+    expect(MXC_SHELL_ASYNC_STACK_BYTES).toBe(8 * 1024 * 1024);
+    const koffi = (size: number) => ({ config: () => ({ async_stack_size: size }) }) as unknown as Parameters<typeof assertMxcShellCallStack>[0];
+    expect(() => assertMxcShellCallStack(koffi(MXC_SHELL_ASYNC_STACK_BYTES), MXC_SHELL_ASYNC_STACK_BYTES)).not.toThrow();
+    // koffi's own default, which overruns while libsandbox compiles a carved profile before exec.
+    const unconfigured = () => assertMxcShellCallStack(koffi(128 * 1024), MXC_SHELL_ASYNC_STACK_BYTES);
+    expect(unconfigured).toThrow(MxcNativeCallStackError);
+    expect(unconfigured).toThrow(MxcCapabilityUnavailableError);
   });
 });
 

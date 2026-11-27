@@ -28,6 +28,14 @@ export class MxcCapabilityUnavailableError extends Error {
   }
 }
 
+/** The SDK's koffi instance does not run asynchronous native calls on the stack the shell supervisor configured. */
+export class MxcNativeCallStackError extends MxcCapabilityUnavailableError {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "MxcNativeCallStackError";
+  }
+}
+
 export class WorkerTransportUnsupportedError extends Error {
   readonly code = "worker-transport-unsupported";
   constructor() {

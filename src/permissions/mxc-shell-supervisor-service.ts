@@ -1,13 +1,15 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { Socket } from "node:net";
 import type { Readable, Writable } from "node:stream";
 import { MxcIntegrityError } from "../../scripts/lib/mxc-sdk-integrity.mjs";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
-import type { MxcExtensionChannel, MxcFramePayload } from "./mxc-extension-channel.js";
+import { MxcExtensionChannel, type MxcFramePayload } from "./mxc-extension-channel.js";
 import { MxcProcessContractError, MxcSupervisorLostError } from "./mxc-extension-errors.js";
 import { mapSeatbeltShellRequest, type buildSeatbeltShellRequest } from "./mxc-macos.js";
 import { MxcNativeProcess } from "./mxc-native-process.js";
-import type { MxcShellSdk } from "./mxc-shell-supervisor-bootstrap.js";
+import { bootstrapMxcShellSupervisor, MXC_SHELL_ASYNC_STACK_BYTES, type MxcShellSdk } from "./mxc-shell-supervisor-bootstrap.js";
+import { readMxcSupervisorKey } from "./mxc-supervisor-transport.js";
 
 export const SEATBELT_CLEANUP_WARNING = "Seatbelt: the process exited, but processes it started could not be terminated";
 
@@ -176,4 +178,20 @@ export async function serveMxcShellSupervisor(
     stdout.off("error", handleFailure);
     stderr.off("error", handleFailure);
   }
+}
+
+/** The supervisor process body: fd 3 carries the owner key and liveness, fd 4 the authenticated control channel. */
+export async function runMxcShellSupervisorProcess(
+  argv: readonly string[], asyncStackBytes: number | null = MXC_SHELL_ASYNC_STACK_BYTES,
+): Promise<void> {
+  const [nodeModules, generation, mode] = argv;
+  if (!nodeModules || !generation || (mode !== "packaged" && mode !== "development")) {
+    throw new MxcProcessContractError("Missing shell supervisor configuration");
+  }
+  const liveness = new Socket({ fd: 3, readable: true, writable: false });
+  const control = new Socket({ fd: 4, readable: true, writable: true, allowHalfOpen: true });
+  const key = await readMxcSupervisorKey(liveness);
+  const channel = new MxcExtensionChannel(control, control, generation, key, "supervisor");
+  await serveMxcShellSupervisor(channel, liveness, process.stdout, process.stderr,
+    () => bootstrapMxcShellSupervisor(nodeModules, mode === "packaged", asyncStackBytes), () => process.exit(1));
 }
