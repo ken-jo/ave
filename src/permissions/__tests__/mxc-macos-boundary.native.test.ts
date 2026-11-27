@@ -74,8 +74,14 @@ function livePids(pids: readonly number[]): number[] {
   return listed.stdout.split("\n").map(line => Number(line.trim())).filter(pid => pids.includes(pid));
 }
 
-async function recordedPids<Name extends string>(dir: string, names: readonly Name[]): Promise<Record<Name, number>> {
-  const pids = {} as Record<Name, number>;
+// A shell start takes about 1.4 s through BashTool on an M-series Mac and about 5 s on the macos-15 runner, which
+// missed a 5 s wait once (2026-11-28). The wait only bounds how long a start may take; what it then checks is unchanged.
+const PID_FILE_WAIT_MS = 20_000;
+
+/** Waits for every `<name>.pid` in `dir`, filling `pids` as each appears so a caller can reap a partial start. */
+async function recordedPids<Name extends string>(
+  dir: string, names: readonly Name[], pids = {} as Record<Name, number>,
+): Promise<Record<Name, number>> {
   await vi.waitFor(() => {
     for (const name of names) {
       const file = join(dir, `${name}.pid`);
@@ -83,7 +89,7 @@ async function recordedPids<Name extends string>(dir: string, names: readonly Na
       expect(pid, name).toBeGreaterThan(1);
       pids[name] = pid;
     }
-  }, { interval: 20, timeout: 5_000 });
+  }, { interval: 20, timeout: PID_FILE_WAIT_MS });
   return pids;
 }
 
@@ -724,8 +730,12 @@ req.end();
     const pending = new BashTool().execute({ command: workload, timeoutSeconds: 60 }, {
       cwd: project, extraAllowedDirectories: [], metadata: { toolUseId: "native-bash-cancel" }, abortSignal: controller.signal,
     });
-    const pids = await recordedPids(project, DETACH_KINDS);
+    const pids = {} as Record<(typeof DETACH_KINDS)[number], number>;
     try {
+      // A call that ends before its shell wrote every pid file says why, instead of the wait running out.
+      await Promise.race([recordedPids(project, DETACH_KINDS, pids), pending.then((early) => {
+        throw new Error(`BashTool returned before its shell started: ${JSON.stringify(early).slice(0, 800)}`);
+      })]);
       await vi.waitFor(() => expect(tickSizes(project, DETACH_TICKS).every(size => size > 0)).toBe(true));
       expect(liveEgressInvocationCount()).toBe(invocationsBefore + 1);
       controller.abort();
@@ -735,9 +745,12 @@ req.end();
       await expectReaped(project, pids, DETACH_TICKS);
       expect(liveEgressInvocationCount()).toBe(invocationsBefore);
     } finally {
+      // On any failure above the call is still running: cancel it before reaping what it recorded.
+      controller.abort();
+      await pending;
       reapRecorded(pids);
     }
-  }, 30_000);
+  }, 60_000);
 
   /** A staged request outside the product launch, for supervisor-level cases; the profile admits `project` only. */
   async function stageDirect(
