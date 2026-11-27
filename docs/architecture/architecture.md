@@ -3702,7 +3702,9 @@ in its directory.
   random loopback destination and a matching refusal recorded by the host
   invocation proxy. The script attempts direct TCP connections to
   `192.0.2.1:443`, `[2001:db8::1]:443`, and the host's primary LAN IPv4 on a
-  port selected from those without a listener. UDP is checked by arrival only.
+  high port absent from the host's listening table because the initial host
+  check found TCP port 135 open. The LAN target can only downgrade coverage.
+  UDP is checked by arrival only.
   The host listens on that LAN address at an OS-assigned port, and the script
   sends the launch identifier as a nonce. The host lookup, listener open and
   close, contained start, and host evidence acceptance share a sixty-second
