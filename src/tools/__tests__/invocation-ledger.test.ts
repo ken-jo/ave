@@ -335,15 +335,17 @@ it("leaves the claim open when a writer fails before its row, so the host writes
   await expect(ledger.drainToolInvocationsForExit(50)).resolves.toBe("failed");
 });
 
-it("bounds a drain with a pending denial hook", async () => {
+it("commits a forced terminal row while the denial hook is still pending", async () => {
   const ledger = await import("../invocation-ledger.js");
   const parked = ledger.admitToolInvocation("holding");
+  const fire = vi.fn(() => new Promise(() => {}));
   parked.terminal.hostTerminal(async (_cause, _detail, _selected, row) => {
     await row({ entry: ENTRY, kind: "denied", humanAnswered: true });
-  }, { governed: () => false, fire: () => new Promise(() => {}) });
+  }, { governed: () => false, fire });
   const outcome = ledger.drainToolInvocationsForExit(50);
   await vi.advanceTimersByTimeAsync(50);
-  await expect(outcome).resolves.toBe("timed-out");
+  await expect(outcome).resolves.toBe("committed");
+  expect(fire).toHaveBeenCalledOnce();
   expect(events()).toEqual([expect.objectContaining({ event: "permission_decision", terminalKind: "denied" })]);
 });
 
