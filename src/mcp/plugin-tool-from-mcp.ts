@@ -6,6 +6,7 @@ import {
   type ToolSurface,
 } from "../plugins/runtime/tool-visibility.js";
 import { createLogger } from "../lib/logger.js";
+import { effectFromAnnotations } from "../permissions/tool-effect-evidence.js";
 import type { McpToolCallOutput } from "./types.js";
 import { prepareMcpContentImage } from "./mcp-tool-content.js";
 import type { PluginToolOperationPolicy } from "../tools/plugin-operation-governance.js";
@@ -14,13 +15,14 @@ import { errorMessage } from "../shared/error-message.js";
 const log = createLogger("plugin-tool-from-mcp");
 
 const AVE_META_PREFIX = "ai.agent-connector.ave/";
+const TOOL_EFFECT_HINTS = ["readOnlyHint", "openWorldHint"] as const;
 
 /** Wire metadata is opaque and untrusted; extract authority defensively. */
 export interface DiscoveredMcpTool {
   name: string;
   description?: string;
   inputSchema: Record<string, unknown>;
-  annotations?: { readOnlyHint?: boolean };
+  annotations?: { readOnlyHint?: boolean; openWorldHint?: boolean };
   _meta?: Record<string, unknown>;
 }
 
@@ -70,13 +72,17 @@ export function mcpToolToPluginTool(
     );
   }
   // Ignore wire category; effective risk is derived by the host for each invocation.
-  if (tool.annotations !== undefined && (tool.annotations === null || typeof tool.annotations !== "object"
-      || Array.isArray(tool.annotations) || Object.keys(tool.annotations).some((key) => key !== "readOnlyHint"))) {
-    throw new Error(`Plugin tool '${tool.name}' has unsupported annotations; only readOnlyHint is allowed`);
-  }
-  if (tool.annotations !== undefined && Object.hasOwn(tool.annotations, "readOnlyHint")
-      && typeof tool.annotations.readOnlyHint !== "boolean") {
-    throw new Error(`Plugin tool '${tool.name}' has invalid readOnlyHint; expected a boolean`);
+  const annotations = tool.annotations;
+  if (annotations !== undefined) {
+    if (annotations === null || typeof annotations !== "object" || Array.isArray(annotations)
+      || Object.keys(annotations).some(key => !TOOL_EFFECT_HINTS.some(hint => hint === key))) {
+      throw new Error(`Plugin tool '${tool.name}' has unsupported annotations`);
+    }
+    for (const hint of TOOL_EFFECT_HINTS) {
+      if (Object.hasOwn(annotations, hint) && typeof annotations[hint] !== "boolean") {
+        throw new Error(`Plugin tool '${tool.name}' has invalid ${hint}; expected a boolean`);
+      }
+    }
   }
   const readOnly = tool.annotations?.readOnlyHint === true
     && Object.values(operationPolicy?.operations ?? {}).every(
@@ -97,6 +103,8 @@ export function mcpToolToPluginTool(
     modelVisible: readToolSurfaces(tool.name, meta).includes("model"),
     jsonSchema: tool.inputSchema,
     mcpReadOnlyHint: readOnly,
+    effectAnnotations: annotations === undefined ? undefined : Object.freeze({ ...annotations }),
+    unattendedEffect: annotations?.readOnlyHint === true && !readOnly ? "unknown" : effectFromAnnotations(annotations),
     isReadOnly: () => readOnly,
     execute: async (rawInput, ctx) => {
       let parsed: unknown = rawInput ?? {};

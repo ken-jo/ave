@@ -1,5 +1,6 @@
 /** Reverse projection retains plugin authority and owned path fields, never wire sandbox or risk claims. */
 import { describe, it, expect, vi } from "vitest";
+import { requiredValue } from "../../__tests__/support/required-value.js";
 import { mcpToolToPluginTool } from "../plugin-tool-from-mcp.js";
 import { manifestToolsToMcpTools } from "../plugin-server-projection.js";
 import type { PluginManifest } from "../../plugins/types.js";
@@ -213,11 +214,19 @@ describe("plugin read declaration", () => {
   it.each([null, [], true, "readOnlyHint"])("rejects malformed wire annotations %j", (annotations) => {
     expect(() => mcpToolToPluginTool(PLUGIN_ID, {
       ...manifestToolsToMcpTools(MANIFEST)[0], annotations: annotations as never,
-    }, async () => ({ text: "read" }))).toThrow("unsupported annotations; only readOnlyHint is allowed");
+    }, async () => ({ text: "read" }))).toThrow("unsupported annotations");
   });
-  it.each(["destructiveHint", "idempotentHint", "openWorldHint", "title"])("rejects unexpected wire annotation %s", (key) => {
+  it.each(["destructiveHint", "idempotentHint", "title"])("rejects unexpected wire annotation %s", (key) => {
     expect(() => mcpToolToPluginTool(PLUGIN_ID, {
       ...manifestToolsToMcpTools(MANIFEST)[0], annotations: { readOnlyHint: true, [key]: true },
-    }, async () => ({ text: "read" }))).toThrow("unsupported annotations; only readOnlyHint is allowed");
+    }, async () => ({ text: "read" }))).toThrow("unsupported annotations");
+  });
+  it("preserves effect annotations from projection without changing attended risk", () => {
+    const annotations = { readOnlyHint: false, openWorldHint: true };
+    const manifest = { ...MANIFEST, tools: [{ ...requiredValue(MANIFEST.tools)[0], annotations }] };
+    const [wire] = manifestToolsToMcpTools(manifest);
+    const tool = mcpToolToPluginTool(PLUGIN_ID, wire, async () => ({ text: "done" }));
+    expect(wire.annotations).toEqual(annotations);
+    expect(tool).toMatchObject({ category: "write", mcpReadOnlyHint: false, unattendedEffect: "outward", effectAnnotations: annotations });
   });
 });

@@ -64,15 +64,13 @@ describe("Host-owned public plugin contract boundary", () => {
 });
 
 
-it("limits authorable tool annotations to the read declaration", async () => {
+it("limits authorable tool annotations to the read and open-world declarations", () => {
   const declaration: import("../public-contract.js").Tool = {
-    name: "panel_status", inputSchema: { type: "object", properties: {} }, annotations: { readOnlyHint: true },
+    name: "panel_status", inputSchema: { type: "object", properties: {} }, annotations: { readOnlyHint: true, openWorldHint: false },
   };
-  expect(declaration.annotations).toEqual({ readOnlyHint: true });
-  // @ts-expect-error Only readOnlyHint is authorable.
+  expect(declaration.annotations).toEqual({ readOnlyHint: true, openWorldHint: false });
+  // @ts-expect-error This hint is outside the public contract.
   declaration.annotations = { destructiveHint: true };
-  // @ts-expect-error Only readOnlyHint is authorable.
+  // @ts-expect-error This hint is outside the public contract.
   declaration.annotations = { idempotentHint: true };
-  // @ts-expect-error Only readOnlyHint is authorable.
-  declaration.annotations = { openWorldHint: false };
 });

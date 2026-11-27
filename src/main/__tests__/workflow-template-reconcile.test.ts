@@ -1,3 +1,4 @@
+import { unknownToolEffects } from "../../__tests__/support/tool-effect-resolver.js";
 import { requiredValue } from "../../__tests__/support/required-value.js";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
@@ -51,11 +52,11 @@ afterEach(async () => { await rm(dir, { recursive: true, force: true }); });
 it("confirm refuses a typed list without mutating the draft", async () => {
   const store = new WorkflowTemplateStore(join(dir, "templates.json")); const g = graph(); requiredValue(g.stages[0].envelope).tools = ["write_file"];
   const r = await store.draft(null, { ...g, name: "Template", scope: { kind: "all" } }); const before = await readFile(join(dir, "templates.json"), "utf8");
-  await expect(store.confirmDraft(r.template.id, { expectedGraphHash: requiredValue(r.draft).graphHash, expectedDraftRevision: requiredValue(r.draft).revision }, { who: "user", origin: "local-desktop" })).rejects.toMatchObject({ code: "envelope-refused", refusals: ["tools-broader-than-scope"] });
+  await expect(store.confirmDraft(r.template.id, { expectedGraphHash: requiredValue(r.draft).graphHash, expectedDraftRevision: requiredValue(r.draft).revision }, { who: "user", origin: "local-desktop" }, unknownToolEffects)).rejects.toMatchObject({ code: "envelope-refused", refusals: ["tools-broader-than-scope"] });
   expect(await readFile(join(dir, "templates.json"), "utf8")).toBe(before);
 });
 it("retains stable attachment ids and detach history with readers", async () => {
-  const store = new WorkflowTemplateStore(join(dir, "templates.json")); const r = await store.draft(null, { ...graph(), name: "Template", scope: { kind: "all" } }); const v = await store.confirmDraft(r.template.id, { expectedGraphHash: requiredValue(r.draft).graphHash, expectedDraftRevision: requiredValue(r.draft).revision }, { who: "user", origin: "local-desktop" }); const request = { templateId: v.templateId, version: 1, graphHash: v.graphHash, scheduleId: "daily" };
+  const store = new WorkflowTemplateStore(join(dir, "templates.json")); const r = await store.draft(null, { ...graph(), name: "Template", scope: { kind: "all" } }); const { version: v } = await store.confirmDraft(r.template.id, { expectedGraphHash: requiredValue(r.draft).graphHash, expectedDraftRevision: requiredValue(r.draft).revision }, { who: "user", origin: "local-desktop" }, unknownToolEffects); const request = { templateId: v.templateId, version: 1, graphHash: v.graphHash, scheduleId: "daily" };
   await expect(store.attachSchedule(request, { origin: "local-desktop", auditId: "forged", decidedAt: new Date().toISOString() } as never, { kind: "all" })).rejects.toMatchObject({ code: "invalid-input" });
   const a = await store.attachSchedule(request, mintHostDecisionProof("local-desktop"), { kind: "all" }); expect(a.id).toBeTruthy(); expect(await store.getAttachment(a.id)).toEqual(a); expect(await store.listByTemplate(v.templateId)).toEqual([a]); expect(await store.listByRoutine("daily")).toEqual([a]);
   await expect(store.detachSchedule(a.id, { origin: "local-desktop" } as never)).rejects.toMatchObject({ code: "invalid-input" });
@@ -76,7 +77,7 @@ it("retains pre-folder canonical hashes when optional fields are absent", () => 
 it("refuses non-human output gates at confirmation", async () => {
   const store = new WorkflowTemplateStore(join(dir, "templates.json")); const g = graph(); g.stages[0].gate = { type: "auto", pass: { kind: "stage_ok" } }; g.stages[0].requestedOutputs = [{ kind: "send-message", toolName: "send", owner: "plugin", ownerId: "media" }];
   const r = await store.draft(null, { ...g, name: "Template", scope: { kind: "all" } });
-  await expect(store.confirmDraft(r.template.id, { expectedGraphHash: requiredValue(r.draft).graphHash, expectedDraftRevision: requiredValue(r.draft).revision }, { who: "user", origin: "local-desktop" })).rejects.toMatchObject({ code: "envelope-refused", refusals: ["outputs-need-human-gate"] });
+  await expect(store.confirmDraft(r.template.id, { expectedGraphHash: requiredValue(r.draft).graphHash, expectedDraftRevision: requiredValue(r.draft).revision }, { who: "user", origin: "local-desktop" }, unknownToolEffects)).rejects.toMatchObject({ code: "envelope-refused", refusals: ["outputs-need-human-gate"] });
 });
 it.each([null, 1, {}, { from: "project" }, { from: "stage", stageId: "_out" }])("refuses malformed folder input with a typed error %j", entry => {
   const g = graph(); g.stages[0].inputFiles = [entry] as never; expect(() => graphHashOf(g)).toThrow(expect.objectContaining({ code: "invalid-input" }));

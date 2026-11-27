@@ -6925,6 +6925,7 @@ export const en = {
   "workflowTemplates.confirmSave": "Confirm and save v1",
   "workflowTemplates.saving": "Saving template…",
   "workflowTemplates.saved": "Template version 1 saved.",
+  "workflowTemplates.unattendedMark": "can't run unattended: {tool} {reason}",
   "workflowTemplates.unavailable": "This workflow draft is no longer available. Ask for a new proposal.",
   "workflowTemplates.saveFailed": "The template could not be saved. Try Confirm and save again.",
   "workflowTemplates.allProjects": "Available in all projects",

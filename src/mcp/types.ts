@@ -172,7 +172,7 @@ export interface McpToolSchema {
   name: string;
   description: string;
   /** Untrusted permission hints; only an explicit saved rule may grant access. */
-  annotations?: { readOnlyHint?: boolean; destructiveHint?: boolean };
+  annotations?: { readOnlyHint?: boolean; destructiveHint?: boolean; openWorldHint?: boolean };
   inputSchema: {
     type: "object";
     properties: Record<string, unknown>;

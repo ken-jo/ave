@@ -17,7 +17,7 @@ export const PLUGIN_RESULT_CACHE = {
   cacheScope: "private",
 } as const satisfies { ttlMs: number; cacheScope: "public" | "private" };
 
-/** Projection carries the sole authorable read annotation and explicit restriction metadata. */
+/** Projection carries validated tool annotations and explicit restriction metadata. */
 export interface McpToolProjection {
   name: string;
   title?: string;
@@ -66,8 +66,10 @@ function toWireTool(tool: McpTool): McpToolProjection {
   }
   return {
     name: tool.name,
-    ...(tool.annotations?.readOnlyHint !== undefined
-      ? { annotations: { readOnlyHint: tool.annotations.readOnlyHint } } : {}),
+    ...(tool.annotations !== undefined ? { annotations: {
+      ...(tool.annotations.readOnlyHint === undefined ? {} : { readOnlyHint: tool.annotations.readOnlyHint }),
+      ...(tool.annotations.openWorldHint === undefined ? {} : { openWorldHint: tool.annotations.openWorldHint }),
+    } } : {}),
     ...(tool.title !== undefined ? { title: tool.title } : {}),
     description: tool.description ?? tool.name,
     inputSchema: { ...tool.inputSchema, $schema: JSON_SCHEMA_2020_12 },

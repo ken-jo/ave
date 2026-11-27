@@ -1,0 +1,52 @@
+import { expect, it } from "vitest";
+import { requiredValue } from "../../__tests__/support/required-value.js";
+import type { EnvelopeToolRef, StageEnvelope, TemplateGraph } from "../../shared/workflow-template-types.js";
+import { qualifyUnattended } from "../template-graph.js";
+
+const collections = ["tools", "mcpReadOnlyTools", "mcpGenerationTools", "pluginGenerationTools"] as const;
+
+function graph(): TemplateGraph {
+  const envelope: StageEnvelope = {
+    tools: ["local", "later"], mcpReadOnlyTools: ["sources_read"],
+    mcpGenerationTools: [{ name: "render", effect: "generate", dataSent: true }],
+    pluginGenerationTools: [{ name: "fetch", effect: "fetch", dataSent: false }],
+    readRoots: [], writePaths: [], commands: [], network: [], outputs: [], budget: { rounds: 1, minutes: 1, costUsd: 0 },
+  };
+  return { stages: [{ id: "first", name: "First", goal: "Review", gate: { type: "human" }, toolScope: "all", inputs: [], allowSubAgents: false, envelope }], edges: [] };
+}
+
+it.each(collections)("names the first failing entry and code for %s", collection => {
+  const names = { tools: "local", mcpReadOnlyTools: "sources_read", mcpGenerationTools: "render", pluginGenerationTools: "fetch" };
+  const tool = { stageId: "first", collection, name: names[collection] };
+  for (const [evidence, code] of [["outward", "outward-effect-tool"], ["unknown", "tool-effect-unknown"]] as const) {
+    expect(qualifyUnattended(graph(), { effectOf: t => t.collection === collection ? evidence : "safe" }))
+      .toEqual({ ok: false, code, tool });
+  }
+});
+
+it("checks stage and collection order before reporting a missing envelope", () => {
+  const input = graph();
+  input.stages.unshift({ ...input.stages[0], id: "missing", envelope: undefined });
+  input.stages.push({ ...input.stages[1], id: "other" });
+  const observed: Omit<EnvelopeToolRef, "stageId">[] = [];
+  expect(qualifyUnattended(input, { effectOf: tool => {
+    observed.push(tool);
+    return tool.collection === "mcpGenerationTools" ? "outward" : "safe";
+  } })).toMatchObject({ code: "outward-effect-tool", tool: { stageId: "first", collection: "mcpGenerationTools" } });
+  expect(observed.map(t => t.name)).toEqual(["local", "later", "sources_read", "render"]);
+  expect(qualifyUnattended(input, { effectOf: () => "safe" })).toEqual({ ok: false, code: "unattended-not-read-only" });
+});
+
+it.each(collections)("answers unknown for a null resolver with an entry in %s", collection => {
+  const input = graph();
+  const envelope = requiredValue(input.stages[0].envelope);
+  for (const other of collections) if (other !== collection) envelope[other] = [];
+  expect(qualifyUnattended(input, null)).toMatchObject({ ok: false, code: "tool-effect-unknown", tool: { collection } });
+});
+
+it("qualifies a version with an envelope on every stage and no envelope tools", () => {
+  const input = graph();
+  const envelope = requiredValue(input.stages[0].envelope);
+  for (const collection of collections) envelope[collection] = [];
+  expect(qualifyUnattended(input, null)).toEqual({ ok: true });
+});

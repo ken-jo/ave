@@ -11,6 +11,7 @@ import { prepareMcpContentImage } from "./mcp-tool-content.js";
 import { createMcpToolApprovalScope, mcpToolApprovalCacheKey, isMcpToolApprovalScope } from "../shared/mcp-tool-approval.js";
 import { authorizedApprovalMemoryScope } from "../tools/approval-memory-context.js";
 import { errorMessage } from "../shared/error-message.js";
+import { effectFromAnnotations } from "../permissions/tool-effect-evidence.js";
 
 /** MCP Apps spec default when a server declares no `_meta.ui.visibility`: `["model","app"]`; visible to the agent AND callable by the server's own app. */
 const SPEC_DEFAULT_VISIBILITY: readonly ToolSurface[] = ["model", "app"];
@@ -39,6 +40,13 @@ export function mcpToolToTool(
   // Discovery is an untrusted wire boundary even when its static type is known.
   const hasValidHints = (readOnlyHint === undefined || typeof readOnlyHint === "boolean")
     && (destructiveHint === undefined || typeof destructiveHint === "boolean");
+  const openWorldHint = schema.annotations?.openWorldHint;
+  const effectAnnotations = hasValidHints && (openWorldHint === undefined || typeof openWorldHint === "boolean") && schema.annotations
+    ? Object.freeze({
+      ...(readOnlyHint === undefined ? {} : { readOnlyHint }),
+      ...(destructiveHint === undefined ? {} : { destructiveHint }),
+      ...(openWorldHint === undefined ? {} : { openWorldHint }),
+    }) : undefined;
   return createDynamicTool({
     name: namespacedName,
     description: schema.description,
@@ -49,6 +57,8 @@ export function mcpToolToTool(
     approvalCacheKey: () => mcpToolApprovalCacheKey(approvalScope),
     approvalMemoryScope: () => approvalScope,
     mcpReadOnlyHint: hasValidHints && readOnlyHint === true,
+    unattendedEffect: effectFromAnnotations(effectAnnotations),
+    effectAnnotations,
     mcpRuleIdentity: {
       tool: remoteToolName,
       nonDestructive: hasValidHints && destructiveHint !== true

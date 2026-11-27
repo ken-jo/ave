@@ -449,9 +449,10 @@ it.each([
   [{ readOnlyHint: "true" }, false],
   [{ readOnlyHint: true, destructiveHint: true }, false],
   [{ idempotentHint: true }, false],
-  [{ openWorldHint: false }, false],
+  [{ openWorldHint: false }, true],
+  [{ openWorldHint: "false" }, false],
   [{ title: "Status" }, false],
-])("limits protocol tool annotations %j to the authorable read hint (%s)", (annotations, accepted) => {
+])("validates the supported protocol tool annotations %j (%s)", (annotations, accepted) => {
   const errors = violations("Tool annotations", SCHEMA.$defs.types.Tool, {
     name: "panel_status", inputSchema: { type: "object", properties: {} }, annotations,
   });
