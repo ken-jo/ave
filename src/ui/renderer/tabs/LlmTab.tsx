@@ -2421,27 +2421,30 @@ export const LlmTab = memo(function LlmTab(props: LlmTabProps) {
   /** Whether the route chat is on right now can actually answer a turn. Saving a credential deliberately does NOT adopt the provider it belongs to; the model list is the one
    * switch, and a save silently moving the route would make it two. What a save does owe the user is the pointer: this is what says the key landed but chat is still elsewhere. */
   const activeRouteCanChat = useMemo(() => {
-    if (subscription.activeRuntime.kind === "subscription") return true;
+    if (subscription.activeRuntime.kind === "subscription") {
+      const provider = subscription.activeRuntime.provider;
+      return subscription.providers.some((view) => view.descriptor.id === provider && view.status?.connection === "connected");
+    }
     if (retiredLlmProvider) return false;
     const active = connections.find(
       (row) => row.apiVendorId && rowCredentialId(row) === activeApiRowId,
     );
     return Boolean(active) && rowChatBlocker(active!) === null;
-  }, [activeApiRowId, connections, rowChatBlocker, subscription.activeRuntime.kind, retiredLlmProvider]);
+  }, [activeApiRowId, connections, rowChatBlocker, subscription.activeRuntime, subscription.providers, retiredLlmProvider]);
 
   // The saved model is hidden from the chooser in either retirement tier, so the trigger names it and the tier instead of pointing at no option.
   const activeModelRetirement = isRetiredLlmModelMarker(retiredLlmProvider)
     ? retiredLlmProvider.reason
     : modelRetirementOn(savedModelListCache, activeSyncRow?.modelListKey, vendor)(activeModelValue);
   const selectedUnifiedValue = subscription.activeRuntime.kind === "subscription"
-    ? unifiedValue(subscription.activeRuntime.provider, subscription.activeRuntime.model ?? "")
+    ? activeRouteCanChat ? unifiedValue(subscription.activeRuntime.provider, subscription.activeRuntime.model ?? "") : ""
     // No model is selected on a route that cannot answer: an empty value lets the trigger say so instead of pointing at an option that is not listed.
     : retiredLlmProvider || activeModelRetirement || !activeRouteCanChat || !activeModelValue
       ? ""
       : unifiedValue(apiProviderId(activeApiRowId), activeModelValue);
   const unifiedPlaceholder = subscription.activeRuntime.kind === "api" && activeModelRetirement
     ? retiredModelPlaceholder(t, activeModelRetirement, isRetiredLlmModelMarker(retiredLlmProvider) ? retiredLlmProvider.model : activeModelValue)
-    : subscription.activeRuntime.kind === "api" && !activeRouteCanChat
+    : !activeRouteCanChat
       ? t("llmTab.modelPlaceholderNoProvider")
       : t("llmTab.model");
 

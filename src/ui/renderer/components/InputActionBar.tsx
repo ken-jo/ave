@@ -19,7 +19,9 @@ import type { ReasoningLevel } from "./ReasoningSlider.js";
 import { getApi } from "../api-client.js";
 import { isIpcErrorResult } from "../types.js";
 import { modelCardChoices, type ModelCardChoice } from "../hooks/use-settings.js";
-import type { AppSettings } from "../types.js";
+import type { AveApi } from "../types.js";
+import { canUseLlmVendorWithoutApiKey, getLlmVendorSettings } from "../../../shared/llm-vendor-defaults.js";
+import { marketplaceProviderPresetSecretId } from "../../../shared/marketplace-package-assets.js";
 import type { RolePreset } from "../../../data/role-presets.js";
 import type { UserKeyboardIntentSnapshot } from "../../../shared/chat-origin.js";
 import type { McpPromptEntry } from "./slash-picker-data.js";
@@ -767,15 +769,38 @@ function ModelQuickPicker({
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
-    const take = (settings: AppSettings) => {
-      if (cancelled) return;
-      const nextChoices = modelCardChoices(settings.llm);
-      setChoices(nextChoices);
-      setAnyPinned((settings.llm.pinnedModels ?? []).length > 0);
-      runtimeRef.current = settings.llm.activeChatRuntime?.kind ?? "api";
-    };
+    let revision = 0;
     const api = getApi();
-    void api.getSettings().then(take).catch(() => { /* card stays as it was */ });
+    const take = async (settings: Awaited<ReturnType<AveApi["getSettings"]>>) => {
+      if (cancelled) return;
+      const request = ++revision;
+      const { llm, activeChatModel } = settings;
+      const nextChoices = modelCardChoices(llm, activeChatModel);
+      setAnyPinned((llm.pinnedModels ?? []).length > 0);
+      runtimeRef.current = llm.activeChatRuntime?.kind ?? "api";
+      const vendors = new Set(nextChoices.flatMap((choice) => choice.kind === "api" ? [choice.vendor] : []));
+      const connectedVendors = new Set(await Promise.all([...vendors].map(async (vendor) => {
+        if (activeChatModel?.kind === "api" && activeChatModel.vendor === vendor) return vendor;
+        const block = getLlmVendorSettings(llm.vendors, vendor);
+        if (vendor === "vertex-ai") return block.vertexProject ? vendor : null;
+        const presetId = vendor === "openai-compatible" ? llm.marketplaceProviderPresetId : undefined;
+        if (presetId) {
+          const preset = settings.marketplace?.installedProviderPresets?.find((entry) => entry.providerId === presetId);
+          if (!preset) return null;
+          if (preset.requiresApiKey === false && preset.baseUrl.trim()) return vendor;
+        } else if (canUseLlmVendorWithoutApiKey(vendor, block)) {
+          return vendor;
+        }
+        const credential = presetId ? marketplaceProviderPresetSecretId(presetId) : vendor;
+        return await api.hasApiKey(credential).catch(() => false) === true ? vendor : null;
+      })));
+      if (!cancelled && revision === request) {
+        setChoices(nextChoices.filter((choice) => choice.kind === "subscription" || connectedVendors.has(choice.vendor)));
+      }
+    };
+    void api.getSettings().then((settings) => {
+      if (revision === 0) return take(settings);
+    }).catch(() => { /* card stays as it was */ });
     const unsubscribe = api.onSettingsUpdated(take);
     return () => { cancelled = true; unsubscribe(); };
   }, [open]);

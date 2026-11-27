@@ -70,6 +70,7 @@ export function assembleAppServices(ctx: ReadyBootContext): AppServices {
     postTurnHookChain: ctx.postTurnHookChain,
     approvalGate: ctx.approvalGate,
     rewireReviewerAgent: ctx.rewireReviewerAgent,
+    isSubscriptionConnected: ctx.isSubscriptionConnected,
     getApprovalSentenceSelector: () => ctx.approvalSentenceSelector,
     refreshActiveLlmWildcard: ctx.refreshActiveLlmWildcard,
     refreshSandboxNetworkConfig: ctx.refreshSandboxNetworkConfig,

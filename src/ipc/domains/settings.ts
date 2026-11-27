@@ -49,6 +49,7 @@ import type {
 import type { ActiveChatModel } from "../../shared/active-chat-model.js";
 import {
   resolveMainActiveChatModel,
+  type SubscriptionConnectionReader,
   type ActiveChatModelSettingsReader,
 } from "../../engine/turn/active-chat-model.js";
 import {
@@ -108,15 +109,16 @@ export type RendererSettingsSnapshot = Omit<AppSettings, "a2aRemote" | "upstream
 export async function rendererSettingsSnapshot(
   settingsService: ActiveChatModelSettingsReader & Pick<SettingsService, "getAll">,
   snapshot: AppSettings = settingsService.getAll(),
+  isSubscriptionConnected?: SubscriptionConnectionReader,
 ): Promise<RendererSettingsSnapshot> {
   // `upstreamProxy` has its own channels (permissions upstreamProxyGet/Set).
   const { a2aRemote: _mainOnly, upstreamProxy: _ownChannel, memoryEmbedding: _embeddingConfig, ...projected } = structuredClone(snapshot);
-  return { ...projected, activeChatModel: await resolveMainActiveChatModel(settingsService) };
+  return { ...projected, activeChatModel: await resolveMainActiveChatModel(settingsService, undefined, isSubscriptionConnected) };
 }
 
 /** Shared by every handler that mutates settings and must re-broadcast the projected snapshot to all windows. */
 export async function broadcastSettingsSnapshot(
-  deps: Pick<IpcDeps, "settingsService" | "getAppWindows" | "getMainWindow">,
+  deps: Pick<IpcDeps, "settingsService" | "getAppWindows" | "getMainWindow" | "isSubscriptionConnected">,
   shouldBroadcast: () => boolean = () => true,
 ): Promise<void> {
   const snapshot = deps.settingsService.getAll();
@@ -127,7 +129,7 @@ export async function broadcastSettingsSnapshot(
   // `appearance`; a partial snapshot (e.g. a test double or a pre-migration settings file) must not crash the broadcast. setLocale coerces undefined to the English default.
   const nextLocale = normalizeLocale(snapshot.appearance?.language);
   const localeLoaded = await tryLoadLocaleMessages(nextLocale);
-  const rendererSnapshot = await rendererSettingsSnapshot(deps.settingsService, snapshot);
+  const rendererSnapshot = await rendererSettingsSnapshot(deps.settingsService, snapshot, deps.isSubscriptionConnected);
   // Locale loading yields. Suppress stale snapshots (and their locale side effect) if any
   // settings mutation or a caller-specific ownership hand-off occurred while it was in flight.
   if (
@@ -364,6 +366,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
   let activeChatRuntimeTransitionRevision = 0;
   // Handler-start ownership prevents a slow verify/model lookup from applying an older subscription choice after a newer provider/API selection.
   let activeChatRuntimeSelectionIntentRevision = 0;
+  let observedSubscriptionConnection: { provider: SubscriptionRuntimeId; connected: boolean } | undefined;
   const publishSubscriptionRuntimeStatusUpdated = (provider: SubscriptionRuntimeId): void => {
     const event: SubscriptionRuntimeStatusUpdatedEvent = {
       provider,
@@ -449,8 +452,27 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     ) => Promise<SubscriptionRuntimeStatus>,
   ): Promise<SubscriptionRuntimeActionResult> => {
     const result = await runSubscriptionAction(provider, operation);
+    await refreshActiveSubscriptionConnection(provider, result.status);
     publishSubscriptionRuntimeStatusUpdated(provider);
     return result;
+  };
+  const refreshActiveSubscriptionConnection = async (
+    provider: SubscriptionRuntimeId,
+    status: SubscriptionRuntimeStatus | undefined,
+  ): Promise<void> => {
+    const active = settingsService.get("llm").activeChatRuntime;
+    if (active?.kind !== "subscription" || active.provider !== provider) return;
+    const connected = status?.connection === "connected";
+    if (observedSubscriptionConnection?.provider === provider && observedSubscriptionConnection.connected === connected) return;
+    const observation = { provider, connected };
+    observedSubscriptionConnection = observation;
+    try {
+      await deps.rewireReviewerAgent?.();
+    } catch (err) {
+      if (observedSubscriptionConnection === observation) observedSubscriptionConnection = undefined;
+      log.warn({ err }, "Could not refresh the reviewer after a subscription connection change");
+    }
+    await broadcastSettingsSnapshot(deps);
   };
   const runSubscriptionModels = async (
     provider: SubscriptionRuntimeId,
@@ -539,6 +561,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     activeChatRuntime: LLMSettings["activeChatRuntime"],
   ): Promise<void> => {
     const previousLlm = settingsService.get("llm");
+    observedSubscriptionConnection = undefined;
     const previousSubscriptionProvider = previousLlm.activeChatRuntime?.kind === "subscription"
       ? previousLlm.activeChatRuntime.provider
       : null;
@@ -635,7 +658,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
 
   ipcMain.handle(CHANNELS.settings.get, (event) => {
     if (!validateHostRendererSender(event)) { auditUnauthorized(auditLogger, CHANNELS.settings.get, event); return UNAUTHORIZED_FRAME; }
-    return rendererSettingsSnapshot(settingsService);
+    return rendererSettingsSnapshot(settingsService, undefined, deps.isSubscriptionConnected);
   });
 
   // Read-only, and presence only: the answer is a list of settings paths the environment is forcing ON, never the value of any variable. A control that
@@ -729,7 +752,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
       && Object.keys(llmPatch).length === 1 && Object.keys(partial).length === 1) {
       const result = await settingsService.patch(partial);
       await broadcastSettingsSnapshot(deps);
-      return rendererSettingsSnapshot(settingsService, result);
+      return rendererSettingsSnapshot(settingsService, result, deps.isSubscriptionConnected);
     }
     // LOW: validate vendors["azure-foundry"].baseUrl at write time so an invalid Foundry endpoint is rejected before it reaches the settings store.
     const foundryVendorPatch = (llmPatch?.vendors as Record<string, unknown> | undefined)
@@ -869,7 +892,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     reconcileShortcutStartupIfChanged();
     if (marketplaceWritten) hooks?.marketplaceSettingsChanged();
     await broadcastSettingsSnapshot(deps);
-    return rendererSettingsSnapshot(settingsService, result);
+    return rendererSettingsSnapshot(settingsService, result, deps.isSubscriptionConnected);
   });
 
   ipcMain.handle(CHANNELS.settings.setApiKey, async (e, vendor: string, apiKey: string) => {
@@ -1005,7 +1028,9 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     // Only the user's explicit "check again" re-runs discovery; other card reads may reuse a settled status.
     const refresh = typeof optionsValue === "object" && optionsValue !== null
       && (optionsValue as { refresh?: unknown }).refresh === true;
-    return runSubscriptionAction(providerValue, (runtime, provider) => runtime.getStatus(provider, { allowCached: !refresh }));
+    const result = await runSubscriptionAction(providerValue, (runtime, provider) => runtime.getStatus(provider, { allowCached: !refresh }));
+    await refreshActiveSubscriptionConnection(providerValue, result.status);
+    return result;
   });
   ipcMain.handle(CHANNELS.settings.subscriptionChooseRuntime, async (e, providerValue: unknown) => {
     if (!validateHostRendererSender(e)) {

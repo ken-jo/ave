@@ -44,12 +44,14 @@ import { emitEvent } from "../types.js";
 import { createLogger } from "../../lib/logger.js";
 import { createSubscriptionLlmProvider } from "../../main/subscription-llm-provider.js";
 import {
+  getSubscriptionRuntimeService,
   SubscriptionRuntimeServiceError,
   type SubscriptionRuntimeAuditSink,
 } from "../../main/subscription-runtime-service.js";
+import type { SubscriptionConnectionReader } from "../../engine/turn/active-chat-model.js";
 import { validateExternalUrl } from "../../shared/external-url.js";
 import type { LLMProvider } from "../../engine/llm/types.js";
-import type { SubscriptionChatRuntimeSelection } from "../../shared/subscription-runtime.js";
+import type { SubscriptionChatRuntimeSelection, SubscriptionRuntimeId } from "../../shared/subscription-runtime.js";
 import type { AuditLogger } from "../../audit/audit-logger.js";
 import type { BootContext } from "../context.js";
 import type { ConversationLoop } from "../../engine/conversation-loop.js";
@@ -75,6 +77,7 @@ export function sessionHeldByOtherLoop(
 }
 
 export interface SubscriptionChatLoopBindings {
+  readonly isSubscriptionConnected: SubscriptionConnectionReader;
   readonly subscriptionProviderFactory: (
     selection: SubscriptionChatRuntimeSelection,
     fallbackSelection?: SubscriptionChatRuntimeSelection,
@@ -113,6 +116,14 @@ export function createSubscriptionChatLoopBindings(input: {
     }
   };
   return Object.freeze({
+    isSubscriptionConnected: async (provider: SubscriptionRuntimeId) => {
+      try {
+        const runtime = await getSubscriptionRuntimeService(openAuthorizationUrl, { audit });
+        return (await runtime.getStatus(provider, { allowCached: true })).connection === "connected";
+      } catch {
+        return false;
+      }
+    },
     subscriptionProviderFactory: (
       selection: SubscriptionChatRuntimeSelection,
       fallbackSelection?: SubscriptionChatRuntimeSelection,

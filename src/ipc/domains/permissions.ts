@@ -718,7 +718,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       }
       await deps.refreshSandboxNetworkConfig?.();
       await broadcastSettingsSnapshot(deps);
-      return rendererSettingsSnapshot(deps.settingsService, updated);
+      return rendererSettingsSnapshot(deps.settingsService, updated, deps.isSubscriptionConnected);
     });
     // Keep later writes runnable while returning this operation's own failure to its caller.
     securitySettingsWrite = write.catch(() => undefined);

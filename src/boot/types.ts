@@ -65,6 +65,7 @@ export function offEvent(type: string, handler: EventHandler): void {
 }
 
 export interface AppServices {
+  isSubscriptionConnected?: import("../engine/turn/active-chat-model.js").SubscriptionConnectionReader;
   relaunchApp?: () => void;
   pythonRuntime?: PythonRuntimeBootstrapper;
   pythonPath?: string;

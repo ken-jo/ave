@@ -67,6 +67,7 @@ import type { PluginBackgroundEffectApprovals } from "../plugins/plugin-backgrou
 import type { PluginOperationGrantCoordinator } from "../permissions/plugin-operation-grant.js";
 import type { PluginOperationIdentityProvider } from "../tools/invocation-services.js";
 import type { SubscriptionChatRuntimeSelection } from "../shared/subscription-runtime.js";
+import type { SubscriptionConnectionReader } from "../engine/turn/active-chat-model.js";
 import type { TracingHandle } from "../engine/telemetry/tracing.js";
 
 type PluginPaths = ReturnType<typeof import("../plugins/plugin-paths.js").resolvePluginPaths>;
@@ -163,6 +164,7 @@ export class BootContext {
     selection: SubscriptionChatRuntimeSelection,
     fallbackSelection?: SubscriptionChatRuntimeSelection,
   ) => LLMProvider | null;
+  declare isSubscriptionConnected: SubscriptionConnectionReader;
   /** Gated IPC writes card context slots; prompt construction reads them at turn build, with no push-triggered turns. */
   declare mcpAppModelContext: McpAppModelContextStore;
   declare rationaleScopeReviewer: RationaleScopeReviewer;
@@ -284,6 +286,7 @@ const BOOT_CONTEXT_FIELDS = [
   "buildWorkerEgressAllowlists",
   "systemPromptBuilder",
   "subscriptionProviderFactory",
+  "isSubscriptionConnected",
   "mcpAppModelContext",
   "rationaleScopeReviewer",
   "approvalSentenceSelector",

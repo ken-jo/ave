@@ -661,6 +661,7 @@ function SideChatSession({
             onImageAttachmentLimitExceeded={emitImageAttachmentLimitExceeded}
             placeholder={computeComposerPlaceholder({
               hasApiKey,
+              connectionMissing: subscriptionRuntimePolicy?.connectionMissing,
               streaming: isStreaming,
               subscriptionUnavailable: runtimeUnavailable,
               subscriptionPending: runtimePending,

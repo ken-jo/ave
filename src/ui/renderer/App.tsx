@@ -1377,6 +1377,7 @@ export function App() {
   const apiUsageProjectionAvailable = settingsLoaded && !subscriptionRuntimeSelected;
   const effectiveLlmReady = useMemo(
     () => {
+      if (subscriptionRuntimePolicy.connectionMissing) return false;
       // Subscription readiness alone authorizes sending; pending or failed selections must not fall back to stale API keys.
       if (subscriptionRuntimeSelected) return subscriptionChatReady === true;
       // A removed provider keeps API chat unavailable until the user selects a replacement.
@@ -1385,7 +1386,7 @@ export function App() {
         ? (chatReadyWithoutApiKey ? true : null)
         : effectiveHasApiKey || chatReadyWithoutApiKey;
     },
-    [effectiveHasApiKey, chatReadyWithoutApiKey, subscriptionChatReady, subscriptionRuntimeSelected, retiredLlmProvider],
+    [effectiveHasApiKey, chatReadyWithoutApiKey, subscriptionChatReady, subscriptionRuntimeSelected, retiredLlmProvider, subscriptionRuntimePolicy.connectionMissing],
   );
   const subscriptionUnavailableProvider = subscriptionRuntimePolicy.unavailableProvider;
   const subscriptionPendingProvider = subscriptionRuntimePolicy.pendingProvider;

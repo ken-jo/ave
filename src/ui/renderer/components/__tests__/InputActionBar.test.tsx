@@ -636,6 +636,7 @@ describe("model card (status-row model cell)", () => {
       vendors: { openai: { model: "gpt-5.4" } },
     } });
     getSettings.mockResolvedValue(settings);
+    hasApiKey.mockResolvedValueOnce(true);
     updateSettings.mockImplementation(async (patch: { llm?: LLMSettingsPatch }) => {
       settings.llm = mergeLlmPatch(settings.llm, patch.llm ?? {}, settings.marketplace.installedProviderPresets);
       return settings;
@@ -831,10 +832,36 @@ describe("model card (status-row model cell)", () => {
     await waitFor(() => expect(subscriptionUseApiForChat).toHaveBeenCalledTimes(1));
   });
 
-  it("checks the subscription provider — not an API model — while a subscription runtime is active", async () => {
+  it("omits disconnected routes and retains connected alternatives in the picker", async () => {
+    const settings = settingsWithPins();
+    getSettings.mockResolvedValue({
+      ...settings,
+      llm: {
+        ...settings.llm,
+        activeChatRuntime: { kind: "subscription", provider: "codex", model: "example-model" },
+        pinnedModels: [...settings.llm.pinnedModels, "example-api-model"],
+        modelListCache: {
+          ...settings.llm.modelListCache,
+          "openai": { vendor: "openai", models: ["example-api-model"] },
+        },
+      },
+      activeChatModel: { kind: "none", reason: "no-connected-provider" },
+    });
+    const { getByTestId, findByTestId } = renderBar({ onOpenModelSettings: vi.fn() });
+    fireEvent.click(getByTestId("iab-status-model"));
+    const card = await findByTestId("model-quick-picker");
+    await waitFor(() => expect(card.querySelectorAll("[role='option']")).toHaveLength(2));
+    expect(card.querySelector("[aria-selected='true']")).toBeNull();
+    expect(card).not.toHaveTextContent("example-model");
+    expect(card).not.toHaveTextContent("example-api-model");
+    expect(hasApiKey).toHaveBeenCalledWith("openai");
+  });
+
+  it("checks the saved model when its subscription provider is connected", async () => {
     getSettings.mockResolvedValue({
       ...settingsWithPins(),
-      llm: { ...settingsWithPins().llm, activeChatRuntime: { kind: "subscription", provider: "codex" } },
+      llm: { ...settingsWithPins().llm, activeChatRuntime: { kind: "subscription", provider: "codex", model: "example-model" } },
+      activeChatModel: { kind: "subscription", provider: "codex", model: "example-model" },
     });
     const { getByTestId, findByTestId } = renderBar({ onOpenModelSettings: vi.fn() });
     fireEvent.click(getByTestId("iab-status-model"));
@@ -843,6 +870,7 @@ describe("model card (status-row model cell)", () => {
     const checked = card.querySelectorAll("[role='option'][aria-selected='true']");
     expect(checked).toHaveLength(1);
     expect(checked[0]?.querySelector("button")?.getAttribute("data-testid")).toBe("model-quick-picker-option:codex");
+    expect(checked[0]).toHaveTextContent("example-model");
     // The plan's brand, never the runtime's own name.
     expect(checked[0]?.textContent).toContain("ChatGPT");
     expect(checked[0]?.textContent).not.toContain("Codex");
@@ -860,6 +888,7 @@ describe("model card (status-row model cell)", () => {
     getSettings.mockResolvedValue({
       ...settingsWithPins(),
       llm: { ...settingsWithPins().llm, activeChatRuntime: { kind: "subscription", provider: "codex" } },
+      activeChatModel: { kind: "subscription", provider: "codex", model: null },
     });
     const { getByTestId, findByTestId } = renderBar({ onOpenModelSettings: vi.fn() });
     fireEvent.click(getByTestId("iab-status-model"));
@@ -880,6 +909,7 @@ describe("model card (status-row model cell)", () => {
     getSettings.mockResolvedValue({
       ...settingsWithPins(),
       llm: { ...settingsWithPins().llm, activeChatRuntime: { kind: "subscription", provider: "claude-code" } },
+      activeChatModel: { kind: "subscription", provider: "claude-code", model: null },
     });
     hasApiKey.mockClear();
     const view = renderBar();
@@ -897,6 +927,7 @@ describe("model card (status-row model cell)", () => {
     getSettings.mockResolvedValue({
       ...settingsWithPins(),
       llm: { ...settingsWithPins().llm, activeChatRuntime: { kind: "subscription", provider: "kimi-code" } },
+      activeChatModel: { kind: "subscription", provider: "kimi-code", model: null },
     });
     const { getByTestId, findByTestId } = renderBar({ onOpenModelSettings: vi.fn() });
     fireEvent.click(getByTestId("iab-status-model"));
@@ -918,6 +949,7 @@ describe("model card (status-row model cell)", () => {
     getSettings.mockResolvedValue({
       ...settingsWithPins(),
       llm: { ...settingsWithPins().llm, activeChatRuntime: { kind: "subscription", provider: "claude-code" } },
+      activeChatModel: { kind: "subscription", provider: "claude-code", model: null },
     });
     const { getByTestId, findByTestId } = renderBar({ onOpenModelSettings: vi.fn() });
     fireEvent.click(getByTestId("iab-status-model"));

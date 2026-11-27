@@ -394,8 +394,9 @@ export function useSettings(api: AveApi): UseSettingsResult {
       settingsLoaded,
       capabilities: subscriptionRuntimeCapabilities,
       provableOnUse: subscriptionRuntimeProvableOnUse,
+      connectionMissing: activeChatModel?.kind === "none" && activeChatModel.reason === "no-connected-provider",
     }),
-    [activeSubscriptionRuntime, settingsLoaded, subscriptionRuntimeCapabilities, subscriptionRuntimeProvableOnUse],
+    [activeSubscriptionRuntime, settingsLoaded, subscriptionRuntimeCapabilities, subscriptionRuntimeProvableOnUse, activeChatModel],
   );
 
   return {
@@ -453,7 +454,7 @@ export type ModelCardChoice = ApiModelCardChoice | SubscriptionModelCardChoice;
 
 /** Show the active runtime as checked and API pins as alternatives; resolve pins against offered models and retain user
  * order. */
-export function modelCardChoices(llm: AppSettings["llm"]): ModelCardChoice[] {
+export function modelCardChoices(llm: AppSettings["llm"], activeChatModel?: ActiveChatModel): ModelCardChoice[] {
   const pinned = llm.pinnedModels ?? [];
   const offered = new Map<string, Set<LLMVendor>>();
   const active = llm.provider;
@@ -487,13 +488,9 @@ export function modelCardChoices(llm: AppSettings["llm"]): ModelCardChoice[] {
   for (const modelId of getVendorOption(active).modelOptions) {
     offer(active, modelId);
   }
-  // `kind === "subscription"` alone decides the branch: an unrecognised
-  // provider id must still keep the card off the API model it would
-  // otherwise mismark as current. `isSubscriptionRuntimeId` below only
-  // chooses how to *label* that provider — it never re-admits the API
-  // branch.
-  const activeRuntime = llm.activeChatRuntime;
-  const subscription = activeRuntime?.kind === "subscription" ? activeRuntime : null;
+  const followsApi = llm.activeChatRuntime?.kind !== "subscription";
+  const apiModelCurrent = followsApi && !llm.retiredProvider
+    && (activeChatModel === undefined || activeChatModel.kind === "api");
   const choices: ModelCardChoice[] = [];
   for (const modelId of pinned) {
     for (const vendor of offered.get(modelId) ?? []) {
@@ -503,32 +500,22 @@ export function modelCardChoices(llm: AppSettings["llm"]): ModelCardChoice[] {
         vendor,
         vendorLabel: getVendorOption(vendor).label,
         modelId,
-        // A pinned API model can equal the vendor/model the settings still hold for the API path even while a subscription runtime
-        // is what the chat is actually on — that stale match is not "current".
-        current: subscription === null && !llm.retiredProvider && vendor === active && modelId === currentModel,
+        current: apiModelCurrent && vendor === active && modelId === currentModel,
       });
     }
   }
   // A retired vendor leaves its configured model as an unselected candidate; a retired model is not offered at all.
-  if (subscription === null && currentModel && !retired(active, currentModel) && !choices.some((choice) =>
+  if (followsApi && currentModel && !retired(active, currentModel) && !choices.some((choice) =>
     choice.kind === "api" && choice.vendor === active && choice.modelId === currentModel
   )) {
-    choices.unshift({ kind: "api", vendor: active, vendorLabel: getVendorOption(active).label, modelId: currentModel, current: !llm.retiredProvider });
+    choices.unshift({ kind: "api", vendor: active, vendorLabel: getVendorOption(active).label, modelId: currentModel, current: apiModelCurrent });
   }
-  if (subscription) {
-    const model = typeof subscription.model === "string" ? subscription.model.trim() : "";
-    // `subscriptionRuntimeDescriptor` falls back to its first entry for an id
-    // it does not recognise — fine for a lookup that only ever sees validated
-    // ids, wrong here: an unrecognised id must show as itself, never borrow
-    // another provider's label.
-    const vendorLabel = isSubscriptionRuntimeId(subscription.provider)
-      ? subscriptionRuntimeDescriptor(subscription.provider).planName
-      : subscription.provider;
+  if (activeChatModel?.kind === "subscription") {
     choices.unshift({
       kind: "subscription",
-      provider: subscription.provider,
-      vendorLabel,
-      modelId: model.length > 0 ? model : null,
+      provider: activeChatModel.provider,
+      vendorLabel: subscriptionRuntimeDescriptor(activeChatModel.provider).planName,
+      modelId: activeChatModel.model,
       current: true,
     });
   }
