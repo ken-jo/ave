@@ -1,3 +1,5 @@
+import { isElementShown } from "./browser-observation-preview.js";
+
 /** Side-panel blocks use the group's last composer, then its main composer; main-pane blocks use the window's last
  * composer, then the pane's own chat. */
 export type ComposerKind = "conversation" | "side-chat";
@@ -11,7 +13,7 @@ export interface ComposerTarget {
   kind: ComposerKind;
   /** Put `text` into the draft; false when it did not fit. */
   attach: (text: string) => boolean;
-  attachImage?: (base64: string) => Promise<boolean>;
+  attachImage?: (base64: string, canCommit?: () => boolean) => Promise<boolean>;
   /** Whether the user can see this composer now. */
   available: () => boolean;
   /** The composer's dock: focus landing inside it is "the user used it". */
@@ -66,10 +68,11 @@ function conversationOf(groupId: string): ComposerTarget | null {
 }
 
 /** The chat docked to a surface pane (the terminal's own conversation), when the user can see its composer. */
-function sideChatOf(groupId: string | undefined): ComposerTarget | null {
+function sideChatOf(groupId: string | undefined): [symbol, ComposerTarget] | null {
   if (groupId === undefined) return null;
-  for (const target of targets.values()) {
-    if (target.groupId === groupId && target.kind === "side-chat" && target.available()) return target;
+  for (const entry of targets) {
+    const target = entry[1];
+    if (target.groupId === groupId && target.kind === "side-chat" && target.available()) return entry;
   }
   return null;
 }
@@ -85,7 +88,7 @@ function anyConversation(): ComposerTarget | null {
 export function attachToComposer(text: string, from: { fromGroup: string } | { focusedGroupId: string; ownChatGroup?: string }): AttachTextResult {
   const target = "fromGroup" in from
     ? usable(lastUsedByGroup.get(from.fromGroup)) ?? conversationOf(from.fromGroup)
-    : usable(lastUsed) ?? sideChatOf(from.ownChatGroup) ?? conversationOf(from.focusedGroupId) ?? anyConversation();
+    : usable(lastUsed) ?? sideChatOf(from.ownChatGroup)?.[1] ?? conversationOf(from.focusedGroupId) ?? anyConversation();
   return target ? target.attach(text) : "no-composer";
 }
 
@@ -97,9 +100,24 @@ export async function attachImageToComposer(base64: string, groupId?: string): P
   return target?.attachImage ? target.attachImage(base64) : "no-composer";
 }
 
-export async function attachImageToPaneChat(base64: string, paneChatGroupId: string): Promise<AttachTextResult> {
-  const target = sideChatOf(paneChatGroupId);
-  return target?.attachImage ? target.attachImage(base64) : "no-composer";
+export async function attachImageToPaneChat(base64: string, paneChatGroupId: string, sourceCurrent: () => boolean): Promise<AttachTextResult | "target-changed"> {
+  const registration = sideChatOf(paneChatGroupId);
+  if (!registration) return "no-composer";
+  const [key, target] = registration;
+  const dock = target.element();
+  if (!target.attachImage || !dock || !isElementShown(dock)) return "no-composer";
+  let current = true;
+  const canCommit = () => {
+    current &&= sourceCurrent() && targets.get(key) === target && target.available() && target.element() === dock && isElementShown(dock);
+    return current;
+  };
+  try {
+    const attached = await target.attachImage(base64, canCommit);
+    return attached || (canCommit() ? false : "target-changed");
+  } catch (error) {
+    if (!canCommit()) return "target-changed";
+    throw error;
+  }
 }
 
 /** Test-only. */

@@ -535,7 +535,7 @@ function SideChatSession({
       groupId: chatGroupId,
       kind: "side-chat",
       attach: (text) => attachPastedTextRef.current(text),
-      attachImage: (base64) => attachImageRef.current(base64),
+      attachImage: (base64, canCommit) => attachImageRef.current(base64, canCommit),
       available: () => shownRef.current,
       element: () => dockRef.current,
     });

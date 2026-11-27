@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import "../../../../../test/renderer/setup.js";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
+import { useRef, useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BrowserWorkspaceApi } from "../../../../shared/browser-workspace.js";
 import { t, translate } from "../../../../i18n/index.js";
@@ -8,9 +9,11 @@ import { deferred } from "../../../../__tests__/support/deferred.js";
 import { BrowserCaptureControls } from "../browser-capture-controls.js";
 import { registerComposerTarget, resetComposerTargetsForTest } from "../../preview/composer-targets.js";
 import { setWebSurfaceElement } from "../../preview/web-surfaces.js";
+import { useAttachmentPicker } from "../../hooks/use-attachment-picker.js";
+import type { Attachment } from "../../types/attachments.js";
 
 const TAB = "browser:capture";
-afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); resetComposerTargetsForTest(); setWebSurfaceElement(TAB, null); });
+afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); resetComposerTargetsForTest(); setWebSurfaceElement(TAB, null); });
 
 function mount(paneChatGroupId?: string) {
   const attachImage = vi.fn(async () => true);
@@ -79,6 +82,46 @@ describe("browser user captures", () => {
     });
     expect(attachReplacement).not.toHaveBeenCalled();
     expect(attachImage).not.toHaveBeenCalled();
+  });
+
+  it.each(["hide", "replace composer", "replace browser"] as const)("releases a staged capture if the user can %s while it is attaching", async (change) => {
+    const groupId = "pane:capture-draft";
+    const { api, rerender } = mount(groupId);
+    const image = { ok: true, path: "/work/capture.png", dataUrl: "data:image/png;base64,aW1hZ2U=", mimeType: "image/png", width: 200, height: 100, bytes: 5 };
+    const staged = deferred<typeof image>();
+    const saveClipboardImage = vi.fn(async () => change === "hide" ? staged.promise : image);
+    const readImage = vi.fn(async () => change === "hide" ? image : staged.promise);
+    const release = vi.fn(async () => ({ ok: true }));
+    vi.stubGlobal("ave", { attach: { saveClipboardImage, readImage, release } });
+    const dock = render(<div />).container;
+    vi.spyOn(dock, "getBoundingClientRect").mockReturnValue(new DOMRect(10, 10, 200, 100));
+    const { result, unmount } = renderHook(() => {
+      const [attachments, setAttachments] = useState<Attachment[]>([]);
+      const [draft, setQuestion] = useState("");
+      const picker = useAttachmentPicker({ attachmentNCounter: useRef(0), composerRef: useRef(null), setAttachments, setQuestion, imagesEnabled: true });
+      return { attachments, draft, attachImage: picker.attachImage };
+    });
+    const unregister = registerComposerTarget({ groupId, kind: "side-chat", attach: () => true, attachImage: result.current.attachImage, available: () => true, element: () => dock });
+    await choose("browser-capture-viewport");
+    expect(change === "hide" ? saveClipboardImage : readImage).toHaveBeenCalledOnce();
+
+    const attachReplacement = vi.fn(async () => true);
+    if (change === "hide") dock.hidden = true;
+    if (change === "replace composer") {
+      unregister();
+      unmount();
+      registerComposerTarget({ groupId, kind: "side-chat", attach: () => true, attachImage: attachReplacement, available: () => true, element: () => dock });
+    }
+    if (change === "replace browser") {
+      rerender(<BrowserCaptureControls key="replacement" api={api} tabId="browser:replacement" paneChatGroupId={groupId} />);
+    }
+    await act(async () => { staged.resolve(image); });
+
+    expect.soft(release).toHaveBeenCalledExactlyOnceWith([image.path]);
+    expect.soft(result.current.attachments).toEqual([]);
+    expect.soft(result.current.draft).toBe("");
+    expect(attachReplacement).not.toHaveBeenCalled();
+    if (change !== "replace browser") expect(screen.getByRole("alert")).toHaveTextContent(t("browserCapture.failed"));
   });
 
   it("normalizes a host drag rectangle by the guest zoom without injecting an overlay", async () => {

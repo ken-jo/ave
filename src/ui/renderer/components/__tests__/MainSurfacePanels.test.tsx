@@ -143,6 +143,8 @@ describe("SurfacePane", () => {
         api={{ ...api, browserWorkspace } as never} surface={page} paneId={paneId} frame={{}} onNavigate={() => {}} />
     </TooltipProvider>);
     const other = screen.getByRole("button", { name: "Other composer" });
+    const dock = screen.getByTestId("web-panel");
+    vi.spyOn(dock, "getBoundingClientRect").mockReturnValue(new DOMRect(10, 10, 200, 100));
     const attachOther = vi.fn(async () => true);
     const attachPane = vi.fn(async () => true);
     const unregisterOther = registerComposerTarget({
@@ -152,14 +154,14 @@ describe("SurfacePane", () => {
     const unregisterPane = target === "missing" ? undefined : registerComposerTarget({
       groupId: surfacePaneChatGroup(paneId), kind: "side-chat", attach: () => true,
       ...(target === "unsupported" ? {} : { attachImage: attachPane }),
-      available: () => target !== "hidden", element: () => null,
+      available: () => target !== "hidden", element: () => dock,
     });
     try {
       other.focus();
       fireEvent.pointerDown(screen.getByTestId("browser-capture-menu"), { button: 0, ctrlKey: false });
       fireEvent.click(await screen.findByTestId("browser-capture-viewport"));
       if (target === "visible") {
-        await waitFor(() => expect(attachPane).toHaveBeenCalledWith("aW1hZ2U="));
+        await waitFor(() => expect(attachPane).toHaveBeenCalledWith("aW1hZ2U=", expect.any(Function)));
       } else {
         expect(await screen.findByRole("alert")).toHaveTextContent(t("browserCapture.attachmentFailed"));
         expect(attachPane).not.toHaveBeenCalled();

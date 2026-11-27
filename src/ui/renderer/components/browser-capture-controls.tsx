@@ -111,6 +111,8 @@ export function BrowserCaptureControls({ api, tabId, composerGroupId, paneChatGr
   const cancelSelection = useCallback(() => setSelection(null), []);
 
   const capture = async (tab: BrowserWorkspaceTab, options: Pick<BrowserCaptureRequest, "fullPage" | "clip">) => {
+    const trigger = triggerRef.current;
+    const sourceCurrent = () => trigger !== null && trigger === triggerRef.current && trigger.isConnected;
     setSelection(null); setBusy(true); setFailure(null);
     let failureKey: NonNullable<typeof failure> = "browserCapture.failed";
     try {
@@ -125,13 +127,12 @@ export function BrowserCaptureControls({ api, tabId, composerGroupId, paneChatGr
       if (!result.ok) { setFailure(failureKey); return; }
       const base64 = result.value.dataUrl.split(",")[1];
       if (!base64) { setFailure(failureKey); return; }
-      // A replacement toolbar can reuse the old pane's composer group while capture is pending.
-      if (paneChatGroupId !== undefined && triggerRef.current === null) return;
+      if (paneChatGroupId !== undefined && !sourceCurrent()) { setFailure(failureKey); return; }
       failureKey = "browserCapture.attachmentFailed";
       const attached = await (paneChatGroupId === undefined
         ? attachImageToComposer(base64, composerGroupId)
-        : attachImageToPaneChat(base64, paneChatGroupId));
-      if (attached !== true) setFailure(failureKey);
+        : attachImageToPaneChat(base64, paneChatGroupId, sourceCurrent));
+      if (attached !== true) setFailure(attached === "target-changed" ? "browserCapture.failed" : failureKey);
     } catch { setFailure(failureKey); }
     finally { setBusy(false); }
   };
