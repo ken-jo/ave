@@ -89,6 +89,31 @@ describe('Windows memory build owner', () => {
     await expect(registry.cancel('settled-0')).resolves.toBeNull();
   });
 
+  it('refuses existing waits when a late receipt runs before the deadline timer', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const clock = vi.spyOn(performance, 'now').mockReturnValue(100);
+    try {
+      const registry = new BuildRegistry();
+      const owner = registry.register('build', { scopeId: 'scope', assertAdmitted: () => {} });
+      owner.takeover(() => {});
+      const receipt = owner.beginWorker('projection');
+      const replies = Promise.allSettled([registry.cancel(owner.id), registry.cancel(owner.id)]);
+      owner.settle({ kind: 'cancelled' });
+
+      clock.mockReturnValue(100 + TOOL_TIMEOUT_POLICY.windowsMemoryBuildCancelMs + 1);
+      receipt.confirmed();
+
+      expect(await replies).toEqual(Array.from({ length: 2 }, () => ({
+        status: 'rejected', reason: expect.objectContaining({ code: 'build-exit-unconfirmed' }),
+      })));
+      await expect(registry.cancel(owner.id)).resolves.toBeNull();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      clock.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   it('preserves receipts and the renderer graph through 2,000 seeded two-owner interleavings', async () => {
     const ROUTES: readonly MemoryWorkerRoute[] = ['container', 'unconfined', 'account', 'account', 'projection'];
     const READY: GraphSnapshot = {
@@ -103,7 +128,7 @@ describe('Windows memory build owner', () => {
       seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
       return Math.floor(seed / 2 ** 32 * limit);
     };
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
     try {
       for (let run = 0; run < 2000; run++) {
         const registry = new BuildRegistry();

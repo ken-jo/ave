@@ -73,7 +73,7 @@ interface BuildRequest {
 export class BuildOwner {
   private state = INITIAL_STATE;
   private controller?: AbortController;
-  private deadline?: ReturnType<typeof setTimeout>;
+  private deadline?: { cutoff: number; timer: ReturnType<typeof setTimeout> };
   private wait?: Promise<boolean>;
   private resolveWait?: (confirmed: boolean) => void;
   snapshot: GraphSnapshot | null = null;
@@ -120,23 +120,37 @@ export class BuildOwner {
     const worker = this.state.receipts.length;
     if (!this.isRunning() || !this.transition({ type: 'begin-worker' })) throw new MemoryMapHostError('request-stale');
     return {
-      confirmed: () => { this.transition({ type: 'confirmed', worker }); },
+      confirmed: () => { this.expireDeadline(); this.transition({ type: 'confirmed', worker }); },
       lost: () => { this.transition({ type: 'lost', worker }); },
     };
   };
 
   stop(_reason: StopReason): void {
-    if (this.transition({ type: 'stop' })) this.controller?.abort(new MemoryMapHostError('request-stale'));
+    const stopped = this.transition({ type: 'stop' });
     if (this.state.receipts.includes('pending') && !this.state.expired && this.deadline === undefined) {
-      this.deadline = setTimeout(() => { this.transition({ type: 'deadline' }); }, TOOL_TIMEOUT_POLICY.windowsMemoryBuildCancelMs);
-      this.deadline.unref();
+      const delay = TOOL_TIMEOUT_POLICY.windowsMemoryBuildCancelMs;
+      const cutoff = performance.now() + delay;
+      const onTimer = () => {
+        const remaining = cutoff - performance.now();
+        if (remaining <= 0) this.transition({ type: 'deadline' });
+        else deadline.timer = setTimeout(onTimer, Math.ceil(remaining)).unref();
+      };
+      const deadline = this.deadline = { cutoff, timer: setTimeout(onTimer, delay).unref() };
     }
+    if (stopped) this.controller?.abort(new MemoryMapHostError('request-stale'));
   }
 
   waitForExit(): Promise<boolean> {
+    this.expireDeadline();
     if (this.exit !== 'pending') return Promise.resolve(this.exit === 'clear');
     this.wait ??= new Promise(resolve => { this.resolveWait = resolve; });
     return this.wait;
+  }
+
+  private expireDeadline(): void {
+    if (this.deadline && performance.now() >= this.deadline.cutoff) {
+      this.transition({ type: 'deadline' });
+    }
   }
 
   private transition(event: BuildEvent): boolean {
@@ -147,7 +161,7 @@ export class BuildOwner {
     const exit = this.exit;
     if (exit !== 'pending') this.resolveWait?.(exit === 'clear');
     if (!next.receipts.includes('pending') && this.deadline !== undefined) {
-      clearTimeout(this.deadline);
+      clearTimeout(this.deadline.timer);
       this.deadline = undefined;
     }
     return true;
