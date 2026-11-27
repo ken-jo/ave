@@ -238,6 +238,17 @@ describe("contained MCP stdio server", () => {
     expect(state.holderSpawn).not.toHaveBeenCalled();
   });
 
+  it("starts a bash-form server as an ordinary holder on macOS, in the container and never on the wrap", async () => {
+    setProcessPlatform("darwin");
+    const server = containedServer(LEGACY_HANDSHAKE);
+    state.holderSpawn.mockResolvedValue(server.holder);
+    const mcp = client({ command: "bash" });
+    await mcp.connect();
+    expect(state.holderSpawn.mock.calls[0]![0]).toMatchObject({ label: "mcp:fs", command: "bash" });
+    expect(state.legacySpawn).not.toHaveBeenCalled();
+    await mcp.disconnect();
+  });
+
   it("gives the container the same host-owned variables the legacy route passes", async () => {
     const server = containedServer(LEGACY_HANDSHAKE);
     state.holderSpawn.mockResolvedValue(server.holder);
