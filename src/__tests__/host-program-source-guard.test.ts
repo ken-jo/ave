@@ -66,9 +66,9 @@ const LAUNCH_FILES = [
   "permissions/confined-child.ts",
   "permissions/judge/external-judge.ts",
   "permissions/mxc-extension-process.ts",
-  "permissions/mxc-macos.ts",
   "permissions/mxc-policy-pipe.ts",
   "permissions/mxc-runtime-root.ts",
+  "permissions/mxc-shell-supervisor-client.ts", // macOS shell supervisor: process.execPath as Node, safe env without loader overrides
   "permissions/mxc-windows.ts",
   "permissions/offline-process-sandbox.ts",
   "permissions/srt-win-integrity.ts",
@@ -87,7 +87,6 @@ const LAUNCH_FILES = [
   "shared/windows-path-facts.ts",
   "tools/grep-search.ts",
   "tools/image-preparation.ts",
-  "tools/mxc-posix-shell-launch.ts",
   "tools/preview-document-process.ts",
   "tools/shell-tools.ts",
 ];
