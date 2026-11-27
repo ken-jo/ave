@@ -342,7 +342,7 @@ it("shows the requested effect payload and approves the hash on the keyboard", a
   fireEvent.click(await screen.findByRole("button", { name: t("workflowTemplates.openRun") }));
   const view = within(await screen.findByRole("dialog", { name: item.title }));
   expect(await view.findByText(payload, { normalizer: value => value })).toBeInTheDocument();
-  expect(view.getByText(t("workflowTemplates.approveOutputsWithKeyboard"))).toBeInTheDocument();
+  expect(view.getByText(t("workflowTemplates.outputPathsAsArguments"))).toBeInTheDocument();
   const approve = view.getByRole("button", { name: t("workflowTemplates.approveStage") });
   approve.focus();
   await userEvent.keyboard("{Enter}");
@@ -354,9 +354,10 @@ it("the gate card of a push to an https remote shows the help text, and the card
   const card = (url: string) => <WorkflowDecisionCard itemId={item.id} onChanged={vi.fn()}
     api={{ decideWorkStage: vi.fn(), decideWorkJoin: vi.fn(), openWorkBoardJoin: vi.fn() }}
     review={{ kind: "stage-gate", binding, result: "Ready", arrivedAt: at, outputs: [{
-      id: "push", summary: "Publish", payload: JSON.stringify({ args: { url } }), httpsAccountsHelp: url.startsWith("https:"),
+      id: "push", summary: "Publish", payload: JSON.stringify({ args: { url } }), pushRunBranch: true, httpsAccountsHelp: url.startsWith("https:"),
     }] }} />;
   const view = render(card("https://example.test/repo"));
+  expect(view.getByText(t("workflowTemplates.pushRunBranchAsRequested"))).toBeVisible();
   expect(view.getByText(t("workflowTemplates.pushHttpsAccountsHelp"))).toBeVisible();
   view.rerender(card("ssh://git@example.test/repo"));
   expect(view.queryByText(t("workflowTemplates.pushHttpsAccountsHelp"))).toBeNull();
@@ -481,4 +482,14 @@ it("focuses the parked stage tool approval inside the run opened in another proj
   expect(approve).toBeEnabled();
   fireEvent.click(approve);
   expect(vi.mocked(surface.decide).mock.calls.map(call => call[0])).toEqual(["parked-tool"]);
+});
+
+it("uses the decision gesture message when no gesture accompanies approval", async () => {
+  const binding = { runId: "run-a", stageId: "summarize", attempt: 1, resultHash: graphHash };
+  const view = render(<WorkflowDecisionCard itemId={item.id} onChanged={vi.fn()}
+    api={{ decideWorkStage: vi.fn().mockResolvedValue({ ok: false, reason: "user-gesture-required" }), decideWorkJoin: vi.fn(), openWorkBoardJoin: vi.fn() }}
+    review={{ kind: "stage-gate", binding, result: "Ready", arrivedAt: at }} />);
+  fireEvent.click(view.getByRole("button", { name: t("workflowTemplates.approveStage") }));
+  expect(await view.findByText(t("workflowTemplates.decideWithGesture"))).toBeVisible();
+  expect(view.queryByText(t("reasonCodes.user-gesture-required"))).toBeNull();
 });

@@ -39,7 +39,7 @@ import type {
 } from "../shared/work-board-types.js";
 import type { EnvelopeToolRef, RunAuthoritySource } from "../shared/workflow-template-types.js";
 import type { SecuritySettingsDecision } from "../ipc/security-settings-gesture.js";
-import { createStageRunEngine, type StageRunEngineDeps, type ScheduledTemplateSource, type ScheduledTemplateStart } from "../work-board/workflow/stage-run-engine.js";
+import { createStageRunEngine, type StageGateDecider, type StageRunEngineDeps, type ScheduledTemplateSource, type ScheduledTemplateStart } from "../work-board/workflow/stage-run-engine.js";
 import {
   MAX_PLAN_NOTE_LENGTH,
   BRIEFING_PROPOSAL_KINDS,
@@ -199,7 +199,7 @@ export interface WorkBoardEngine {
 
   /** Template runs. The user's decision at a stage gate or on a join that could not be collected, a retry of a failed stage, and
    * continuing a run that a restart left with only ready stages. Each is refused and changes nothing unless it matches the stored run. */
-  decideStageGate(itemId: number, input: StageGateDecideInput, receipt?: SecuritySettingsDecision): Promise<StageGateDecideResult>;
+  decideStageGate(itemId: number, input: StageGateDecideInput, decider?: StageGateDecider): Promise<StageGateDecideResult>;
   decideStageJoin(itemId: number, input: StageJoinDecideInput): Promise<StageJoinDecideResult>;
   openStageJoin(itemId: number, input: Omit<StageJoinDecideInput, "decision">, open: (path: string) => Promise<boolean>): Promise<OpenJoinResult>;
   retryOutput(itemId: number, input: StageOutputRetryInput, receipt: SecuritySettingsDecision): Promise<StageOutputRetryResult>;
@@ -1071,7 +1071,7 @@ export function createWorkBoardEngine(
     executingChildSessionId: (itemId) => executingChildByItem.get(itemId),
     steerRun,
     cancelRun,
-    decideStageGate: async (itemId, input, receipt) => { await recover(); return stageRuns?.decideGate(itemId, input, receipt) ?? { ok: false, reason: "not_found" }; },
+    decideStageGate: async (itemId, input, decider) => { await recover(); return stageRuns?.decideGate(itemId, input, decider) ?? { ok: false, reason: "not_found" }; },
     decideStageJoin: async (itemId, input) => { await recover(); return stageRuns?.decideJoin(itemId, input) ?? { ok: false, reason: "not_found" }; },
     openStageJoin: async (itemId, input, open) => stageRuns?.openJoin(itemId, input, open) ?? { ok: false, reason: "not_found" },
     retryOutput: async (itemId, input, receipt) => { await recover(); return stageRuns?.retryOutput(itemId, input, receipt) ?? { ok: false, reason: "not_found" }; },

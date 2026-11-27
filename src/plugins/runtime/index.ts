@@ -2898,7 +2898,7 @@ abstract class PluginRuntimeState {
       .update("\0")
       .update(activationId)
       .digest("hex");
-    const { payloadRoot } = await materializePluginGenerationRoot(
+    return materializePluginGenerationRoot(
       pluginRoot,
       this.installReceiptCacheRoot,
       pluginId,
@@ -2906,7 +2906,6 @@ abstract class PluginRuntimeState {
       receiptRaw,
       receiptPluginId,
     );
-    return payloadRoot;
   }
 
   /** The one removal of a retained generation payload. A quarantined lifecycle may still have a live child
@@ -4685,7 +4684,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
       .update("\0")
       .update(activationId)
       .digest("hex");
-    const { payloadRoot } = await materializePluginGenerationRoot(
+    const payloadRoot = await materializePluginGenerationRoot(
       input.pluginRoot,
       this.installReceiptCacheRoot!,
       manifest.id,

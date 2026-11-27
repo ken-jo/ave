@@ -1,3 +1,4 @@
+import { getDefaultWorkspaceRoot } from "../../main/default-workspace-root.js";
 import { createLogger } from "../../lib/logger.js";
 import { authoriseRunSource } from "../../work-board/workflow/run-authority.js";
 import { createPassConditionRegistry } from "../../work-board/workflow/stage-gates.js";
@@ -98,7 +99,7 @@ export function workflowEngineExtensions(store: WorkBoardStore, attachments: Pic
   return {
     runs: boardRunState(store),
     workspace,
-    outputs: createRequestedOutputHooks(createHostGit(), outputAdapter),
+    outputs: createRequestedOutputHooks(createHostGit(), outputAdapter, getDefaultWorkspaceRoot()),
     workspaceBinding: { bind: bindStageWorkspace, unbind: unbindStageWorkspace },
     authoriseRunSource,
     passConditions: createPassConditionRegistry(),

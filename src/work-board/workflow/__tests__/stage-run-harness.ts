@@ -47,7 +47,6 @@ type ChildWaitPulse = { error: Error; originSessionId?: string };
 type Flight = { startedAt: number; endedAt: number; pending: number[]; failure?: ChildWaitFailure };
 
 export const unavailableOutputAdapter: GovernedOutputAdapter = {
-  operands: () => "output-operands-unverified",
   invoke: async () => "denied",
 };
 

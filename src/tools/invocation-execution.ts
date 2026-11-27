@@ -1320,7 +1320,7 @@ export async function executeAuthorizedToolInvocation(
       abortSignal: signal,
     };
     if (!await refreshRemoteControllerBoundToSession(invocationPermissionContext.remoteControllerAuthority, sessionId)) throw new Error("remote-controller-revoked");
-    if (context.approvedInvocation && !await context.approvedInvocation(tool, finalInput)) throw new Error("The approved output changed");
+    if (context.approvedInvocation && !context.approvedInvocation(tool, finalInput)) throw new Error("The approved output changed");
     let execution: ReturnType<Tool["execute"]>;
     try {
       execution = runWithToolExecutionCwd(executionCwd, () =>

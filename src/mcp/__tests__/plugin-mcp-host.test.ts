@@ -121,18 +121,16 @@ describe("PluginMcpHost — first-party loopback registration + round-trip", () 
     expect(registry.findByName("notes_read")).toBeUndefined();
   });
 
-  it("fails preparation when the discovered operand list differs from the signed operation", async () => {
-    const [read, ...otherTools] = MANIFEST.tools;
-    const withOperands = (pathFields: string[]): PluginManifest => ({
-      ...MANIFEST,
-      tools: [{ ...read, _meta: { ...read._meta, "ai.agent-connector.ave/operationPolicy": {
-        discriminant: "operation", operations: { read: { kind: "read", minimumRisk: "read", pathFields } },
-      } } }, ...otherTools],
-    });
-    const host = PluginMcpHost.loopback(withOperands([]), async () => ({ content: [] }), undefined,
-      "signed-generation", withOperands(["path"]));
-
-    await expect(host.prepareTools()).rejects.toThrow(/differs from its signed manifest/);
+  it.each(["constructor", "__proto__"])("does not read an inherited operation policy for %s", async name => {
+    const manifest = { ...MANIFEST, tools: [{ ...MANIFEST.tools[0], name }] };
+    const host = PluginMcpHost.loopback(manifest, async () => ({ content: [] }), undefined, "tool-generation");
+    try {
+      const tools = await host.prepareTools();
+      expect(tools.map(tool => tool.name)).toEqual([name]);
+      expect(tools[0].operationPolicy).toBeUndefined();
+    } finally {
+      await host.dispose();
+    }
   });
 
   it("accepts and registers an unchanged signed operation policy from the loopback wire", async () => {

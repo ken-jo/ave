@@ -6,14 +6,7 @@ import { resultHashOf } from "../../shared/workflow-template-output.js";
 import { isWorkflowPush } from "./host-git.js";
 import { declaredOutputOf, requestedOutputHash, type RequestedOutputHooks } from "./requested-outputs.js";
 import type { RunRecord, WorkflowRunState } from "./run-state.js";
-import type { RunRef, StageWorkspaceProvider } from "./stage-workspace.js";
-
-export function retainsOutputFiles(stage: WorkItemStageRun): boolean {
-  return stage.status === "passed" && stage.gate?.type === "human" && stage.gate.status === "approved"
-    && stage.requestedOutputs?.some(output => output.files?.length && stage.outputExecutions?.some(
-      execution => execution.id === output.id && execution.status !== "done",
-    )) === true;
-}
+import type { RunRef } from "./stage-workspace.js";
 
 function sameApprovedStage(stage: WorkItemStageRun | undefined, attempt: number, hash: string | undefined): stage is WorkItemStageRun {
   return hash !== undefined && stage?.attempt === attempt && stage.status === "passed" && stage.gate?.type === "human"
@@ -26,12 +19,13 @@ export function createRecordedOutputEffects(deps: {
   resolveProjectRoot: (root: string) => string | null;
   scheduledProject: (source: Extract<RunRecord["runStartedBy"], { kind: "schedule-attachment" }>) => Promise<string | undefined | null>;
   notifyItemChanged: (id: number) => void;
-  release: StageWorkspaceProvider["release"];
 }) {
   const { records, outputs, resolvePinned, resolveProjectRoot, notifyItemChanged } = deps;
 
   async function execute(record: RunRecord, stage: WorkItemStageRun, definition: TemplateStage, output: RequestedOutput,
-    run: RunRef, approvalSurface: WebContents, canExecute: () => boolean): Promise<boolean> {
+    run: RunRef, approvalSurface: WebContents, canExecute: () => boolean, signal: AbortSignal,
+    rowRemoved?: () => boolean): Promise<boolean> {
+    if (rowRemoved?.()) return false;
     const hash = requestedOutputHash(stage);
     const read = await records.get(run.itemId, run.runId);
     const current = read?.stageRuns.find(row => row.stageId === stage.stageId);
@@ -43,10 +37,11 @@ export function createRecordedOutputEffects(deps: {
     } else if (!workspaceRoot || !outputs) {
       result = { id: output.id, status: "failed", detail: "workspace-unavailable" };
     } else {
-      result = await outputs.execute({ run, stageId: stage.stageId, output, approvalSurface, canExecute,
+      result = await outputs.execute({ run, stageId: stage.stageId, output, approvalSurface, canExecute, signal,
         workspace: { root: workspaceRoot, repository: record.runWorkspace?.kind === "git" ? run.projectRoot : undefined },
-      }).catch(() => ({ id: output.id, status: "failed", detail: "output-execution-failed" }));
+      }).catch(() => ({ id: output.id, status: "failed", detail: signal.aborted ? "output-execution-interrupted" : "output-execution-failed" }));
     }
+    if (rowRemoved?.()) return false;
     const saved = await records.update(run.itemId, run.runId, stored => {
       const latest = stored.stageRuns.find(row => row.stageId === stage.stageId);
       if (!sameApprovedStage(latest, stage.attempt, hash) || latest.outputExecutions?.find(entry => entry.id === output.id)?.status !== "pending") return null;
@@ -87,9 +82,7 @@ export function createRecordedOutputEffects(deps: {
     const stage = reserved.ok && reserved.run.stageRuns.find(row => row.stageId === stageId);
     if (!stage || !selected) return { ok: false, reason };
     const run = { itemId, runId, runKey: `work-board:${itemId}#${runId}`, projectRoot: projectRoot ?? undefined };
-    if (!await execute(record, stage, definition, selected, run, surface, canExecute)) return { ok: false, reason: "run_mismatch" };
-    const after = await records.get(itemId, runId);
-    if (after?.settled && !after.stageRuns.some(retainsOutputFiles)) await deps.release(run, "all").catch(() => undefined);
+    if (!await execute(record, stage, definition, selected, run, surface, canExecute, new AbortController().signal)) return { ok: false, reason: "run_mismatch" };
     return { ok: true };
   }
 

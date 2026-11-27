@@ -56,7 +56,8 @@ export function WorkflowRunDialog({ api, item, run, requestedVersion, approvals,
       const result = await onRetryOutput(item.id, input);
       if (!result.ok) {
         const code = "reason" in result ? result.reason : result.error;
-        const key = `reasonCodes.${code.replaceAll("_", "-")}`;
+        const key = code === "user-gesture-required" ? "workflowTemplates.retryFailed"
+          : `reasonCodes.${code.replaceAll("_", "-")}`;
         setError(t(key) !== key ? key : "workflowTemplates.retryFailed");
       }
     } catch {

@@ -1552,24 +1552,24 @@ cancels the run and interrupts its live stage children.
 
 A stage with pinned output declarations can use `stage_request_output` to
 record a request for its human gate. The host matches the tool and its owner
-exactly, records canonical arguments, and hashes the workspace files identified
-by the tool's verified operands.
-The desktop gate shows the full request and binds it to a native keyboard
-receipt, the stage result digest and the output digest. The host computes the
-output digest from the stored stage result and requests and keeps the digest
-in memory. Approval is recorded before the host
-invokes the declared tool through ordinary tool governance. An interrupted
-execution is never replayed at startup. A user can retry a failed tool output
-under the same approval binding. A plugin call requires a signed operation
-policy with a complete file operand list, including an explicit empty list
-for an inline operation. At registration the host compares the discovered
-policy with the signed manifest.
-It checks the worker read boundary at intake and again before dispatch,
-including the user's configured read denies. The host copies only bytes
-that match the approved file hashes. It keeps the copy private until the
-governed handler may run, then makes it available in the owning plugin's
-confined temporary directory. File-backed calls are refused on platforms
-without a plugin-private temporary directory.
+exactly and records canonical arguments that the ordinary approval card can
+show in full. Tool operand declarations are display only. The desktop stage
+gate shows the full request and binds the decision to a native gesture, the
+stage result digest and the output digest. A click or keyboard gesture can
+approve the gate or retry a tool output. The host computes the output digest
+from the stored stage result and requests and keeps it in memory.
+
+After recording approval, the host invokes each declared tool through the
+ordinary permission tree as another principal, with the deciding window as the
+approver. The call uses the authorized project root or the default workspace.
+The ordinary card shows the arguments the handler receives. A hook that changes
+those arguments prevents dispatch. The tool reads any file named in the
+arguments when it runs, under its ordinary permissions and confinement. The
+host records the path as text and does not bind file contents to the approval.
+A Stop cancels the open output card and records the output as interrupted. Row
+removal cancels the card and leaves no output outcome. An execution left pending
+is never replayed at startup. A user can retry a failed or denied tool output
+under the same approval binding.
 
 A push request binds a configured remote's one resolved, sanitized push URL
 and the run ref's commit. The host accepts HTTPS and SSH destinations and

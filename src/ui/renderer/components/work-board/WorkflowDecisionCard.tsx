@@ -62,7 +62,8 @@ export function WorkflowDecisionCard({ review, itemId, stageName, api, onChanged
       if (result?.ok) setSubmitted(true);
       else {
         const code = result && ("reason" in result ? result.reason : "error" in result ? result.error : undefined);
-        const key = code && `reasonCodes.${code.replaceAll("_", "-")}`;
+        const key = code === "user-gesture-required" ? "workflowTemplates.decideWithGesture"
+          : code && `reasonCodes.${code.replaceAll("_", "-")}`;
         setError(key && t(key) !== key ? key : "workflowTemplates.decisionFailed");
       }
       onChanged();
@@ -83,10 +84,10 @@ export function WorkflowDecisionCard({ review, itemId, stageName, api, onChanged
           {review.outputs.map(output => <li key={output.id} className="space-y-1">
             <p>{stageDisplayName(output.id)}{output.summary && ` · ${stageDisplayName(output.summary)}`}</p>
             <pre dir="ltr" className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted p-2">{revealHiddenCharacters(output.payload, { lineBreaks: false })}</pre>
+            <p>{t(output.pushRunBranch ? "workflowTemplates.pushRunBranchAsRequested" : "workflowTemplates.outputPathsAsArguments")}</p>
             {output.httpsAccountsHelp && <p>{t("workflowTemplates.pushHttpsAccountsHelp")}</p>}
           </li>)}
         </ul> : null}
-        {review.outputs?.length ? <p>{t("workflowTemplates.approveOutputsWithKeyboard")}</p> : null}
         {writingNote && <Label className="grid gap-1">
           {t("workflowTemplates.changeNote")}
           <Textarea autoFocus maxLength={MAX_PLAN_NOTE_LENGTH} value={note} onChange={event => setNote(event.target.value)} disabled={disabled} />

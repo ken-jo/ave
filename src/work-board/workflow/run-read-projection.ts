@@ -44,11 +44,15 @@ export function pendingWorkflowDecisions(run: WorkflowRunRecord, localVersion?: 
       kind: "stage-gate",
       binding: { runId: run.runId, stageId: stage.stageId, attempt: stage.attempt, resultHash: stage.resultHash, ...(outputHash !== undefined && { outputHash }) },
       result: maskWorkflowText(stage.output),
-      ...(outputs?.length && { outputs: outputs.map(output => ({
-        id: output.id, summary: maskWorkflowText(output.summary),
-        httpsAccountsHelp: isWorkflowPush(output.decl) && /^https?:/iu.test(JSON.parse(output.args).url),
-        payload: JSON.stringify({ ...output.decl, args: JSON.parse(output.args), ...(output.files && { files: output.files }) }, null, 2),
-      })) }),
+      ...(outputs?.length && { outputs: outputs.map(output => {
+        const pushRunBranch = isWorkflowPush(output.decl);
+        const args = JSON.parse(output.args);
+        return {
+          id: output.id, summary: maskWorkflowText(output.summary), pushRunBranch,
+          httpsAccountsHelp: pushRunBranch && /^https?:/iu.test(args.url),
+          payload: JSON.stringify({ ...output.decl, args }, null, 2),
+        };
+      }) }),
       arrivedAt: stage.endedAt ?? null,
     });
   }

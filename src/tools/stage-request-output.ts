@@ -18,7 +18,6 @@ export function createStageRequestOutputTool(declarations: readonly RequestedOut
         owner: { enum: ["server", "plugin", "host"] },
         ownerId: { type: "string" },
         args: { type: "object" },
-        files: { type: "array", items: { type: "string" }, maxItems: 5000, description: "Paths relative to the stage workspace." },
         summary: { type: "string", maxLength: 400 },
       },
       required: ["toolName", "owner", "ownerId", "args", "summary"],

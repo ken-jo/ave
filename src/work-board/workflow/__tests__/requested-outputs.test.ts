@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { symlinkSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { WebContents } from "electron";
 import { expect, it, vi } from "vitest";
@@ -12,7 +12,6 @@ import { outputHashOf, resultHashOf } from "../../../shared/workflow-template-ou
 import type { StageEnvelope } from "../../../shared/workflow-template-types.js";
 import { createHostGit } from "../host-git.js";
 import { acceptRequestedOutput, createRequestedOutputHooks, requestedOutputHash, stageOutputIntake } from "../requested-outputs.js";
-import { createStageWorkspaceProvider } from "../stage-workspaces.js";
 import { runBranch } from "../workspace-layout.js";
 import { stageOf } from "./stage-fixtures.js";
 import { fixturePushRemote, gitFixture } from "./stage-git-fixture.js";
@@ -25,14 +24,11 @@ const REQUEST = { toolName: "deliver", owner: "plugin", ownerId: "delivery", arg
 const ENVELOPE: StageEnvelope = { tools: [], writePaths: [], readRoots: [], commands: [], network: [], mcpReadOnlyTools: [],
   mcpGenerationTools: [], pluginGenerationTools: [], outputs: ["branch"], budget: { rounds: 5, minutes: 1, costUsd: 0 } };
 
-const operands = (_decl: unknown, input: Record<string, unknown>) => ({
-  input, paths: typeof input.path === "string" ? [input.path] : [],
-});
 const accept = (raw: unknown, stage = STAGE) => acceptRequestedOutput({ stage, workspaceRoot: process.cwd(), raw,
-  run: { itemId: 1, runId: "sample", runKey: "sample" } }, createHostGit(), operands);
+  run: { itemId: 1, runId: "sample", runKey: "sample" } }, createHostGit());
 
 it("refuses a tool the stage does not declare with reasonCode output-not-declared, which has an en and a ko message", async () => {
-  const hooks = createRequestedOutputHooks(createHostGit(), { operands, invoke: vi.fn() });
+  const hooks = createRequestedOutputHooks(createHostGit(), { invoke: vi.fn() }, process.cwd());
   const intake = stageOutputIntake(hooks, { stage: STAGE, workspaceRoot: process.cwd(), run: { itemId: 1, runId: "sample", runKey: "sample" } });
   await expect(intake.tool.execute({ ...REQUEST, toolName: "undeclared" }, { cwd: process.cwd(), metadata: {}, extraAllowedDirectories: [] }))
     .resolves.toEqual({ isError: true, output: '{"reasonCode":"output-not-declared"}' });
@@ -68,7 +64,7 @@ it("bounds intake and refuses a stage without a human gate", async () => {
   await expect(accept({ ...REQUEST, args: { text: "x".repeat(33 * 1024) } })).resolves.toEqual({ ok: false, code: "args-too-large" });
   await expect(accept(REQUEST, { ...STAGE, gate: { type: "auto", pass: { kind: "always" } } } as never))
     .resolves.toEqual({ ok: false, code: "needs-human-gate" });
-  const intake = stageOutputIntake(createRequestedOutputHooks(createHostGit(), { operands, invoke: vi.fn() }), {
+  const intake = stageOutputIntake(createRequestedOutputHooks(createHostGit(), { invoke: vi.fn() }, process.cwd()), {
     stage: STAGE, workspaceRoot: process.cwd(), run: { itemId: 1, runId: "sample", runKey: "sample" },
   });
   const ctx = { cwd: process.cwd(), metadata: {}, extraAllowedDirectories: [] };
@@ -77,20 +73,24 @@ it("bounds intake and refuses a stage without a human gate", async () => {
   expect(intake.close()).toHaveLength(10);
 });
 
-it("refuses an escaping or unreadable member of the requested file manifest", async () => {
-  const fixture = gitFixture();
-  try {
-    const outside = join(fixture.base, "outside.txt");
-    writeFileSync(outside, "Outside");
-    symlinkSync(outside, join(fixture.repo, "alias.txt"), "file");
-    const request = (files: string[]) => acceptRequestedOutput({
-      stage: STAGE, workspaceRoot: fixture.repo, raw: { ...REQUEST, args: { path: files[0] }, files },
-      run: { itemId: 1, runId: "sample", runKey: "sample" },
-    }, createHostGit({ env: fixture.env }), operands);
-    await expect(request(["../outside.txt"])).resolves.toEqual({ ok: false, code: "file-outside-workspace" });
-    await expect(request(["alias.txt"])).resolves.toEqual({ ok: false, code: "file-outside-workspace" });
-    await expect(request(["missing.txt"])).resolves.toEqual({ ok: false, code: "file-unreadable" });
-  } finally { await fixture.done(); }
+it.each([
+  ["a masked value", { body: "(202)\t555-0100" }],
+  ["an omitted key", JSON.parse('{"nested":{"__proto__":{"body":"Ready"}}}')],
+] as const)("refuses output arguments when the card would lose %s", async (_reason, args) => {
+  await expect(accept({ ...REQUEST, args })).resolves.toEqual({ ok: false, code: "output-args-not-displayable" });
+});
+
+it("refuses an invisible character escaped by JSON serialization", async () => {
+  await expect(accept({ ...REQUEST, args: { body: "line\u0000end" } })).resolves.toEqual({ ok: false, code: "args-too-large" });
+});
+
+it("a request carrying files is refused args-too-large and nothing reaches the gate", async () => {
+  const intake = stageOutputIntake(createRequestedOutputHooks(createHostGit(), { invoke: vi.fn() }, process.cwd()), {
+    stage: STAGE, workspaceRoot: process.cwd(), run: { itemId: 1, runId: "sample", runKey: "sample" },
+  });
+  await expect(intake.tool.execute({ ...REQUEST, files: [] }, { cwd: process.cwd(), metadata: {}, extraAllowedDirectories: [] }))
+    .resolves.toEqual({ isError: true, output: '{"reasonCode":"args-too-large"}' });
+  expect(intake.close()).toEqual([]);
 });
 
 it("outputHash changes when an output changes and resultHash does not", async () => {
@@ -108,20 +108,19 @@ function gesture(channel: typeof WORK_BOARD.decideStage | typeof WORK_BOARD.retr
   const events = new EventEmitter();
   const surface = Object.assign(events, { isDestroyed: () => false }) as unknown as WebContents;
   securitySettingsGestures.observe(surface);
-  events.emit("before-input-event", {}, { type: "keyDown", isAutoRepeat: false });
-  const proof = securitySettingsGestures.consume(surface, { channel, payload: workBoardDecisionKey(channel, id, input) }, "keyboard");
-  if (!proof) throw new Error("Missing native key receipt");
+  events.emit("before-mouse-event", {}, { type: "mouseUp" });
+  const proof = securitySettingsGestures.consume(surface, { channel, payload: workBoardDecisionKey(channel, id, input) });
+  if (!proof) throw new Error("Missing native gesture receipt");
   return { surface, proof };
 }
 
 async function parked(body: (fixture: Awaited<ReturnType<typeof stageRunHarness>>, id: number, binding: {
   stageId: string; runId: string; attempt: number; resultHash: string; outputHash: string; decision: "approve";
-}, invoke: ReturnType<typeof vi.fn>) => Promise<void>, opts: { files?: string[]; calls?: number; fail?: boolean } = {}) {
+}, invoke: ReturnType<typeof vi.fn>) => Promise<void>, opts: { calls?: number; fail?: boolean } = {}) {
   const invoke = vi.fn(async () => "done" as const);
   if (opts.fail) invoke.mockRejectedValueOnce(new Error("Transient tool failure"));
   const fixture = await stageRunHarness({ observeRunWork: true, workflow: {
-    ...(opts.files && { workspace: createStageWorkspaceProvider() }),
-    outputs: createRequestedOutputHooks(createHostGit(), { operands, invoke }),
+    outputs: createRequestedOutputHooks(createHostGit(), { invoke }, process.cwd()),
   } });
   await fixture.runThenEnd(async () => {
     const version = await fixture.confirm([{ ...STAGE, toolScope: "all" }]);
@@ -131,9 +130,8 @@ async function parked(body: (fixture: Awaited<ReturnType<typeof stageRunHarness>
     const tool = child.input.stageOutputTool;
     const cwd = child.input.projectRoot;
     if (!tool || !cwd) throw new Error("Expected a scoped stage tool");
-    for (const name of opts.files ?? []) writeFileSync(join(cwd, name), "Original");
     for (let i = 0; i < (opts.calls ?? 1); i++) {
-      expect(await tool.execute({ ...REQUEST, ...(opts.files && { args: { path: opts.files[0] }, files: opts.files }) }, { cwd, metadata: {}, extraAllowedDirectories: [] }))
+      expect(await tool.execute(REQUEST, { cwd, metadata: {}, extraAllowedDirectories: [] }))
         .toMatchObject({ isError: false });
     }
     child.finish({ summary: "Prose result" });
@@ -159,46 +157,18 @@ it("records an output and executes nothing", () => parked(async (h, id, binding,
 
 it("an approve with the right resultHash and a stale outputHash is refused", () => parked(async (h, id, binding, invoke) => {
   const stale = { ...binding, outputHash: "0".repeat(64) };
-  await expect(h.engine.decideStageGate(id, stale, gesture(WORK_BOARD.decideStage, id, stale))).resolves.toEqual({ ok: false, reason: "output_mismatch" });
+  await expect(h.engine.decideStageGate(id, stale, { kind: "local-desktop", receipt: gesture(WORK_BOARD.decideStage, id, stale) })).resolves.toEqual({ ok: false, reason: "output_mismatch" });
   expect(invoke).not.toHaveBeenCalled();
 }));
 
 it("approve executes each output once through the permission check", () => parked(async (h, id, binding, invoke) => {
   const receipt = gesture(WORK_BOARD.decideStage, id, binding);
-  await expect(h.engine.decideStageGate(id, binding)).resolves.toEqual({ ok: false, reason: "user-keyboard-required" });
-  await expect(h.engine.decideStageGate(id, binding, receipt)).resolves.toEqual({ ok: true, status: "approved" });
-  await expect(h.engine.decideStageGate(id, binding, receipt)).resolves.toMatchObject({ ok: false });
+  await expect(h.engine.decideStageGate(id, binding)).resolves.toEqual({ ok: false, reason: "user-gesture-required" });
+  await expect(h.engine.decideStageGate(id, binding, { kind: "local-desktop", receipt })).resolves.toEqual({ ok: true, status: "approved" });
+  await expect(h.engine.decideStageGate(id, binding, { kind: "local-desktop", receipt })).resolves.toMatchObject({ ok: false });
   expect(invoke).toHaveBeenCalledTimes(2);
-  expect(invoke).toHaveBeenCalledWith(expect.objectContaining({ args: REQUEST.args, surface: receipt.surface }));
+  expect(invoke).toHaveBeenCalledWith(expect.objectContaining({ output: expect.objectContaining({ args: JSON.stringify(REQUEST.args) }), surface: receipt.surface }));
 }, { calls: 2 }));
-
-it("a file changed after the request is not sent", () => parked(async (h, id, binding, invoke) => {
-  const item = await h.item(id);
-  const stage = item.stageRuns[0];
-  expect((await h.engine.readTemplateRuns([item], "local-desktop"))[0].pendingWorkflowDecisions).toMatchObject([
-    { outputs: [{ payload: expect.stringContaining('"sha256"') }] },
-  ]);
-  writeFileSync(join(stage.workspace?.root ?? "", "deliver.txt"), "Changed bytes");
-  await expect(h.engine.decideStageGate(id, binding, gesture(WORK_BOARD.decideStage, id, binding))).resolves.toMatchObject({ ok: true });
-  expect((await h.stageRun(id, "review")).outputExecutions).toMatchObject([{ status: "failed", detail: "output-file-changed" }]);
-  expect(invoke).not.toHaveBeenCalled();
-}, { files: ["deliver.txt"] }));
-
-it("preserves a failed file output across restart and retries the same approved bytes", () => parked(async (h, id, binding, invoke) => {
-  await expect(h.engine.decideStageGate(id, binding, gesture(WORK_BOARD.decideStage, id, binding))).resolves.toMatchObject({ ok: true });
-  await h.until(id, item => item.runStatus === "completed");
-  const engine = h.makeEngine();
-  await engine.adoptParkedTemplateRuns();
-  const stage = await h.stageRun(id, "review");
-  const bytes = await import("node:fs/promises");
-  const path = join(stage.workspace?.root ?? "", "deliver.txt");
-  expect(await bytes.readFile(path, "utf8")).toBe("Original");
-  const { runId, stageId, attempt, outputHash } = binding;
-  const retry = { runId, stageId, attempt, outputHash, outputId: stage.outputExecutions?.[0].id ?? "" };
-  await expect(engine.retryOutput(id, retry, gesture(WORK_BOARD.retryOutput, id, retry))).resolves.toEqual({ ok: true });
-  expect((await h.stageRun(id, "review")).outputExecutions).toMatchObject([{ status: "done" }]);
-  expect(invoke).toHaveBeenCalledTimes(2);
-}, { files: ["deliver.txt"], fail: true }));
 
 it("a rejected gate executes nothing", () => parked(async (h, id, binding, invoke) => {
   await expect(h.engine.decideStageGate(id, { ...binding, decision: "reject" })).resolves.toMatchObject({ ok: true });
@@ -206,7 +176,7 @@ it("a rejected gate executes nothing", () => parked(async (h, id, binding, invok
 }));
 
 it("a failed output leaves the stage passed and can be retried under the same hash", () => parked(async (h, id, binding, invoke) => {
-  await expect(h.engine.decideStageGate(id, binding, gesture(WORK_BOARD.decideStage, id, binding))).resolves.toMatchObject({ ok: true });
+  await expect(h.engine.decideStageGate(id, binding, { kind: "local-desktop", receipt: gesture(WORK_BOARD.decideStage, id, binding) })).resolves.toMatchObject({ ok: true });
   await h.until(id, item => item.runStatus === "completed");
   const stage = await h.stageRun(id, "review");
   expect(stage).toMatchObject({ status: "passed", outputExecutions: [{ status: "failed" }] });
@@ -217,6 +187,33 @@ it("a failed output leaves the stage passed and can be retried under the same ha
   expect(invoke).toHaveBeenCalledTimes(2);
 }, { fail: true }));
 
+it.each(["missing workspace", "unconfirmed execution"] as const)("handles %s after restart without calling the tool again", scenario => parked(async (h, id, binding, invoke) => {
+  await expect(h.engine.decideStageGate(id, binding, { kind: "local-desktop", receipt: gesture(WORK_BOARD.decideStage, id, binding) }))
+    .resolves.toMatchObject({ ok: true });
+  await h.until(id, item => item.runStatus === "completed");
+  const { runId, stageId, attempt, outputHash } = binding;
+  const [outcome] = (await h.stageRun(id, stageId)).outputExecutions ?? [];
+  if (!outcome) throw new Error("Missing output outcome");
+  expect(await h.board.updateRun(id, runId, run => ({
+    ...run,
+    stageRuns: run.stageRuns.map(stage => stage.stageId !== stageId ? stage
+      : scenario === "missing workspace" ? { ...stage, workspace: undefined }
+        : { ...stage, outputExecutions: [{ id: outcome.id, status: "pending" }] }),
+  }))).toMatchObject({ status: "stored" });
+  const engine = h.makeEngine();
+  await engine.adoptParkedTemplateRuns();
+  const retry = { runId, stageId, attempt, outputHash, outputId: outcome.id };
+  const receipt = gesture(WORK_BOARD.retryOutput, id, retry);
+  if (scenario === "missing workspace") {
+    await expect(engine.retryOutput(id, retry, receipt)).resolves.toEqual({ ok: true });
+    expect((await h.stageRun(id, stageId)).outputExecutions).toMatchObject([{ status: "failed", detail: "workspace-unavailable" }]);
+  } else {
+    await expect(engine.retryOutput(id, retry, receipt)).resolves.toEqual({ ok: false, reason: "not_pending" });
+    expect((await h.stageRun(id, stageId)).outputExecutions).toEqual([{ id: outcome.id, status: "pending" }]);
+  }
+  expect(invoke).toHaveBeenCalledTimes(1);
+}, { fail: true }));
+
 async function pushGate(decision: "approve" | "reject", changeRef = false) {
   const fixture = gitFixture();
   const remote = join(fixture.base, "endpoint.git");
@@ -224,7 +221,7 @@ async function pushGate(decision: "approve" | "reject", changeRef = false) {
   fixture.userGit(fixture.repo, "remote", "add", "origin", fixturePushRemote(fixture, remote));
   const { provider } = fixture.start();
   const h = await stageRunHarness({ observeRunWork: true, workflow: {
-    workspace: provider, outputs: createRequestedOutputHooks(createHostGit({ env: fixture.env }), { operands, invoke: vi.fn() }),
+    workspace: provider, outputs: createRequestedOutputHooks(createHostGit({ env: fixture.env }), { invoke: vi.fn() }, process.cwd()),
   } });
   try {
     await h.runThenEnd(async () => {
@@ -235,12 +232,16 @@ async function pushGate(decision: "approve" | "reject", changeRef = false) {
       const cwd = child.input.projectRoot ?? "";
       expect(await child.input.stageOutputTool?.execute({ toolName: PUSH.toolName, owner: PUSH.owner, ownerId: PUSH.ownerId,
         args: { remote: "origin" }, summary: "Publish run branch" }, { cwd, metadata: {}, extraAllowedDirectories: [] })).toMatchObject({ isError: false });
+      writeFileSync(join(cwd, "a.txt"), "Stage output");
       child.finish({ summary: "Ready" });
       await started;
       const item = await h.item(id);
       const ref = `refs/heads/${runBranch(item.runId ?? "")}`;
+      const approvedHead = fixture.userGit(fixture.repo, "rev-parse", ref);
       expect(fixture.userGit(remote, "for-each-ref")).toBe("");
       const stage = item.stageRuns[0];
+      expect((await h.engine.readTemplateRuns([item], "local-desktop"))[0].pendingWorkflowDecisions)
+        .toMatchObject([{ outputs: [{ pushRunBranch: true, payload: expect.stringContaining(approvedHead) }] }]);
       if (changeRef) {
         writeFileSync(join(fixture.repo, "payload.txt"), "A later payload");
         fixture.commitAll("A later commit");
@@ -248,23 +249,31 @@ async function pushGate(decision: "approve" | "reject", changeRef = false) {
       }
       const binding = { runId: item.runId ?? "", stageId: "review", attempt: 1, decision,
         resultHash: stage.resultHash ?? "", outputHash: requestedOutputHash(stage) };
-      await expect(h.engine.decideStageGate(id, binding, gesture(WORK_BOARD.decideStage, id, binding))).resolves.toMatchObject({ ok: true });
+      await expect(h.engine.decideStageGate(id, binding, { kind: "local-desktop", receipt: gesture(WORK_BOARD.decideStage, id, binding) })).resolves.toMatchObject({ ok: true });
       expect(fixture.userGit(remote, "for-each-ref", "--format=%(refname)")).toBe(decision === "approve" && !changeRef ? ref : "");
       if (decision === "approve") {
-        const [outcome] = (await h.stageRun(id, "review")).outputExecutions ?? [];
+        const approved = await h.stageRun(id, "review");
+        const [outcome] = approved.outputExecutions ?? [];
+        if (!changeRef) {
+          const pushed = fixture.userGit(remote, "rev-parse", ref);
+          expect(pushed).toBe(approvedHead);
+          expect(approved.workspace?.sealCommit).toMatch(/^[a-f0-9]{40}$/u);
+          expect(pushed).not.toBe(approved.workspace?.sealCommit);
+          expect(fixture.userGit(remote, "show", `${ref}:a.txt`)).toBe("one");
+        }
         expect(outcome?.status).toBe(changeRef ? "failed" : "done");
         if (changeRef) expect(outcome?.detail).toBe("push-ref-changed");
         const retry = { runId: binding.runId, stageId: binding.stageId, attempt: binding.attempt,
           outputHash: binding.outputHash ?? "", outputId: outcome?.id ?? "" };
         await expect(h.engine.retryOutput(id, retry, gesture(WORK_BOARD.retryOutput, id, retry)))
           .resolves.toEqual({ ok: false, reason: "push-retry-forbidden" });
-        await expect(h.engine.decideStageGate(id, binding, gesture(WORK_BOARD.decideStage, id, binding))).resolves.toMatchObject({ ok: false });
+        await expect(h.engine.decideStageGate(id, binding, { kind: "local-desktop", receipt: gesture(WORK_BOARD.decideStage, id, binding) })).resolves.toMatchObject({ ok: false });
       }
     });
   } finally { await fixture.done(); }
 }
 
-it("a declared host:git git_push entry is pushed by the engine once, after an approve with matching hashes, and not before", () => pushGate("approve"));
+it("a host Git push sends the run head bound at request without the stage seal commit", () => pushGate("approve"));
 it("a rejected gate pushes nothing", () => pushGate("reject"));
 it("retry-output refuses a failed push", () => pushGate("approve", true));
 it("one approval pushes at most once: a second execution and retry-output both send nothing", () => pushGate("approve"));

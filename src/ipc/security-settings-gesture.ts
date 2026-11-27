@@ -80,11 +80,11 @@ function createSecuritySettingsGestureTracker() {
       return latest.get(contents)?.proof === proof && age >= 0 && age <= USER_GESTURE_LIFETIME_MS
         && proof.channel === operation.channel && proof.payloadDigest === payloadDigest(operation.payload);
     },
-    redeem(decision: SecuritySettingsDecision | undefined, operation: SecuritySettingsOperation, requiredKind: NativeInputKind): WebContents | null {
+    redeem(decision: SecuritySettingsDecision | undefined, operation: SecuritySettingsOperation, requiredKind?: NativeInputKind): WebContents | null {
       if (!decision) return null;
       const { surface, proof } = decision;
       const receipt = latest.get(surface);
-      if (!receipt || receipt.redeemed || proof.kind !== requiredKind || !this.matches(surface, proof, operation)) return null;
+      if (!receipt || receipt.redeemed || (requiredKind !== undefined && proof.kind !== requiredKind) || !this.matches(surface, proof, operation)) return null;
       receipt.redeemed = true;
       return surface;
     },

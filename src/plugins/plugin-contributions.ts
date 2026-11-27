@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { chmod, copyFile, lstat, mkdir, readFile, readdir, realpath, rename, rm } from "node:fs/promises";
 import { dirname, isAbsolute, posix, relative, resolve, sep } from "node:path";
 import type { PluginContributionDeclaration, PluginManifest } from "./types.js";
-import { type PluginInstallReceipt, verifyInstallReceiptRaw } from "./plugin-install-receipt.js";
+import { verifyInstallReceiptRaw } from "./plugin-install-receipt.js";
 import { canonicalZipEntryPathIdentity } from "./zip-entry-path.js";
 import { assertPayloadOnlyPluginTree } from "./plugin-storage-layout.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
@@ -268,7 +268,7 @@ export async function materializePluginGenerationRoot(
   generationId: string,
   receiptRaw: string,
   receiptPluginId: string = pluginId,
-): Promise<{ payloadRoot: string; receipt: PluginInstallReceipt }> {
+): Promise<string> {
   if (!/^[a-f0-9]{64}$/.test(generationId)) throw new Error("plugin generation id must be a SHA-256 digest");
   let parsed: unknown;
   try {
@@ -292,7 +292,7 @@ export async function materializePluginGenerationRoot(
       if (!sealed.ok) {
         throw new Error(`plugin '${pluginId}' retained generation changed while sealing: ${sealed.reason}`);
       }
-      return { payloadRoot: finalPayload, receipt: sealed.receipt };
+      return finalPayload;
     }
     await lstat(finalRoot);
     throw new Error(`plugin '${pluginId}' retained generation failed verification: ${existing.reason}`);
@@ -343,7 +343,7 @@ export async function materializePluginGenerationRoot(
         throw new Error(`plugin '${pluginId}' concurrent retained generation changed while sealing: ${sealedRace.reason}`);
       }
     }
-    return { payloadRoot: finalPayload, receipt: sealed.receipt };
+    return finalPayload;
   } finally {
     await makeRetainedGenerationRemovable(temporaryRoot).catch(() => undefined);
     await rm(temporaryRoot, { recursive: true, force: true }).catch(() => undefined);

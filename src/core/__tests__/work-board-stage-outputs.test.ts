@@ -1,30 +1,48 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { isAbsolute, join, relative } from "node:path";
+import AdmZip from "adm-zip";
+import { createHash } from "node:crypto";
+import fs, { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import fsPromises from "node:fs/promises";
+import { join } from "node:path";
+import { EventEmitter } from "node:events";
+import type { WebContents } from "electron";
 import { expect, it, vi } from "vitest";
 import { deferred } from "../../__tests__/support/deferred.js";
 import { unusedNetworkFetch } from "../../__tests__/support/network-fetch-stubs.js";
 import { makeMockWebContents } from "../../__tests__/test-helpers.js";
+import { governedWorkflowOutput } from "../../boot/steps/workflow-output-invocation.js";
 import { AuditLogger } from "../../audit/audit-logger.js";
 import { makeConversationLoopSettings } from "../../engine/__tests__/conversation-loop-test-helpers.js";
 import { makeSubagentLoopDeps, patchLoopProvider } from "../../engine/__tests__/support/subagent-loop-fixtures.js";
-import { PARENT_ALL_TOOL_SCOPE, SubAgentRunner } from "../../engine/subagent-runner.js";
+import { PARENT_ALL_TOOL_SCOPE, exactToolScope, SubAgentRunner } from "../../engine/subagent-runner.js";
 import { ScriptHookManager } from "../../hooks/script-hook-manager.js";
+import { securitySettingsGestures } from "../../ipc/security-settings-gesture.js";
 import { mintHostDecisionProof } from "../../main/workflow-template-decision.js";
 import { mcpToolToTool } from "../../mcp/mcp-tool-adapter.js";
 import { PluginMcpHost } from "../../mcp/plugin-mcp-host.js";
 import type { PluginManifest } from "../../plugins/types.js";
+import { treeDigest, type PluginInstallPlan } from "../../marketplace/resolve/plugin-ladder.js";
+import { verifyInstallReceipt } from "../../plugins/plugin-install-receipt.js";
+import {
+  activateAndCommitPreparedPluginForTest, agentPluginsDocument, makeTestPluginPaths, TestPluginMarketplaceService,
+} from "../../plugins/__tests__/test-helpers.js";
 import { MemoryManager } from "../../memory/memory-manager.js";
-import { ApprovalGate, IPC_APPROVAL_REQUEST, type ApprovalRequest } from "../../permissions/approval-gate.js";
-import * as sandbox from "../../permissions/asrt-sandbox.js";
+import { approvalSurfaceRegistry } from "../../permissions/approval-surface-registry.js";
+import { ApprovalGate, IPC_APPROVAL_REQUEST, IPC_APPROVAL_SETTLED, type ApprovalRequest } from "../../permissions/approval-gate.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import type { ScheduleAttachment, StageEnvelope, WorkflowTemplateRecord } from "../../shared/workflow-template-types.js";
+import { en } from "../../i18n/messages/en.js";
+import { ko } from "../../i18n/messages/ko.js";
+import { WORK_BOARD } from "../../shared/ipc-channels.js";
+import { workBoardDecisionKey } from "../../shared/work-board-decision-intent.js";
+import { canonicalWorkflowJson } from "../../shared/workflow-template-output.js";
 import { createDynamicTool } from "../../tools/base.js";
+import { ToolExecutor } from "../../tools/executor.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import { createStageRequestOutputTool } from "../../tools/stage-request-output.js";
 import { stageOf } from "../../work-board/workflow/__tests__/stage-fixtures.js";
 import { stageRunHarness } from "../../work-board/workflow/__tests__/stage-run-harness.js";
 import { createHostGit } from "../../work-board/workflow/host-git.js";
-import { createRequestedOutputHooks } from "../../work-board/workflow/requested-outputs.js";
+import { createRequestedOutputHooks, requestedOutputHash, type RequestedOutputHooks } from "../../work-board/workflow/requested-outputs.js";
 
 const DECLARATION = { kind: "send-message", owner: "server", ownerId: "reports", toolName: "send_report" } as const;
 const ENVELOPE: StageEnvelope = {
@@ -35,7 +53,7 @@ const ENVELOPE: StageEnvelope = {
 it("a scheduled run ends at the gate with outputs pending and nothing sent", async () => {
   const send = vi.fn();
   const h = await stageRunHarness({ observeRunWork: true, workflow: {
-    outputs: createRequestedOutputHooks(createHostGit(), { operands: (_decl, input) => ({ input, paths: [] }), invoke: send }),
+    outputs: createRequestedOutputHooks(createHostGit(), { invoke: send }, process.cwd()),
     unattendedAllowed: () => ({ ok: true }),
     lane: { admit: async () => ({ ok: true }), sessionLinked: vi.fn(), sessionEnded: vi.fn(), onDenied: () => () => {} },
   } });
@@ -69,7 +87,7 @@ it("a scheduled run ends at the gate with outputs pending and nothing sent", asy
 });
 
 async function withRunner(body: (fixture: {
-  runner: SubAgentRunner; cwd: string; tools: string[][]; approval: Promise<ApprovalRequest>; gate: ApprovalGate;
+  runner: SubAgentRunner; registry: ToolRegistry; cwd: string; tools: string[][]; approval: Promise<ApprovalRequest>; gate: ApprovalGate;
   execute: ReturnType<typeof vi.fn>;
 }) => Promise<void>) {
   const h = await stageRunHarness();
@@ -101,7 +119,7 @@ async function withRunner(body: (fixture: {
       auditLogger: new AuditLogger(), networkFetch: unusedNetworkFetch }),
     toolRegistry: registry, subAgentMemoryManager: new MemoryManager({ aveDir: join(h.dir, "children") }),
   });
-  try { await body({ runner, cwd: h.dir, tools, approval: approval.promise, gate, execute }); }
+  try { await body({ runner, registry, cwd: h.dir, tools, approval: approval.promise, gate, execute }); }
   finally {
     gate.disposeAll();
     hasProviderSpy.mockRestore();
@@ -124,91 +142,122 @@ it("an undeclared outward call is denied in a scheduled run and raises a card in
   await attended;
 }));
 
-it("git_push is in no tool schema of a stage child or a grandchild", () => withRunner(async ({ runner, cwd, tools }) => {
+it("keeps the stage output tool out of descendant tool scopes", () => withRunner(async ({ runner, registry, cwd, tools }) => {
   const input = { title: "Stage", instructions: "Inspect result", toolScope: PARENT_ALL_TOOL_SCOPE, projectRoot: cwd };
   const tool = createStageRequestOutputTool([DECLARATION], async () => ({ ok: true, id: "delivery" }));
+  registry.register(tool);
   await runner.spawn({ ...input, stageOutputTool: tool });
   await runner.spawn({ ...input, title: "Delegated child" });
-  expect(tools).toHaveLength(2);
+  await runner.spawn({ ...input, title: "Scoped child", toolScope: exactToolScope([tool.name]) });
+  expect(tools).toHaveLength(3);
   expect(tools[0]).toContain("stage_request_output");
-  expect(tools[1]).not.toContain("stage_request_output");
+  expect(tools.slice(1).every(names => !names.includes(tool.name))).toBe(true);
   expect(tools.every(names => !names.includes("git_push"))).toBe(true);
 }));
 
-it.each([
-  "unverified", "partial hint", "unsigned policy", "policy without operands", "source read deny", "deny while awaiting permission",
-  "registration replaced while awaiting permission", "inline upload", "file operands",
-] as const)("binds requested output by verified operands for %s", async scenario => {
-  const { governedWorkflowOutput } = await import("../../boot/steps/workflow-output-invocation.js");
-  const { approvalSurfaceRegistry } = await import("../../permissions/approval-surface-registry.js");
-  const { ToolExecutor } = await import("../../tools/executor.js");
-  const h = await stageRunHarness();
-  const owner = makeMockWebContents();
-  const shown = deferred<ApprovalRequest>();
-  owner.send.mockImplementation((channel: string, request: ApprovalRequest) => {
-    if (channel === IPC_APPROVAL_REQUEST) shown.resolve(request);
+async function installOutputPlugin(source: "git" | "folder", root: string, manifest: PluginManifest): Promise<PluginManifest> {
+  const pluginsRoot = join(root, "plugins");
+  const cacheRoot = join(pluginsRoot, ".cache");
+  mkdirSync(pluginsRoot);
+  writeFileSync(join(pluginsRoot, "registry.json"), JSON.stringify({ version: 1, plugins: [] }));
+  const service = new TestPluginMarketplaceService(makeTestPluginPaths({ rootDir: root, cacheRoot }));
+  const authority = { capabilities: [], requires: { minAppVersion: "0.12.0", hostProtocol: "5" } };
+  const revision = source === "folder" ? `local-${"a".repeat(64)}` : "a".repeat(40);
+  const plan: PluginInstallPlan = {
+    sourceId: "sample", sourceOrigin: "custom", snapshotCommit: revision,
+    versionCommit: source === "folder" ? revision : "b".repeat(40),
+    packagePath: "plugins/reports", kind: "plugin", name: manifest.id, version: manifest.version,
+    minAppVersion: authority.requires.minAppVersion, hostProtocol: authority.requires.hostProtocol, authority,
+    artifact: { tree: "plugins/reports" },
+  };
+  const entry = "dist/entry.mjs";
+  const document = agentPluginsDocument({ ...manifest, ...authority, entry });
+  const files = [
+    { path: "plugin.json", data: Buffer.from(JSON.stringify(document)), executable: false },
+    { path: entry, data: Buffer.from("export default {};"), executable: false },
+  ];
+  const zip = new AdmZip();
+  for (const file of files) zip.addFile(file.path, file.data, "", 0o644);
+  const zipBuffer = zip.toBuffer();
+  await service.installGitPlugin(plan, {
+    stage: async () => ({
+      plan, zipBuffer, unencrypted: false, notInstalled: [], manifestDocument: document,
+      artifactSha256: source === "folder" ? treeDigest(files) : createHash("sha256").update(zipBuffer).digest("hex"),
+      rung: source === "folder" ? "folder" : "archive",
+      rungs: source === "folder" ? [{ rung: "folder", outcome: "used" }] : [
+        { rung: "release", outcome: "skipped", reason: "NOT_DECLARED" }, { rung: "archive", outcome: "used" },
+      ],
+    }),
+    activatePreparedArtifact: activateAndCommitPreparedPluginForTest,
   });
-  const gate = new ApprovalGate(sessionId => sessionId === "ordinary" ? owner as never : approvalSurfaceRegistry.resolve(sessionId));
-  const readDenies = vi.spyOn(sandbox, "getUserReadDenies");
+  const receipt = await verifyInstallReceipt(cacheRoot, manifest.id, join(pluginsRoot, manifest.id));
+  expect(receipt).toMatchObject({ ok: true, receipt: { installSource: source } });
+  const installed = await service.getInstalledConfigManifest(manifest.id);
+  if (!installed) throw new Error("Missing installed plugin manifest");
+  return installed.manifest;
+}
+
+const DEFAULT_WORKSPACE = process.cwd();
+const PLUGIN_OUTPUT = { ...DECLARATION, owner: "plugin", kind: "upload" } as const;
+
+async function withOutputExecutor(
+  opts: { args: Record<string, unknown>; owner?: "plugin" | "server"; kind?: "upload" | "other"; rewrite?: boolean; install?: "git" | "folder" },
+  body: (fixture: {
+    h: Awaited<ReturnType<typeof stageRunHarness>>;
+    hooks: RequestedOutputHooks;
+    surface: WebContents;
+    gate: ApprovalGate;
+    shown: Promise<ApprovalRequest>;
+    settled: Promise<string>;
+    events: string[];
+    handler: ReturnType<typeof vi.fn>;
+    executor: ToolExecutor;
+    registry: ToolRegistry;
+  }) => Promise<void>,
+) {
+  const decl = { ...PLUGIN_OUTPUT, owner: opts.owner ?? "plugin", kind: opts.kind ?? "upload" };
+  let hooks: RequestedOutputHooks;
+  const h = await stageRunHarness({ observeRunWork: true, workflow: { outputs: {
+    accept: input => hooks.accept(input),
+    execute: input => hooks.execute(input),
+  } } });
+  const owner = makeMockWebContents();
+  const nativeEvents = new EventEmitter();
+  const surface = Object.assign(nativeEvents, owner) as unknown as WebContents;
+  const shown = deferred<ApprovalRequest>();
+  const settled = deferred<string>();
+  const events: string[] = [];
+  owner.send.mockImplementation((channel: string, request: ApprovalRequest | { requestId: string }) => {
+    if (channel === IPC_APPROVAL_REQUEST && "id" in request) {
+      events.push("card shown");
+      shown.resolve(request);
+    }
+    if (channel === IPC_APPROVAL_SETTLED && "requestId" in request) settled.resolve(request.requestId);
+  });
+  const gate = new ApprovalGate(sessionId => approvalSurfaceRegistry.resolve(sessionId));
   const audit = new AuditLogger(join(h.dir, "audit"));
+  const registry = new ToolRegistry();
+  const handler = vi.fn(async (_name: string, _input: Record<string, unknown>) => {
+    events.push("handler");
+    return { text: "Sent" };
+  });
+  const schema = { name: decl.toolName, description: "Send a report", inputSchema: { type: "object" as const, properties: {} } };
+  const generationId = "report-generation";
   let plugin: PluginMcpHost | undefined;
   try {
-    const source = join(h.dir, "report.txt");
-    const attachment = join(h.dir, "attachment.txt");
-    writeFileSync(source, "Approved report");
-    writeFileSync(attachment, "Approved attachment");
-    const args = scenario === "inline upload" ? { operation: "send", path: "An inline label" }
-      : scenario === "unverified" ? { documentSource: source }
-      : scenario === "partial hint" ? { document: { sources: ["report.txt"] }, attachment }
-      : { operation: "send", document: { sources: ["report.txt", "attachment.txt"] } };
-    const execute = vi.fn(async (_name: string, input: Record<string, unknown>) => {
-      if (scenario === "file operands") {
-        const { sources } = input.document as { sources: string[] };
-        const temp = sandbox.ensureSandboxTempPrincipalDir({ kind: "plugin", id: DECLARATION.ownerId });
-        expect(sources.every(path => !isAbsolute(relative(temp.dir, path)) && !relative(temp.dir, path).startsWith(".."))).toBe(true);
-        expect(sources.every(path => sandbox.protectedReadDenyCovering(path, [temp.root]) === temp.root)).toBe(true);
-        expect(sources.map(path => readFileSync(path, "utf8"))).toEqual(["Approved report", "Approved attachment"]);
-      }
-      return { text: "Sent" };
-    });
-    const registry = new ToolRegistry();
-    const decl = scenario === "unverified" ? DECLARATION
-      : { ...DECLARATION, owner: "plugin", kind: scenario === "inline upload" ? "upload" : "external-write" } as const;
-    const schema = { name: decl.toolName, description: "Send a report", inputSchema: { type: "object" as const, properties: {} } };
-    const generationId = "reporting-generation";
-    if (scenario === "unverified") {
-      registry.register(mcpToolToTool(decl.ownerId, decl.toolName, schema, execute));
+    if (decl.owner === "server") {
+      registry.register(mcpToolToTool(decl.ownerId, decl.toolName, schema, handler));
     } else {
-      const pathFields = scenario === "inline upload" ? [] : ["document.sources"];
       const manifest: PluginManifest = {
-        id: decl.ownerId, name: "Reports", description: "Report delivery fixture", version: "1.0.0", entry: "entry.mjs",
-        tools: [{ ...schema, inputSchema: {
-          type: "object", additionalProperties: false,
-          properties: {
-            operation: { type: "string", const: "send" },
-            ...(scenario === "inline upload" ? { path: { type: "string" } } : {
-              document: { type: "object", additionalProperties: false,
-                properties: { sources: { type: "array", items: { type: "string" } } }, required: ["sources"] },
-              ...(scenario === "partial hint" ? { attachment: { type: "string" } } : {}),
-            }),
-          },
-          required: ["operation", ...(scenario === "inline upload" ? ["path"] : ["document"]),
-            ...(scenario === "partial hint" ? ["attachment"] : [])],
-        }, _meta: {
-          ui: { visibility: ["model"] },
-          "ai.agent-connector.ave/pathFields": pathFields,
-          ...(scenario !== "partial hint" && { "ai.agent-connector.ave/operationPolicy": {
-            discriminant: "operation", operations: { send: { kind: "write", minimumRisk: "write",
-              ...(scenario !== "policy without operands" && { pathFields: [...pathFields] }) } },
-          } }),
-        } }],
+        id: decl.ownerId, name: "Reports", description: "Report delivery", version: "1.0.0", entry: "entry.mjs",
+        tools: [{ ...schema, _meta: { ui: { visibility: ["model"] } } }],
       };
-      plugin = PluginMcpHost.loopback(manifest, async (name, input) => {
-        const result = await execute(name, input);
+      const installed = opts.install ? await installOutputPlugin(opts.install, h.dir, manifest) : manifest;
+      plugin = PluginMcpHost.loopback(installed, async (name, input) => {
+        const result = await handler(name, input);
         return { content: [{ type: "text", text: result.text }] };
-      }, undefined, generationId, scenario === "unsigned policy" ? undefined : manifest);
+      }, undefined, generationId);
       const tools = await plugin.prepareTools();
-      expect(tools).toHaveLength(1);
       registry.reservePluginReplacement(decl.ownerId, tools, []).publish();
       plugin.publishPrepared(tools);
     }
@@ -218,84 +267,210 @@ it.each([
       acquireExact: async () => ({ generation: { state: { runtime: { instance: { handlers: {} } } } }, release: vi.fn() }),
       runWithLease: async (_lease: unknown, invoke: () => Promise<unknown>) => invoke(),
     };
-    const scriptHooks = new ScriptHookManager();
     await audit.setupPermissionAuditChain("a".repeat(64));
-    const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, scriptHooks, audit,
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, new ScriptHookManager(), audit,
       undefined, undefined, undefined, () => generationAccess as never, (_tool, sessionId) => ({
         ownerVersion: "1.0.0", generationId, appSessionId: sessionId ?? "test-session",
         accountScopeHash: "sample-account-scope", accountHash: "sample-account", appGrantRequired: false,
       }));
-    const hooks = createRequestedOutputHooks(createHostGit(), governedWorkflowOutput(registry, executor));
-    const run = { itemId: 1, runId: "verified-operands", runKey: "verified-operands" };
-    const raw = { toolName: decl.toolName, owner: decl.owner, ownerId: decl.ownerId, args, summary: "Send report" };
-    if (scenario === "source read deny") readDenies.mockReturnValue([source]);
-    const request = await hooks.accept({ stage: stageOf("review", { requestedOutputs: [decl] }), workspaceRoot: h.dir, run, raw });
-    if (scenario === "partial hint" || scenario === "unsigned policy"
-      || scenario === "policy without operands" || scenario === "source read deny") {
-      expect(request).toEqual({ ok: false, code: scenario === "source read deny" ? "output-file-read-denied" : "output-operands-unverified" });
-      expect(execute).not.toHaveBeenCalled();
-      return;
-    }
-    if (scenario === "unverified") {
-      expect(request).toEqual({ ok: false, code: "output-operands-unverified" });
-      expect(execute).not.toHaveBeenCalled();
-      const ordinary = executor.executeAll([{ id: "ordinary", name: decl.toolName, input: args }], {
-        executionCwd: h.dir, sessionId: "ordinary", permissionContext: { trustOrigin: "llm-tool-arg" },
-      });
-      const card = await Promise.race([shown.promise, ordinary.then(() => undefined)]);
-      expect(card?.toolName).toBe(decl.toolName);
-      if (card) gate.resolveFromDesktopRenderer(card.id, { requestId: card.id, choice: "allow-once", nonce: card.nonce, hmac: card.hmac }, owner as never);
-      await ordinary;
-      expect(execute).toHaveBeenCalledWith(decl.toolName, args);
-      return;
-    }
-    if (process.platform === "win32" && scenario !== "inline upload") {
-      expect(request).toEqual({ ok: false, code: "output-file-unbound" });
-      return;
-    }
-    if (!request.ok) throw new Error(request.code);
-    if (scenario === "file operands") {
-      expect(request.output.files).toEqual(["report.txt", "attachment.txt"].map(path => ({ path,
-        sha256: expect.stringMatching(/^[a-f0-9]{64}$/u), size: expect.any(Number) })));
-    }
-    const dispatch = hooks.execute({ run, stageId: "review", output: request.output, approvalSurface: owner as never,
-      workspace: { root: h.dir }, canExecute: () => true });
-    const card = await Promise.race([shown.promise, dispatch.then(() => undefined)]);
-    expect(card?.toolName).toBe(decl.toolName);
-    expect(execute).not.toHaveBeenCalled();
-    const paths = (card?.args as { document?: { sources: string[] } } | undefined)?.document?.sources ?? [];
-    if (scenario !== "inline upload") {
-      expect(paths).toHaveLength(2);
-      expect(paths.every(path => !existsSync(path))).toBe(true);
-    }
-    if (scenario === "deny while awaiting permission") readDenies.mockReturnValue([source]);
-    if (scenario === "registration replaced while awaiting permission") {
-      const original = registry.findByName(decl.toolName);
-      if (!original) throw new Error("Missing registered tool");
-      registry.reservePluginReplacement(decl.ownerId, [{ ...original }], []).publish();
-    }
-    writeFileSync(source, "Later report");
-    writeFileSync(attachment, "Later attachment");
-    if (card) gate.resolveFromDesktopRenderer(card.id, { requestId: card.id, choice: "allow-once", nonce: card.nonce, hmac: card.hmac }, owner as never);
-    if (scenario === "deny while awaiting permission") {
-      await expect(dispatch).resolves.toMatchObject({ status: "failed", detail: "output-file-read-denied" });
-      expect(execute).not.toHaveBeenCalled();
-      return;
-    }
-    if (scenario === "registration replaced while awaiting permission") {
-      await expect(dispatch).resolves.toMatchObject({ status: "failed" });
-      expect(execute).not.toHaveBeenCalled();
-      return;
-    }
-    await expect(dispatch).resolves.toMatchObject({ status: "done" });
-    expect(paths.every(path => !existsSync(path))).toBe(true);
-    expect(execute).toHaveBeenCalledOnce();
-    if (scenario === "inline upload") expect(execute).toHaveBeenCalledWith(decl.toolName, args);
+    if (opts.rewrite) executor.getHookRunner().registerPreHook("rewrite", () => ({
+      action: "modify", updatedInput: { ...opts.args, body: "Changed by hook" },
+    }));
+    const dispatch = executor.executeAll.bind(executor);
+    vi.spyOn(executor, "executeAll").mockImplementation((calls, options) => {
+      const approve = options?.approvedInvocation;
+      return approve ? dispatch(calls, { ...options, approvedInvocation: (candidate, input) => {
+        events.push("approvedInvocation");
+        return approve(candidate, input);
+      } }) : dispatch(calls, options);
+    });
+    hooks = createRequestedOutputHooks(createHostGit(), governedWorkflowOutput(registry, executor), DEFAULT_WORKSPACE);
+    await body({ h, hooks, surface, gate, shown: shown.promise, settled: settled.promise, events, handler, executor, registry });
   } finally {
-    readDenies.mockRestore();
     gate.disposeAll();
+    await h.drainRunWork();
     await plugin?.dispose();
     await audit.close();
     await h.cleanup();
   }
+}
+
+type OutputExecutorFixture = Parameters<Parameters<typeof withOutputExecutor>[1]>[0];
+
+function answerOutput({ gate, events, surface }: OutputExecutorFixture, card: ApprovalRequest) {
+  events.push("card answered");
+  gate.resolveFromDesktopRenderer(card.id, { requestId: card.id, choice: "allow-once", nonce: card.nonce, hmac: card.hmac }, surface);
+}
+
+const OUTPUT_SOURCE_PATHS = [
+  "../../work-board/workflow/requested-outputs.ts",
+  "../../work-board/workflow/requested-output-retry.ts",
+  "../../boot/steps/workflow-output-invocation.ts",
+];
+
+it("keeps requested output modules outside filesystem and operand binding", () => {
+  const forbidden = /["'](?:node:(?:fs(?:\/promises)?|os)|[^"'\n]*\/(?:atomic-file|workspace-seed|owned-fs|asrt-sandbox|path-extraction|plugin-mcp-host|plugin-install-receipt)(?:\.js)?)["']/u;
+  for (const path of OUTPUT_SOURCE_PATHS) {
+    expect(readFileSync(new URL(path, import.meta.url), "utf8"), path).not.toMatch(forbidden);
+  }
+});
+
+type OutputCase = NonNullable<Parameters<typeof withOutputExecutor>[0]>;
+const plainArgs = { body: "Ready", path: "reports/latest.txt", fields: { count: 42, locale: "한글", amounts: [0.125, -3] } };
+const longArgs = { body: `${"Review ".repeat(90)}end`, path: "/example/report.txt" };
+const cases: ReadonlyArray<[string, OutputCase]> = [
+  ["upload", { args: plainArgs, kind: "upload" }],
+  ["other", { args: plainArgs, kind: "other" }],
+  ["long MCP input", { args: longArgs, owner: "server" }],
+  ["a plugin from a git install", { args: plainArgs, install: "git" }],
+  ["a plugin from a folder install", { args: plainArgs, install: "folder" }],
+];
+it.each(cases)("shows and executes identical args for %s after the ordinary approval", (_name, opts) => withOutputExecutor(opts, async fixture => {
+  const { hooks, h, handler, shown, events, executor } = fixture;
+  const decl = { ...PLUGIN_OUTPUT, owner: opts.owner ?? "plugin", kind: opts.kind ?? "upload" };
+  const run = { itemId: 1, runId: "delivery", runKey: "delivery", ...(opts.owner === "server" && { projectRoot: h.dir }) };
+  const request = await hooks.accept({ stage: stageOf("review", { requestedOutputs: [decl] }), workspaceRoot: h.dir, run,
+    raw: { toolName: decl.toolName, owner: decl.owner, ownerId: decl.ownerId, args: opts.args, summary: "Deliver" } });
+  if (!request.ok) throw new Error(request.code);
+
+  const fsFrames: string[] = [];
+  const recordOutputFrames = <Args extends unknown[], Result>(operation: (...args: Args) => Result) => (...args: Args): Result => {
+    const frames = new Error().stack ?? "";
+    if (OUTPUT_SOURCE_PATHS.some(path => frames.includes(path.slice(5)))) fsFrames.push(frames);
+    return operation(...args);
+  };
+  const observeRealpath = recordOutputFrames(fsPromises.realpath) as typeof fsPromises.realpath;
+  const observeMkdtemp = recordOutputFrames(fsPromises.mkdtemp) as typeof fsPromises.mkdtemp;
+  const observeReadFile = recordOutputFrames(fs.readFileSync) as typeof fs.readFileSync;
+  const realpath = vi.spyOn(fsPromises, "realpath").mockImplementation(observeRealpath);
+  const mkdtemp = vi.spyOn(fsPromises, "mkdtemp").mockImplementation(observeMkdtemp);
+  const readFile = vi.spyOn(fs, "readFileSync").mockImplementation(observeReadFile);
+  try {
+    const pending = hooks.execute({ run, stageId: "review", output: request.output, approvalSurface: fixture.surface,
+      workspace: { root: h.dir }, canExecute: () => true, signal: new AbortController().signal });
+    const card = await Promise.race([shown, pending.then(() => undefined)]);
+    expect(card).toBeDefined();
+    if (!card) throw new Error("The tool did not ask for approval");
+    expect(canonicalWorkflowJson(card.args)).toBe(request.output.args);
+    expect(events).toEqual(["card shown"]);
+    expect(handler).not.toHaveBeenCalled();
+    expect(executor.executeAll).toHaveBeenCalledWith(expect.any(Array), expect.objectContaining({ executionCwd: run.projectRoot ?? DEFAULT_WORKSPACE }));
+    answerOutput(fixture, card);
+    await expect(pending).resolves.toMatchObject({ status: "done" });
+    expect(handler).toHaveBeenCalledExactlyOnceWith(decl.toolName, opts.args);
+    expect(canonicalWorkflowJson(handler.mock.calls[0][1])).toBe(request.output.args);
+    expect(events).toEqual(["card shown", "card answered", "approvedInvocation", "handler"]);
+    expect(fsFrames).toEqual([]);
+  } finally {
+    readFile.mockRestore();
+    mkdtemp.mockRestore();
+    realpath.mockRestore();
+  }
+}));
+
+async function openOutputGate(fixture: OutputExecutorFixture, count = 1) {
+  const { h, surface } = fixture;
+  const version = await h.confirm([stageOf("review", { requestedOutputs: [PLUGIN_OUTPUT] })]);
+  const itemId = await h.addItem(version);
+  const started = h.start(itemId, h.local(version));
+  const [child] = await h.untilLive(1);
+  const { toolName, owner, ownerId } = PLUGIN_OUTPUT;
+  for (let n = 0; n < count; n++) {
+    await expect(child.input.stageOutputTool?.execute({ toolName, owner, ownerId, args: plainArgs, summary: "Deliver" },
+      { cwd: child.input.projectRoot ?? "", metadata: {}, extraAllowedDirectories: [] })).resolves.toMatchObject({ isError: false });
+  }
+  child.finish({ summary: "Ready" });
+  await expect(started).resolves.toMatchObject({ status: "awaiting_approval" });
+  const item = await h.item(itemId);
+  const stage = item.stageRuns[0];
+  const outputHash = requestedOutputHash(stage);
+  if (!item.runId || !stage.resultHash || !outputHash) throw new Error("Missing gate binding");
+  const binding = { runId: item.runId, stageId: "review", attempt: stage.attempt, resultHash: stage.resultHash,
+    outputHash, decision: "approve" } as const;
+  securitySettingsGestures.observe(surface);
+  (surface as unknown as EventEmitter).emit("before-mouse-event", {}, { type: "mouseUp" });
+  const proof = securitySettingsGestures.consume(surface, { channel: WORK_BOARD.decideStage, payload: workBoardDecisionKey(WORK_BOARD.decideStage, itemId, binding) });
+  if (!proof) throw new Error("Missing approval gesture");
+  const decision = h.engine.decideStageGate(itemId, binding, { kind: "local-desktop", receipt: { surface, proof } });
+  const card = await Promise.race([fixture.shown, decision.then(() => undefined)]);
+  if (!card) throw new Error("The output did not reach its approval card");
+  expect(fixture.handler).not.toHaveBeenCalled();
+  return { itemId, card, decision };
+}
+
+it("a hook that rewrites the input ends the output failed and the handler never runs", () => withOutputExecutor({
+  args: plainArgs, rewrite: true,
+}, async fixture => {
+  const { itemId, card, decision } = await openOutputGate(fixture);
+  expect(card.args).toMatchObject({ body: "Changed by hook" });
+  answerOutput(fixture, card);
+  await expect(decision).resolves.toMatchObject({ ok: true });
+  expect((await fixture.h.stageRun(itemId, "review")).outputExecutions)
+    .toMatchObject([{ status: "failed", detail: "output-execution-failed" }]);
+  expect(fixture.handler).not.toHaveBeenCalled();
+}));
+
+it("a changed tool registration prevents dispatch after the card is answered", () => withOutputExecutor({ args: plainArgs }, async fixture => {
+  const { itemId, card, decision } = await openOutputGate(fixture);
+  const original = fixture.registry.findByName(PLUGIN_OUTPUT.toolName);
+  if (!original) throw new Error("Missing registered tool");
+  fixture.registry.reservePluginReplacement(PLUGIN_OUTPUT.ownerId, [{ ...original }], []).publish();
+  answerOutput(fixture, card);
+  await expect(decision).resolves.toMatchObject({ ok: true });
+  expect((await fixture.h.stageRun(itemId, "review")).outputExecutions).toMatchObject([{ status: "failed" }]);
+  expect(fixture.handler).not.toHaveBeenCalled();
+}));
+
+it.each(["Stop", "row removal"] as const)("%s cancels an unanswered output card", action => withOutputExecutor({ args: plainArgs }, async fixture => {
+  const { h, settled, gate, handler } = fixture;
+  const { itemId, card, decision } = await openOutputGate(fixture, 2);
+  expect(gate.pendingCount).toBe(1);
+  const writes = vi.spyOn(h.board, "updateRun");
+  try {
+    if (action === "Stop") {
+      expect(h.engine.cancelRun(itemId)).toEqual({ ok: true });
+    } else {
+      await expect(h.board.remove(itemId)).resolves.toMatchObject({ status: "deleted" });
+    }
+    await expect(settled).resolves.toBe(card.id);
+    expect(gate.pendingCount).toBe(0);
+    await expect(decision).resolves.toMatchObject({ ok: true });
+    expect(handler).not.toHaveBeenCalled();
+    expect(fixture.events).toEqual(["card shown"]);
+    if (action === "Stop") {
+      await h.until(itemId, row => row.runStatus === "cancelled");
+      expect((await h.stageRun(itemId, "review")).outputExecutions)
+        .toMatchObject([
+          { status: "failed", detail: "output-execution-interrupted" },
+          { status: "failed", detail: "output-execution-interrupted" },
+        ]);
+    } else {
+      await h.waitForProgress(event => event.itemId === itemId && event.phase === "cancelled", "row removal settled");
+      expect(writes).not.toHaveBeenCalled();
+    }
+  } finally {
+    writes.mockRestore();
+  }
+}));
+
+it("refuses tool execution without an approval surface", () => withOutputExecutor({ args: plainArgs }, async fixture => {
+  const run = { itemId: 1, runId: "delivery", runKey: "delivery" };
+  const { toolName, owner, ownerId } = PLUGIN_OUTPUT;
+  const request = await fixture.hooks.accept({ stage: stageOf("review", { requestedOutputs: [PLUGIN_OUTPUT] }),
+    workspaceRoot: fixture.h.dir, run, raw: { toolName, owner, ownerId, args: plainArgs, summary: "Deliver" } });
+  if (!request.ok) throw new Error(request.code);
+  await expect(fixture.hooks.execute({ run, stageId: "review", output: request.output, approvalSurface: null,
+    workspace: { root: fixture.h.dir }, canExecute: () => true, signal: new AbortController().signal }))
+    .resolves.toMatchObject({ status: "denied", detail: "user-gesture-required" });
+  expect(fixture.handler).not.toHaveBeenCalled();
+}));
+
+it.each([
+  "output-not-declared", "remote-not-configured", "too-many", "args-too-large", "needs-human-gate",
+  "output-remote-local-unsupported", "output-args-not-displayable", "output-execution-failed",
+  "output-execution-interrupted", "workspace-unavailable", "user-gesture-required", "outputs-need-local-approver",
+  "push-url-unverified", "push-url-changed", "push-ref-changed", "push-authentication", "push-non-fast-forward", "push-failed",
+] as const)("localizes the requested output reason %s in both catalogs", code => {
+  expect(en[`reasonCodes.${code}`]).toBeTruthy();
+  expect(ko[`reasonCodes.${code}`]).toBeTruthy();
 });

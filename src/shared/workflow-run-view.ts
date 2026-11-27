@@ -4,7 +4,7 @@ import type { StageJoin, TemplateVersionPin, WorkItemStageRun } from "./workflow
 type JoinEvidence = Omit<NonNullable<StageJoin["conflict"]>, "conflictHash">;
 
 export type PendingWorkflowDecision =
-  | { kind: "stage-gate"; binding: Omit<StageGateDecideInput, "decision" | "note">; result: string; outputs?: { id: string; summary: string; payload: string; httpsAccountsHelp?: boolean }[]; arrivedAt: string | null }
+  | { kind: "stage-gate"; binding: Omit<StageGateDecideInput, "decision" | "note">; result: string; outputs?: { id: string; summary: string; payload: string; pushRunBranch?: boolean; httpsAccountsHelp?: boolean }[]; arrivedAt: string | null }
   | { kind: "join-conflict"; binding: Omit<StageJoinDecideInput, "decision">; evidence: JoinEvidence; canOpenFolder?: boolean; arrivedAt: null };
 
 export interface WorkflowRunPinView {

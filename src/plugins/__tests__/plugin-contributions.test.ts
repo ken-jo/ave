@@ -237,7 +237,7 @@ describe("materializePluginContributions", () => {
       files: [{ path: "plugin.json", sha256: createHash("sha256").update(body).digest("hex") }],
     });
     const generationId = "b".repeat(64);
-    const { payloadRoot } = await materializePluginGenerationRoot(
+    const payloadRoot = await materializePluginGenerationRoot(
       root,
       cacheRoot,
       "bundle-host-test",

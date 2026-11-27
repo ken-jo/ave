@@ -1,5 +1,6 @@
 /** Spawn isolated child history with scoped tools, a host-assigned round budget, labeled approval prompts, and streamed status.
  * Never expose agent_spawn to children or mutate the parent loop's state. */
+import { STAGE_REQUEST_OUTPUT_TOOL } from "../shared/workflow-template-types.js";
 import type { ListSessionsOptions, RestoredSubAgentSession, SessionListEntry } from "../memory/session-repository.js";
 import {
   SUBAGENT_MAX_ROUNDS_DEFAULT,
@@ -635,6 +636,7 @@ function normalizeRoundBudget(requested: number): number {
  * is the defense-in-depth backstop.
  */
 const SUB_AGENT_TOOL_BLOCKLIST = new Set<string>([
+  STAGE_REQUEST_OUTPUT_TOOL,
   "agent_spawn",
   "agent_status",
   "agent_interrupt",

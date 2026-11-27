@@ -177,7 +177,7 @@ export interface ExecuteOptions {
   /** Host-issued replay invalidation check; never a permission grant or wire input. */
   replayRootBinding?: ReplayRootBinding;
   /** Host-only pre-dispatch check for a separately approved exact payload. Grants no tool authority. */
-  approvedInvocation?: (tool: import("./base.js").Tool, input: Record<string, unknown>) => Promise<boolean>;
+  approvedInvocation?: (tool: import("./base.js").Tool, input: Record<string, unknown>) => boolean;
   /** Host-only lifecycle for an exact governed auth Tool; never plugin data. */
   pluginAuthLifecycle?: HostPluginAuthLifecycle;
 }

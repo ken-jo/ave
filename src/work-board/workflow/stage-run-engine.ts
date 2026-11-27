@@ -44,7 +44,7 @@ import { requestedOutputHash, stageOutputIntake, type RequestedOutputHooks } fro
 import { securitySettingsGestures, type SecuritySettingsDecision } from "../../ipc/security-settings-gesture.js";
 import { WORK_BOARD } from "../../shared/ipc-channels.js";
 import { workBoardDecisionKey } from "../../shared/work-board-decision-intent.js";
-import { createRecordedOutputEffects, retainsOutputFiles } from "./requested-output-retry.js";
+import { createRecordedOutputEffects } from "./requested-output-retry.js";
 import { isAwaitingStageReview, reconcileRunRecord, type RunRecord, type RunWriteFailure, type WorkflowRunState } from "./run-state.js";
 import type { RunRef, StageWorkspaceProvider } from "./stage-workspace.js";
 import { WorkflowInvariantError } from "./workflow-errors.js";
@@ -117,13 +117,15 @@ export type ScheduledTemplateStart =
   | { ok: true; itemId: number; result: Promise<WorkItemRunResult> }
   | { ok: false; code: string; tool?: EnvelopeToolRef };
 
+export type StageGateDecider = { kind: "local-desktop"; receipt: SecuritySettingsDecision };
+
 export interface StageRunEngine {
   /** Resolves once admission writes the run. The result observes its first quiescent state separately. */
   startScheduled(source: ScheduledTemplateSource, title: string): Promise<ScheduledTemplateStart>;
   /** Resolves with the run's first quiescent state, or with the start's refusal (error, already_running, not_found). That state may already
    * be past a gate: a decision queued before then is part of it. Gate state comes from events, not from this value. */
   start(itemId: number, a: { source: RunAuthoritySource }): Promise<WorkItemRunResult>;
-  decideGate(itemId: number, i: StageGateDecideInput, receipt?: SecuritySettingsDecision): Promise<StageGateDecideResult>;
+  decideGate(itemId: number, i: StageGateDecideInput, decider?: StageGateDecider): Promise<StageGateDecideResult>;
   decideJoin(itemId: number, i: StageJoinDecideInput): Promise<StageJoinDecideResult>;
   openJoin(itemId: number, i: Omit<StageJoinDecideInput, "decision">, open: (path: string) => Promise<boolean>): Promise<OpenJoinResult>;
   retryOutput(itemId: number, input: StageOutputRetryInput, receipt: SecuritySettingsDecision): Promise<StageOutputRetryResult>;
@@ -163,6 +165,7 @@ interface RunState {
   pendingStages: Map<string, number>;
   waiters: Set<() => void>;
   stopping: boolean;
+  outputAbort?: AbortController;
   /** No board row names the run any more. */
   rowGone: boolean;
   /** Why, once `rowGone`: the user's delete was due, or the run was an orphan. */
@@ -291,7 +294,6 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   const runs = new Map<number, RunState>();
   const outputApprovalSurfaces = new WeakMap<RunState, Map<string, WebContents>>();
   const outputEffects = createRecordedOutputEffects({ records, outputs: deps.outputs, resolvePinned, resolveProjectRoot: deps.resolveProjectRoot, notifyItemChanged,
-    release: workspace.release,
     scheduledProject: async source => {
       const approved = (await deps.attachments.getAttachment(source.attachmentId))?.approvedScope;
       return approved?.kind === "project" ? approved.projectRoot : approved?.kind === "all" ? undefined : null;
@@ -440,6 +442,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     state.rowGone = true;
     state.removedAs = cause;
     state.stopping = true;
+    state.outputAbort?.abort();
     post(state, { type: "stop_requested" });
   }
 
@@ -944,8 +947,16 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
           if (!stage?.requestedOutputs?.length || !definition || !surface) break;
           const canExecute = () => runs.get(state.itemId) === state && !state.rowGone && !state.lost
             && !halted(state, effect.stageId) && canShowRun(state) && !surface.isDestroyed();
-          for (const output of stage.requestedOutputs) {
-            await outputEffects.execute(record, stage, definition, output, state.ref, surface, canExecute);
+          const outputAbort = new AbortController();
+          state.outputAbort = outputAbort;
+          try {
+            for (const output of stage.requestedOutputs) {
+              if (state.rowGone) break;
+              await outputEffects.execute(record, stage, definition, output, state.ref, surface, canExecute,
+                outputAbort.signal, () => state.rowGone);
+            }
+          } finally {
+            delete state.outputAbort;
           }
           break;
         }
@@ -970,8 +981,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
           await finish(state, record, record.settled?.status ?? effect.runStatus, version, effect.runStatus === "error" ? state.faulted ?? undefined : undefined);
           break;
         case "release_workspace": {
-          const retained = new Set(record.stageRuns.filter(retainsOutputFiles).map(stage => stage.stageId));
-          await workspace.release(state.ref, effect.stageIds.filter(id => !retained.has(id)))
+          await workspace.release(state.ref, effect.stageIds)
             .catch((error: unknown) => log.warn("stage workspace release failed (id=%d): %s", state.itemId, errorMessage(error)));
           break;
         }
@@ -1507,15 +1517,15 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   async function retryOutput(itemId: number, input: StageOutputRetryInput, receipt: SecuritySettingsDecision): Promise<StageOutputRetryResult> {
     const surface = securitySettingsGestures.redeem(receipt, {
       channel: WORK_BOARD.retryOutput, payload: workBoardDecisionKey(WORK_BOARD.retryOutput, itemId, input),
-    }, "keyboard");
-    return surface ? outputEffects.retry(itemId, input, surface) : { ok: false, reason: "user-keyboard-required" };
+    });
+    return surface ? outputEffects.retry(itemId, input, surface) : { ok: false, reason: "user-gesture-required" };
   }
 
-  async function decideGate(itemId: number, i: StageGateDecideInput, receipt?: SecuritySettingsDecision): Promise<StageGateDecideResult> {
+  async function decideGate(itemId: number, i: StageGateDecideInput, decider?: StageGateDecider): Promise<StageGateDecideResult> {
     const event: RunEvent = { type: "gate_decided", stageId: i.stageId, attempt: i.attempt, decision: i.decision, ...(i.note !== undefined && i.note.length > 0 ? { note: i.note } : {}) };
-    const surface = i.decision === "approve" && i.outputHash !== undefined ? securitySettingsGestures.redeem(receipt, {
+    const surface = decider?.kind === "local-desktop" && i.decision === "approve" && i.outputHash !== undefined ? securitySettingsGestures.redeem(decider.receipt, {
       channel: WORK_BOARD.decideStage, payload: workBoardDecisionKey(WORK_BOARD.decideStage, itemId, i),
-    }, "keyboard") : null;
+    }) : null;
     let outputSurfaces: Map<string, WebContents> | undefined;
     const reason = await decide(itemId, i.runId, event, (record) => {
       const run = record.stageRuns.find(candidate => candidate.stageId === i.stageId);
@@ -1526,7 +1536,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       if (requestedOutputHash(run) !== i.outputHash) return "output_mismatch";
       if (run.requestedOutputs?.length && i.decision === "approve") {
         const state = runs.get(itemId);
-        if (!surface || !state) return "user-keyboard-required";
+        if (!surface || !state) return "user-gesture-required";
         outputSurfaces = outputApprovalSurfaces.get(state) ?? new Map();
         outputApprovalSurfaces.set(state, outputSurfaces);
         outputSurfaces.set(i.stageId, surface);
@@ -1587,6 +1597,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     // A second stop while the first unwinds is the same stop.
     if (state.stopping) return { ok: true };
     state.stopping = true;
+    state.outputAbort?.abort();
     post(state, { type: "stop_requested" });
     return { ok: true };
   }
@@ -1648,7 +1659,6 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
         continue;
       }
       if (run.settled !== undefined) {
-        if (run.stageRuns.some(retainsOutputFiles)) active.push(run.runId);
         if (item.runStatus !== run.settled.status) {
           const version = run.settled.status === "completed" ? await resolvePinned(run.pin).catch(() => null) : null;
           const output = finalOutput(run, version);

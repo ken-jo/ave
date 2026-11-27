@@ -177,10 +177,6 @@ function parseDecideStageInput(raw: unknown): StageGateDecideInput | null {
   return { runId, stageId, attempt, resultHash, decision: decision as WorkPlanDecision, ...(outputHash !== undefined ? { outputHash } : {}), ...(note !== undefined ? { note } : {}) };
 }
 
-function isRequestedOutputApproval(input: StageGateDecideInput): boolean {
-  return input.decision === "approve" && input.outputHash !== undefined;
-}
-
 /** The `Create and run` tuple the user saw, with the project the card showed. Null when the renderer sent none or a malformed one. */
 function parseJoinBinding(record: Record<string, unknown> | null): Omit<StageJoinDecideInput, "decision"> | null {
   if (!record) return null;
@@ -234,17 +230,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     }
     const channel = workBoardDecisionChannel(key);
     if (!channel || typeof token !== "string" || !/^[0-9a-f-]{36}$/u.test(token)) return false;
-    let keyboard = channel === WORK_BOARD.retryOutput;
-    if (channel === WORK_BOARD.decideStage && typeof key === "string") {
-      try {
-        const stage = parseDecideStageInput(JSON.parse(key)?.[2]);
-        keyboard = stage !== null && isRequestedOutputApproval(stage);
-      } catch {
-        return false;
-      }
-    }
-    const operation = { channel, payload: key };
-    const proof = keyboard ? securitySettingsGestures.consume(e.sender, operation, "keyboard") : securitySettingsGestures.consume(e.sender, operation);
+    const proof = securitySettingsGestures.consume(e.sender, { channel, payload: key });
     if (!proof) return false;
     decisionTokens.set(e.sender, { frame: e.sender.mainFrame, token, proof });
     return true;
@@ -611,7 +597,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
   });
 
   // The user's work approval of a stored plan (permission-decision-tree.md "Work approvals"): a user action on a host work object, outside
-  // the tool tree. Same boundary as steer: a sender-validated board-window main frame with a consumed local keyboard gesture, refused
+  // the tool tree. Same boundary as steer: a sender-validated board-window main frame with a consumed local gesture, refused
   // otherwise. The renderer names the run and the hash of the plan it showed, never the plan text; the engine checks both against the
   // stored item inside the board lock, stores the decision, and only then continues the run. A continuing run broadcasts its own
   // started/finished pair (`resumed`), so the board keeps the planning turns it already has.
@@ -686,13 +672,13 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
       return UNAUTHORIZED_FRAME;
     }
     const stage = channel === WORK_BOARD.decideStage ? parseDecideStageInput(input) : null;
-    const keyboard = channel === WORK_BOARD.retryOutput || (stage !== null && isRequestedOutputApproval(stage));
+    const decidesOutput = channel === WORK_BOARD.retryOutput || (stage?.decision === "approve" && stage.outputHash !== undefined);
     const proof = takeDecisionIntent(e, channel, id, input, intent);
-    if (!proof) return { ok: false as const, reason: keyboard ? "user-keyboard-required" as const : "user-gesture-required" as const };
+    if (!proof) return { ok: false as const, reason: "user-gesture-required" as const };
     if (typeof id !== "number" || !Number.isInteger(id)) return { ok: false as const, reason: "invalid-input" as const };
     const existing = await loadAuthorizedItem(id);
     if (existing.status !== "found") return { ok: false as const, reason: "not_found" as const };
-    if (keyboard && !canReadItem(e, existing.item)) return { ok: false as const, reason: "not_found" as const };
+    if (decidesOutput && !canReadItem(e, existing.item)) return { ok: false as const, reason: "not_found" as const };
     onProof?.(proof);
     return null;
   };
@@ -713,6 +699,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
       let proof: SecuritySettingsDecision | undefined;
       const refusal = await stageDecisionRefusal(WORK_BOARD.decideStage, e, id, input, intent, captured => { proof = captured; });
       if (refusal !== null) return refusal;
+      if (!proof) return { ok: false, reason: "user-gesture-required" };
       const parsed = parseDecideStageInput(input);
       if (parsed === null || !workBoardEngine) return { ok: false, reason: "invalid-input" };
       // Bound the note before redaction does any work on it; the engine checks the redacted note again.
@@ -725,9 +712,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
         }, parsed.note);
       const { note: _sent, ...bound } = parsed;
       const decision = { ...bound, ...(note !== undefined ? { note } : {}) };
-      const result = isRequestedOutputApproval(parsed)
-        ? await workBoardEngine.decideStageGate(id as number, decision, proof)
-        : await workBoardEngine.decideStageGate(id as number, decision);
+      const result = await workBoardEngine.decideStageGate(id as number, decision, { kind: "local-desktop", receipt: proof });
       if (!result.ok) return result;
       // The decision only; the note body stays on the item.
       auditStageDecision(id as number, { runId: parsed.runId, stageId: parsed.stageId, attempt: parsed.attempt, result: parsed.resultHash.slice(0, 8), decision: result.status, note: note !== undefined });

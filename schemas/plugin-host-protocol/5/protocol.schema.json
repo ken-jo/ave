@@ -6987,12 +6987,6 @@
           "minimumRisk": {
             "$ref": "#/$defs/types/GovernedRiskFloor"
           },
-          "pathFields": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
           "requiresRead": {
             "properties": {
               "maxAgeMs": {

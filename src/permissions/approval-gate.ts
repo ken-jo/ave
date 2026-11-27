@@ -29,6 +29,7 @@ import { describePermissionQuestion, pendingAnswerDefersAllowSaves, spendStandin
 import { NO_APPROVER_MESSAGE, type PermissionDecisionRequest } from "./decision-pipeline.js";
 import { isIssuedToolApprovalWait, withToolApprovalWait, type ToolApprovalWait } from "../tools/executor-ceiling.js";
 import { maskSensitiveData } from "../audit/dlp-filter.js";
+import { maskArgsForDisplay } from "../shared/approval-args-display.js";
 import { runSessionOf } from "./run-grants.js";
 import { canonicalStringify } from "../shared/canonical-json.js";
 import { isSessionOnlyApprovalMemoryScope, isUserOwnedSurface, isUserOwnedSurfaceChoice, resolveUserApprovalVerdict, type ApprovalMemory, type UserOwnedSurface, type UserOwnedSurfaceChoice } from "../shared/permissions-events.js";
@@ -68,27 +69,6 @@ import { isTerminalTabId } from "../shared/tab-id.js";
 import { captureShellWorkingDirectoryIdentity, matchesShellWorkingDirectoryIdentity, type ShellWorkingDirectoryIdentity } from "./shell-working-directory-identity.js";
 import type { ApprovalPersistenceGuard } from "./approval-persistence-guard.js";
 import { HOST_PROVENANCE, RULE_PROVENANCE, type HostProvenance, type RuleProvenance } from "./decision-provenance.js";
-
-// Args DLP masking
-
-function maskArgsForDisplay(value: unknown, detections: Set<string>): unknown {
-  if (typeof value === "string") {
-    const { masked, detections: hits } = maskSensitiveData(value);
-    for (const h of hits) detections.add(h);
-    return masked;
-  }
-  if (Array.isArray(value)) {
-    return value.map((v) => maskArgsForDisplay(v, detections));
-  }
-  if (value && typeof value === "object") {
-    const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      out[k] = maskArgsForDisplay(v, detections);
-    }
-    return out;
-  }
-  return value;
-}
 
 // An extension-start card's row ids are host-minted keys, not content: the answers name them (`extensionStartChoices`,
 // `extensionStartRow`) and the gate checks those against the ids it offered. A random id can read as a phone or card number,

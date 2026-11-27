@@ -95,7 +95,7 @@ it.each(["absolute", "file URL", "relative"])("shows the local transport refusal
   const remoteUrl = shape === "absolute" ? x.onePath : shape === "file URL" ? pathToFileURL(x.onePath).href : "../endpoint-one.git";
   x.git("remote", "set-url", "origin", remoteUrl);
   const decl = { kind: "external-write", owner: "host", ownerId: "host:git", toolName: "git_push" } as const;
-  const intake = stageOutputIntake(createRequestedOutputHooks(x.real, { operands: vi.fn(), invoke: vi.fn() }), {
+  const intake = stageOutputIntake(createRequestedOutputHooks(x.real, { invoke: vi.fn() }, process.cwd()), {
     stage: stageOf("review", { requestedOutputs: [decl] }), workspaceRoot: x.repo, repository: x.repo,
     run: { itemId: 1, runId: RUN_ID, runKey: RUN_ID },
   });

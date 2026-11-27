@@ -133,7 +133,8 @@ it("refuses without a keyboard gesture or from a non-owner frame", async () => {
 it("forwards a gesture-carrying decision with the host's approval surface and audits the decision, never the note", async () => {
   const { event, engine, log } = setup();
   await expect(decide(WORK_BOARD.decideStage, event, 7, { ...gateInput, decision: "request_changes", note: "tighten the summary" })).resolves.toEqual({ ok: true, status: "approved" });
-  expect(engine.decideStageGate).toHaveBeenCalledWith(7, { ...gateInput, decision: "request_changes", note: "tighten the summary" });
+  expect(engine.decideStageGate).toHaveBeenCalledWith(7, { ...gateInput, decision: "request_changes", note: "tighten the summary" },
+    { kind: "local-desktop", receipt: expect.objectContaining({ surface: event.sender }) });
   await expect(decide(WORK_BOARD.decideJoin, event, 7, joinInput)).resolves.toEqual({ ok: true });
   expect(engine.decideStageJoin).toHaveBeenCalledWith(7, joinInput);
   await expect(decide(WORK_BOARD.retryStage, event, 7, retryInput)).resolves.toEqual({ ok: true });
@@ -747,20 +748,9 @@ it("keeps a B stage and its descendant approval details out of the launching A w
   }
 });
 
-it("requires a native keyboard receipt for an output-bearing approval", async () => {
-  const { event, engine } = setup();
-  const input = { ...gateInput, outputHash: HASH };
-  const token = "a".repeat(36);
-  const key = workBoardDecisionKey(WORK_BOARD.decideStage, 7, input);
-  event.sender.emit("before-mouse-event", {}, { type: "mouseUp" });
-  await expect(handler(WORK_BOARD.captureDecisionIntent)(event, token, key)).resolves.toBe(false);
-  await expect(handler(WORK_BOARD.decideStage)(event, 7, input, token)).resolves.toEqual({ ok: false, reason: "user-keyboard-required" });
-  expect(engine.decideStageGate).not.toHaveBeenCalled();
-});
-
-it("shows the full output request on the desktop and executes it only with its bound keyboard receipt", async () => {
+it("a click approves a stage with requested outputs and shows the full request", async () => {
   const execute = vi.fn(async ({ output }: { output: { id: string } }) => ({ id: output.id, status: "failed" as const, detail: "output-execution-failed" }));
-  const h = await stageRunHarness({ observeRunWork: true, workflow: { outputs: { execute, accept: input => acceptRequestedOutput(input, createHostGit(), (_decl, args) => ({ input: args, paths: [] })) } } });
+  const h = await stageRunHarness({ observeRunWork: true, workflow: { outputs: { execute, accept: input => acceptRequestedOutput(input, createHostGit()) } } });
   await h.runThenEnd(async () => {
     const decl = { kind: "send-message", owner: "plugin", ownerId: "delivery", toolName: "send" } as const;
     const version = await h.confirm([stageOf("a", { requestedOutputs: [decl] })]);
@@ -798,11 +788,11 @@ it("shows the full output request on the desktop and executes it only with its b
     expect(allProjects).toMatchObject({ items: [{ kind: "navigation", targetKind: "stage-gate" }] });
     expect(JSON.stringify(allProjects)).not.toContain("Full message body");
     const approval = { ...binding, decision: "approve" };
-    await expect(handler(WORK_BOARD.decideStage)(event, id, approval)).resolves.toMatchObject({ ok: false });
+    await expect(handler(WORK_BOARD.decideStage)(event, id, approval)).resolves.toEqual({ ok: false, reason: "user-gesture-required" });
     expect(execute).not.toHaveBeenCalled();
 
     const token = "b".repeat(36);
-    pressWorkBoardTestKey(event);
+    event.sender.emit("before-mouse-event", {}, { type: "mouseUp" });
     await expect(handler(WORK_BOARD.captureDecisionIntent)(event, token, workBoardDecisionKey(WORK_BOARD.decideStage, id, approval))).resolves.toBe(true);
     await expect(handler(WORK_BOARD.decideStage)(event, id, approval, token)).resolves.toEqual({ ok: true, status: "approved" });
     expect(execute).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ output: expect.objectContaining({ decl }) }));
@@ -810,5 +800,14 @@ it("shows the full output request on the desktop and executes it only with its b
     expect(execute).toHaveBeenCalledTimes(1);
     const view = await handler(WORK_BOARD.get)(event, id);
     expect(view).toMatchObject({ item: { workflowRun: { stages: [{ outputExecutions: [{ status: "failed", detail: "output-execution-failed" }] }] } } });
+
+    const retry = { runId: binding.runId, stageId: binding.stageId, attempt: binding.attempt,
+      outputHash: binding.outputHash, outputId: stage.requestedOutputs?.[0].id };
+    await expect(handler(WORK_BOARD.retryOutput)(event, id, retry)).resolves.toEqual({ ok: false, reason: "user-gesture-required" });
+    const retryToken = "c".repeat(36);
+    event.sender.emit("before-mouse-event", {}, { type: "mouseUp" });
+    await expect(handler(WORK_BOARD.captureDecisionIntent)(event, retryToken, workBoardDecisionKey(WORK_BOARD.retryOutput, id, retry))).resolves.toBe(true);
+    await expect(handler(WORK_BOARD.retryOutput)(event, id, retry, retryToken)).resolves.toEqual({ ok: true });
+    expect(execute).toHaveBeenCalledTimes(2);
   });
 });
