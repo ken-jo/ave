@@ -140,14 +140,15 @@ describe.runIf(NATIVE)("native macOS shell boundary", () => {
 
   afterEach(() => rmSync(root, { recursive: true, force: true }));
 
-  async function launch(commandLine: string, timeoutMs: number, model: PolicyModel, cwd = work, location = supervisor.location) {
+  async function launch(commandLine: string, timeoutMs: number, model: PolicyModel, cwd = work, location = supervisor.location,
+    authorize?: (grant: () => boolean) => Promise<boolean>) {
     const { request } = buildSeatbeltShellRequest({
       model, cwd, commandLine, timeoutMs, lookups: posixPolicyLookups(root, true),
       env: { HOME: root, PATH: "/usr/bin:/bin" }, proxyUrl: "http://127.0.0.1:1",
     });
     const staged = await stageMxcShellRequest(join(root, "request.json"), request);
     return collectShell(startMxcShellSupervisor(staged, timeoutMs, undefined, () => {},
-      "test:boundary-shell", location));
+      "test:boundary-shell", location, authorize));
   }
 
   const POWERSHELL = resolveTrustedPowerShellExecutable()?.executable;
@@ -186,6 +187,14 @@ describe.runIf(NATIVE)("native macOS shell boundary", () => {
       const result = await swapBeforeChild(powerShellMarker(), mode);
       expect(result).toMatchObject({ rejected: true, cleanupUnverified: false, failure: { code: "cwd-changed" } });
     });
+
+  it("keeps the real workload blocked before user code when the host withholds its grant on a stable cwd", async () => {
+    const authorize = vi.fn((_grant: () => boolean) => Promise.resolve(false));
+    const result = await launch(bashMarker, 20_000, cwdSwapModel(), work, supervisor.location, authorize);
+    expect(authorize).toHaveBeenCalledOnce();
+    expect(result).toMatchObject({ rejected: true, grantWithheld: true, cleanupUnverified: false });
+    expect(existsSync(join(work, "marker"))).toBe(false);
+  });
 
   it("keeps a stable cwd's own exit 197 an ordinary exit", async () => {
     const result = await launch("exec /bin/bash -c 'echo ran > marker; exit 197'", 20_000, cwdSwapModel());

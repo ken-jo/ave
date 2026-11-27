@@ -11,10 +11,10 @@ const GENERATION = "b".repeat(64);
 const KEY = Buffer.alloc(32, 7);
 
 /** A minimal staged macOS request that the supervisor services accept and map. */
-export function stageSeatbeltWire(directory: string, overrides: { readonly timeout?: number; readonly cwd?: string } = {}) {
+export function stageSeatbeltWire(directory: string, overrides: { readonly timeout?: number; readonly cwd?: string; readonly env?: readonly string[] } = {}) {
   const wire = {
     version: "1.0.0", containment: "seatbelt",
-    process: { commandLine: "/usr/bin/true", cwd: overrides.cwd ?? directory, timeout: overrides.timeout ?? 1_000, inheritDefaultEnv: false, env: ["PATH=/usr/bin:/bin"] },
+    process: { commandLine: "/usr/bin/true", cwd: overrides.cwd ?? directory, timeout: overrides.timeout ?? 1_000, inheritDefaultEnv: false, env: [...(overrides.env ?? ["PATH=/usr/bin:/bin"])] },
     filesystem: { readwritePaths: [directory], readonlyPaths: [], deniedPaths: [] },
     network: { egress: { default: "deny" }, ingress: { default: "deny", hostLoopback: "deny" } },
     runtimeConfig: { networkProxy: "http://127.0.0.1:9" },

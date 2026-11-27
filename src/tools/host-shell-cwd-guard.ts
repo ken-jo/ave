@@ -55,8 +55,9 @@ function posixWorkingDirectoryCheck(
  * stdout, which the supervisor takes off before any output is forwarded, and the grant is a line on stdin, which the
  * supervisor then ends. The SDK starts every command under /bin/sh, so this runs before Bash or PowerShell is
  * exec'd, and the interpreter inherits the directory it verified. The shell's own `pwd -P` names the physical path:
- * under Seatbelt, /bin/pwd is refused where the cwd's ancestors are not readable. The container's environment is an
- * allowlist, so no imported function can stand in for it.
+ * under Seatbelt, /bin/pwd is refused where the cwd's ancestors are not readable. /bin/sh imports functions from
+ * `BASH_FUNC_<name>%%` entries, so the request builder and the supervisor both refuse any environment name that is
+ * not a plain identifier (`SEATBELT_ENV_NAME`): no imported function can stand in for a builtin the check uses.
  */
 export function containerShellWorkingDirectoryPrelude(identity: ShellWorkingDirectoryIdentity): string {
   return posixWorkingDirectoryCheck(identity, "darwin", "pwd -P", "") +

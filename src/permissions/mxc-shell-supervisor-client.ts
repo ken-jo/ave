@@ -260,6 +260,8 @@ export function startMxcShellSupervisor(
   let ready = false;
   let verified = false;
   let grantWithheld = false;
+  // Once the grant is on its way the workload may run user code: no later failure can report the run as not started.
+  let grantSent = false;
   let receipt: ShellReceipt | undefined;
   let stopping: Promise<void> | undefined;
   let stopDeadline: ReturnType<typeof setTimeout> | undefined;
@@ -295,13 +297,14 @@ export function startMxcShellSupervisor(
   const grantRun = (): void => {
     const grant = (): boolean => {
       if (settled || stopping !== undefined || !matchesShellWorkingDirectoryIdentity(cwdIdentity.realpath, cwdIdentity)) return false;
+      grantSent = true;
       void channel.send({ type: "spawn-authorized" }).catch(handleFailure);
       return true;
     };
     void authorize(grant).then((granted) => granted, () => false).then((granted) => {
       // A run already stopping (cancelled, failed or quit) keeps that ending.
       if (granted || stopping !== undefined || settled) return;
-      grantWithheld = true;
+      if (!grantSent) grantWithheld = true;
       void stop();
     });
   };
@@ -324,7 +327,7 @@ export function startMxcShellSupervisor(
     const result = await Promise.race([
       Promise.all([exited, readReceipts]).then(() => receipt === undefined ? lostOutcome(ready) : shellOutcome(receipt, ready)),
       lost.then(() => lostOutcome(ready)),
-    ]).then((outcome) => withheldOutcome(outcome, grantWithheld && !ready));
+    ]).then((outcome) => withheldOutcome(outcome, grantWithheld && !grantSent && !ready));
     settled = true;
     clearTimeout(watchdog);
     clearTimeout(stopDeadline);

@@ -7,7 +7,7 @@ import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { MxcExtensionChannel, type MxcFramePayload } from "./mxc-extension-channel.js";
 import { MxcProcessContractError, MxcSupervisorLostError } from "./mxc-extension-errors.js";
 import { CONTAINER_SHELL_CWD_GRANT, containerShellWorkingDirectoryPrelude } from "../tools/host-shell-cwd-guard.js";
-import { mapSeatbeltShellRequest, type buildSeatbeltShellRequest } from "./mxc-macos.js";
+import { mapSeatbeltShellRequest, SEATBELT_ENV_NAME, type buildSeatbeltShellRequest } from "./mxc-macos.js";
 import { MxcNativeProcess, seatbeltCleanupUnverified } from "./mxc-native-process.js";
 import { bootstrapMxcShellSupervisor, MXC_SHELL_ASYNC_STACK_BYTES, type MxcShellRuntime, type MxcShellSdk } from "./mxc-shell-supervisor-bootstrap.js";
 import { readMxcSupervisorKey } from "./mxc-supervisor-transport.js";
@@ -28,7 +28,9 @@ async function loadRequest(frame: ShellStart) {
   const wire: SeatbeltRequest = JSON.parse(bytes.toString("utf8"));
   if (wire.version !== "1.0.0" || wire.containment !== "seatbelt" || typeof wire.seatbelt?.profileOverride !== "string"
     || !wire.seatbelt.profileOverride || typeof wire.process?.cwd !== "string" || !wire.process.cwd
-    || wire.process.inheritDefaultEnv !== false || !Array.isArray(wire.process.env)) {
+    || wire.process.inheritDefaultEnv !== false || !Array.isArray(wire.process.env)
+    // Every name is a plain identifier, so /bin/sh imports no function over the cwd prelude's builtins.
+    || wire.process.env.some((entry) => typeof entry !== "string" || !SEATBELT_ENV_NAME.test(entry.slice(0, Math.max(entry.indexOf("="), 0))))) {
     throw new MxcProcessContractError("Invalid staged shell request");
   }
   const cwdIdentity: ShellWorkingDirectoryIdentity = {

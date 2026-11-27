@@ -107,6 +107,19 @@ describe("macOS shell supervisor working directory check before spawn", () => {
     expect(existsSync(join(h.directory, "b.json")) || existsSync(join(h.directory, "c.json"))).toBe(false);
   });
 
+  it("refuses a staged environment name that /bin/sh could import as a function, and never calls the SDK", async () => {
+    for (const entry of ["BASH_FUNC_read%%=() { aveHostHandoff=G; }", "BASH_FUNC_pwd%%=() { echo /forged; }", "WITH-DASH=1", "=empty"]) {
+      harness?.dispose();
+      harness = createPosixSupervisorHarness();
+      const h = harness;
+      const served = serveMxcShellSupervisor(h.supervisor, h.liveness, h.stdout, h.stderr, h.bootstrap, h.onFatal);
+      await h.host.send({ type: "shell-start", ...stageSeatbeltWire(h.directory, { env: ["PATH=/usr/bin:/bin", entry] }) });
+      await served;
+      expect(h.frames.at(-1), entry).toMatchObject({ type: "error", code: "start-refused", sdkCode: "malformed_request" });
+      expect(h.spawned).toEqual([]);
+    }
+  });
+
   async function startUntilSpawned(h: ReturnType<typeof createPosixSupervisorHarness>) {
     const served = serveMxcShellSupervisor(h.supervisor, h.liveness, h.stdout, h.stderr, h.bootstrap, h.onFatal);
     await h.host.send({ type: "shell-start", ...stageSeatbeltWire(h.directory) });

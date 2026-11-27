@@ -99,6 +99,21 @@ describe("macOS shell grant before user code", () => {
     expect(await finish(stopped)).toMatchObject({ rejected: true, grantWithheld: true, cancelled: false, cleanupUnverified: false });
   });
 
+  it("never reports a run as not started once its grant was sent, even when the final check then fails", async () => {
+    const authorize = (grant: () => boolean) => {
+      grant();
+      return Promise.reject(new Error("late failure after the grant"));
+    };
+    const { header, key, control, hostFrames, finish } = launchShell({ authorize, cwdIdentity: ownCwdIdentity() });
+    control.push(encodeMxcFrame({ ...header, type: "shell-cwd-verified", id: 7 }, key, "supervisor"));
+    await vi.waitFor(() => expect(hostFrames()).toContain("spawn-authorized"));
+    // The run may have started; whatever stops it is an ordinary stop, not a grant that was never given.
+    const stopped = encodeMxcFrame({ ...header, sequence: 1, type: "stopped", spawnPendingAtCancellation: false }, key, "supervisor");
+    const outcome = await finish(stopped);
+    expect(outcome).not.toHaveProperty("grantWithheld");
+    expect(outcome).not.toMatchObject({ rejected: true });
+  });
+
   it("refuses a ready frame before the workload's verified cwd as a protocol failure", async () => {
     const { header, key, finish, revoke } = launchShell({ cwdIdentity: ownCwdIdentity() });
     const ready = encodeMxcFrame({ ...header, type: "shell-ready", id: 7 }, key, "supervisor");
