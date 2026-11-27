@@ -1590,23 +1590,35 @@ async function runToolInvocationAttempt(
     const isWindows = process.platform === "win32";
     let unsealedRuleSubject = isWindows ? scopedRuleSubjectFor(tool, finalInput, executionCwd) : undefined;
     const resolveFileTarget = (filePath: string) => {
+      const isEdit = unsealedRuleSubject?.kind === "edit";
+      const resolvedTarget = (runtimePath: string) => ({
+        filePath, canonicalPath: caseFoldForMatch(foldCanonicalPathSeparators(runtimePath)), runtimePath,
+      });
       const seen = new Map<string, ReturnType<typeof observeWindowsTarget>>();
       const observe = (path: string) => {
         let target = seen.get(path);
         if (target === undefined) {
-          target = observeWindowsTarget(path, unsealedRuleSubject?.kind === "edit");
+          target = observeWindowsTarget(path, isEdit);
           seen.set(path, target);
         }
         return target.path;
       };
-      const runtimePath = unsealedRuleSubject?.kind === "edit"
-        ? resolveShellFilesystemPath(filePath, executionCwd, undefined, observe) : observe(filePath);
+      let runtimePath: string;
+      try {
+        runtimePath = isEdit ? resolveShellFilesystemPath(filePath, executionCwd, undefined, observe) : observe(filePath);
+      } catch (error) {
+        rethrowLocalityFailure(error);
+        // A share, device or mapped path still needs a policy decision. Only a proven local route can issue a seal.
+        if (isEdit || !(error instanceof Error) || !("code" in error) || error.code !== "ENETWORKSHAREPATH" ||
+            ("incomplete" in error && error.incomplete === true)) throw error;
+        return { target: resolvedTarget(resolvePathForPolicy(filePath)), observation: undefined };
+      }
       // The lexical and physical readings of parent traversal must also agree on the object.
       const evidence = [...seen.values()].filter(target => target.path === runtimePath);
       const observation = evidence[0];
       if (observation === undefined) throw new TargetIdentityChangedError();
       for (const other of evidence.slice(1)) assertWindowsTarget(observation, other);
-      return { target: { filePath, canonicalPath: caseFoldForMatch(foldCanonicalPathSeparators(runtimePath)), runtimePath }, observation };
+      return { target: resolvedTarget(runtimePath), observation };
     };
     // Sealed by the initial path judgment: each operand's runtime path and the project anchors of its write judgment.
     let fileTargetSeal: TargetSeal | undefined;
@@ -2574,7 +2586,8 @@ async function runToolInvocationAttempt(
         lexicalProjectRoots, roots, unsealedRuleSubject?.kind === "edit" ? unsealedRuleSubject.paths : undefined);
       const insideProject = judgeProjectWrite(canonicalTargets, projectRoots);
       const targetKey = (path: string) => path.replaceAll("\\", "/").replace(/^[a-z]:/u, (drive) => drive.toUpperCase());
-      const pathsByOperand = new Map(expected.map(({ target }) => [targetKey(target.filePath), target.runtimePath]));
+      const pathsByOperand = new Map(expected.flatMap(({ target, observation }) =>
+        observation === undefined ? [] : [[targetKey(target.filePath), target.runtimePath]]));
       const parents = new Map<string, ReturnType<typeof observeWindowsTarget>>();
       const entries = new Map<string, string>();
       if (nativeFileWrite) {
@@ -2594,6 +2607,7 @@ async function runToolInvocationAttempt(
         verify: () => withLocalityDecision(() => {
           const current = targetFilePaths.map(resolveFileTarget);
           for (const [index, { target, observation }] of expected.entries()) {
+            if (observation === undefined) continue;
             const actual = current[index]?.observation;
             if (actual === undefined) throw new TargetIdentityChangedError();
             if (mutated.has(targetKey(target.filePath)) || mutated.has(targetKey(target.runtimePath))) {
@@ -2609,7 +2623,7 @@ async function runToolInvocationAttempt(
         }),
         afterMutation: (path) => createFileSeal(new Set([...mutated, targetKey(path)])),
       });
-      if (canonicalTargets.length > 0) fileTargetSeal = createFileSeal(new Set());
+      if (pathsByOperand.size > 0) fileTargetSeal = createFileSeal(new Set());
       return { sensitiveTarget, linkedTargets, projectRoots, insideProject };
     });
     let initialPathScope: ReturnType<typeof initialPathJudgment> | undefined;
