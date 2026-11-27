@@ -19,4 +19,14 @@ describe('memory map preload bridge', () => {
     listener({}, progress); listener({}, { ...progress, text: 'private' }); listener({}, { ...progress, completed: -1 });
     expect(callback).toHaveBeenCalledExactlyOnceWith(progress); unsubscribe(); expect(state.remove).toHaveBeenCalledWith(CHANNELS.memoryMap.progress, listener);
   });
+  it('forwards a build ID through build and Cancel while preserving the no-ID invocation', async () => {
+    const buildId = '11111111-1111-4111-8111-111111111111';
+    const scope = { projectRoot: '/example' };
+    await api.build(scope, buildId);
+    expect(state.invoke).toHaveBeenLastCalledWith(CHANNELS.memoryMap.build, { scope, buildId });
+    await api.cancel(buildId);
+    expect(state.invoke).toHaveBeenLastCalledWith(CHANNELS.memoryMap.cancel, buildId);
+    await api.cancel();
+    expect(state.invoke).toHaveBeenLastCalledWith(CHANNELS.memoryMap.cancel);
+  });
 });

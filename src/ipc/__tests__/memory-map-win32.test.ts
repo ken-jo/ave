@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import type { ClientRequest, IncomingMessage } from 'node:http';
 import type { RequestOptions } from 'node:https';
@@ -16,10 +17,13 @@ import { graphMemoryRevision, type ReadMemoryMapCatalog } from '../../main/memor
 import { MemoryMapHostError } from '../../main/memory-map/errors.js';
 import { MODEL_FILES, modelFileUrl } from '../../main/memory-map/model-manifest.js';
 import type { MemoryWorkerRunner } from '../../main/memory-map/worker-client-win32.js';
+import type { MemoryBuildTeardown, MemoryWorkerExit } from '../../main/memory-map/build-teardown-win32.js';
 const state = vi.hoisted(() => ({
   artifactRequest: vi.fn<(url: URL, options: RequestOptions, respond: (incoming: IncomingMessage) => void) => ClientRequest>(),
   handles: new Map<string, (event: IpcMainInvokeEvent, ...args: unknown[]) => Promise<unknown>>(),
-  get: vi.fn(async (_readCatalog: ReadMemoryMapCatalog) => null), build: vi.fn(async (_readCatalog?: ReadMemoryMapCatalog, _onAdmission?: (assertLive: () => void) => void) => ({ snapshotId: 'snapshot' })), cancel: vi.fn(), invalidate: vi.fn(), retrieve: vi.fn(async () => ({ queryId: 'query' })),
+  get: vi.fn(async (_readCatalog: ReadMemoryMapCatalog) => null),
+  build: vi.fn(async (_readCatalog: ReadMemoryMapCatalog, _onAdmission: (assertLive: () => void) => void, _teardown: MemoryBuildTeardown) => ({ snapshotId: 'snapshot' })),
+  cancel: vi.fn(), invalidate: vi.fn(), retrieve: vi.fn(async () => ({ queryId: 'query' })),
   status: vi.fn(async () => ({ status: 'unconfigured' })), download: vi.fn(async () => ({ status: 'ready' })), modelCancel: vi.fn(), adoptExistingFolder: vi.fn(async () => ({ status: 'ready' })),
   downloadFile: undefined as ConstructorParameters<typeof import('../../main/memory-map/model-manager-win32.js').LocalModelManager>[0]['downloadFile'],
   readModelPath: undefined as ((signal: AbortSignal) => Promise<string>) | undefined,
@@ -51,6 +55,9 @@ import { registerWindowsMemoryMapHandlers } from '../domains/memory-map-win32.js
 import { createMemoryMapInvoker } from './memory-map-fixtures.js';
 const hostEvent = { senderFrame: { url: 'file:///app/index.html' }, sender: { send: vi.fn(), isDestroyed: () => false } } as unknown as IpcMainInvokeEvent;
 const { invoke, providerEndpointId } = createMemoryMapInvoker(state.handles, hostEvent);
+function invokeBuild(scope?: unknown, event?: IpcMainInvokeEvent) {
+  return invoke('build', { scope, buildId: randomUUID() }, event);
+}
 const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
 if (!originalPlatform) throw new Error('Missing platform descriptor');
 beforeEach(() => {
@@ -67,6 +74,57 @@ beforeEach(() => {
 });
 afterEach(() => { Object.defineProperty(process, 'platform', originalPlatform); });
 describe('memory map host boundary', () => {
+  it('routes Cancel to an older overlapping build without stopping the current owner', async () => {
+    const firstId = randomUUID();
+    const secondId = randomUUID();
+    const unknownId = randomUUID();
+    const firstStarted = deferred<void>();
+    const secondStarted = deferred<MemoryWorkerExit>();
+    const firstSettled = deferred<void>();
+    const secondSettled = deferred<void>();
+    state.build.mockImplementationOnce((_catalog, _onAdmission, teardown) => teardown.track(async exit => {
+      exit.starting();
+      firstStarted.resolve();
+      await firstSettled.promise;
+      throw new MemoryMapHostError('local-runtime-unavailable');
+    })).mockImplementationOnce((_catalog, _onAdmission, teardown) => teardown.track(async exit => {
+      exit.starting();
+      secondStarted.resolve(exit);
+      await secondSettled.promise;
+      return { snapshotId: 'snapshot' };
+    }));
+    const first = invoke('build', { buildId: firstId });
+    let second: Promise<unknown> | undefined;
+    try {
+      await firstStarted.promise;
+      second = invoke('build', { buildId: secondId });
+      const secondExit = await secondStarted.promise;
+      const refusal = { ok: false, error: 'build-exit-unconfirmed' };
+      expect(await invoke('cancel')).toEqual({ ok: false, error: 'invalid-input' });
+      expect(await invoke('build', { buildId: secondId })).toEqual({ ok: false, error: 'invalid-input' });
+      const firstCancel = invoke('cancel', firstId);
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(state.cancel).not.toHaveBeenCalled();
+      firstSettled.resolve();
+      expect(await firstCancel).toEqual(refusal);
+      expect(await invoke('cancel', firstId)).toEqual(refusal);
+      expect(state.cancel).not.toHaveBeenCalled();
+
+      const replied = vi.fn((result: unknown) => result);
+      const secondCancel = invoke('cancel', secondId).then(replied);
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(replied).not.toHaveBeenCalled();
+      expect(state.cancel).toHaveBeenCalledOnce();
+      secondExit.confirmed();
+      expect(await secondCancel).toEqual({ ok: true, value: null });
+      expect(await invoke('cancel', unknownId)).toEqual(refusal);
+    } finally {
+      firstSettled.resolve();
+      secondSettled.resolve();
+      await Promise.all([first, second]);
+    }
+  });
+
   const artifactDns: { lookup: (host: string, options: LookupAllOptions) => Promise<LookupAddress[]> } = dns;
 
   async function artifactDownloader(transport?: typeof fetch) {
@@ -277,7 +335,7 @@ describe('memory map host boundary', () => {
       queueMicrotask(() => { live = false; });
       return { snapshotId: 'snapshot' };
     });
-    await expect(invoke('build')).resolves.toEqual({ ok: false, error: 'local-runtime-unavailable' });
+    await expect(invokeBuild()).resolves.toEqual({ ok: false, error: 'local-runtime-unavailable' });
   });
 
   it.each(['sender', 'scope'] as const)('checks the original %s again before delivering a result', async change => {
@@ -294,7 +352,7 @@ describe('memory map host boundary', () => {
       return { snapshotId: 'snapshot' };
     });
     const expected = change === 'sender' ? { ok: false, error: 'unauthorized-frame' } : { ok: false, error: 'project-not-allowed' };
-    await expect(invoke('build', undefined, event)).resolves.toMatchObject(expected);
+    await expect(invokeBuild(undefined, event)).resolves.toMatchObject(expected);
   });
 
   it('rechecks switch eligibility when a queued settings write runs', async () => {
@@ -339,13 +397,13 @@ describe('memory map host boundary', () => {
     state.releaseGateOpen = true;
     await expect(invoke('settingsSet', { localInferenceWithoutSandbox: 'false' })).resolves.toEqual({ ok: false, error: 'invalid-input' });
     await expect(invoke('settingsGet')).resolves.toMatchObject({ ok: true, value: { localInferenceWithoutSandbox: true } });
-    await expect(invoke('build')).resolves.toMatchObject({ ok: true });
+    await expect(invokeBuild()).resolves.toMatchObject({ ok: true });
     await expect(change()).resolves.toMatchObject({ ok: true, value: preference });
     expect(set).toHaveBeenCalledWith('memoryEmbedding', { source: 'local', localModelPath, ...preference },
       expect.objectContaining({ field: ['memoryEmbedding', 'localInferenceWithoutSandbox'] }));
     expect(state.cancel).toHaveBeenCalledOnce();
     await expect(invoke('modelStatus')).resolves.toEqual({ ok: false, error: 'local-inference-disabled' });
-    await expect(invoke('build')).resolves.toEqual({ ok: false, error: 'local-inference-disabled' });
+    await expect(invokeBuild()).resolves.toEqual({ ok: false, error: 'local-inference-disabled' });
     await expect(invoke('settingsSet', { source: 'local' })).resolves.toMatchObject({ ok: true, value: preference });
     await expect(invoke('settingsSet', { localInferenceWithoutSandbox: true })).resolves.toMatchObject({ ok: true, value: { localInferenceWithoutSandbox: true } });
     await expect(invoke('modelStatus')).resolves.toMatchObject({ ok: true });
@@ -354,7 +412,7 @@ describe('memory map host boundary', () => {
   it.each(['build', 'modelStatus', 'modelDownload'] as const)('recovers from unknown evidence before %s', async operation => {
     state.localConfined = false;
     state.refreshAdmission.mockResolvedValue({ areSwitchesAvailable: () => true });
-    expect(await invoke(operation)).toMatchObject({ ok: true });
+    expect(await (operation === 'build' ? invokeBuild() : invoke(operation))).toMatchObject({ ok: true });
     expect(state.refreshAdmission).toHaveBeenCalled();
   });
 
@@ -364,7 +422,7 @@ describe('memory map host boundary', () => {
     state.localConfined = false;
     state.releaseGateOpen = true;
     state.refreshAdmission.mockResolvedValue({ areSwitchesAvailable: () => false });
-    expect(await invoke(operation)).toEqual({ ok: false, error: 'local-runtime-unavailable' });
+    expect(await (operation === 'build' ? invokeBuild() : invoke(operation))).toEqual({ ok: false, error: 'local-runtime-unavailable' });
     expect(effect).not.toHaveBeenCalled();
   });
 
@@ -435,7 +493,7 @@ describe('memory map host boundary', () => {
 
   it('returns a distinct error for an oversized local build', async () => {
     state.build.mockRejectedValueOnce(new MemoryMapHostError('catalog-too-large'));
-    await expect(invoke('build')).resolves.toEqual({ ok: false, error: 'catalog-too-large' });
+    await expect(invokeBuild()).resolves.toEqual({ ok: false, error: 'catalog-too-large' });
   });
 
   it.each([undefined, '/example/verified-model'])('refuses local operations while the OS sandbox cannot confine inference, with model folder %s', async localModelPath => {
@@ -455,7 +513,7 @@ describe('memory map host boundary', () => {
     expect(await invoke('modelStatus')).toEqual(unavailable);
     expect(await invoke('modelDownload')).toEqual(unavailable);
     expect(await invoke('modelUseExisting')).toEqual(unavailable);
-    expect(await invoke('build')).toEqual(unavailable);
+    expect(await invokeBuild()).toEqual(unavailable);
     expect(await invoke('modelStatus')).toEqual(unavailable);
     expect(state.status).not.toHaveBeenCalled();
     expect(state.download).not.toHaveBeenCalled();
@@ -467,7 +525,7 @@ describe('memory map host boundary', () => {
     expect(await invoke('settingsSet', { source: 'provider', providerId: 'openai', modelId: 'text-embedding-3-small',
       endpointId: await providerEndpointId(), consent: true })).toMatchObject({ ok: true, value: { source: 'provider' } });
     expect(config.localModelPath).toBe(localModelPath);
-    expect(await invoke('build')).toMatchObject({ ok: true });
+    expect(await invokeBuild()).toMatchObject({ ok: true });
     expect(state.build).toHaveBeenCalledOnce();
   });
   it('locates a selected revision through its authorized graph scope and refuses edited or revoked sources', async () => {
@@ -581,8 +639,8 @@ describe('memory map host boundary', () => {
     expect(state.audit).toHaveBeenCalledOnce(); expect(state.download).not.toHaveBeenCalled(); expect(state.build).not.toHaveBeenCalled();
   });
   it('validates strict payloads and rejects unauthorized projects before catalog access', async () => {
-    expect(await invoke('build', { projectRoot: '/denied' })).toEqual({ ok: false, error: 'project-not-allowed' });
-    expect(await invoke('build', { arbitraryPath: '/example' })).toEqual({ ok: false, error: 'invalid-input' });
+    expect(await invokeBuild({ projectRoot: '/denied' })).toEqual({ ok: false, error: 'project-not-allowed' });
+    expect(await invokeBuild({ arbitraryPath: '/example' })).toEqual({ ok: false, error: 'invalid-input' });
     expect(await invoke('get', null)).toEqual({ ok: false, error: 'invalid-input' });
     expect(await invoke('modelDownload', {})).toEqual({ ok: false, error: 'invalid-input' });
     expect(await invoke('retrieve', { question: '', filters: {}, snapshotId: 's', queryId: 'q' })).toEqual({ ok: false, error: 'invalid-input' });
@@ -590,7 +648,7 @@ describe('memory map host boundary', () => {
     expect(state.build).not.toHaveBeenCalled(); expect(state.download).not.toHaveBeenCalled();
   });
   it('allows validated host operations and rejects incomplete provider selections', async () => {
-    expect(await invoke('build', {})).toEqual({ ok: true, value: { snapshotId: 'snapshot' } });
+    expect(await invokeBuild({})).toEqual({ ok: true, value: { snapshotId: 'snapshot' } });
     expect(await invoke('retrieve', { question: 'Question', filters: {}, snapshotId: 's', queryId: 'q' })).toMatchObject({ ok: true });
     expect(await invoke('settingsGet')).toMatchObject({ ok: true, value: { source: 'local', providerAvailable: false, namespace: { source: 'local', dimensions: 384 } } });
     expect(await invoke('settingsSet', { source: 'provider' })).toEqual({ ok: false, error: 'invalid-input' });

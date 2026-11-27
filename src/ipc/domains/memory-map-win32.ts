@@ -12,6 +12,9 @@ import { commitUnderAdmission } from '../../shared/admission-commit.js';
 
 export type MemoryMapScopeResolver = (raw: unknown) => { ok: true; options: ProjectScopedMemoryOptions } | { ok: false; error: string };
 
+const MemoryBuildIdSchema = z.uuidv4();
+const MemoryBuildRequestSchema = z.strictObject({ scope: MemoryMapScopeSchema.optional(), buildId: MemoryBuildIdSchema });
+
 // Registers the channels at startup; the host, model manager and provider load behind a dynamic import on the first request.
 export function registerWindowsMemoryMapHandlers(deps: IpcDeps, resolveScope: MemoryMapScopeResolver) {
   let runtime: MemoryMapRuntime | undefined;
@@ -29,7 +32,8 @@ export function registerWindowsMemoryMapHandlers(deps: IpcDeps, resolveScope: Me
       if (!validateHostRendererSender(event)) { auditUnauthorized(deps.auditLogger, channel, event); return UNAUTHORIZED_FRAME; }
       const parsed = schema.safeParse(raw);
       if (!parsed.success || extra.length) return { ok: false, error: 'invalid-input' };
-      const scope = channel === CHANNELS.memoryMap.retrieve ? (parsed.data as { scope?: MemoryMapScope }).scope : parsed.data;
+      const scope = channel === CHANNELS.memoryMap.retrieve || channel === CHANNELS.memoryMap.build
+        ? (parsed.data as { scope?: MemoryMapScope }).scope : parsed.data;
       const scoped = [CHANNELS.memoryMap.get, CHANNELS.memoryMap.build, CHANNELS.memoryMap.facets, CHANNELS.memoryMap.retrieve].includes(channel as never);
       const original = scoped ? resolveScope(scope) : undefined;
       const projectDenied = { ok: false, error: 'project-not-allowed' } as const;
@@ -58,8 +62,9 @@ export function registerWindowsMemoryMapHandlers(deps: IpcDeps, resolveScope: Me
     });
   }
   handle(CHANNELS.memoryMap.get, MemoryMapScopeSchema.optional(), (current, scope) => current.get(scope));
-  handle(CHANNELS.memoryMap.build, MemoryMapScopeSchema.optional(), (current, scope, event, onAdmission) => current.build(scope, event, onAdmission));
-  handle(CHANNELS.memoryMap.cancel, z.undefined(), current => current.cancel());
+  handle(CHANNELS.memoryMap.build, MemoryBuildRequestSchema, (current, { scope, buildId }, event, onAdmission) =>
+    current.build(scope, buildId, event, onAdmission));
+  handle(CHANNELS.memoryMap.cancel, MemoryBuildIdSchema, (current, buildId) => current.cancel(buildId));
   handle(CHANNELS.memoryMap.facets, MemoryMapScopeSchema.optional(), (current, scope) => current.facets(scope));
   handle(CHANNELS.memoryMap.retrieve, MemoryRetrievalSchema, (current, request, _event, onAdmission) => current.retrieve(request, onAdmission));
   handle(CHANNELS.memoryMap.modelStatus, z.undefined(), (current, _value, _event, onAdmission) => current.modelStatus(onAdmission));

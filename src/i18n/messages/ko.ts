@@ -47,6 +47,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "memoryMap.phase.neighbours": "이웃 찾기 {completed} / {total}",
   "memoryMap.phase.projection": "좌표 계산 {completed} / {total}",
   "memoryMap.cancelBuild": "지도 생성 취소",
+  "memoryMap.retryCancel": "취소 다시 시도",
   "memoryMap.retry": "다시 시도",
   "memoryMap.detail": "메모리 소스 상세",
   "memoryMap.closeDetail": "소스 상세 닫기",

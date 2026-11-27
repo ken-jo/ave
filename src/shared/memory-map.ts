@@ -52,8 +52,8 @@ type MemoryMapResult<T> = { ok: true; value: T } | { ok: false; error: MemoryMap
 export interface MemoryMapScope { projectRoot?: string; projectName?: string; includeUnscoped?: boolean }
 export interface MemoryMapApi {
   get: (scope?: MemoryMapScope) => Promise<MemoryMapResult<GraphSnapshot | null>>;
-  build: (scope?: MemoryMapScope) => Promise<MemoryMapResult<GraphSnapshot>>;
-  cancel: () => Promise<MemoryMapResult<null>>;
+  build: (scope?: MemoryMapScope, buildId?: string) => Promise<MemoryMapResult<GraphSnapshot>>;
+  cancel: (buildId?: string) => Promise<MemoryMapResult<null>>;
   facets: (scope?: MemoryMapScope) => Promise<MemoryMapResult<MemoryFacets>>;
   retrieve: (request: { scope?: MemoryMapScope; question: string; filters: MemoryMapFilters; snapshotId: string; queryId: string }) => Promise<MemoryMapResult<RetrievalAnswer>>;
   modelStatus: () => Promise<MemoryMapResult<MemoryModelStatus>>;

@@ -210,6 +210,52 @@ describe('memory map view', () => {
       userAgent.mockRestore();
     }
   });
+  it.each(['started', 'resumed'] as const)('retries Cancel for the %s Windows build after the view sees a newer build', async source => {
+    const userAgent = vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue('Windows');
+    try {
+      const { map, props, api } = setup();
+      const firstId = '11111111-1111-4111-8111-111111111111';
+      const secondId = '22222222-2222-4222-8222-222222222222';
+      const firstCancel = Promise.withResolvers<Awaited<ReturnType<typeof map.cancel>>>();
+      const refusal = { ok: false, error: 'build-exit-unconfirmed' } as const;
+      map.cancel.mockReturnValueOnce(firstCancel.promise).mockResolvedValueOnce(refusal).mockResolvedValueOnce({ ok: true, value: null });
+      map.build.mockImplementation(() => new Promise(() => {}));
+      if (source === 'resumed') map.get.mockResolvedValue({ ok: true, value: { ...SNAPSHOT, status: 'building', snapshotId: firstId } });
+      render(<MemoryView {...props} />);
+      if (source === 'started') {
+        await ready();
+        fireEvent.click(screen.getByRole('button', { name: '지도 다시 만들기' }));
+      }
+      fireEvent.click(await screen.findByRole('button', { name: '지도 생성 취소' }));
+      map.get.mockResolvedValue({ ok: true, value: { ...SNAPSHOT, status: 'building', snapshotId: secondId } });
+      const save = vi.mocked(api.onMemorySaveResult).mock.calls[0][0];
+      act(() => save({} as Parameters<typeof save>[0]));
+      await waitFor(() => expect(map.get).toHaveBeenCalledTimes(2));
+      await act(async () => firstCancel.resolve(refusal));
+      expect(await screen.findByRole('alert')).toHaveTextContent(ko['memoryMap.error.build-exit-unconfirmed']);
+
+      fireEvent.click(screen.getByRole('button', { name: ko['memoryMap.retryCancel'] }));
+      expect(await screen.findByRole('alert')).toHaveTextContent(ko['memoryMap.error.build-exit-unconfirmed']);
+      const displayedId = source === 'started' ? map.build.mock.calls[0]?.[1] : firstId;
+      expect(displayedId).toBeTruthy();
+      expect(map.cancel.mock.calls).toEqual([[displayedId], [displayedId]]);
+      expect(map.build).toHaveBeenCalledTimes(source === 'started' ? 1 : 0);
+
+      const progress = map.onProgress.mock.calls.at(-1)?.[0];
+      assert.ok(progress);
+      act(() => {
+        progress({ jobId: firstId, phase: 'embedding', completed: 1, total: 2 });
+        progress({ jobId: secondId, phase: 'embedding', completed: 2, total: 3 });
+      });
+      expect(screen.getByText('임베딩 2 / 3')).toBeTruthy();
+      map.get.mockResolvedValue({ ok: true, value: SNAPSHOT });
+      fireEvent.click(screen.getByRole('button', { name: '지도 생성 취소' }));
+      await waitFor(() => expect(map.cancel).toHaveBeenLastCalledWith(secondId));
+      await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+    } finally {
+      userAgent.mockRestore();
+    }
+  });
   it.each(['Macintosh', 'Linux'])('keeps resumed-build polling while Cancel is pending on %s', async platform => {
     const userAgent = vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue(platform);
     vi.useFakeTimers();

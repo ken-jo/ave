@@ -45,6 +45,7 @@ export const en = {
   "memoryMap.phase.neighbours": "Finding neighbours {completed} / {total}",
   "memoryMap.phase.projection": "Projecting {completed} / {total}",
   "memoryMap.cancelBuild": "Cancel build",
+  "memoryMap.retryCancel": "Retry cancellation",
   "memoryMap.retry": "Retry",
   "memoryMap.detail": "Memory source detail",
   "memoryMap.closeDetail": "Close source detail",

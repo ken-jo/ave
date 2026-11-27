@@ -1,4 +1,5 @@
 import { mkdtemp, readFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { IpcMainInvokeEvent } from 'electron';
@@ -11,7 +12,6 @@ import { ManagedExitUnconfirmedError } from '../../main/managed-child-processes.
 import { MxcProcessCleanupError } from '../../permissions/mxc-extension-errors.js';
 import { buildGraph } from '../../main/memory-map/graph.js';
 import type { MemoryWorkerExit } from '../../main/memory-map/build-teardown-win32.js';
-import { MemoryMapHostError } from '../../main/memory-map/errors.js';
 import * as localRuntime from '../../main/memory-map/local-runtime-win32.js';
 import type { MemoryWorkerTask } from '../../main/memory-map/worker-client.js';
 import { registerMxcReleaseGateEvidence } from '../../permissions/mxc-extension-admission.js';
@@ -28,14 +28,16 @@ const state = vi.hoisted(() => ({
   operational: true,
   plan: undefined as Partial<SandboxWindowsExtensionPlan> | undefined,
   substrate: null as Partial<SandboxWindowsSubstrateInfo> | null,
-  handle: undefined as ((event: IpcMainInvokeEvent) => Promise<unknown>) | undefined,
-  cancel: undefined as ((event: IpcMainInvokeEvent) => Promise<unknown>) | undefined,
+  handle: undefined as ((event: IpcMainInvokeEvent, raw: unknown) => Promise<unknown>) | undefined,
+  get: undefined as ((event: IpcMainInvokeEvent) => Promise<unknown>) | undefined,
+  cancel: undefined as ((event: IpcMainInvokeEvent, raw: unknown) => Promise<unknown>) | undefined,
   runWorker: vi.fn<(folder: string, task: MemoryWorkerTask, signal: AbortSignal, progress?: unknown, admission?: unknown, exit?: MemoryWorkerExit) => Promise<unknown>>(),
   beforeCommit: undefined as (() => Promise<unknown>) | undefined,
   afterRead: undefined as (() => void) | undefined,
 }));
 vi.mock('electron', () => ({ dialog: {}, ipcMain: { handle: (channel: string, handler: typeof state.handle) => {
   if (channel === CHANNELS.memoryMap.build) state.handle = handler;
+  if (channel === CHANNELS.memoryMap.get) state.get = handler;
   if (channel === CHANNELS.memoryMap.cancel) state.cancel = handler;
 } } }));
 vi.mock('../../permissions/asrt-sandbox.js', async importOriginal => ({
@@ -146,13 +148,16 @@ describe.each(['container', 'unconfined', 'account'] as const)('%s Cancel', rout
     const event = { senderFrame: { url: 'file:///app/index.html' }, sender: { send: vi.fn(), isDestroyed: () => false } } as unknown as IpcMainInvokeEvent;
     if (!state.handle || !state.cancel) throw new Error('Memory-map IPC is not registered');
 
-    const build = state.handle(event);
+    const buildId = randomUUID();
+    const build = state.handle(event, { buildId });
+    const cancel = state.cancel;
     try {
       const signal = await Promise.race([started.promise, build.then(() => { throw new Error('Worker did not start'); })]);
+      expect(await state.get?.(event)).toMatchObject({ ok: true, value: { status: 'building', snapshotId: buildId } });
       if (outcome === 'deadline') vi.useFakeTimers();
       const replied = vi.fn();
-      const firstCancel = state.cancel(event).then(replied);
-      const secondCancel = state.cancel(event).then(replied);
+      const firstCancel = cancel(event, buildId).then(replied);
+      const secondCancel = cancel(event, buildId).then(replied);
       await stopping.promise;
       if (outcome === 'deadline') await vi.advanceTimersByTimeAsync(0);
       else await new Promise<void>(resolve => setImmediate(resolve));
@@ -170,22 +175,40 @@ describe.each(['container', 'unconfined', 'account'] as const)('%s Cancel', rout
       await Promise.all([firstCancel, secondCancel]);
       const reply = outcome === 'confirmed' ? { ok: true, value: null } : { ok: false, error: 'build-exit-unconfirmed' };
       expect.soft(replied.mock.calls).toEqual([[reply], [reply]]);
-      expect.soft(await state.cancel(event)).toEqual(reply);
+      expect.soft(await cancel(event, buildId)).toEqual(reply);
       if (outcome === 'deadline') {
         finishTeardown.resolve();
         expect(await build).toMatchObject({ ok: false });
-        expect(await state.cancel(event)).toEqual({ ok: true, value: null });
+        expect(await cancel(event, buildId)).toEqual({ ok: true, value: null });
       } else if (outcome === 'refused' && route === 'unconfined') {
         confirmExit?.();
-        expect(await state.cancel(event)).toEqual({ ok: true, value: null });
+        expect(await cancel(event, buildId)).toEqual({ ok: true, value: null });
       } else if (outcome === 'refused' && route === 'account') {
-        state.runWorker.mockImplementationOnce(async (_folder, _task, _signal, _progress, _admission, exit) => {
+        const nextId = randomUUID();
+        const nextStarted = deferred<void>();
+        const nextExit = deferred<void>();
+        const nextReply = vi.fn((reply: unknown) => reply);
+        state.runWorker.mockImplementationOnce(async (_folder, _task, signal, _progress, _admission, exit) => {
           exit?.starting();
+          nextStarted.resolve();
+          await nextExit.promise;
           exit?.confirmed();
-          throw new MemoryMapHostError('catalog-too-large');
+          signal.throwIfAborted();
         });
-        expect(await state.handle(event)).toEqual({ ok: false, error: 'catalog-too-large' });
-        expect(await state.cancel(event)).toEqual(reply);
+        const nextBuild = state.handle(event, { buildId: nextId });
+        try {
+          await Promise.race([nextStarted.promise, nextBuild.then(() => { throw new Error('Second worker did not start'); })]);
+          const nextCancel = cancel(event, nextId).then(nextReply);
+          await new Promise<void>(resolve => setImmediate(resolve));
+          expect(nextReply).not.toHaveBeenCalled();
+          nextExit.resolve();
+          expect(await nextCancel).toEqual({ ok: true, value: null });
+          expect(await cancel(event, nextId)).toEqual({ ok: true, value: null });
+          expect(await cancel(event, buildId)).toEqual(reply);
+        } finally {
+          nextExit.resolve();
+          await nextBuild;
+        }
       }
     } finally {
       finishTeardown.resolve();
@@ -235,7 +258,7 @@ describe.each(['account', 'container'] as const)('%s admission', backend => {
       const event = { senderFrame: { url: 'file:///app/index.html' }, sender: { send: vi.fn(), isDestroyed: () => false } } as unknown as IpcMainInvokeEvent;
       const handle = state.handle;
       if (handle === undefined) throw new Error('Memory-map build IPC is not registered');
-      const build = () => handle(event);
+      const build = () => handle(event, { buildId: randomUUID() });
       expect(await build()).toMatchObject({ ok: true, value: { status: 'ready' } });
       const path = join(state.root, 'memory-map', 'snapshot.json');
       const previous = await readFile(path);

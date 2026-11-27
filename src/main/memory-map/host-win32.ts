@@ -173,7 +173,8 @@ export class MemoryMapHost {
     }
     return cache;
   }
-  async build(readCatalog: ReadMemoryMapCatalog, onAdmission?: (assertLive: () => void) => void, teardown = new MemoryBuildTeardown()): Promise<GraphSnapshot> {
+  async build(readCatalog: ReadMemoryMapCatalog, onAdmission?: (assertLive: () => void) => void,
+    teardown = new MemoryBuildTeardown(), buildId: string = randomUUID()): Promise<GraphSnapshot> {
     const runWorker: MemoryWorkerRunner = <T>(folder: string, task: MemoryWorkerTask, signal: AbortSignal,
       onProgress?: (progress: MemoryMapProgress) => void, onAdmission?: OnInferenceAdmission) =>
       teardown.track(exit => this.runWorker<T>(folder, task, signal, onProgress, onAdmission, exit));
@@ -202,7 +203,7 @@ export class MemoryMapHost {
     let stopWatching: (() => void) | undefined;
     let releaseModel: (() => void) | undefined;
     this.pending = {
-      snapshotId: randomUUID(), catalogRevision: revision, authorizationScopeId: catalog.authorizationScopeId,
+      snapshotId: buildId, catalogRevision: revision, authorizationScopeId: catalog.authorizationScopeId,
       model: { id: selected.modelId, revision: selected.modelRevision, dimensions: selected.dimensions, preprocessingRevision: selected.preprocessingRevision, namespace: selected },
       projection: { algorithm: 'umap', dimensions: 2, version: '1.4.0', seed: 42, parameters: { nNeighbors: Math.min(12, Math.max(0, catalog.records.length - 1)), minDist: 0.1, nEpochs: 200 } },
       status: 'building', coverage: { eligible: catalog.records.length, embedded: 0, pending: catalog.records.length, excluded: catalog.excluded }, points: [], edges: [],

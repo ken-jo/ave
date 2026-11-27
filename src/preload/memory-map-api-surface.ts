@@ -10,8 +10,10 @@ function subscribe<T>(channel: string, schema: z.ZodType<T>, callback: (value: T
 }
 export const memoryMapApiSurface: MemoryMapApi = {
   get: scope => ipcRenderer.invoke(CHANNELS.memoryMap.get, scope),
-  build: scope => ipcRenderer.invoke(CHANNELS.memoryMap.build, scope),
-  cancel: () => ipcRenderer.invoke(CHANNELS.memoryMap.cancel),
+  build: (scope, buildId) => ipcRenderer.invoke(CHANNELS.memoryMap.build, buildId === undefined ? scope : { scope, buildId }),
+  cancel: buildId => buildId === undefined
+    ? ipcRenderer.invoke(CHANNELS.memoryMap.cancel)
+    : ipcRenderer.invoke(CHANNELS.memoryMap.cancel, buildId),
   facets: scope => ipcRenderer.invoke(CHANNELS.memoryMap.facets, scope),
   retrieve: request => ipcRenderer.invoke(CHANNELS.memoryMap.retrieve, request),
   modelStatus: () => ipcRenderer.invoke(CHANNELS.memoryMap.modelStatus),
