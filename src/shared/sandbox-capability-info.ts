@@ -238,6 +238,7 @@ export interface EgressProtocolCoverage {
 }
 
 const MXC_EGRESS_PROTOCOL_COVERAGE: EgressProtocolCoverage = Object.freeze({ dns: "host-resolver", rawIp: "unknown" });
+const MEASURED_MXC_EGRESS_PROTOCOL_COVERAGE: EgressProtocolCoverage = Object.freeze({ dns: "host-resolver", rawIp: "blocked" });
 const UNKNOWN_EGRESS_PROTOCOL_COVERAGE: EgressProtocolCoverage = Object.freeze({ dns: "unknown", rawIp: "unknown" });
 
 export function egressProtocolCoverageFor(substrate: "mxc" | "asrt" | "srt-win" | "approved-host" | "none"): EgressProtocolCoverage {
@@ -245,6 +246,15 @@ export function egressProtocolCoverageFor(substrate: "mxc" | "asrt" | "srt-win" 
 }
 
 const SEATBELT_EGRESS_PROTOCOL_COVERAGE: EgressProtocolCoverage = Object.freeze({ dns: "blocked", rawIp: "blocked" });
+
+export function acceptMeasuredContainerEgress(
+  platform: NodeJS.Platform, backend: ContainerBackend, coverage: EgressProtocolCoverage | undefined,
+): EgressProtocolCoverage | undefined {
+  if (platform !== "win32" || backend !== "process-container" || typeof coverage !== "object" || coverage === null
+      || Reflect.ownKeys(coverage).length !== 2 || !Object.hasOwn(coverage, "dns") || !Object.hasOwn(coverage, "rawIp")
+      || coverage.dns !== "host-resolver" || coverage.rawIp !== "blocked") return undefined;
+  return MEASURED_MXC_EGRESS_PROTOCOL_COVERAGE;
+}
 
 export function containerEgressProtocolCoverage(backend: ContainerBackend): EgressProtocolCoverage {
   if (backend === "process-container") return MXC_EGRESS_PROTOCOL_COVERAGE;

@@ -33,6 +33,7 @@ import {
   getWindowsSandboxSubstrate,
   getWindowsExtensionBackendPlan,
   detectMxcShellCapability,
+  getSandboxGeneration,
   detectPluginWorkerSandboxCapability,
   __resetWindowsSandboxSubstrateForTest,
   type SandboxCapability,
@@ -678,6 +679,26 @@ describe("sandbox-capability — Windows MXC substrate", () => {
     // The workspace terminal reads the process-wide capability, which must not inherit the containers' confinement.
     expect(detectShellSandboxCapability().confines).toEqual({ filesystem: false, process: false, network: false });
     expect(isActiveSandboxShellContained()).toBe(false);
+  });
+
+  it("publishes measured egress without replacing the live MXC capability", () => {
+    bootProxyOnly();
+    const substrate = getWindowsSandboxSubstrate()!;
+    const capability = detectMxcShellCapability();
+    const generation = getSandboxGeneration();
+    const before = getHostShellExecutionPlan();
+    const measured = { dns: "host-resolver", rawIp: "blocked" } as const;
+    setWindowsSandboxSubstrate({ ...substrate }, mxcShellCapability(), measured);
+    expect(detectMxcShellCapability()).toBe(capability);
+    expect(getSandboxGeneration()).toBe(generation);
+    expect(getHostShellExecutionPlan()).toEqual({ ...before, egressProtocolCoverage: measured });
+    expect(before.egressProtocolCoverage.rawIp).toBe("unknown");
+
+    const nonMxc = { ...substrate, shells: "approved-host", shellEgressIdentity: "shared" } as const;
+    expect(() => setWindowsSandboxSubstrate(nonMxc, undefined, measured)).toThrow(/egress/);
+    setWindowsSandboxSubstrate(nonMxc);
+    setWindowsSandboxSubstrate(substrate, mxcShellCapability());
+    expect(getHostShellExecutionPlan().egressProtocolCoverage.rawIp).toBe("unknown");
   });
 
   it("reports extensions unconfined when ASRT runs only as the containers' proxy", () => {
