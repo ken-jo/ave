@@ -38,7 +38,7 @@ async function forward(source: Readable, destination: Writable): Promise<void> {
   }
 }
 
-export async function serveMxcShellSupervisor(
+async function serveMxcShellSupervisor(
   channel: MxcExtensionChannel, liveness: Readable, stdout: Writable, stderr: Writable,
   bootstrap: () => Promise<MxcShellSdk>, onFatal: () => void,
 ): Promise<void> {

@@ -1,6 +1,3 @@
-import { createHash } from "node:crypto";
-import { lstatSync } from "node:fs";
-import { readFile } from "node:fs/promises";
 import { posix, win32 } from "node:path";
 import { containerPlatform, containerTarget, containerTargets, type ContainerArch, type ContainerTarget } from "../shared/container-platform.js";
 import { isRecord } from "../shared/is-record.js";
@@ -40,50 +37,6 @@ export function launcherPathFor(resourcePath: string, platform: NodeJS.Platform,
   const container = containerPlatform(platform);
   if (container === undefined || containerTarget(platform, arch) === undefined) return undefined;
   return (platform === "win32" ? win32 : posix).join(resourcePath, "mxc", arch, container.launcherFile);
-}
-
-
-function launcherStamp(path: string): string {
-  const entry = lstatSync(path, { bigint: true });
-  if (!entry.isFile()) throw new Error("Container launcher is not a regular file");
-  return [entry.dev, entry.ino, entry.size, entry.mtimeNs, entry.ctimeNs].join(":");
-}
-
-interface VerifiedLauncher {
-  readonly path: string;
-  assertInPlace(): void;
-}
-
-const verifiedLaunchers = new Map<string, Promise<VerifiedLauncher>>();
-
-function verifyLauncher(path: string, target: ContainerTarget): Promise<VerifiedLauncher> {
-  const stamp = launcherStamp(path);
-  const assertInPlace = (): void => {
-    if (launcherStamp(path) !== stamp) throw new Error("Verified container launcher changed");
-  };
-  return readFile(path).then(bytes => {
-    if (createHash("sha256").update(bytes).digest("hex") !== pinnedLauncherSha256(target)) {
-      throw new Error("Container launcher does not match its pinned build");
-    }
-    assertInPlace();
-    return { path, assertInPlace };
-  });
-}
-
-export async function resolveHostLauncherPath(target: ContainerTarget, resourcePath?: string): Promise<VerifiedLauncher> {
-  const resources = resourcePath ?? (await import("../main/host-resources.js")).getHostResources().resourcePath;
-  const [platform, arch] = target.split("-") as [NodeJS.Platform, ContainerArch];
-  const path = launcherPathFor(resources, platform, arch);
-  if (path === undefined) throw new Error("Container launcher target is unsupported");
-  const key = `${target}:${path}`;
-  let verification = verifiedLaunchers.get(key);
-  if (verification === undefined) {
-    verification = verifyLauncher(path, target);
-    verifiedLaunchers.set(key, verification);
-  }
-  const verified = await verification;
-  verified.assertInPlace();
-  return verified;
 }
 
 export { readLauncherPins as _readLauncherPinsForTest };

@@ -24,7 +24,7 @@ import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootFor
 import pins from "../mxc-launcher-pins.json" with { type: "json" };
 import { _runSeatbeltCanaryForTest, buildSeatbeltShellRequest, detectHostMxcMacShellSupport } from "../mxc-macos.js";
 import { posixPolicyLookups } from "../mxc-posix.js";
-import { _mxcShellStandbyPidForTest, stageMxcShellRequest, startMxcShellSupervisor } from "../mxc-shell-supervisor-client.js";
+import { _mxcShellStandbyPidForTest, mxcShellSupervisorLocation, stageMxcShellRequest, startMxcShellSupervisor } from "../mxc-shell-supervisor-client.js";
 import { buildPolicyModel, policyFloorRow, policyGrantRow, type PolicyModel } from "../policy-model.js";
 
 const NATIVE = process.platform === "darwin" && process.arch === "arm64";
@@ -60,8 +60,8 @@ function livePids(pids: readonly number[]): number[] {
   return listed.stdout.split("\n").map(line => Number(line.trim())).filter(pid => pids.includes(pid));
 }
 
-async function recordedPids(dir: string, names: readonly string[]): Promise<Record<string, number>> {
-  const pids: Record<string, number> = {};
+async function recordedPids<Name extends string>(dir: string, names: readonly Name[]): Promise<Record<Name, number>> {
+  const pids = {} as Record<Name, number>;
   await vi.waitFor(() => {
     for (const name of names) {
       const file = join(dir, `${name}.pid`);
@@ -78,7 +78,7 @@ function tickSizes(dir: string, ticks: readonly string[]): number[] {
 }
 
 /** Every recorded pid is gone and no tick file grows afterwards. */
-async function expectReaped(dir: string, pids: Record<string, number>, ticks: readonly string[]): Promise<void> {
+async function expectReaped(dir: string, pids: Readonly<Record<string, number>>, ticks: readonly string[]): Promise<void> {
   expect(livePids(Object.values(pids)), JSON.stringify(pids)).toEqual([]);
   const before = tickSizes(dir, ticks);
   await new Promise(resolve => setTimeout(resolve, 400));
@@ -86,7 +86,7 @@ async function expectReaped(dir: string, pids: Record<string, number>, ticks: re
 }
 
 /** Test cleanup only: stop pids this test recorded, after its assertions. Ave itself signals none of them. */
-function reapRecorded(pids: Record<string, number>): void {
+function reapRecorded(pids: Readonly<Record<string, number>>): void {
   for (const pid of livePids(Object.values(pids))) {
     try { process.kill(pid, "SIGKILL"); } catch { /* exited between listing and kill */ }
   }
@@ -296,6 +296,19 @@ describe.runIf(NATIVE)("native product shell launch", () => {
     return collectShell(launch.start("test:native-posix-shell"));
   }
 
+  function latestLease() {
+    const lease = leases.at(-1);
+    if (lease === undefined) throw new Error("Expected a prepared invocation");
+    return lease;
+  }
+
+  /** The live standby's pid; throws until one exists, for `vi.waitFor`. */
+  function standbyPid(): number {
+    const pid = _mxcShellStandbyPidForTest(supervisor.location);
+    if (pid === undefined) throw new Error("No live standby");
+    return pid;
+  }
+
   async function compareLauncher(command: string, sealed: string, allowed: string[]) {
     const sdkRoot = resolve("node_modules", pins.sdk.packages["@microsoft/mxc-sdk"]);
     const pin = pins.targets["darwin-arm64"].launcher;
@@ -306,7 +319,7 @@ describe.runIf(NATIVE)("native product shell launch", () => {
     const admitted = await prepare(command, { denyRead: [sealed], allowRead: allowed });
     const staged = readdirSync(runtime).filter(name => name.startsWith("shell-") && !previous.has(name));
     expect(staged).toHaveLength(1);
-    const requestPath = join(runtime, staged[0]!, "request.json");
+    const requestPath = join(runtime, ...staged, "request.json");
     const baseline = spawnSync(cli, ["--config", requestPath], {
       encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 12_000,
     });
@@ -415,8 +428,9 @@ describe.runIf(NATIVE)("native product shell launch", () => {
     const library = join(nodeModules, pins.sdk.packages["@microsoft/mxc-sdk"], pins.targets["darwin-arm64"].library.member);
     mkdirSync(dirname(library), { recursive: true });
     writeFileSync(library, "changed");
-    mkdirSync(join(root, "dist", "src", "main"), { recursive: true });
-    symlinkSync(supervisor.location.entry, join(root, "dist", "src", "main", "mxc-shell-supervisor.js"));
+    const entry = mxcShellSupervisorLocation(resources).entry;
+    mkdirSync(dirname(entry), { recursive: true });
+    symlinkSync(supervisor.location.entry, entry);
     await expect(detectHostMxcMacShellSupport(resources)).resolves.toEqual({ state: "unavailable", reason: "launcher-mismatch" });
   });
 
@@ -447,7 +461,7 @@ describe.runIf(NATIVE)("native product shell launch", () => {
       writeFileSync(offered, "new access");
       return offered;
     });
-    await compareLauncher(`cat ${quote(allowed[29]!)}`, sealed, allowed);
+    await compareLauncher(`cat ${quote(allowed.at(-1) ?? "")}`, sealed, allowed);
   });
 
   it("tunnels verified TLS from curl, git, node and python through its own live proxy only", async () => {
@@ -563,7 +577,7 @@ req.end();
   it("cancels every process kind at once, including a separate-session writer on inherited stdout", async () => {
     startEgressRelayService({ ask: async () => false });
     const launch = await prepare(DETACH_WORKLOAD, { timeoutMs: 60_000 });
-    const lease = leases.at(-1)!;
+    const lease = latestLease();
     const pending = run(launch);
     const pids = await recordedPids(project, DETACH_KINDS);
     try {
@@ -598,7 +612,7 @@ req.end();
   it("leaves nothing writing after cancelling a session-hopping respawner", async () => {
     startEgressRelayService({ ask: async () => false });
     const launch = await prepare(RESPAWN_WORKLOAD, { timeoutMs: 60_000 });
-    const lease = leases.at(-1)!;
+    const lease = latestLease();
     const pending = run(launch);
     const pids = await recordedPids(project, ["shell", "hop"]);
     try {
@@ -615,7 +629,7 @@ req.end();
   it("cancels a command whose stop arrives before the shell is ready", async () => {
     startEgressRelayService({ ask: async () => false });
     const launch = await prepare(DETACH_WORKLOAD, { timeoutMs: 60_000 });
-    const lease = leases.at(-1)!;
+    const lease = latestLease();
     const pending = run(launch);
     lease.revoke();
     const result = await pending;
@@ -648,7 +662,7 @@ req.end();
       expect(launch.child.signalCode).toBe("SIGKILL");
       expect(launch.child.stdout.destroyed && launch.child.stderr.destroyed).toBe(true);
       // The output holder is still alive: settlement did not wait for its pipe.
-      expect(livePids([holder.holder!])).toEqual([holder.holder]);
+      expect(livePids([holder.holder])).toEqual([holder.holder]);
     } finally {
       reapRecorded(holder);
     }
@@ -666,7 +680,7 @@ req.end();
       expect(result).toMatchObject({ code: null, cancelled: false, timedOut: false, cleanupUnverified: true });
       expect(signals).not.toHaveBeenCalled();
       // The disclosed fault limit: the workload outlives a killed supervisor, still confined.
-      expect(livePids([pids.daemon!, pids.nohup!])).toHaveLength(2);
+      expect(livePids([pids.daemon, pids.nohup])).toHaveLength(2);
     } finally {
       signals.mockRestore();
       reapRecorded(pids);
@@ -781,31 +795,28 @@ req.end();
   it("hands the next command an idle verified standby and drops it on a sandbox status change or quit", async () => {
     startEgressRelayService({ ask: async () => false });
     expect((await run(await prepare("/usr/bin/true"))).code).toBe(0);
-    let standby: number | undefined;
-    await vi.waitFor(() => { standby = _mxcShellStandbyPidForTest(supervisor.location); expect(standby).toBeDefined(); });
+    const standby = await vi.waitFor(standbyPid);
     const warm = (await prepare("printf warm")).start("test:warm-standby");
     expect(warm.child.pid).toBe(standby);
     expect(await collectShell(warm)).toMatchObject({ code: 0, stdout: "warm" });
 
-    let replacement: number | undefined;
-    await vi.waitFor(() => {
-      replacement = _mxcShellStandbyPidForTest(supervisor.location);
-      expect(replacement).toBeDefined();
-      expect(replacement).not.toBe(standby);
+    const replacement = await vi.waitFor(() => {
+      const pid = standbyPid();
+      expect(pid).not.toBe(standby);
+      return pid;
     });
     setActiveSandboxCapability({
       kind: "asrt", platform: "darwin", confidence: "verified", reason: "Status change",
       confines: { filesystem: true, network: true, process: true },
     });
     expect(_mxcShellStandbyPidForTest(supervisor.location)).toBeUndefined();
-    await vi.waitFor(() => expect(livePids([replacement!])).toEqual([]), { timeout: 5_000 });
+    await vi.waitFor(() => expect(livePids([replacement])).toEqual([]), { timeout: 5_000 });
 
     expect((await run(await prepare("/usr/bin/true"))).code).toBe(0);
-    let idle: number | undefined;
-    await vi.waitFor(() => { idle = _mxcShellStandbyPidForTest(supervisor.location); expect(idle).toBeDefined(); });
+    const idle = await vi.waitFor(standbyPid);
     try {
       await forceKillAndDrainManagedChildProcesses("test quit", 5_000);
-      await vi.waitFor(() => expect(livePids([idle!])).toEqual([]), { timeout: 5_000 });
+      await vi.waitFor(() => expect(livePids([idle])).toEqual([]), { timeout: 5_000 });
       await new Promise(resolve => setImmediate(resolve));
       expect(_mxcShellStandbyPidForTest(supervisor.location)).toBeUndefined();
     } finally {
@@ -823,6 +834,6 @@ req.end();
       elapsed.push(performance.now() - start);
     }
     elapsed.sort((left, right) => left - right);
-    console.info("Native shell launch, 21 commands, median %s ms", elapsed[10]!.toFixed(1));
+    console.info("Native shell launch, 21 commands, median %s ms", elapsed.at(10)?.toFixed(1));
   }, 25_000);
 });
