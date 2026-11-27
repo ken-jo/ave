@@ -87,11 +87,14 @@ function checkSource(path: string, snapshot: WorkbookFileSnapshot, location: Wor
   } catch { stale(); }
   checkParent(path, location);
 }
-function temporaryFile(path: string): { path: string; descriptor: number; identity: fs.BigIntStats } {
+function temporaryFile(path: string): { path: string; descriptor: number } {
   const temporary = join(dirname(path), `.ave-xlsx-${randomBytes(12).toString("hex")}.tmp`);
-  const descriptor = fs.openSync(temporary, "wx", 0o600);
-  try { return { path: temporary, descriptor, identity: fs.fstatSync(descriptor, { bigint: true }) }; }
-  catch (error) { fs.closeSync(descriptor); fs.unlinkSync(temporary); throw error; }
+  return { path: temporary, descriptor: fs.openSync(temporary, "wx", 0o600) };
+}
+function temporaryWindowsFile(path: string): WorkbookFile & { descriptor: number } {
+  const staged = temporaryFile(path);
+  try { return { ...staged, identity: fs.fstatSync(staged.descriptor, { bigint: true }) }; }
+  catch (error) { fs.closeSync(staged.descriptor); fs.unlinkSync(staged.path); throw error; }
 }
 function writeAndSync(descriptor: number, bytes: Buffer, io: WorkbookEditIo): void {
   let offset = 0;
@@ -121,7 +124,6 @@ function accessRulesRefusal(kind: keyof typeof ACCESS_RULES_REFUSALS, reason: "d
 
 /** Check the created file's owner and access list before writing workbook bytes. */
 function requireSameAccessRules(kind: keyof typeof ACCESS_RULES_REFUSALS, source: WorkbookFile, copy: WorkbookFile): void {
-  if (process.platform !== "win32") return;
   const files = [source, copy];
   let rules: ReturnType<typeof readWindowsFileDacls>;
   try { rules = readWindowsFileDacls(files.map(file => file.path)); }
@@ -195,10 +197,11 @@ export function publishWorkbookEdit(path: string, snapshot: WorkbookFileSnapshot
     } finally { fs.unlinkSync(staged.path); }
   }
   checkSource(requestedPath, snapshot, location);
-  const staged = temporaryFile(path);
+  const windowsStaged = process.platform === "win32" ? temporaryWindowsFile(path) : undefined;
+  const staged = windowsStaged ?? temporaryFile(path);
   try {
     try {
-      requireSameAccessRules("workbook", source, staged);
+      if (windowsStaged) requireSameAccessRules("workbook", source, windowsStaged);
       writeAndSync(staged.descriptor, output, io);
     } finally { fs.closeSync(staged.descriptor); }
     verifyStagedBytes(staged.path, output, "Output verification failed.");
@@ -207,8 +210,10 @@ export function publishWorkbookEdit(path: string, snapshot: WorkbookFileSnapshot
       checkSource(requestedPath, snapshot, location);
     });
   } finally {
-    const current = fs.lstatSync(staged.path, { bigint: true, throwIfNoEntry: false });
-    if (current?.dev === staged.identity.dev && current.ino === staged.identity.ino) fs.unlinkSync(staged.path);
+    if (windowsStaged) {
+      const current = fs.lstatSync(staged.path, { bigint: true, throwIfNoEntry: false });
+      if (current?.dev === windowsStaged.identity.dev && current.ino === windowsStaged.identity.ino) fs.unlinkSync(staged.path);
+    } else { if (fs.existsSync(staged.path)) fs.unlinkSync(staged.path); }
   }
   return { editedCells, needsRecalculation: true, backup };
 }

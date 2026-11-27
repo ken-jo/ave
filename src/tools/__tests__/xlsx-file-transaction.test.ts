@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { constants, copyFileSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync,
+import { constants, copyFileSync, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync,
   renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -20,7 +20,7 @@ vi.mock("node:child_process", async (importOriginal) => {
 
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
-  return { ...actual, linkSync: vi.fn((source: string, target: string) => {
+  return { ...actual, fstatSync: vi.fn(actual.fstatSync), linkSync: vi.fn((source: string, target: string) => {
     if (process.platform === "win32") throw Object.assign(new Error("Hard link refused"), { code: "EPERM" });
     return actual.linkSync(source, target);
   }) };
@@ -162,7 +162,7 @@ describe("workbook file transaction", () => {
     expect(temporaryNames()).toEqual([]);
   });
 
-  it.each(["darwin", "linux"])("publishes the recovery name only after staging on %s", async (platform) => {
+  it.each(["darwin", "linux"])("publishes the recovery name only after staging without a descriptor stat on %s", async (platform) => {
     const path = join(directory, "book.xlsx");
     const before = Buffer.alloc(8 * 1024 * 1024 + 1, 0x61);
     const output = Buffer.from("validated output");
@@ -176,6 +176,13 @@ describe("workbook file transaction", () => {
       copyFileSync(source, target, constants.COPYFILE_EXCL);
     });
     publish.mockClear();
+    const stat = vi.mocked(fstatSync);
+    const actualStat = stat.getMockImplementation()!;
+    stat.mockImplementation(((...args: Parameters<typeof fstatSync>) => {
+      const identity = actualStat(...args);
+      if (identity.size === 0n) throw new Error("Unexpected stat of an empty staging descriptor");
+      return identity;
+    }) as typeof fstatSync);
     vi.stubGlobal("process", Object.create(process, { platform: { value: platform } }));
     try {
       expect(publishWorkbookEdit(path, snapshot, output, 1, { write(descriptor, bytes, offset, length) {
@@ -188,6 +195,28 @@ describe("workbook file transaction", () => {
       expect(temporaryNames()).toEqual([]);
     } finally {
       publish.mockReset();
+      stat.mockImplementation(actualStat);
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it.each(["darwin", "linux"])("removes the output staging name with Unix cleanup on %s", (platform) => {
+    const path = join(directory, "book.xlsx");
+    const before = Buffer.from("original bytes");
+    writeFileSync(path, before);
+    const snapshot = readWorkbookSnapshot(path);
+    vi.stubGlobal("process", Object.create(process, { platform: { value: platform } }));
+    try {
+      expect(() => publishWorkbookEdit(path, snapshot, Buffer.from("validated output"), 1, { write() {
+        const [temporary] = temporaryNames();
+        const staged = join(directory, temporary!);
+        renameSync(staged, join(directory, "retired-staging"));
+        writeFileSync(staged, "rebound staging name");
+        throw new Error("Interrupted staging");
+      } })).toThrow("Interrupted staging");
+      expect(temporaryNames()).toEqual([]);
+      expect(readFileSync(path)).toEqual(before);
+    } finally {
       vi.unstubAllGlobals();
     }
   });
