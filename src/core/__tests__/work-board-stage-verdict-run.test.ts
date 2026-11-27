@@ -29,7 +29,7 @@ async function withRun(
   const h = await stageRunHarness({
     observeRunWork: true,
     runner,
-    wiring: (store, { templates }) => ({ passConditions: workflowEngineExtensions(store, templates, runScopePermissions()).passConditions }),
+    wiring: (store, { templates }) => ({ passConditions: workflowEngineExtensions(store, templates, runScopePermissions(), async () => "denied").passConditions }),
   });
   await h.runThenEnd(() => test(h));
 }

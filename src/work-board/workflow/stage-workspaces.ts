@@ -4,14 +4,14 @@ import { createLogger } from "../../lib/logger.js";
 import { isSensitivePath } from "../../permissions/sensitive-paths.js";
 import { aveHome, getAveHomePrivacyFailure } from "../../shared/ave-home.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
-import { canonicalWorkflowJson, resultHashOf, stageOutputBranch } from "../../shared/workflow-template-output.js";
+import { canonicalWorkflowJson, resultHashOf } from "../../shared/workflow-template-output.js";
 import type { TemplateStage } from "../../shared/workflow-template-types.js";
 import { isStageId } from "../template-graph.js";
 import { type NameReader, plainFolderIgnore, projectFoldsCase } from "./folder-ignore.js";
 import { createHostGit, type HostGit, HostGitError } from "./host-git.js";
 import { type FolderId, holdDir, type NodeId, type OwnedDir, OwnedFsError, type Pin, realDirId, realWithin, type SourceRoot } from "./owned-fs.js";
 import type { JoinConflict } from "./shipped-shapes.js";
-import type { RemovedRunProject, RunRef, StageOutputBranchWriter, StageWorkspaceProvider, WORKSPACE_REFUSALS } from "./stage-workspace.js";
+import type { RemovedRunProject, RunRef, StageWorkspaceProvider, WORKSPACE_REFUSALS } from "./stage-workspace.js";
 import { ADMIN_MARK, adminPinOf, IGNORE_PREFIX, isIgnoreFolder, JOIN_DIR, OUT_DIR, PIN_DIR, RUN_FILE, RUN_MARK, runBranch, runPinOf, runRootOf, runSlug, stageDirName, WORKTREES_DIR } from "./workspace-layout.js";
 import { isRecordFilePath, isWorkspaceRecord, type LiveRepo, type OutputFile, ownerOf, recordFits, type Registration, runFolderOf, type StageEntry, samePath, vetRecordPath, type WorkspaceRecord } from "./workspace-record.js";
 import { copySeedFiles, hashSeedFile, listSeedFiles, MAX_SEED_BYTES, MAX_SEED_FILES, type SeedRules } from "./workspace-seed.js";
@@ -62,7 +62,7 @@ const nul = (text: string): string[] => text.split(NUL).filter(entry => entry !=
 const chunked = <T>(items: readonly T[], size = 200): T[][] => Array.from({ length: Math.ceil(items.length / size) }, (_, index) => items.slice(index * size, (index + 1) * size));
 
 /** Stage workspaces under `<aveHome>/worktrees`: a git worktree per stage for a git project, a seeded plain folder otherwise. */
-export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}): StageWorkspaceProvider & { keepOutputBranch: StageOutputBranchWriter } {
+export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}): StageWorkspaceProvider {
   const git = options.git ?? createHostGit();
   const plainCeiling = options.plainCeiling === undefined ? undefined : realpathSync.native(options.plainCeiling);
   const sensitive = options.sensitive ?? ((path: string) => isSensitivePath(path, "read") !== null);
@@ -832,36 +832,6 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     });
   }
 
-  const keepOutputBranch: StageOutputBranchWriter = (run, stageId, attempt, canExecute) => serial(run.runId, async () => {
-    const branch = stageOutputBranch(run.runId, stageId);
-    const at = locate(run);
-    if (!branch || !at || at.file.kind !== "git") return { ok: false, code: "output-branch-unavailable" };
-    const entry = at.file.stages[stageId];
-    const root = at.live?.root;
-    const commit = entry?.sealCommit ?? entry?.base;
-    if (!root || entry?.attempt !== attempt || entry.sealed !== true || !commit) return { ok: false, code: "workspace-unavailable" };
-    const ref = `refs/heads/${branch}`;
-    try {
-      await assertRepository(at);
-      const current = await git.run(root, ["for-each-ref", "--format=%(objectname) %(refname) %(symref)", ref], { exact: true, requiresFloor: true });
-      if (current.code !== 0) return { ok: false, code: "workspace-unavailable" };
-      if (!canExecute()) return { ok: false, code: "output-execution-interrupted" };
-      if (entry.requestedBranch === true) {
-        if (current.stdout === `${commit} ${ref} \n`) return { ok: true };
-        return { ok: false, code: "output-branch-taken" };
-      }
-      if (current.stdout !== "") return { ok: false, code: "output-branch-taken" };
-      // Creation requires an absent ref. A namesake is never overwritten or followed.
-      const created = await git.run(root, ["update-ref", "--no-deref", END_OF_OPTIONS, ref, commit, ""], { requiresFloor: true });
-      if (created.code !== 0) return { ok: false, code: "workspace-unavailable" };
-      entry.requestedBranch = true;
-      writeRunFile(at, at.file);
-      return { ok: true };
-    } catch {
-      return { ok: false, code: "workspace-unavailable" };
-    }
-  });
-
   const conflictOf = (run: RunRef, joinId: string, reason: JoinConflict["reason"], files: ConflictFile[], bound: unknown, excerpt?: string): { ok: false; conflict: JoinConflict } => ({
     ok: false,
     conflict: { conflictHash: resultHashOf(canonicalWorkflowJson({ runId: run.runId, joinId, reason, files, bound })), reason, files, ...(excerpt ? { excerpt } : {}) },
@@ -1328,5 +1298,5 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     }
   }
 
-  return { open, prepare, seal, keepOutputBranch, integrate, openJoinFolder, release, discard, sweep };
+  return { open, prepare, seal, integrate, openJoinFolder, release, discard, sweep };
 }

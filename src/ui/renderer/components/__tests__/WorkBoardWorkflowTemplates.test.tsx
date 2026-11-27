@@ -11,6 +11,8 @@ import { TEST_IDS } from "../../../../shared/test-ids.js";
 import type { RunProgressEventPayload, WorkItemResolved } from "../../../../shared/work-board-types.js";
 import type { TemplateVersion, WorkflowTemplate, WorkflowTemplateDraftInput } from "../../../../shared/workflow-template-types.js";
 import { WorkBoardPanel } from "../WorkBoardPanel.js";
+import { WorkflowDecisionCard } from "../work-board/WorkflowDecisionCard.js";
+import { WorkflowStageEvidence } from "../work-board/WorkflowRunEvidence.js";
 import type { ApprovalRequest, AveApi } from "../../types.js";
 
 const at = "2026-11-26T05:00:00.000Z";
@@ -345,6 +347,27 @@ it("shows the requested effect payload and approves the hash on the keyboard", a
   approve.focus();
   await userEvent.keyboard("{Enter}");
   expect(api.decideWorkStage).toHaveBeenCalledExactlyOnceWith(item.id, { ...binding, decision: "approve" });
+});
+
+it("the gate card of a push to an https remote shows the help text, and the card of a push to an ssh remote does not", () => {
+  const binding = { runId: "run-a", stageId: "summarize", attempt: 1, resultHash: graphHash, outputHash: "b".repeat(64) };
+  const card = (url: string) => <WorkflowDecisionCard itemId={item.id} onChanged={vi.fn()}
+    api={{ decideWorkStage: vi.fn(), decideWorkJoin: vi.fn(), openWorkBoardJoin: vi.fn() }}
+    review={{ kind: "stage-gate", binding, result: "Ready", arrivedAt: at, outputs: [{
+      id: "push", summary: "Publish", payload: JSON.stringify({ args: { url } }), httpsAccountsHelp: url.startsWith("https:"),
+    }] }} />;
+  const view = render(card("https://example.test/repo"));
+  expect(view.getByText(t("workflowTemplates.pushHttpsAccountsHelp"))).toBeVisible();
+  view.rerender(card("ssh://git@example.test/repo"));
+  expect(view.queryByText(t("workflowTemplates.pushHttpsAccountsHelp"))).toBeNull();
+});
+
+it("the authentication failure shows the https accounts help text", () => {
+  const detail = JSON.stringify({ exit: { code: "push-authentication", message: "Authentication failed" } });
+  const view = render(<WorkflowStageEvidence stageName={id => id}
+    stage={{ stageId: "summarize", attempt: 1, status: "passed", outputExecutions: [{ id: "push", status: "failed", detail }] }} />);
+  expect(view.getByText(t("workflowTemplates.pushHttpsAccountsHelp"))).toBeVisible();
+  expect(view.getByText("Authentication failed")).toBeVisible();
 });
 
 it("presents enabled controls for a reissued join conflict of the same files", async () => {

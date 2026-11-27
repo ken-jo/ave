@@ -20,7 +20,7 @@ const workspaceBound: Bound = expire => boundWait(expire, WORKSPACE_WAIT_MS);
 let production: StageWorkspaceProvider;
 async function withProductionParts(run: (h: Harness) => Promise<void>): Promise<void> {
   const h = await stageRunHarness({ observeRunWork: true, wiring: (store, { templates, waking }) => {
-    const parts = workflowEngineExtensions(store, templates, runScopePermissions());
+    const parts = workflowEngineExtensions(store, templates, runScopePermissions(), async () => "denied");
     production = parts.workspace;
     const release = production.release.bind(production);
     const discard = production.discard.bind(production);

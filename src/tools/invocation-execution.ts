@@ -208,6 +208,7 @@ export interface ExecutionStageContext {
   approvedPolicyEpoch?: string;
   permissionRecheckResult?: PermissionCheckResult;
   replayRootBinding?: ReplayRootBinding;
+  approvedInvocation?: ExecuteOptions["approvedInvocation"];
   abortSignal: AbortSignal | undefined;
   hostShellExecutionPermitBinding: HostShellExecutionPermitBinding | undefined;
   /** The kinds of use this call's cards declare for a standing answer. */
@@ -1319,6 +1320,7 @@ export async function executeAuthorizedToolInvocation(
       abortSignal: signal,
     };
     if (!await refreshRemoteControllerBoundToSession(invocationPermissionContext.remoteControllerAuthority, sessionId)) throw new Error("remote-controller-revoked");
+    if (context.approvedInvocation && !await context.approvedInvocation(tool, finalInput)) throw new Error("The approved output changed");
     let execution: ReturnType<Tool["execute"]>;
     try {
       execution = runWithToolExecutionCwd(executionCwd, () =>

@@ -2840,6 +2840,7 @@ async function runToolInvocationAttempt(
       permissionRecheckResult: authorization.permissionRecheckResult,
       checkCurrentPermission: authorization.checkCurrentPermission,
       replayRootBinding: opts.replayRootBinding,
+      approvedInvocation: opts.approvedInvocation,
       abortSignal,
       hostShellExecutionPermitBinding,
       answerUses: answerUses(),

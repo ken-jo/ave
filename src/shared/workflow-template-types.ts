@@ -114,7 +114,7 @@ export type WorkflowTemplateErrorCode =
   | "invalid-input" | "template-not-found" | "unknown-version" | "graph-hash-mismatch"
   | "confirmed-version-immutable" | "stale-draft" | "no-draft" | "template-archived"
   | "bad-stage-id" | "too-many-entries" | "envelope-refused" | "not-current-version" | "routine-not-found"
-  | "scope-changed" | "project-mismatch" | "scope-not-authorised" | "output-not-declared"
+  | "scope-changed" | "project-mismatch" | "scope-not-authorised" | "output-not-declared" | "remote-not-configured"
   | "invalid-template-file" | "invalid-template-run" | "schedule-requires-read-only" | "gate-check-unsupported";
 export type WorkflowTemplateIpcResult<T> = { ok: true; value: T } | { ok: false; refusals?: EnvelopeRefusal[]; error: WorkflowTemplateErrorCode | "unauthorized-frame" | "no-store" | "user-gesture-required" | "user-keyboard-required" | "storage-error" };
 
@@ -122,7 +122,7 @@ export interface WorkItemStageRun {
   stageId: string;
   attempt: number;
   status: "waiting" | "running" | "awaiting_gate" | "passed" | "failed" | "cancelled" | "rejected";
-  failure?: "error" | "gate" | "interrupted" | "denied-tool" | "workspace-lost" | "workspace-revoked" | "budget" | "seed" | "requested-output-invalid";
+  failure?: "error" | "gate" | "interrupted" | "denied-tool" | "workspace-lost" | "workspace-revoked" | "budget" | "seed";
   taint?: "file-content" | "agent-message";
   workspace?: { root: string; kind: "git" | "folder"; baseCommit?: string; sealCommit?: string; manifest?: OutputFile[] };
   blocked?: { code: LaneBlockCode; at: string };
@@ -135,7 +135,6 @@ export interface WorkItemStageRun {
   /** At most 48,000 characters; the engine truncates before storing. */
   output?: string;
   resultHash?: string;
-  outputHash?: string;
   gate?: { type: "human"; status: "pending" | "approved" | "changes_requested" | "rejected"; note?: string; decidedAt?: string; revision: number; judgedBy?: "host" | "model" }
     | { type: "auto"; passed: boolean; evidence: string; evaluatedAt: string; judgedBy?: "host" | "model" };
 }
@@ -148,7 +147,7 @@ export type RunAuthoritySource = { kind: "local-create-and-run"; pin: RunPin; pr
 export interface RunWorkspace { kind: "git" | "folder"; runRoot: string; branch?: string; baseCommit?: string; outputDir?: string }
 type LaneBlockCode = "envelope-missing" | "isolation-unproven" | "lane-unavailable";
 interface OutputFile { path: string; sha256: string; size: number }
-export interface RequestedOutput { id: string; decl: RequestedOutputDecl | { kind: "branch"; owner: "host"; ownerId: "host:git"; toolName: "git_branch" }; args: string; files?: OutputFile[]; summary: string }
+export interface RequestedOutput { id: string; decl: RequestedOutputDecl; args: string; files?: OutputFile[]; summary: string }
 interface OutputExecution { id: string; status: "pending" | "done" | "failed" | "denied"; at?: string; detail?: string }
 interface JoinConflict { conflictHash: string; reason: "merge-conflict" | "same-path" | "identity-missing" | "interrupted"; files: { path: string; stageIds: string[] }[]; excerpt?: string }
 export interface StageJoin { joinId: string; stageIds: string[]; status: "integrating" | "integrated" | "conflict" | "rejected"; conflictGeneration?: number; conflict?: JoinConflict; decidedAt?: string }

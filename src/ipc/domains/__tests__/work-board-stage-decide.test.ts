@@ -1,3 +1,5 @@
+import { createHostGit } from "../../../work-board/workflow/host-git.js";
+import { acceptRequestedOutput, requestedOutputHash } from "../../../work-board/workflow/requested-outputs.js";
 import { ApprovalGate, IPC_APPROVAL_REQUEST } from "../../../permissions/approval-gate.js";
 import { approvalSurfaceResolver } from "../../../boot/approval-surface.js";
 import { updateApprovalSurface } from "../../../permissions/approval-surface-registry.js";
@@ -752,20 +754,25 @@ it("requires a native keyboard receipt for an output-bearing approval", async ()
   const key = workBoardDecisionKey(WORK_BOARD.decideStage, 7, input);
   event.sender.emit("before-mouse-event", {}, { type: "mouseUp" });
   await expect(handler(WORK_BOARD.captureDecisionIntent)(event, token, key)).resolves.toBe(false);
+  await expect(handler(WORK_BOARD.decideStage)(event, 7, input, token)).resolves.toEqual({ ok: false, reason: "user-keyboard-required" });
   expect(engine.decideStageGate).not.toHaveBeenCalled();
 });
 
 it("shows the full output request on the desktop and executes it only with its bound keyboard receipt", async () => {
-  const execute = vi.fn(async () => ({ id: "delivery", status: "denied" as const, detail: "capability-unavailable" }));
-  const h = await stageRunHarness({ observeRunWork: true, workflow: { outputs: { execute } } });
+  const execute = vi.fn(async ({ output }: { output: { id: string } }) => ({ id: output.id, status: "failed" as const, detail: "output-execution-failed" }));
+  const h = await stageRunHarness({ observeRunWork: true, workflow: { outputs: { execute, accept: input => acceptRequestedOutput(input, createHostGit()) } } });
   await h.runThenEnd(async () => {
     const decl = { kind: "send-message", owner: "plugin", ownerId: "delivery", toolName: "send" } as const;
     const version = await h.confirm([stageOf("a", { requestedOutputs: [decl] })]);
     const id = await h.addItem(version);
     const start = h.start(id, h.local(version));
-    (await h.untilLive(1))[0].finish({ summary: JSON.stringify({
-      result: "Ready", requestedOutputs: [{ id: "delivery", ...decl, args: { recipient: "Review team", text: "Full message body" }, summary: "Notify" }],
-    }) });
+    const [child] = await h.untilLive(1);
+    const { toolName, owner: outputOwner, ownerId } = decl;
+    const request = await child.input.stageOutputTool?.execute({ toolName, owner: outputOwner, ownerId,
+      args: { recipient: "Review team", text: "Full message body" }, summary: "Notify" },
+    { cwd: child.input.projectRoot ?? "", metadata: {}, extraAllowedDirectories: [] });
+    expect(request?.isError).toBe(false);
+    child.finish({ summary: "Ready" });
     await expect(start).resolves.toMatchObject({ status: "awaiting_approval" });
 
     const owner = workBoardTestSender();
@@ -780,10 +787,10 @@ it("shows the full output request on the desktop and executes it only with its b
     await bindDefaultProject(event);
     const record = await h.item(id);
     const stage = record.stageRuns[0];
-    const binding = { runId: record.runId, stageId: "a", attempt: 1, resultHash: stage.resultHash, outputHash: stage.outputHash };
+    const binding = { runId: record.runId, stageId: "a", attempt: 1, resultHash: stage.resultHash, outputHash: requestedOutputHash(stage) };
     const card = {
       kind: "stage-gate", binding,
-      outputs: [{ id: "delivery", summary: "Notify", payload: expect.stringContaining('"text": "Full message body"') }],
+      outputs: [{ id: stage.requestedOutputs?.[0].id, summary: "Notify", payload: expect.stringContaining('"text": "Full message body"') }],
     };
     await expect(handler(WORK_BOARD.get)(event, id)).resolves.toMatchObject({ item: { pendingWorkflowDecisions: [card] } });
     await expect(handler(WORK_APPROVALS.list)(event, {})).resolves.toMatchObject({ items: [card] });
@@ -802,6 +809,6 @@ it("shows the full output request on the desktop and executes it only with its b
     await expect(handler(WORK_BOARD.decideStage)(event, id, approval, token)).resolves.toMatchObject({ ok: false });
     expect(execute).toHaveBeenCalledTimes(1);
     const view = await handler(WORK_BOARD.get)(event, id);
-    expect(view).toMatchObject({ item: { workflowRun: { stages: [{ outputExecutions: [{ status: "denied", detail: "capability-unavailable" }] }] } } });
+    expect(view).toMatchObject({ item: { workflowRun: { stages: [{ outputExecutions: [{ status: "failed", detail: "output-execution-failed" }] }] } } });
   });
 });

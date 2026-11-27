@@ -1,6 +1,5 @@
 import { readWorkflowDecisionHistory } from "../workflow-decision-history.js";
 import { maskWorkflowText, withoutWorkflowProjection } from "../../work-board/workflow/run-read-projection.js";
-import { mintRequestedOutputDecision } from "../../work-board/workflow/requested-output-decision.js";
 import { isGraphHash, isStageId, isTemplateId, isTemplateVersion, WorkflowTemplateError } from "../../work-board/template-graph.js";
 import type { RunAuthoritySource, TemplateVersionPin } from "../../shared/workflow-template-types.js";
 import { registerWorkflowTemplateHandlers } from "../workflow-template-handlers.js";
@@ -22,13 +21,14 @@ import type {
   StageJoinDecideIpcResult,
   StageJoinDecideInput,
   StageRetryIpcResult,
+  StageOutputRetryIpcResult,
   WorkPlanDecideInput,
   WorkPlanDecideIpcResult,
   WorkPlanDecision,
 } from "../../shared/work-board-types.js";
 import { MAX_PLAN_NOTE_LENGTH, workBoardOriginSessionId } from "../../shared/work-board-types.js";
 import { workBoardDecisionChannel, workBoardDecisionKey, type WorkBoardDecisionChannel } from "../../shared/work-board-decision-intent.js";
-import { securitySettingsGestures, type SecuritySettingsGestureProof } from "../security-settings-gesture.js";
+import { securitySettingsGestures, type SecuritySettingsDecision, type SecuritySettingsGestureProof } from "../security-settings-gesture.js";
 import { deliverWorkBoardFailure, setWorkBoardProjectScope, workBoardProjectAllows } from "../work-board-project-scope.js";
 import { parseFileMentionReferences } from "../../shared/file-mention-reference.js";
 import { sanitizeOutgoingInput } from "../handlers/chat.js";
@@ -208,7 +208,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
         const code = error instanceof WorkBoardWriteRefusal ? error.code
           : error instanceof WorkflowTemplateError && error.code === "invalid-template-run" ? error.code : undefined;
         if (code === undefined) throw error;
-        if (channel === WORK_BOARD.decidePlan || channel === WORK_BOARD.decideStage || channel === WORK_BOARD.decideJoin || channel === WORK_BOARD.openJoin || channel === WORK_BOARD.retryStage) {
+        if (channel === WORK_BOARD.decidePlan || channel === WORK_BOARD.decideStage || channel === WORK_BOARD.decideJoin || channel === WORK_BOARD.openJoin || channel === WORK_BOARD.retryStage || channel === WORK_BOARD.retryOutput) {
           return { ok: false, reason: code };
         }
         if (channel === WORK_BOARD.list || channel === WORK_BOARD.get || channel === WORK_BOARD.steerRun || channel === WORK_BOARD.cancelRun) {
@@ -234,7 +234,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     }
     const channel = workBoardDecisionChannel(key);
     if (!channel || typeof token !== "string" || !/^[0-9a-f-]{36}$/u.test(token)) return false;
-    let keyboard = false;
+    let keyboard = channel === WORK_BOARD.retryOutput;
     if (channel === WORK_BOARD.decideStage && typeof key === "string") {
       try {
         const stage = parseDecideStageInput(JSON.parse(key)?.[2]);
@@ -250,13 +250,16 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     return true;
   });
 
-  function spendDecisionIntent(e: IpcMainInvokeEvent, channel: WorkBoardDecisionChannel, id: unknown, input: unknown, token: unknown): boolean {
+  function takeDecisionIntent(e: IpcMainInvokeEvent, channel: WorkBoardDecisionChannel, id: unknown, input: unknown, token: unknown): SecuritySettingsDecision | null {
     const captured = decisionTokens.get(e.sender);
-    if (!captured || captured.token !== token) return false;
+    if (!captured || captured.token !== token) return null;
     decisionTokens.delete(e.sender);
     return captured.frame === e.senderFrame
-      && securitySettingsGestures.matches(e.sender, captured.proof, { channel, payload: workBoardDecisionKey(channel, id, input) });
+      && securitySettingsGestures.matches(e.sender, captured.proof, { channel, payload: workBoardDecisionKey(channel, id, input) })
+      ? { surface: e.sender, proof: captured.proof } : null;
   }
+
+  const spendDecisionIntent = (...args: Parameters<typeof takeDecisionIntent>): boolean => takeDecisionIntent(...args) !== null;
 
   registerWorkflowTemplateHandlers(deps, isBoardOwnerFrame, spendDecisionIntent);
 
@@ -672,7 +675,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
 
   /** The work-approval boundary every stage decision shares with decide-plan: a validated sender, a consumed local keyboard gesture, the
    * board window's main frame, and an item this window may see. Returns the refusal, or null when the caller may go on. */
-  const stageDecisionRefusal = async (channel: WorkBoardDecisionChannel, e: IpcMainInvokeEvent, id: unknown, input: unknown, intent: unknown) => {
+  const stageDecisionRefusal = async (channel: WorkBoardDecisionChannel, e: IpcMainInvokeEvent, id: unknown, input: unknown, intent: unknown, onProof?: (proof: SecuritySettingsDecision) => void) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, channel, e);
       return UNAUTHORIZED_FRAME;
@@ -682,12 +685,15 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
       auditUnauthorized(auditLogger, channel, e);
       return UNAUTHORIZED_FRAME;
     }
-    if (!spendDecisionIntent(e, channel, id, input, intent)) return { ok: false as const, reason: "user-gesture-required" as const };
+    const stage = channel === WORK_BOARD.decideStage ? parseDecideStageInput(input) : null;
+    const keyboard = channel === WORK_BOARD.retryOutput || (stage !== null && isRequestedOutputApproval(stage));
+    const proof = takeDecisionIntent(e, channel, id, input, intent);
+    if (!proof) return { ok: false as const, reason: keyboard ? "user-keyboard-required" as const : "user-gesture-required" as const };
     if (typeof id !== "number" || !Number.isInteger(id)) return { ok: false as const, reason: "invalid-input" as const };
     const existing = await loadAuthorizedItem(id);
     if (existing.status !== "found") return { ok: false as const, reason: "not_found" as const };
-    const stage = channel === WORK_BOARD.decideStage ? parseDecideStageInput(input) : null;
-    if (stage && isRequestedOutputApproval(stage) && !canReadItem(e, existing.item)) return { ok: false as const, reason: "not_found" as const };
+    if (keyboard && !canReadItem(e, existing.item)) return { ok: false as const, reason: "not_found" as const };
+    onProof?.(proof);
     return null;
   };
   const auditStageDecision = (id: number, detail: Record<string, unknown>): void => {
@@ -704,7 +710,8 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
   handle(
     WORK_BOARD.decideStage,
     async (e, id: unknown, input: unknown, intent?: unknown): Promise<StageGateDecideIpcResult | typeof UNAUTHORIZED_FRAME | typeof NO_ENGINE> => {
-      const refusal = await stageDecisionRefusal(WORK_BOARD.decideStage, e, id, input, intent);
+      let proof: SecuritySettingsDecision | undefined;
+      const refusal = await stageDecisionRefusal(WORK_BOARD.decideStage, e, id, input, intent, captured => { proof = captured; });
       if (refusal !== null) return refusal;
       const parsed = parseDecideStageInput(input);
       if (parsed === null || !workBoardEngine) return { ok: false, reason: "invalid-input" };
@@ -719,11 +726,11 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
       const { note: _sent, ...bound } = parsed;
       const decision = { ...bound, ...(note !== undefined ? { note } : {}) };
       const result = isRequestedOutputApproval(parsed)
-        ? await workBoardEngine.decideStageGate(id as number, decision, mintRequestedOutputDecision(id as number, decision))
+        ? await workBoardEngine.decideStageGate(id as number, decision, proof)
         : await workBoardEngine.decideStageGate(id as number, decision);
       if (!result.ok) return result;
       // The decision only; the note body stays on the item.
-      auditStageDecision(id as number, { runId: parsed.runId, stageId: parsed.stageId, attempt: parsed.attempt, result: parsed.resultHash.slice(0, 8), ...(parsed.outputHash !== undefined && { outputs: parsed.outputHash.slice(0, 8) }), decision: result.status, note: note !== undefined });
+      auditStageDecision(id as number, { runId: parsed.runId, stageId: parsed.stageId, attempt: parsed.attempt, result: parsed.resultHash.slice(0, 8), decision: result.status, note: note !== undefined });
       broadcastItemChanged(id as number, "updated");
       broadcastToAppWindows(deps, WORK_APPROVALS.changed, undefined);
       return redactedCount > 0 ? { ...result, redactedCount } : result;
@@ -757,6 +764,19 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
       try { return await shell.openPath(path) === ""; }
       catch { return false; }
     });
+  });
+
+  handle(WORK_BOARD.retryOutput, async (e, id: unknown, input: unknown, intent?: unknown): Promise<StageOutputRetryIpcResult | typeof NO_ENGINE | typeof UNAUTHORIZED_FRAME> => {
+    let proof: SecuritySettingsDecision | undefined;
+    const refusal = await stageDecisionRefusal(WORK_BOARD.retryOutput, e, id, input, intent, captured => { proof = captured; });
+    if (refusal !== null) return refusal;
+    const binding = exactRecord(input, ["runId", "stageId", "attempt", "outputId", "outputHash"]);
+    if (!binding || !proof || !workBoardEngine) return { ok: false, reason: "invalid-input" };
+    const { runId, stageId, attempt, outputId, outputHash } = binding;
+    if (typeof runId !== "string" || !RUN_ID_PATTERN.test(runId) || !isStageId(stageId) || !isTemplateId(outputId)
+      || typeof attempt !== "number" || !Number.isInteger(attempt) || attempt < 1 || attempt > 3
+      || typeof outputHash !== "string" || !PLAN_HASH_PATTERN.test(outputHash)) return { ok: false, reason: "invalid-input" };
+    return workBoardEngine.retryOutput(id as number, { runId, stageId, attempt, outputId, outputHash }, proof);
   });
 
   handle(

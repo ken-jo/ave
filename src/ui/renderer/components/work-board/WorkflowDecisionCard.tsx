@@ -83,6 +83,7 @@ export function WorkflowDecisionCard({ review, itemId, stageName, api, onChanged
           {review.outputs.map(output => <li key={output.id} className="space-y-1">
             <p>{stageDisplayName(output.id)}{output.summary && ` · ${stageDisplayName(output.summary)}`}</p>
             <pre dir="ltr" className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted p-2">{revealHiddenCharacters(output.payload, { lineBreaks: false })}</pre>
+            {output.httpsAccountsHelp && <p>{t("workflowTemplates.pushHttpsAccountsHelp")}</p>}
           </li>)}
         </ul> : null}
         {review.outputs?.length ? <p>{t("workflowTemplates.approveOutputsWithKeyboard")}</p> : null}

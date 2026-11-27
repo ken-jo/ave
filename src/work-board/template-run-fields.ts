@@ -1,5 +1,5 @@
 import { isRecord } from "../shared/is-record.js";
-import { canonicalWorkflowJson, LOCAL_BRANCH_OUTPUT } from "../shared/workflow-template-output.js";
+import { canonicalWorkflowJson } from "../shared/workflow-template-output.js";
 import type { WorkflowRunRecord } from "../shared/workflow-template-types.js";
 import { hasTemplateKeys, parseRequestedOutputDecl, isGraphHash, isStageId, isTemplateId, isTemplateVersion, isWorkspaceGlob, requireTemplate, WorkflowTemplateError } from "./template-graph.js";
 const STAGE_STATUSES = ["waiting", "running", "awaiting_gate", "passed", "failed", "cancelled", "rejected"];
@@ -23,11 +23,7 @@ function workspace(value: unknown, run: boolean): boolean {
 }
 function requestedOutput(value: unknown): boolean {
   if (!isRecord(value) || !isTemplateId(value.id) || !isRecord(value.decl) || typeof value.summary !== "string" || value.summary.length > 400 || typeof value.args !== "string" || Buffer.byteLength(value.args, "utf8") > 32 * 1024) return false;
-  if (value.decl.kind === "branch") {
-    if (canonicalWorkflowJson(value.decl) !== canonicalWorkflowJson(LOCAL_BRANCH_OUTPUT)) return false;
-  } else {
-    try { parseRequestedOutputDecl(value.decl); } catch { return false; }
-  }
+  try { parseRequestedOutputDecl(value.decl); } catch { return false; }
   try { if (canonicalWorkflowJson(JSON.parse(value.args)) !== value.args) return false; } catch { return false; }
   return optional(value, "files", files);
 }
@@ -49,8 +45,8 @@ function validStage(value: unknown): boolean {
   if (!isRecord(value) || !isStageId(value.stageId) || !Number.isInteger(value.attempt) || (value.attempt as number) < 1 || (value.attempt as number) > 3 || !STAGE_STATUSES.includes(value.status as string)) return false;
   for (const key of ["startedAt", "endedAt", "childSessionId", "output"]) if (value[key] !== undefined && typeof value[key] !== "string") return false;
   if (typeof value.output === "string" && value.output.length > 48_000) throw new WorkflowTemplateError("invalid-template-run", "Stage output exceeds 48000 characters");
-  if (!optional(value, "resultHash", isGraphHash) || !optional(value, "outputHash", isGraphHash)) return false;
-  if (!optional(value, "failure", v => ["error", "gate", "interrupted", "denied-tool", "workspace-lost", "workspace-revoked", "budget", "seed", "requested-output-invalid"].includes(v as string))
+  if (!optional(value, "resultHash", isGraphHash) || "outputHash" in value) return false;
+  if (!optional(value, "failure", v => ["error", "gate", "interrupted", "denied-tool", "workspace-lost", "workspace-revoked", "budget", "seed"].includes(v as string))
     || !optional(value, "taint", v => v === "file-content" || v === "agent-message") || !optional(value, "workspace", v => workspace(v, false))
     || !optional(value, "blocked", v => isRecord(v) && ["envelope-missing", "isolation-unproven", "lane-unavailable"].includes(v.code as string) && timestamp(v.at))
     || !optional(value, "requestedOutputs", v => uniqueEntries(v, 10, requestedOutput))

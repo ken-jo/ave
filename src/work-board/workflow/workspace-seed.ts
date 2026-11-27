@@ -131,7 +131,7 @@ export async function listSeedFiles(root: string, globs: readonly string[], rule
 }
 
 /** sha256 and size of what `source` holds; with `into`, each part is also written there, after `held` was asked once more. */
-async function digest(source: FileHandle, into?: { fd: number; held: () => void }): Promise<{ sha256: string; size: number }> {
+async function digest(source: FileHandle, into?: { fd: number; held: () => void }, maxBytes = Infinity): Promise<{ sha256: string; size: number }> {
   const hash = createHash("sha256");
   const buffer = Buffer.allocUnsafe(1024 * 1024);
   let size = 0;
@@ -139,8 +139,9 @@ async function digest(source: FileHandle, into?: { fd: number; held: () => void 
     const { bytesRead } = await source.read(buffer, 0, buffer.length, null);
     if (bytesRead === 0) break;
     const chunk = buffer.subarray(0, bytesRead);
-    hash.update(chunk);
     size += bytesRead;
+    if (size > maxBytes) throw new Error("File exceeds its size bound");
+    hash.update(chunk);
     if (into === undefined) continue;
     into.held();
     for (let written = 0; written < chunk.length;) written += writeSync(into.fd, chunk, written);
@@ -149,12 +150,12 @@ async function digest(source: FileHandle, into?: { fd: number; held: () => void 
 }
 
 /** sha256 and size of one regular file under a folder that is still the one held: no link is followed on the way to it. */
-export async function hashSeedFile(root: SourceRoot, path: string): Promise<{ sha256: string; size: number }> {
+export async function hashSeedFile(root: SourceRoot, path: string, maxBytes?: number): Promise<{ sha256: string; size: number }> {
   const segments = relativeSegments(path);
   if (segments === null) throw new Error("seed path is not a relative path");
   const source = await openSource(root, segments);
   try {
-    return await digest(source);
+    return await digest(source, undefined, maxBytes);
   } finally {
     await source.close();
   }
@@ -165,7 +166,7 @@ export async function hashSeedFile(root: SourceRoot, path: string): Promise<{ sh
  * held folder, and the file is a new one: a file or link already at its name is unlinked, never written through. With `expect`, a copy
  * whose content is not the sha256 given for its path is removed again and the call throws.
  */
-export async function copySeedFiles(source: SourceRoot, target: OwnedDir, paths: readonly string[], expect?: ReadonlyMap<string, string>, fromProject = false): Promise<SeedFile[]> {
+export async function copySeedFiles(source: SourceRoot, target: OwnedDir, paths: readonly string[], expect?: ReadonlyMap<string, string>, fromProject = false, maxBytes = Infinity): Promise<SeedFile[]> {
   const assertConsumable = (): void => {
     if (fromProject && !isHostWorkspaceConsumable(source.path)) throw new SeedStop("seed-unreadable");
   };
@@ -181,7 +182,8 @@ export async function copySeedFiles(source: SourceRoot, target: OwnedDir, paths:
       const dir = target.ensurePath(segments.slice(0, -1));
       const { fd, id } = dir.createFile(leaf, { replace: true });
       let made: { sha256: string; size: number };
-      try { made = await digest(handle, { fd, held: () => dir.check() }); } finally { closeSync(fd); }
+      try { made = await digest(handle, { fd, held: () => dir.check() }, maxBytes); } finally { closeSync(fd); }
+      maxBytes -= made.size;
       dir.check();
       if (dir.entryId(leaf) !== id) throw new OwnedFsError("changed", "the copy was replaced while it was written");
       const wanted = expect?.get(path);

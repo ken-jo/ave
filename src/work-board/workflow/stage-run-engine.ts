@@ -1,5 +1,6 @@
 /** Runs a template run's stages: one serial event queue per item, the pure reducer for every state change, and the only spawn site of a
  * stage child. Each child's tool calls still enter the ordinary permission tree; nothing here decides a permission. */
+import type { WebContents } from "electron";
 import { randomUUID } from "node:crypto";
 import { access } from "node:fs/promises";
 import { isAbsolute, relative } from "node:path";
@@ -19,11 +20,11 @@ import { projectRootEquals } from "../../shared/project-identity.js";
 import { errorMessage } from "../../shared/error-message.js";
 import {
   MAX_PLAN_NOTE_LENGTH, workBoardOriginSessionId,
-  type StageRetryInput, type StageGateDecideInput, type StageGateDecideResult, type StageJoinDecideInput, type StageJoinDecideResult, type OpenJoinResult, type StageRetryResult,
+  type StageOutputRetryInput, type StageOutputRetryResult, type StageRetryInput, type StageGateDecideInput, type StageGateDecideResult, type StageJoinDecideInput, type StageJoinDecideResult, type OpenJoinResult, type StageRetryResult,
   type WorkBoardCancelResult, type WorkBoardRunEvent, type WorkBoardSteerAck, type WorkBoardSteerResult, type WorkItemResolved,
   type WorkItemRunResult, type WorkItemUpdateResult,
 } from "../../shared/work-board-types.js";
-import { hasMatchingOutputHash, resultHashOf } from "../../shared/workflow-template-output.js";
+import { resultHashOf } from "../../shared/workflow-template-output.js";
 import type {
   EnvelopeToolRef, RequestedOutput, RunAuthoritySource, StageEnvelope, TemplateScope, TemplateStage, TemplateVersion, UnattendedQualification,
   WorkItemStageRun,
@@ -31,7 +32,7 @@ import type {
 import { isUnattendedReadTool } from "../../tools/base.js";
 import { isAllReadOnlyVersion, WorkflowTemplateError } from "../template-graph.js";
 import type { AuthoriseRunSource, RunAuthorityVerdict } from "./run-authority.js";
-import type { LaneBlockCode, OutputExecution, RunPin, StageFailure } from "./shipped-shapes.js";
+import type { LaneBlockCode, RunPin, StageFailure } from "./shipped-shapes.js";
 import type { PassConditionRegistry } from "./stage-gates.js";
 import { assertPinnedVersion, stepsOf } from "./stage-graph.js";
 import { MAX_STAGE_ATTEMPTS, reduceRun, type RunEffect, type RunEvent } from "./stage-machine.js";
@@ -39,8 +40,11 @@ import { buildStagePrompt, stageInputsOf } from "./stage-prompt.js";
 import { maskWorkflowText, pendingWorkflowDecisions, projectWorkflowRun, savedWorkflowStageActivity, withoutWorkflowProjection, workflowStageActivity } from "./run-read-projection.js";
 import type { WorkflowRunPinView, WorkflowStageActivityUpdate, WorkflowStageView } from "../../shared/workflow-run-view.js";
 import { OwnedFsError } from "./owned-fs.js";
-import { collectRequestedOutputs, requestedOutputPrompt, requestedOutputsMatchStage, stageCollectsRequestedOutputs } from "./requested-output.js";
-import { type RequestedOutputDecision, spendRequestedOutputDecision } from "./requested-output-decision.js";
+import { requestedOutputHash, stageOutputIntake, type RequestedOutputHooks } from "./requested-outputs.js";
+import { securitySettingsGestures, type SecuritySettingsDecision } from "../../ipc/security-settings-gesture.js";
+import { WORK_BOARD } from "../../shared/ipc-channels.js";
+import { workBoardDecisionKey } from "../../shared/work-board-decision-intent.js";
+import { createRecordedOutputEffects, retainsOutputFiles } from "./requested-output-retry.js";
 import { isAwaitingStageReview, reconcileRunRecord, type RunRecord, type RunWriteFailure, type WorkflowRunState } from "./run-state.js";
 import type { RunRef, StageWorkspaceProvider } from "./stage-workspace.js";
 import { WorkflowInvariantError } from "./workflow-errors.js";
@@ -49,6 +53,8 @@ const log = createLogger("work-board-stage-run");
 
 /** The host bounds a read-scope stage's rounds, as it does for the plan child of an ordinary run. */
 const READ_STAGE_ROUND_BUDGET = 20;
+const STAGE_OUTPUT_MAX_CHARS = 48_000;
+const stageDeclaresOutputs = (stage: TemplateStage): boolean => Boolean(stage.requestedOutputs?.length);
 
 const runKeyOf = (itemId: number, runId: string): string => `work-board:${itemId}#${runId}`;
 
@@ -65,9 +71,7 @@ interface LaneHooks {
   sessionEnded(sessionId: string): void;
   onDenied(listener: (e: { sessionId: string; code: string }) => void): () => void;
 }
-interface RequestedOutputHooks {
-  execute(a: { run: RunRef; stageId: string; attempt: number; output: RequestedOutput; canExecute: () => boolean }): Promise<OutputExecution>;
-}
+
 
 export interface StageRunEngineDeps {
   /** The board: the row of a run carries its id, its shown status and its final output. Nothing a run is decided from is read here. */
@@ -119,9 +123,10 @@ export interface StageRunEngine {
   /** Resolves with the run's first quiescent state, or with the start's refusal (error, already_running, not_found). That state may already
    * be past a gate: a decision queued before then is part of it. Gate state comes from events, not from this value. */
   start(itemId: number, a: { source: RunAuthoritySource }): Promise<WorkItemRunResult>;
-  decideGate(itemId: number, i: StageGateDecideInput, receipt?: RequestedOutputDecision): Promise<StageGateDecideResult>;
+  decideGate(itemId: number, i: StageGateDecideInput, receipt?: SecuritySettingsDecision): Promise<StageGateDecideResult>;
   decideJoin(itemId: number, i: StageJoinDecideInput): Promise<StageJoinDecideResult>;
   openJoin(itemId: number, i: Omit<StageJoinDecideInput, "decision">, open: (path: string) => Promise<boolean>): Promise<OpenJoinResult>;
+  retryOutput(itemId: number, input: StageOutputRetryInput, receipt: SecuritySettingsDecision): Promise<StageOutputRetryResult>;
   retryStage(itemId: number, i: StageRetryInput): Promise<StageRetryResult>;
   /** Start whatever is ready in a run that has no live child (after a restart). Not a retry: no attempt is used. */
   continueRun(itemId: number, i: { runId: string }): Promise<StageRetryResult>;
@@ -229,7 +234,7 @@ function staleness(record: RunRecord, held: Held): string | null {
   return run.status === (event.type === "seal_failed" ? "passed" : "running") ? null : "its stage moved on from the state it was sent from";
 }
 
-type Precheck<R extends string> = (record: RunRecord, version?: TemplateVersion) => R | null;
+type Precheck<R extends string> = (record: RunRecord) => R | null;
 type Settled = NonNullable<RunRecord["settled"]>["status"];
 /** The cause of a run's end while its row names it, by the status the run reached. */
 const ROW_END: Readonly<Record<Settled, RunEndCause>> = { completed: "completed", denied: "denied", error: "failed", cancelled: "stopped" };
@@ -284,6 +289,14 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   const notifyItemChanged = (itemId: number): void => notify(() => deps.itemChanged?.(itemId));
   const records = deps.runs;
   const runs = new Map<number, RunState>();
+  const outputApprovalSurfaces = new WeakMap<RunState, Map<string, WebContents>>();
+  const outputEffects = createRecordedOutputEffects({ records, outputs: deps.outputs, resolvePinned, resolveProjectRoot: deps.resolveProjectRoot, notifyItemChanged,
+    release: workspace.release,
+    scheduledProject: async source => {
+      const approved = (await deps.attachments.getAttachment(source.attachmentId))?.approvedScope;
+      return approved?.kind === "project" ? approved.projectRoot : approved?.kind === "all" ? undefined : null;
+    },
+  });
   let adoption: Promise<Adopted> | null = null;
   /** Run ends the run file did not confirm, by run id: until each is written, nothing starts, nothing is pruned or swept, and that run
    * is never decided. */
@@ -773,7 +786,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     try {
       written = await writeRun(state, (current) => {
         // Reduced from the run as stored now, inside the write: a field another write stored meanwhile is never lost.
-        refusal = current.settled !== undefined ? "run_mismatch" : precheck?.(current, version) ?? null;
+        refusal = current.settled !== undefined ? "run_mismatch" : precheck?.(current) ?? null;
         if (refusal !== null) return null;
         const expectedAttempt = knownAttempt ?? replay?.attempt ?? ("attempt" in event ? event.attempt : undefined);
         if ("stageId" in event && expectedAttempt !== undefined && current.stageRuns.find(run => run.stageId === event.stageId)?.attempt !== expectedAttempt) {
@@ -925,33 +938,15 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
           break;
         }
         case "execute_outputs": {
-          const { stageId, attempt } = effect;
-          const stage = record.stageRuns.find(candidate => candidate.stageId === stageId);
-          if (!stage?.requestedOutputs?.length) break;
-          const canExecute = () => runs.get(state.itemId) === state && !state.rowGone && !state.lost && !halted(state, stageId) && canShowRun(state);
-          const current = (await records.get(state.itemId, state.runId))?.stageRuns.find(candidate => candidate.stageId === stageId);
-          if (current?.status !== "passed" || current.gate?.type !== "human" || current.gate.status !== "approved"
-            || current.attempt !== attempt || !hasMatchingOutputHash(current, stage.outputHash)
-            || current.outputExecutions?.length !== stage.requestedOutputs.length
-            || !stage.requestedOutputs.every((output, index) => current.outputExecutions?.[index]?.id === output.id && current.outputExecutions[index].status === "pending")) break;
-          const outcomes: OutputExecution[] = [];
+          const stage = record.stageRuns.find(candidate => candidate.stageId === effect.stageId);
+          const definition = version.stages.find(candidate => candidate.id === effect.stageId);
+          const surface = outputApprovalSurfaces.get(state)?.get(effect.stageId);
+          if (!stage?.requestedOutputs?.length || !definition || !surface) break;
+          const canExecute = () => runs.get(state.itemId) === state && !state.rowGone && !state.lost
+            && !halted(state, effect.stageId) && canShowRun(state) && !surface.isDestroyed();
           for (const output of stage.requestedOutputs) {
-            const result: OutputExecution = !canExecute()
-              ? { id: output.id, status: "failed", detail: "output-execution-interrupted" }
-              : !deps.outputs ? { id: output.id, status: "denied", detail: "capability-unavailable" }
-                : output.decl.kind === "branch" && state.sealOutcomes.get(`${stageId}#${attempt}`) !== true
-                  ? { id: output.id, status: "failed", detail: "workspace-unavailable" }
-                  : await deps.outputs.execute({ run: state.ref, stageId, attempt, output, canExecute })
-                    .catch(() => ({ id: output.id, status: "failed", detail: "output-execution-failed" }));
-            outcomes.push({ ...result, at: new Date().toISOString() });
+            await outputEffects.execute(record, stage, definition, output, state.ref, surface, canExecute);
           }
-          // Only this decision's effect may write the outcomes. Recovery never runs it again.
-          const saved = await writeRun(state, run => ({
-            ...run,
-            stageRuns: run.stageRuns.map(candidate => candidate.stageId === stageId && candidate.attempt === attempt
-              && candidate.outputHash === stage.outputHash ? { ...candidate, outputExecutions: outcomes } : candidate),
-          }));
-          if (saved.run !== null) notifyItemChanged(state.itemId);
           break;
         }
         case "integrate": {
@@ -974,9 +969,12 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
           // The run file already says so (the write above). The row follows; a crash here is repaired from the record at boot.
           await finish(state, record, record.settled?.status ?? effect.runStatus, version, effect.runStatus === "error" ? state.faulted ?? undefined : undefined);
           break;
-        case "release_workspace":
-          await workspace.release(state.ref, effect.stageIds).catch((error: unknown) => log.warn("stage workspace release failed (id=%d): %s", state.itemId, errorMessage(error)));
+        case "release_workspace": {
+          const retained = new Set(record.stageRuns.filter(retainsOutputFiles).map(stage => stage.stageId));
+          await workspace.release(state.ref, effect.stageIds.filter(id => !retained.has(id)))
+            .catch((error: unknown) => log.warn("stage workspace release failed (id=%d): %s", state.itemId, errorMessage(error)));
           break;
+        }
       }
     }
   }
@@ -985,7 +983,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     state.stopping || state.faulted !== null || state.refused !== null || state.interruptAsked.has(stageId) || state.revoked.has(stageId);
 
   /** The only `runner.spawn` call for a template run. Throws `WorkflowInvariantError` unless every check of the plan's table holds. */
-  async function spawnStageChild(state: RunState, stageId: string, attempt: number): Promise<{ result: SubAgentSpawnResult; stage: TemplateStage; inputTaint: boolean }> {
+  async function spawnStageChild(state: RunState, stageId: string, attempt: number): Promise<{ result: SubAgentSpawnResult; requestedOutputs?: RequestedOutput[]; inputTaint: boolean }> {
     const key = `${stageId}#${attempt}`;
     if (!Number.isInteger(attempt) || attempt < 1 || attempt > MAX_STAGE_ATTEMPTS) throw new WorkflowInvariantError("attempt-out-of-range");
     if (state.stopping) throw new WorkflowInvariantError("run-stopped");
@@ -1021,7 +1019,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       };
       // Asked before anything is prepared, so a refused run prepares nothing, and again at the spawn itself (below).
       const lane = (await authorise()).lane;
-      if (stageCollectsRequestedOutputs(stage) && !deps.outputs) throw new WorkflowInvariantError("outputs-unavailable");
+      if (stageDeclaresOutputs(stage) && !deps.outputs) throw new WorkflowInvariantError("outputs-unavailable");
 
       // `Retry` starts from a fresh folder; a rerun after `Request changes` keeps the one it has.
       const revising = run.gate?.type === "human" && run.gate.status === "changes_requested";
@@ -1059,7 +1057,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       const revision = run.gate?.type === "human" && run.gate.status === "changes_requested" && run.gate.note !== undefined && run.output !== undefined
         ? { priorOutput: run.output, note: run.gate.note, ...(run.taint ? { taint: run.taint } : {}) }
         : undefined;
-      const gateSuffix = stage.gate.type === "auto" ? deps.passConditions.promptSuffix(stage.gate.pass.kind) : requestedOutputPrompt(stage);
+      const gateSuffix = stage.gate.type === "auto" ? deps.passConditions.promptSuffix(stage.gate.pass.kind) : undefined;
       const prompt = buildStagePrompt({
         item, stage, inputs: stageInputsOf(version, stage, record.stageRuns),
         ...(revision ? { revision } : {}), ...(version.setupCommands ? { setupCommands: version.setupCommands } : {}), ...(gateSuffix ? { gateSuffix } : {}),
@@ -1078,6 +1076,10 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       if ((await authorise()).lane !== lane) throw new WorkflowInvariantError("run-not-authorised", "source-not-authorised");
       if (halted(state, stageId)) throw new WorkflowInvariantError("run-stopped");
 
+      const intake = deps.outputs && stageDeclaresOutputs(stage) ? stageOutputIntake(deps.outputs, {
+        stage, workspaceRoot: stageRoot, run: state.ref,
+        repository: record.runWorkspace?.kind === "git" ? state.ref.projectRoot : undefined,
+      }) : undefined;
       let linked: string | undefined;
       let scoped = false;
       let activitySignature = "";
@@ -1095,6 +1097,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
             ...(readOnly ? { maxRounds: READ_STAGE_ROUND_BUDGET } : {}),
             ...(prompt.taint ? { hostInputTaint: prompt.taint } : {}),
             ...(lane === "unattended" ? { unattendedStage: { runKey, stageId } } : {}),
+            ...(intake ? { stageOutputTool: intake.tool } : {}),
           },
           {
             onLinked: ({ childSessionId }) => {
@@ -1135,8 +1138,9 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
             },
           },
         );
-        return { result, stage, inputTaint: prompt.taint !== undefined };
+        return { result, requestedOutputs: intake?.close(), inputTaint: prompt.taint !== undefined };
       } finally {
+        intake?.close();
         state.live.delete(stageId);
         if (linked !== undefined) {
           deps.workspaceBinding?.unbind(linked);
@@ -1161,18 +1165,16 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     let next: RunEvent | null = null;
     let faultCause: string | null = null;
     try {
-      const { result, stage, inputTaint } = await spawnStageChild(state, stageId, attempt);
+      const { result, requestedOutputs, inputTaint } = await spawnStageChild(state, stageId, attempt);
       state.results.set(stageId, result);
       // A child that reports no end origin is treated as having read files: an unknown origin never passes as clean.
       const end = result.endTrustOrigin;
       const taint: WorkItemStageRun["taint"] = end === "agent-message" ? "agent-message"
         : inputTaint || end === undefined || end === "file-content" ? "file-content" : undefined;
-      const collected = result.ok ? collectRequestedOutputs(stage, state.runId, result.summary) : null;
       next = {
         type: "stage_ended", stageId, attempt, ok: result.ok, ...(taint ? { taint } : {}),
-        ...(collected?.ok ? { output: collected.output, requestedOutputs: collected.requestedOutputs }
-          : collected ? { ok: false, failure: "requested-output-invalid" as const }
-            : { reason: result.error ?? result.summary, failure: failureOf(state, stageId, result) }),
+        ...(result.ok ? { output: result.summary.slice(0, STAGE_OUTPUT_MAX_CHARS), ...(requestedOutputs?.length && { requestedOutputs }) }
+          : { reason: result.error ?? result.summary, failure: failureOf(state, stageId, result) }),
         ...(result.stopReason === "interrupted" ? { interrupted: true } : {}),
       };
     } catch (error) {
@@ -1296,7 +1298,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       if (rowProjectRoot !== projectRoot) return refusedStart("project-mismatch");
       const version = await resolvePinned(pin);
       stepsOf(version);
-      if (!deps.outputs && version.stages.some(stageCollectsRequestedOutputs)) return refusedStart("outputs-unavailable");
+      if (!deps.outputs && version.stages.some(stageDeclaresOutputs)) return refusedStart("outputs-unavailable");
       return { projectRoot, version };
     } catch (error) {
       const fault = pinFault(error);
@@ -1321,7 +1323,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
           attachment, runProjectRoot: projectRoot, scopeAuthorised: deps.scopeAuthorised, unattendedAllowed,
         });
         if (!verdict.ok) return { ok: false, code: verdict.code, ...("tool" in verdict ? { tool: verdict.tool } : {}) } as const;
-        if (!deps.outputs && version.stages.some(stageCollectsRequestedOutputs)) {
+        if (!deps.outputs && version.stages.some(stageDeclaresOutputs)) {
           return { ok: false, code: "outputs-unavailable" } as const;
         }
         const created = await store.create({ title, templateId: pin.templateId, projectRoot });
@@ -1502,27 +1504,37 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     return state !== undefined && !state.stopping && state.refused === null && state.faulted === null;
   };
 
-  async function decideGate(itemId: number, i: StageGateDecideInput, receipt?: RequestedOutputDecision): Promise<StageGateDecideResult> {
-    const localApproval = spendRequestedOutputDecision(receipt, itemId, i);
+  async function retryOutput(itemId: number, input: StageOutputRetryInput, receipt: SecuritySettingsDecision): Promise<StageOutputRetryResult> {
+    const surface = securitySettingsGestures.redeem(receipt, {
+      channel: WORK_BOARD.retryOutput, payload: workBoardDecisionKey(WORK_BOARD.retryOutput, itemId, input),
+    }, "keyboard");
+    return surface ? outputEffects.retry(itemId, input, surface) : { ok: false, reason: "user-keyboard-required" };
+  }
+
+  async function decideGate(itemId: number, i: StageGateDecideInput, receipt?: SecuritySettingsDecision): Promise<StageGateDecideResult> {
     const event: RunEvent = { type: "gate_decided", stageId: i.stageId, attempt: i.attempt, decision: i.decision, ...(i.note !== undefined && i.note.length > 0 ? { note: i.note } : {}) };
-    const reason = await decide(itemId, i.runId, event, (record, version) => {
+    const surface = i.decision === "approve" && i.outputHash !== undefined ? securitySettingsGestures.redeem(receipt, {
+      channel: WORK_BOARD.decideStage, payload: workBoardDecisionKey(WORK_BOARD.decideStage, itemId, i),
+    }, "keyboard") : null;
+    let outputSurfaces: Map<string, WebContents> | undefined;
+    const reason = await decide(itemId, i.runId, event, (record) => {
       const run = record.stageRuns.find(candidate => candidate.stageId === i.stageId);
       if (!run) return "not_found";
       if (run.attempt !== i.attempt) return "attempt_mismatch";
       if (run.status !== "awaiting_gate" || run.gate?.type !== "human" || run.gate.status !== "pending" || !decidable(itemId)) return "not_pending";
       if (run.output === undefined || run.resultHash === undefined || resultHashOf(run.output) !== run.resultHash || i.resultHash !== run.resultHash) return "result_mismatch";
-      if (!hasMatchingOutputHash(run, i.outputHash)) return "output_mismatch";
-      if (run.requestedOutputs?.length) {
-        if (i.decision === "approve" && !localApproval) return "user-keyboard-required";
-        if (version) {
-          const stage = version.stages.find(candidate => candidate.id === i.stageId);
-          if (!stage || !requestedOutputsMatchStage(stage, record.runId, run.requestedOutputs)) return "output_mismatch";
-        }
+      if (requestedOutputHash(run) !== i.outputHash) return "output_mismatch";
+      if (run.requestedOutputs?.length && i.decision === "approve") {
+        const state = runs.get(itemId);
+        if (!surface || !state) return "user-keyboard-required";
+        outputSurfaces = outputApprovalSurfaces.get(state) ?? new Map();
+        outputApprovalSurfaces.set(state, outputSurfaces);
+        outputSurfaces.set(i.stageId, surface);
       }
       const note = noteRefusal(i);
       if (note) return note;
       return i.decision === "request_changes" && run.attempt >= MAX_STAGE_ATTEMPTS ? "attempts_exhausted" : null;
-    });
+    }).finally(() => outputSurfaces?.delete(i.stageId));
     if (reason !== null) return { ok: false, reason };
     return { ok: true, status: i.decision === "approve" ? "approved" : i.decision === "reject" ? "rejected" : "changes_requested" };
   }
@@ -1636,6 +1648,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
         continue;
       }
       if (run.settled !== undefined) {
+        if (run.stageRuns.some(retainsOutputFiles)) active.push(run.runId);
         if (item.runStatus !== run.settled.status) {
           const version = run.settled.status === "completed" ? await resolvePinned(run.pin).catch(() => null) : null;
           const output = finalOutput(run, version);
@@ -1864,7 +1877,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
           log.warn("The pinned graph could not be read for the workflow view (id=%d): %s", item.id, errorMessage(error));
           return undefined;
         });
-        clean.workflowRun = projectWorkflowRun(inspected, inspectedVersion, stage => stageSessionFacts(inspected, stage));
+        clean.workflowRun = projectWorkflowRun(inspected, inspectedVersion, stage => stageSessionFacts(inspected, stage), surface === "local-desktop" && inspected === run);
       }
       if (!run) return clean;
       clean.runPin = { ...run.pin };
@@ -1896,7 +1909,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   }
 
   return {
-    start, startScheduled, decideGate, decideJoin, openJoin, retryStage, continueRun, projectRootRevoked, steer, stop, projectRuns, readRuns, clearMissingRun, reconsider,
+    start, startScheduled, decideGate, retryOutput, decideJoin, openJoin, retryStage, continueRun, projectRootRevoked, steer, stop, projectRuns, readRuns, clearMissingRun, reconsider,
     adoptParkedRuns: async () => {
       const done = await adopted();
       if (!done.ok) log.warn("template runs not adopted at boot: %s", done.code);

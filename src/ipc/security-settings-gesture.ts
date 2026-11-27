@@ -14,6 +14,12 @@ export interface SecuritySettingsGestureProof {
   readonly receivedAt: number;
   readonly channel: string;
   readonly payloadDigest: string;
+  readonly kind: NativeInputKind;
+}
+
+export interface SecuritySettingsDecision {
+  readonly surface: WebContents;
+  readonly proof: SecuritySettingsGestureProof;
 }
 
 type NativeInputKind = "keyboard" | "pointer";
@@ -23,6 +29,8 @@ interface NativeInputReceipt {
   sequence: number;
   receivedAt: number;
   spent: boolean;
+  proof?: SecuritySettingsGestureProof;
+  redeemed?: boolean;
 }
 
 function payloadDigest(payload: unknown): string {
@@ -63,13 +71,22 @@ function createSecuritySettingsGestureTracker() {
       receipt.spent = true;
       const age = now() - receipt.receivedAt;
       if (age < 0 || age > USER_GESTURE_LIFETIME_MS) return null;
-      return Object.freeze({ sequence: receipt.sequence, receivedAt: receipt.receivedAt,
-        channel: operation.channel, payloadDigest: payloadDigest(operation.payload) });
+      receipt.proof = Object.freeze({ sequence: receipt.sequence, receivedAt: receipt.receivedAt,
+        channel: operation.channel, payloadDigest: payloadDigest(operation.payload), kind: receipt.kind });
+      return receipt.proof;
     },
     matches(contents: WebContents, proof: SecuritySettingsGestureProof, operation: SecuritySettingsOperation): boolean {
       const age = now() - proof.receivedAt;
-      return latest.get(contents)?.sequence === proof.sequence && age >= 0 && age <= USER_GESTURE_LIFETIME_MS
+      return latest.get(contents)?.proof === proof && age >= 0 && age <= USER_GESTURE_LIFETIME_MS
         && proof.channel === operation.channel && proof.payloadDigest === payloadDigest(operation.payload);
+    },
+    redeem(decision: SecuritySettingsDecision | undefined, operation: SecuritySettingsOperation, requiredKind: NativeInputKind): WebContents | null {
+      if (!decision) return null;
+      const { surface, proof } = decision;
+      const receipt = latest.get(surface);
+      if (!receipt || receipt.redeemed || proof.kind !== requiredKind || !this.matches(surface, proof, operation)) return null;
+      receipt.redeemed = true;
+      return surface;
     },
   };
 }

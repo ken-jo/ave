@@ -275,6 +275,7 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
       expect(channels.filter(c => c === WORK_BOARD[channel])).toEqual([WORK_BOARD[channel]]);
       expect(isPublicChannel(WORK_BOARD[channel])).toBe(false);
     }
+    expect(CHANNEL_GESTURE[WORK_BOARD.retryOutput]).toBe("required");
     expect(CHANNEL_GESTURE[WORK_BOARD.templateConfirm]).toBe("required");
     expect(CHANNEL_GESTURE[WORK_BOARD.templateAttachSchedule]).toBe("required");
     expect(CHANNEL_GESTURE[WORK_BOARD.templateDetachSchedule]).toBe("required");
@@ -685,6 +686,7 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:work-board:open-join",
         "ave:work-board:remove",
         "ave:work-board:reopen",
+        "ave:work-board:retry-output",
         "ave:work-board:retry-stage",
         "ave:work-board:run",
         "ave:work-board:run-briefing",

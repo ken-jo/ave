@@ -1,5 +1,5 @@
 import type { WorkPlanDecision } from "../../shared/work-board-types.js";
-import { outputHashOf, resultHashOf } from "../../shared/workflow-template-output.js";
+import { resultHashOf } from "../../shared/workflow-template-output.js";
 import type { StageJoin, TemplateGraph, WorkItemStageRun } from "../../shared/workflow-template-types.js";
 import type { JoinConflict, StageFailure } from "./shipped-shapes.js";
 import { currentStepOf, joinIdOfStep, readyStages, stepsOf } from "./stage-graph.js";
@@ -60,7 +60,7 @@ export interface RunStep {
 function rerun(run: WorkItemStageRun): void {
   run.attempt += 1;
   run.status = "waiting";
-  for (const key of ["failure", "resultHash", "outputHash", "requestedOutputs", "outputExecutions", "childSessionId", "startedAt", "endedAt", "blocked"] as const) delete run[key];
+  for (const key of ["failure", "resultHash", "requestedOutputs", "outputExecutions", "childSessionId", "startedAt", "endedAt", "blocked"] as const) delete run[key];
 }
 
 /** The whole scheduler as one pure step. It never spawns, writes or reads a clock; the engine runs the effects it returns. */
@@ -108,10 +108,7 @@ export function reduceRun(snapshot: RunSnapshot, event: RunEvent): RunStep {
         run.output ??= "";
         run.status = "awaiting_gate";
         run.resultHash = resultHashOf(run.output);
-        if (event.requestedOutputs?.length) {
-          run.requestedOutputs = event.requestedOutputs;
-          run.outputHash = outputHashOf(run.output, event.requestedOutputs);
-        }
+        if (event.requestedOutputs?.length) run.requestedOutputs = event.requestedOutputs;
         run.gate = { type: "human", status: "pending", revision: run.attempt - 1 };
       } else {
         run.output ??= "";

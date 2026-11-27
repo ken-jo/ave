@@ -31,12 +31,14 @@ import type {
   StageJoinDecideInput,
   StageJoinDecideResult,
   OpenJoinResult,
+  StageOutputRetryInput,
+  StageOutputRetryResult,
   StageRetryInput,
   StageRetryResult,
   WorkItemUpdateResult,
 } from "../shared/work-board-types.js";
 import type { EnvelopeToolRef, RunAuthoritySource } from "../shared/workflow-template-types.js";
-import type { RequestedOutputDecision } from "../work-board/workflow/requested-output-decision.js";
+import type { SecuritySettingsDecision } from "../ipc/security-settings-gesture.js";
 import { createStageRunEngine, type StageRunEngineDeps, type ScheduledTemplateSource, type ScheduledTemplateStart } from "../work-board/workflow/stage-run-engine.js";
 import {
   MAX_PLAN_NOTE_LENGTH,
@@ -197,9 +199,10 @@ export interface WorkBoardEngine {
 
   /** Template runs. The user's decision at a stage gate or on a join that could not be collected, a retry of a failed stage, and
    * continuing a run that a restart left with only ready stages. Each is refused and changes nothing unless it matches the stored run. */
-  decideStageGate(itemId: number, input: StageGateDecideInput, receipt?: RequestedOutputDecision): Promise<StageGateDecideResult>;
+  decideStageGate(itemId: number, input: StageGateDecideInput, receipt?: SecuritySettingsDecision): Promise<StageGateDecideResult>;
   decideStageJoin(itemId: number, input: StageJoinDecideInput): Promise<StageJoinDecideResult>;
   openStageJoin(itemId: number, input: Omit<StageJoinDecideInput, "decision">, open: (path: string) => Promise<boolean>): Promise<OpenJoinResult>;
+  retryOutput(itemId: number, input: StageOutputRetryInput, receipt: SecuritySettingsDecision): Promise<StageOutputRetryResult>;
   retryStage(itemId: number, input: StageRetryInput): Promise<StageRetryResult>;
   continueRun(itemId: number, input: { runId: string }): Promise<StageRetryResult>;
   /** Called beside the workspace revocation fan-out: stops every live stage child of template runs on that project. */
@@ -1071,6 +1074,7 @@ export function createWorkBoardEngine(
     decideStageGate: async (itemId, input, receipt) => { await recover(); return stageRuns?.decideGate(itemId, input, receipt) ?? { ok: false, reason: "not_found" }; },
     decideStageJoin: async (itemId, input) => { await recover(); return stageRuns?.decideJoin(itemId, input) ?? { ok: false, reason: "not_found" }; },
     openStageJoin: async (itemId, input, open) => stageRuns?.openJoin(itemId, input, open) ?? { ok: false, reason: "not_found" },
+    retryOutput: async (itemId, input, receipt) => { await recover(); return stageRuns?.retryOutput(itemId, input, receipt) ?? { ok: false, reason: "not_found" }; },
     retryStage: async (itemId, input) => { await recover(); return stageRuns?.retryStage(itemId, input) ?? { ok: false, reason: "not_found" }; },
     continueRun: async (itemId, input) => { await recover(); return stageRuns?.continueRun(itemId, input) ?? { ok: false, reason: "not_found" }; },
     projectRootRevoked: (canonicalRoot) => stageRuns?.projectRootRevoked(canonicalRoot),

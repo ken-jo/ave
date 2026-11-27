@@ -22,6 +22,7 @@ import {
 } from "./turn/guidance-limits.js";
 import { createReadToolResultChunkTool } from "../tools/tool-result-chunk.js";
 import { isUnattendedReadTool } from "../tools/base.js";
+import type { Tool } from "../tools/base.js";
 import type { ToolRegistry } from "../tools/registry.js";
 import { type MemoryManager } from "../memory/memory-manager.js";
 import { errorMessage } from "../shared/error-message.js";
@@ -219,6 +220,8 @@ export interface SubAgentSpawnInput {
   hostInputTaint?: "file-content";
   /** Host-only: marks the child as one stage of an unattended workflow run. Minted by the stage scheduler, never by a model or a renderer. */
   unattendedStage?: { runKey: string; stageId: string };
+  /** Host-only stage intake, scoped to this child and never inherited. */
+  stageOutputTool?: Tool;
 }
 
 export interface SubAgentActivityUpdate {
@@ -2331,6 +2334,7 @@ export class SubAgentRunner {
     /** The parent behind this run, when it has one that could answer for it. `null` leaves the child's approvals on the path they took before tier 2 existed: straight to the user. */
     approvalProvenance: SubAgentApprovalProvenance | null;
     unattendedStage?: boolean;
+    stageOutputTool?: Tool;
   }): {
     childDeps: ConversationLoopDeps;
     grantedScope: PersistedSubAgentToolScope;
@@ -2358,6 +2362,7 @@ export class SubAgentRunner {
         return tool !== undefined && isUnattendedReadTool(tool);
       })
       : baseToolNames);
+    if (args.stageOutputTool) scopedRegistry.register(args.stageOutputTool);
     const recoveryTool = createReadToolResultChunkTool();
     if (scopedRegistry.size > 0 && !scopedRegistry.findByName(recoveryTool.name)
       && (!args.unattendedStage || isUnattendedReadTool(recoveryTool))) scopedRegistry.register(recoveryTool);
@@ -2698,6 +2703,7 @@ export class SubAgentRunner {
           profileModel: input.profileModel,
           includeAgentSend: true,
           unattendedStage: input.unattendedStage !== undefined,
+          stageOutputTool: input.stageOutputTool,
           approvalProvenance: buildSubAgentApprovalProvenance({
             childSessionId,
             originSessionId: input.originSessionId,

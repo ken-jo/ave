@@ -7,7 +7,8 @@ import type { WorkflowTemplateStore } from "../../main/workflow-template-store.j
 import { boardRunState } from "../../work-board/workflow/run-state.js";
 import type { RemovedRunProject } from "../../work-board/workflow/stage-workspace.js";
 import { createStageWorkspaceProvider } from "../../work-board/workflow/stage-workspaces.js";
-import { createRequestedOutputExecutor } from "../../work-board/workflow/requested-output-executor.js";
+import { createRequestedOutputHooks, type GovernedOutputCall } from "../../work-board/workflow/requested-outputs.js";
+import { createHostGit } from "../../work-board/workflow/host-git.js";
 import { bindStageWorkspace, unbindStageWorkspace } from "../../permissions/stage-workspace-binding.js";
 import type { PermissionManager } from "../../permissions/permission-manager.js";
 import { createRunScopeHooks } from "../../permissions/run-scope.js";
@@ -26,7 +27,7 @@ type WorkflowEngineExtensions = Pick<
  * is the board store's covered run file. Every stage works in its own folder under the home's `worktrees`, bound to its session, and with
  * no lane only an all-read-only version may run unattended. A run's "Allow for this run" grants and its stage sessions' reviewer
  * breakers are held by the permission manager and end as the run tells it. */
-export function workflowEngineExtensions(store: WorkBoardStore, attachments: Pick<WorkflowTemplateStore, "getAttachment">, permissionManager: PermissionManager): WorkflowEngineExtensions {
+export function workflowEngineExtensions(store: WorkBoardStore, attachments: Pick<WorkflowTemplateStore, "getAttachment">, permissionManager: PermissionManager, invokeOutput: GovernedOutputCall): WorkflowEngineExtensions {
   // A run's output folder lives as long as its item. A record can go while its row is still listed (a later run superseded it and the
   // row's history let it go): that run's output stays until the row goes. A board that cannot be read removes nothing.
   const workspace = createStageWorkspaceProvider({ removable: () => store.runsWithoutItem() });
@@ -97,7 +98,7 @@ export function workflowEngineExtensions(store: WorkBoardStore, attachments: Pic
   return {
     runs: boardRunState(store),
     workspace,
-    outputs: { execute: createRequestedOutputExecutor(workspace.keepOutputBranch) },
+    outputs: createRequestedOutputHooks(createHostGit(), invokeOutput),
     workspaceBinding: { bind: bindStageWorkspace, unbind: unbindStageWorkspace },
     authoriseRunSource,
     passConditions: createPassConditionRegistry(),
