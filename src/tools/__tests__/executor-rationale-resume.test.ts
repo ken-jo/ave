@@ -1,9 +1,8 @@
-import { permissionLogCorrelationId } from "../../lib/permission-log.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { watchPermissionEvents } from "../../__tests__/support/permission-events.js";
+import { trackInvocationCorrelations, watchPermissionEvents } from "../../__tests__/support/permission-events.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
 import { HookRunner } from "../../hooks/hook-runner.js";
@@ -45,6 +44,8 @@ import {
   type RationaleResumeExecuteOptions,
 } from "../executor.js";
 import { ToolRegistry } from "../registry.js";
+
+const invocationCorrelationId = trackInvocationCorrelations();
 
 const permissionContext = {
   trustOrigin: "llm-tool-arg" as const,
@@ -313,7 +314,7 @@ async function fixture() {
   };
   const terminalEvents: Record<string, unknown>[] = [];
   const log = watchPermissionEvents((event) => {
-    if (event.event === "permission_decision" && event.correlationId === permissionLogCorrelationId("sealed-use") && event.decision !== "ask") {
+    if (event.event === "permission_decision" && event.correlationId === invocationCorrelationId("sealed-use") && event.decision !== "ask") {
       terminalEvents.push(event);
       order.push("terminal-log");
     }

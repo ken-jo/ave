@@ -9,7 +9,7 @@ import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { watchPermissionEvents } from "../../__tests__/support/permission-events.js";
+import { captureInvocationCorrelations, watchPermissionEvents } from "../../__tests__/support/permission-events.js";
 import { makeMockWebContents } from "../../__tests__/test-helpers.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { ApprovalGate, IPC_APPROVAL_REQUEST } from "../../permissions/approval-gate.js";
@@ -92,9 +92,9 @@ describe("shutdown invocation settlement", () => {
     });
     gate = new Gate(wc as never);
     const observed: Record<string, unknown>[] = [];
-    const { permissionLogCorrelationId } = await import("../../lib/permission-log.js");
+    const { get: invocationCorrelationId } = await captureInvocationCorrelations();
     watchPermissionEvents((event) => {
-      if (event.event !== "permission_decision" || event.correlationId !== permissionLogCorrelationId("shutdown-write-probe")) return;
+      if (event.event !== "permission_decision" || event.correlationId !== invocationCorrelationId("shutdown-write-probe")) return;
       observed.push(event);
       if (brokenLog && event.decision === "deny") throw new Error("log sink unavailable");
     });

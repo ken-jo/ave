@@ -11,6 +11,7 @@ import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { watchPermissionEvents } from "../../__tests__/support/permission-events.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { RULE_PROVENANCE } from "../../permissions/decision-provenance.js";
+import { admitToolInvocation } from "../invocation-ledger.js";
 import { AuditWriter } from "../pipeline/audit-writer.js";
 import { ToolExecutor } from "../executor.js";
 import { ToolRegistry } from "../registry.js";
@@ -65,16 +66,37 @@ it("logs one decision per attempt without recording nested arguments, output, or
   expect(JSON.stringify(records)).not.toContain(CANARY);
 });
 
+it("assigns distinct correlation IDs to separate admissions with the same provider ID", async () => {
+  const { executor } = fixture();
+  const records: Record<string, unknown>[] = [];
+  watchPermissionEvents((event) => {
+    if (event.event === "permission_decision") records.push(event);
+  });
+  const toolUse = { id: OPAQUE_PROVIDER_ID, name: "allowed_tool", input: {} };
+  for (let i = 0; i < 2; i += 1) {
+    const [result] = await executor.executeAll([toolUse], opts);
+    expect(result.tool_use_id).toBe(OPAQUE_PROVIDER_ID);
+  }
+
+  expect(records).toHaveLength(2);
+  expect(records[0].correlationId).toBeTruthy();
+  expect(records[1].correlationId).toBeTruthy();
+  expect(records[0].correlationId).not.toBe(records[1].correlationId);
+  expect(JSON.stringify(records)).not.toContain(OPAQUE_PROVIDER_ID);
+});
+
 it("correlates an ask without recording its rule pattern", async () => {
   const observed = vi.fn();
   watchPermissionEvents(observed);
+  const admission = admitToolInvocation("allowed_tool");
   await new AuditWriter(undefined).auditPermissionAsk(
     "allowed_tool", "builtin", "read", {},
     { decision: "ask", reasonCode: "rule-ask", reason: CANARY, provenance: RULE_PROVENANCE },
-    "", opts.permissionContext, undefined, { toolUseId: "ask-1", attempt: 2 }, opts.sessionId,
+    "", opts.permissionContext, undefined, { toolUseId: "ask-1", correlationId: admission.terminal.correlationId, attempt: 2 }, opts.sessionId,
   );
+  admission.settle();
   expect(observed).toHaveBeenCalledWith(expect.objectContaining({
-    decision: "ask", reasonCode: "rule-ask", sessionId: "permission-session", correlationId: expect.stringMatching(/^[a-f0-9]{32}$/), attempt: 2,
+    decision: "ask", reasonCode: "rule-ask", sessionId: "permission-session", correlationId: admission.terminal.correlationId, attempt: 2,
   }));
   expect(JSON.stringify(observed.mock.calls)).not.toContain(CANARY);
 });

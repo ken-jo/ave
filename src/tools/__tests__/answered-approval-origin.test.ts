@@ -1,5 +1,4 @@
-import { permissionLogCorrelationId } from "../../lib/permission-log.js";
-import { collectPermissionEvents } from "../../__tests__/support/permission-events.js";
+import { trackInvocationCorrelations, collectPermissionEvents } from "../../__tests__/support/permission-events.js";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
@@ -21,6 +20,8 @@ import { AuditWriter } from "../pipeline/audit-writer.js";
 import { HOST_PROVENANCE, RULE_PROVENANCE } from "../../permissions/decision-provenance.js";
 import type { PermissionCheckResult } from "../../permissions/permission-manager.js";
 import type { TerminalRowWriter } from "../invocation-ledger.js";
+
+const invocationCorrelationId = trackInvocationCorrelations();
 
 const sessionRegistration = vi.hoisted(() => ({ error: undefined as string | undefined }));
 vi.mock("../../permissions/permission-slash.js", async importOriginal => {
@@ -67,7 +68,7 @@ async function auditRows(): Promise<Array<Record<string, unknown>>> {
 }
 
 async function ledger(toolUseId: string): Promise<Array<Record<string, unknown>>> {
-  return (await auditRows()).filter(row => row.correlationId === permissionLogCorrelationId(toolUseId) && row.decision !== "ask");
+  return (await auditRows()).filter(row => row.correlationId === invocationCorrelationId(toolUseId) && row.decision !== "ask");
 }
 
 describe("plugin-emitted invocations answered at the desk", () => {
@@ -80,7 +81,7 @@ describe("plugin-emitted invocations answered at the desk", () => {
     });
     expect(result.is_error, result.content).not.toBe(true);
     expect(requestAndWait).toHaveBeenCalledOnce();
-    expect((await auditRows()).filter(row => row.correlationId === permissionLogCorrelationId("plugin-tool-write") && row.decision === "allow"))
+    expect((await auditRows()).filter(row => row.correlationId === invocationCorrelationId("plugin-tool-write") && row.decision === "allow"))
       .toEqual([expect.objectContaining({ trustOrigin: "user-keyboard" })]);
   });
 
@@ -115,7 +116,7 @@ describe("plugin-emitted invocations answered at the desk", () => {
     });
     expect(result.is_error, result.content).not.toBe(true);
     expect(requestAndWait.mock.calls.map(([request]) => request.kind)).toContain("out-of-allowed-dir");
-    const rows = (await auditRows()).filter(row => row.correlationId === permissionLogCorrelationId("plugin-dir-write") && row.decision === "allow");
+    const rows = (await auditRows()).filter(row => row.correlationId === invocationCorrelationId("plugin-dir-write") && row.decision === "allow");
     expect(rows.find(row => row.grantLifetime === "session")).toMatchObject({ trustOrigin: "user-keyboard" });
     expect(rows.filter(row => row.grantLifetime === undefined)).toEqual([expect.objectContaining({ trustOrigin: "user-keyboard" })]);
   });
@@ -202,7 +203,7 @@ describe("the answerer contract", () => {
       permissionContext: { trustOrigin: "plugin-emitted", additionalDirectories: [project] },
     })).rejects.toThrow(reason);
     await expect(readFile(join(project, "substituted.txt"))).rejects.toThrow();
-    await vi.waitFor(async () => expect((await auditRows()).filter(row => row.correlationId === permissionLogCorrelationId("plugin-substituted-write") && row.decision !== "ask"))
+    await vi.waitFor(async () => expect((await auditRows()).filter(row => row.correlationId === invocationCorrelationId("plugin-substituted-write") && row.decision !== "ask"))
       .toEqual([expect.objectContaining({ decision: "deny", trustOrigin: "unknown", terminalKind: "denied",
       })]));
   });
@@ -222,7 +223,7 @@ describe("the answerer contract", () => {
       .rejects.toThrow("does not settle this allow of write_file");
     await vi.waitFor(() => expect(admission.terminal.state).toBe("failed"));
     admission.settle(new Error("does not settle this allow of write_file"));
-    expect((await auditRows()).filter(row => row.correlationId === permissionLogCorrelationId("integrity-call"))).toEqual([expect.objectContaining({
+    expect((await auditRows()).filter(row => row.correlationId === admission.terminal.correlationId)).toEqual([expect.objectContaining({
       decision: "deny", trustOrigin: "unknown",
     })]);
   });
@@ -258,7 +259,7 @@ describe("the answerer contract", () => {
       permissionContext: { trustOrigin: "plugin-emitted", additionalDirectories: [project], onTurnDirectoryGrant, onSessionDirectoryGrant },
     }).catch(() => undefined);
     expect(requestAndWait.mock.calls.map(([request]) => request.kind)).toEqual(["out-of-allowed-dir"]);
-    await vi.waitFor(async () => expect((await auditRows()).filter(row => row.correlationId === permissionLogCorrelationId("foreign-directory") && row.decision !== "ask")).toEqual([expect.objectContaining({
+    await vi.waitFor(async () => expect((await auditRows()).filter(row => row.correlationId === invocationCorrelationId("foreign-directory") && row.decision !== "ask")).toEqual([expect.objectContaining({
       decision: "deny", trustOrigin: "unknown",
     })]));
     expect(existsSync(join(outside, "foreign.txt"))).toBe(false);

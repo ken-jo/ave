@@ -1,5 +1,4 @@
-import { permissionLogCorrelationId } from "../../lib/permission-log.js";
-import { collectPermissionEvents } from "../../__tests__/support/permission-events.js";
+import { trackInvocationCorrelations, collectPermissionEvents } from "../../__tests__/support/permission-events.js";
 import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi, onTestFinished } from "vitest";
@@ -19,6 +18,8 @@ import { createDynamicTool } from "../base.js";
 import { ToolExecutor } from "../executor.js";
 import { ToolRegistry } from "../registry.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
+
+const invocationCorrelationId = trackInvocationCorrelations();
 
 const resources = new PermissionTestResources();
 const cleanup: Array<() => Promise<void>> = [];
@@ -141,7 +142,7 @@ describe("executor denial history and manual rerun", () => {
     expect(existsSync(target)).toBe(false);
     expect(save).not.toHaveBeenCalled();
     const terminal = capture.events.filter((event) => event.event === "permission_decision" &&
-      event.correlationId === permissionLogCorrelationId("caught-effect-recheck") && event.decision !== "ask");
+      event.correlationId === invocationCorrelationId("caught-effect-recheck") && event.decision !== "ask");
     const terminalReason = personDenied ? "the user denied the effect approval" : reason;
     expect(terminal).toEqual([expect.objectContaining({ decision: "deny", trustOrigin: personDenied ? "user-keyboard" : trustOrigin, })]);
     expect(result).toMatchObject({ content: terminalReason, is_error: true });

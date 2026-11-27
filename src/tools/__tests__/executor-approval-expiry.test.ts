@@ -1,5 +1,4 @@
-import { permissionLogCorrelationId } from "../../lib/permission-log.js";
-import { collectPermissionEvents } from "../../__tests__/support/permission-events.js";
+import { trackInvocationCorrelations, collectPermissionEvents } from "../../__tests__/support/permission-events.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -19,6 +18,8 @@ import { ToolExecutor } from "../executor.js";
 import { ToolRegistry } from "../registry.js";
 import { makeWriteProbeTool } from "./approval-memory-test-fixtures.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
+
+const invocationCorrelationId = trackInvocationCorrelations();
 
 describe("tool approval expiration attribution", () => {
   let root: string;
@@ -84,7 +85,7 @@ describe("tool approval expiration attribution", () => {
   }
 
   function permissions() {
-    return logs.events.filter((event) => event.event === "permission_decision" && event.correlationId === permissionLogCorrelationId("approval-expiry-call"));
+    return logs.events.filter((event) => event.event === "permission_decision" && event.correlationId === invocationCorrelationId("approval-expiry-call"));
   }
 
   it.each([
@@ -210,6 +211,13 @@ describe("tool approval expiration attribution", () => {
     const [result] = await run.result;
     expect(result.is_error).toBe(true);
     expect(result.content).toMatch(/cancel/i);
+    expect(result.tool_use_id).toBe("approval-expiry-call");
+    const decisions = logs.events.filter((entry) => entry.event === "permission_decision" && entry.tool === "write_probe");
+    expect(decisions).toEqual([
+      expect.objectContaining({ decision: "ask", correlationId: expect.stringMatching(/^[a-f0-9]{32}$/) }),
+      expect.objectContaining({ decision: "deny", terminalKind: "cancelled", correlationId: decisions[0]?.correlationId }),
+    ]);
+    expect(JSON.stringify(decisions)).not.toContain(result.tool_use_id);
     expect(result.content).not.toContain("Approval expired");
     expect(run.execute).not.toHaveBeenCalled();
     expect(gate?.pendingCount).toBe(0);

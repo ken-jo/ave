@@ -1,4 +1,3 @@
-import { permissionLogCorrelationId } from "../../lib/permission-log.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -16,7 +15,9 @@ import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
 import type { ApprovalGate } from "../../permissions/approval-gate.js";
 import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
-import { collectPermissionEvents, watchPermissionEvents } from "../../__tests__/support/permission-events.js";
+import { trackInvocationCorrelations, collectPermissionEvents, watchPermissionEvents } from "../../__tests__/support/permission-events.js";
+
+const invocationCorrelationId = trackInvocationCorrelations();
 
 const COMMAND = resolve(__dirname, "../../../test/fixtures/hooks/influence-command.cjs");
 const roots: string[] = [];
@@ -92,7 +93,7 @@ describe("hook replacement permission reentry", () => {
       const [result] = await probe.run();
       expect(result).toMatchObject({ is_error: true, content: expect.stringContaining("could not safely restart") });
 
-      expect(capture.events.filter((event) => event.event === "permission_decision" && event.correlationId === permissionLogCorrelationId("mutated-call") && event.decision !== "ask")).toEqual([
+      expect(capture.events.filter((event) => event.event === "permission_decision" && event.correlationId === invocationCorrelationId("mutated-call") && event.decision !== "ask")).toEqual([
         expect.objectContaining({ event: "permission_decision", decision: "deny", terminalKind: "denied" }),
       ]);
       expect(lifecycle.mock.calls.filter(([event]) => event === "PermissionDenied")).toEqual([["PermissionDenied", "mutation-session", "user-keyboard",

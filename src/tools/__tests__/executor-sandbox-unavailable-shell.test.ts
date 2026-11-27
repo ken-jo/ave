@@ -1,4 +1,3 @@
-import { permissionLogCorrelationId } from "../../lib/permission-log.js";
 // A requested OS sandbox that could not start leaves host shells to a human ask on every platform: once, or for this session; never saved.
 // One saved rule passes that ask: a rule that is exactly the command, while boot verified Ave home privacy (tree T:151, T:232).
 vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
@@ -42,7 +41,9 @@ import { t } from "../../i18n/runtime.js";
 import { userPermissionContext as permissionContext } from "./tool-context-fixture.js";
 import { cardGate, defined, probe, sessionGate } from "../../__tests__/support/forced-shell-card.js";
 import { _resetAveHomePrivacyForTest, setAveHomePrivacyAtBoot } from "../../shared/ave-home.js";
-import { collectPermissionEvents } from "../../__tests__/support/permission-events.js";
+import { trackInvocationCorrelations, collectPermissionEvents } from "../../__tests__/support/permission-events.js";
+
+const invocationCorrelationId = trackInvocationCorrelations();
 
 const ORIGINAL_PLATFORM = process.platform;
 let testRoot: string;
@@ -219,7 +220,7 @@ describe.each(PLATFORMS)("host shells when the requested sandbox is unavailable 
     const ctx = defined(execute.mock.calls[0], "execute call")[0] as ToolExecutionContext;
     expect(ctx.hostShellExecutionPermit).toBeDefined();
     expect(ctx.hostShellExecutionPlan).toMatchObject({ mode: "plain", sandboxed: false, substrate: "none", executionRequest: host ? "host" : "default", requiresExplicitUserApproval: true });
-    expect(capture.events).toContainEqual(expect.objectContaining({ event: "permission_decision", correlationId: permissionLogCorrelationId("exact-rule-1"), decision: "allow", provenance: "rule" }));
+    expect(capture.events).toContainEqual(expect.objectContaining({ event: "permission_decision", correlationId: invocationCorrelationId("exact-rule-1"), decision: "allow", provenance: "rule" }));
     expect(JSON.stringify(capture.events)).not.toContain(exactRule(dialect));
     // No grant was written and none is held: the rule file is unchanged, and a command the rule does not name asks.
     expect(existsSync(rulesFile("default")) ? readFileSync(rulesFile("default"), "utf8") : undefined).toBe(rulesBefore);

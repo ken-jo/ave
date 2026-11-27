@@ -80,6 +80,7 @@ interface PermissionDecisionFields {
 
 /** Host-owned correlation metadata must never carry renderer data or approval material. */
 export interface ToolExecutionAuditMetadata {
+  readonly correlationId?: string;
   readonly toolUseId?: string;
   readonly attempt?: number;
   readonly executionPlan?: HostShellExecutionPlanAuditProjection;

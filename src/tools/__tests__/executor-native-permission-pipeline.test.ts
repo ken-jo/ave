@@ -1,5 +1,4 @@
-import { permissionLogCorrelationId } from "../../lib/permission-log.js";
-import { collectPermissionEvents } from "../../__tests__/support/permission-events.js";
+import { trackInvocationCorrelations, collectPermissionEvents } from "../../__tests__/support/permission-events.js";
 import { useConfigurationOwner } from "../../__tests__/support/configuration-owner.js";
 useConfigurationOwner();
 import { HookRunner } from "../../hooks/hook-runner.js";
@@ -42,6 +41,8 @@ import { preparedShellFacts } from "../prepared-shell-invocation.js";
 import { approvalIdentityFor } from "../pipeline/display-mask.js";
 import { ToolRegistry } from "../registry.js";
 import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
+
+const invocationCorrelationId = trackInvocationCorrelations();
 
 // win32 yields separator-folded canonicals ("c:/users/..."); compare against the same fold, never the raw backslash spelling.
 const directoryIdentity = (path: string | undefined): string | undefined =>
@@ -155,7 +156,7 @@ describe("native invocation permission evidence", () => {
     expect.soft(result.is_error).toBe(true);
     if (order === "stop-before-scope") expect.soft(result.content).not.toContain("project-scope-changed");
     else expect.soft(result.content).toContain("project-scope-changed");
-    const terminal = logs.events.findLast((row) => row.event === "permission_decision" && row.correlationId === permissionLogCorrelationId("cancelled-folder"));
+    const terminal = logs.events.findLast((row) => row.event === "permission_decision" && row.correlationId === invocationCorrelationId("cancelled-folder"));
     expect(terminal).toMatchObject({ decision: "deny", terminalKind: "cancelled", trustOrigin: order === "stop-before-scope" ? "user-keyboard" : "unknown" });
     expect(grant).not.toHaveBeenCalled();
     expect(execute).not.toHaveBeenCalled();
@@ -966,7 +967,7 @@ describe("native invocation permission evidence", () => {
     expect(outcome.outcome).toBe("rationale-required");
     turn.abort();
     const rows = async () => logs.events
-      .filter((row) => row.correlationId === permissionLogCorrelationId("outside-stop") && row.decision !== "ask");
+      .filter((row) => row.correlationId === invocationCorrelationId("outside-stop") && row.decision !== "ask");
     await vi.waitFor(async () => expect(await rows()).toHaveLength(1));
     await new Promise<void>((done) => setImmediate(done));
     expect(await rows()).toEqual([expect.objectContaining({ decision: "deny", terminalKind: "cancelled" })]);
@@ -998,7 +999,7 @@ describe("native invocation permission evidence", () => {
     expect(turn.signal.aborted).toBe(false);
     expect(coordinator.signal.aborted).toBe(true);
     const rows = logs.events
-      .filter((row) => row.correlationId === permissionLogCorrelationId("coordinator-stop") && row.decision !== "ask");
+      .filter((row) => row.correlationId === invocationCorrelationId("coordinator-stop") && row.decision !== "ask");
     expect(rows).toEqual([expect.objectContaining({ decision: "deny", terminalKind: "cancelled" })]);
     expect(lifecycle.mock.calls.filter(([event]) => event === "PermissionDenied")).toEqual([]);
   });
@@ -1080,7 +1081,7 @@ describe("native invocation permission evidence", () => {
       }
     }
     const readRows = async () => logs.events
-      .filter((row) => row.correlationId === permissionLogCorrelationId("rationale-history") && row.decision !== "ask");
+      .filter((row) => row.correlationId === invocationCorrelationId("rationale-history") && row.decision !== "ask");
     await vi.waitFor(async () => expect(await readRows()).toHaveLength(1));
 
     const rows = await readRows();

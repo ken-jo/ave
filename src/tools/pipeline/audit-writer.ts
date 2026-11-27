@@ -1,4 +1,4 @@
-import { logPermissionEvent, permissionLogCorrelationId, permissionLogId } from "../../lib/permission-log.js";
+import { logPermissionEvent, permissionLogId } from "../../lib/permission-log.js";
 import type { KindedTerminalRowWriter, TerminalDenial, TerminalLifecycleEvent } from "../invocation-ledger.js";
 import type { ToolAuditTerminationReason } from "../executor-contract.js";
 // Tool terminal rows go through auditToolCall with a row writer only the ledger hands out and the kind its writer named;
@@ -113,7 +113,7 @@ export class AuditWriter {
     if (args.provenance.kind === "answered") answeredRecordForAction(args.provenance, "allow", args.toolName, args.audit?.toolUseId);
     logPermissionEvent("permission_directory_grant", {
       tool: permissionLogId(args.toolName), source: args.source, category: args.category, decision: "allow",
-      correlationId: permissionLogCorrelationId(args.audit?.toolUseId), grantLifetime: args.grantLifetime,
+      correlationId: args.audit?.correlationId, grantLifetime: args.grantLifetime,
       policyRule: permissionLogId(args.policyRule),
       trustOrigin: provenanceTrustOrigin(args.provenance, "allow", auditTrustOrigin(args.permissionContext)),
     });
@@ -132,7 +132,7 @@ export class AuditWriter {
     sessionId?: string,
   ): Promise<void> {
     logPermissionEvent("permission_decision", {
-      tool: permissionLogId(toolName), correlationId: permissionLogCorrelationId(audit?.toolUseId),
+      tool: permissionLogId(toolName), correlationId: audit?.correlationId,
       sessionId: permissionLogId(sessionId ?? permission.pipelineRequest?.sessionId),
       requestId: permissionLogId(permission.reviewer?.requestId),
       attempt: audit?.attempt ?? 1, source, category, decision: "ask",

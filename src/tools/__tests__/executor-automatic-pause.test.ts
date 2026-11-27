@@ -1,5 +1,4 @@
-import { permissionLogCorrelationId } from "../../lib/permission-log.js";
-import { collectPermissionEvents } from "../../__tests__/support/permission-events.js";
+import { trackInvocationCorrelations, collectPermissionEvents } from "../../__tests__/support/permission-events.js";
 import { InMemoryHostInvocationStartCasStore } from "../pipeline/rationale-ticket-lifecycle.js";
 import { registerRunSession, __resetRunGrantsForTest } from "../../permissions/run-grants.js";
 import { randomUUID } from "node:crypto";
@@ -39,6 +38,8 @@ import { ToolRegistry } from "../registry.js";
 import { makeWriteProbeTool } from "./approval-memory-test-fixtures.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
 
+const invocationCorrelationId = trackInvocationCorrelations();
+
 withSourceHostResources();
 
 const SESSION_ID = "automatic-pause-session";
@@ -63,7 +64,7 @@ function projectedDecisions() {
 }
 
 function decisions(toolUseId?: string) {
-  return logs.events.filter((entry) => entry.event === "permission_decision" && (toolUseId === undefined || entry.correlationId === permissionLogCorrelationId(toolUseId)));
+  return logs.events.filter((entry) => entry.event === "permission_decision" && (toolUseId === undefined || entry.correlationId === invocationCorrelationId(toolUseId)));
 }
 
 afterEach(async () => {

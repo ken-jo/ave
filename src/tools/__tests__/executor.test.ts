@@ -1,6 +1,5 @@
-import { permissionLogCorrelationId } from "../../lib/permission-log.js";
 import * as decisionProjection from "../pipeline/audit-entries.js";
-import { collectPermissionEvents } from "../../__tests__/support/permission-events.js";
+import { trackInvocationCorrelations, collectPermissionEvents } from "../../__tests__/support/permission-events.js";
 import * as persistenceGuards from "../../permissions/approval-persistence-guard.js";
 import type { ApprovalPersistenceGuard } from "../../permissions/approval-persistence-guard.js";
 import { RULE_PROVENANCE } from "../../permissions/decision-provenance.js";
@@ -75,6 +74,8 @@ import { getHostShellExecutionPlanAuditProjection } from "../../permissions/host
 import { makeMockWebContents, sentApprovalCards } from "../../__tests__/test-helpers.js";
 import { approvalCacheKeyFor } from "../pipeline/display-mask.js";
 import { answeredApprovalDecision, answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
+
+const invocationCorrelationId = trackInvocationCorrelations();
 
 withSourceHostResources();
 
@@ -4399,7 +4400,7 @@ describe("ToolExecutor — script hook denial surfaces in audit hookChain (#811 
       expect(executeSpy).not.toHaveBeenCalled();
       expect(scriptHookManager.runPreToolUse).toHaveBeenCalledOnce();
 
-      expect(capture.events).toContainEqual(expect.objectContaining({ event: "permission_decision", decision: "deny", correlationId: permissionLogCorrelationId("tu-hookchain") }));
+      expect(capture.events).toContainEqual(expect.objectContaining({ event: "permission_decision", decision: "deny", correlationId: invocationCorrelationId("tu-hookchain") }));
       const denyEntry = projected.mock.results.map((record) => record.value).find((entry) => entry.decision === "deny");
       expect(denyEntry).toBeDefined();
       expect(denyEntry?.hookChain).toBeDefined();

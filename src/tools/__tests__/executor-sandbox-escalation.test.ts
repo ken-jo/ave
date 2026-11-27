@@ -1,4 +1,3 @@
-import { permissionLogCorrelationId } from "../../lib/permission-log.js";
 import { collectPermissionEvents } from "../../__tests__/support/permission-events.js";
 import { lstat, readFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
@@ -148,10 +147,11 @@ it("re-enters normal permission policy before one exact host retry and retains t
   expect(check.mock.results.some((result) => result.type === "return" && result.value.decision === "ask" && result.value.forceModal !== true)).toBe(true);
   const hostId = calls[1]!.context.metadata.toolUseId;
   expect(hostId).not.toBe("original-sandbox-call");
-  // The retry is attempt 2 with its own terminal row; the first attempt's rows carry no attempt.
-  const terminal = (id: string) => capture.events.filter((entry) => entry.event === "permission_decision" && entry.correlationId === permissionLogCorrelationId(id) && entry.decision !== "ask");
-  expect(terminal(String(hostId)).map((entry) => [entry.decision, entry.attempt])).toEqual([["allow", 2]]);
-  expect(terminal("original-sandbox-call").map((entry) => entry.attempt)).toEqual([1]);
+  const terminal = capture.events.filter((entry) => entry.event === "permission_decision" && entry.tool === "bash" && entry.decision !== "ask");
+  expect(terminal.map((entry) => entry.attempt)).toEqual([1, 2]);
+  expect(terminal[0].correlationId).toMatch(/^[a-f0-9]{32}$/);
+  expect(terminal[1]).toMatchObject({ decision: "allow", correlationId: terminal[0].correlationId });
+  expect(JSON.stringify(terminal)).not.toContain(String(hostId));
 });
 
 it("denies a headless host escalation without a second native effect", async () => {

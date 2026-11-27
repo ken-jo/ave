@@ -1,5 +1,4 @@
-import { permissionLogCorrelationId } from "../../lib/permission-log.js";
-import { collectPermissionEvents } from "../../__tests__/support/permission-events.js";
+import { trackInvocationCorrelations, collectPermissionEvents } from "../../__tests__/support/permission-events.js";
 import { reviewerJudgeOutcomeForTest } from "../../__tests__/support/reviewer-judge.js";
 import { lstatSync, mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -17,6 +16,8 @@ import { ToolExecutor } from "../executor.js";
 import { ToolRegistry } from "../registry.js";
 import { BashTool } from "../shell-tools.js";
 import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
+
+const invocationCorrelationId = trackInvocationCorrelations();
 
 const localSpawn = vi.hoisted(() => vi.fn(() => {
   throw new Error("local spawn forbidden in broker route test");
@@ -207,7 +208,7 @@ describe("executor broker shell route", () => {
     expect(permissionCheck.mock.calls[0]?.[4]?.guestCwd).toBe(expectedCwd);
     expect(permissionCheck.mock.calls[0]?.[4]?.fileWritePolicy).toBeUndefined();
     expect(logs.events).toContainEqual(expect.objectContaining({
-      event: "permission_decision", correlationId: permissionLogCorrelationId("tu-broker-guest-shell"), sandboxRoute: "disposable-container",
+      event: "permission_decision", correlationId: invocationCorrelationId("tu-broker-guest-shell"), sandboxRoute: "disposable-container",
     }));
   });
 

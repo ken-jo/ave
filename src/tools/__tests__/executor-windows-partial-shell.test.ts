@@ -1,5 +1,4 @@
-import { collectPermissionEvents } from "../../__tests__/support/permission-events.js";
-import { permissionLogCorrelationId } from "../../lib/permission-log.js";
+import { trackInvocationCorrelations, collectPermissionEvents } from "../../__tests__/support/permission-events.js";
 vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
 vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
 vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
@@ -74,6 +73,8 @@ import { userPermissionContext as permissionContext } from "./tool-context-fixtu
 import { sentApprovalCards } from "../../__tests__/test-helpers.js";
 import { makeSubAgentApprovalAdapter } from "../../engine/subagent-runner.js";
 import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
+
+const invocationCorrelationId = trackInvocationCorrelations();
 
 withSourceHostResources();
 
@@ -299,7 +300,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     expect(second.map((entry) => entry.is_error)).toEqual(competing ? [undefined] : []);
     expect(execute).toHaveBeenCalledTimes(competing ? 2 : 1);
     const rows = (id: string) => capture.events.filter((entry) =>
-      entry.correlationId === permissionLogCorrelationId(id) && entry.decision !== "ask");
+      entry.correlationId === invocationCorrelationId(id) && entry.decision !== "ask");
     expect(rows("card-rule")).toEqual([expect.objectContaining({ decision: "allow", trustOrigin: "user-keyboard" })]);
     if (competing) {
       expect(rows("competing-card-rule")).toEqual([expect.objectContaining({ decision: "allow", trustOrigin: "user-keyboard" })]);
@@ -742,7 +743,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     const terminal = capture.events.find((entry) => entry.event === "permission_decision" && entry.decision === "allow");
     for (const surface of [ask, terminal]) {
       expect(surface).toBeDefined();
-      expect(surface?.correlationId).toBe(permissionLogCorrelationId("partial-shell-allow"));
+      expect(surface?.correlationId).toBe(invocationCorrelationId("partial-shell-allow"));
       expect(surface?.sandboxRoute).toBe("host");
     }
     const approvalAuditText = JSON.stringify(capture.events);
@@ -795,7 +796,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     expect(deniedResultPlanJson).not.toContain("hostShellExecutionPermit");
     for (const surface of [ask, terminal]) {
       expect(surface).toBeDefined();
-      expect(surface?.correlationId).toBe(permissionLogCorrelationId("partial-shell-audit-deny"));
+      expect(surface?.correlationId).toBe(invocationCorrelationId("partial-shell-audit-deny"));
       expect(surface?.sandboxRoute).toBe("host");
     }
     const approvalAuditText = JSON.stringify(capture.events);

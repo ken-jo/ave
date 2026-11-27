@@ -1,4 +1,5 @@
-import { logPermissionEvent, permissionLogCorrelationId, permissionLogId } from "../lib/permission-log.js";
+import { randomUUID } from "node:crypto";
+import { logPermissionEvent, permissionLogId } from "../lib/permission-log.js";
 import type { AuditDenyKind, PermissionAuditEntryInput } from "./pipeline/permission-decision.js";
 import { createLogger } from "../lib/logger.js";
 import { answeredApprovalProvenance, isAnsweredApprovalDenial, type ApprovalDecision } from "../permissions/approval-gate.js";
@@ -87,6 +88,7 @@ class TerminalClaimError extends Error {
 
 /** One terminal row per attempt. History, hooks and plain telemetry run after the claim and never undo it. */
 export interface InvocationTerminal {
+  readonly correlationId: string;
   readonly attempt: number;
   readonly owner: TerminalOwner;
   readonly state: TerminalState;
@@ -122,7 +124,13 @@ class TerminalLedger implements InvocationTerminal {
   #signal: AbortSignal;
   #denyKind: TerminalDenyKind | undefined;
 
-  constructor(readonly tool: string, readonly attempt: number, signal: AbortSignal, lifecycle?: TerminalDenialLifecycle) {
+  constructor(
+    readonly tool: string,
+    readonly attempt: number,
+    signal: AbortSignal,
+    readonly correlationId: string,
+    lifecycle?: TerminalDenialLifecycle,
+  ) {
     this.#signal = signal;
     this.#lifecycle = lifecycle;
   }
@@ -201,7 +209,7 @@ class TerminalLedger implements InvocationTerminal {
       const denyKind = cancellation === undefined ? terminal.kind : "cancelled";
       this.#take();
       this.#denyKind = denyKind;
-      emitToolDecision(entry, { ...terminal.fields, terminalKind: denyKind, attempt: this.attempt });
+      emitToolDecision(entry, { ...terminal.fields, terminalKind: denyKind, attempt: this.attempt, correlationId: this.correlationId });
       this.#track(Promise.resolve());
       const lifecycle = this.#lifecycle;
       return (async () => {
@@ -297,7 +305,7 @@ class TerminalLedger implements InvocationTerminal {
 
   nextAttempt(): InvocationTerminal {
     if (this.#state === "open") throw new TerminalClaimError(`attempt ${this.attempt} of ${this.tool} has no terminal row yet`, "already-claimed");
-    return new TerminalLedger(this.tool, this.attempt + 1, this.#signal, this.#lifecycle);
+    return new TerminalLedger(this.tool, this.attempt + 1, this.#signal, this.correlationId, this.#lifecycle);
   }
 }
 
@@ -316,7 +324,7 @@ export type ToolInvocationAdmission = {
 
 export function admitToolInvocation(tool: string, parent?: AbortSignal, resumeOf?: string): ToolInvocationAdmission {
   const held = resumeOf === undefined ? undefined : suspendedTerminals.get(resumeOf);
-  let ledger = held ?? new TerminalLedger(tool, 1, shutdown.signal);
+  let ledger = held ?? new TerminalLedger(tool, 1, shutdown.signal, randomUUID().replaceAll("-", ""));
   if (held) held.adopt();
   const signal = ledger.bindAbortSignal(parent);
   if (admissionClosed) {
@@ -330,6 +338,7 @@ export function admitToolInvocation(tool: string, parent?: AbortSignal, resumeOf
   pending.add(completion);
   let suspended = false;
   const terminal: InvocationTerminal = {
+    correlationId: ledger.correlationId,
     get attempt() { return ledger.attempt; },
     get owner() { return ledger.owner; },
     get state() { return ledger.state; },
@@ -478,7 +487,6 @@ export function emitToolDecision(
     source: entry.source,
     category: entry.category,
     decision: entry.decision,
-    correlationId: permissionLogCorrelationId(entry.toolUseId),
     operation: permissionLogId(entry.pluginOperation?.operation) ?? fields.operation,
     pluginId: permissionLogId(entry.pluginOperation?.pluginId),
     operationOutcome: entry.pluginOperation?.outcome,

@@ -1,5 +1,4 @@
-import { permissionLogCorrelationId } from "../../lib/permission-log.js";
-import { collectPermissionEvents } from "../../__tests__/support/permission-events.js";
+import { trackInvocationCorrelations, collectPermissionEvents } from "../../__tests__/support/permission-events.js";
 import type { UserOwnedSurfaceChoice } from "../../shared/permissions-events.js";
 import { NO_APPROVER_MESSAGE, SHELL_ANALYSIS_LIMIT_REASON } from "../../permissions/decision-pipeline.js";
 import { randomUUID } from "node:crypto";
@@ -28,6 +27,8 @@ import type { ToolResult } from "../executor.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
 import { shellQuote } from "../../lib/shell-resolver.js";
 import { HostExitAbortError } from "../../shared/host-exit-abort.js";
+
+const invocationCorrelationId = trackInvocationCorrelations();
 
 const resources = new PermissionTestResources();
 const SESSION_ID = "late-host-terminal";
@@ -472,7 +473,7 @@ describe("host terminal late native approval", () => {
 // Each terminal path writes exactly one terminal row, attributed by the provenance of the decision that ended it.
 describe("one terminal row per surface invocation", () => {
   const terminalRows = (events: ReturnType<typeof collectPermissionEvents>["events"]) => events.filter((row) =>
-    row.event === "permission_decision" && row.correlationId === permissionLogCorrelationId("late-terminal-command") && row.decision !== "ask");
+    row.event === "permission_decision" && row.correlationId === invocationCorrelationId("late-terminal-command") && row.decision !== "ask");
   const inconsistent = async () => ({ consistent: false, reason: "The command does not follow the current task." });
 
   it.each([false, true])("records a deny on the second card as the desk's (outside directory: %s)", async outside => {

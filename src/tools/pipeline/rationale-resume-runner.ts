@@ -1,4 +1,4 @@
-import { logPermissionEvent, permissionLogCorrelationId, permissionLogId } from "../../lib/permission-log.js";
+import { logPermissionEvent, permissionLogId } from "../../lib/permission-log.js";
 import { canonicalJsonEqual } from "../../shared/canonical-json.js";
 import type { PermissionCheckResult } from "../../permissions/permission-manager.js";
 import type { DecisionProvenance } from "../../permissions/approval-gate.js";
@@ -87,6 +87,7 @@ export interface AuthorizedRationaleResume extends PreparedRationaleResume {
 }
 
 export interface StartedRationaleResume extends AuthorizedRationaleResume {
+  readonly correlationId: string;
   readonly authorityEntry: RationaleExecutionAuthorityEntry;
 }
 
@@ -266,6 +267,7 @@ export async function authorizeRationaleResume(
 
 export async function startRationaleResume(
   authorized: AuthorizedRationaleResume,
+  correlationId: string,
   now = Date.now(),
 ): Promise<RationaleResumeResult<StartedRationaleResume>> {
   try {
@@ -295,14 +297,14 @@ export async function startRationaleResume(
     logPermissionEvent("rationale_invocation", {
       state: "authorized",
       ticketId: permissionLogId(authorized.request.control.ticketId),
-      correlationId: permissionLogCorrelationId(authorized.request.control.sealedAction.toolUseId),
+      correlationId,
     });
     logPermissionEvent("rationale_invocation", {
       state: "started",
       ticketId: permissionLogId(authorized.request.control.ticketId),
-      correlationId: permissionLogCorrelationId(authorized.request.control.sealedAction.toolUseId),
+      correlationId,
     });
-    return { ok: true, value: { ...authorized, authorityEntry } };
+    return { ok: true, value: { ...authorized, authorityEntry, correlationId } };
   } catch (error) {
     return mismatch(
       "rationale resume invocation-start failed: " +
@@ -335,7 +337,7 @@ export async function finishRationaleResume(
     logPermissionEvent("rationale_invocation", {
       state: terminal.state,
       ticketId: permissionLogId(terminal.ticketId),
-      correlationId: permissionLogCorrelationId(terminal.toolUseId),
+      correlationId: started.correlationId,
     });
     return true;
   } catch {

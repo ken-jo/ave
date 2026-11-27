@@ -1,4 +1,3 @@
-import { createHmac, randomBytes } from "node:crypto";
 import { maskSensitiveData } from "../shared/dlp.js";
 import { createLogger } from "./logger.js";
 
@@ -25,17 +24,4 @@ export function permissionLogId(value: unknown): string | undefined {
     && maskSensitiveData(value).detections.length === 0
     ? value
     : undefined;
-}
-
-let correlationKey: Buffer | undefined;
-
-/** Keep provider IDs out of logs while correlating events within this process. */
-export function permissionLogCorrelationId(toolUseId: string | undefined): string | undefined {
-  if (toolUseId === undefined) return undefined;
-  try {
-    correlationKey ??= randomBytes(32);
-    return createHmac("sha256", correlationKey).update(toolUseId).digest("hex").slice(0, 32);
-  } catch {
-    return undefined;
-  }
 }
