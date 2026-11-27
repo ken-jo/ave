@@ -18,7 +18,7 @@ import { isAuthorizedWorkspaceProjectRoot, listAuthorizedWorkspaceProjects, reso
 import { maskWorkflowText } from "../work-board/workflow/run-read-projection.js";
 import { isWorkflowPush, workflowPushBinding } from "../work-board/workflow/host-git.js";
 import { requestedOutputHash } from "../work-board/workflow/requested-outputs.js";
-import { canRetryOutputFromPhone } from "../work-board/workflow/requested-output-retry.js";
+import { canRetryRequestedOutput } from "../work-board/workflow/requested-output-retry.js";
 import { planScope, planView, workflowApprovalViews } from "./work-approval-review.js";
 import type { RoutinesStore } from "./routines-store.js";
 import type { WorkBoardStore } from "./work-board-store.js";
@@ -387,7 +387,7 @@ export function createTailnetWorkDecisions(services: Partial<TailnetWorkDecision
             if (outcome.status !== "failed" && outcome.status !== "denied") continue;
             const output = stage.requestedOutputs?.find(candidate => candidate.id === outcome.id);
             if (!output) continue;
-            const refusal = isWorkflowPush(output.decl) ? "push-retry-forbidden" : !canRetryOutputFromPhone(outcome) ? "output-retry-effect-unknown" : undefined;
+            const refusal = isWorkflowPush(output.decl) ? "push-retry-forbidden" : !canRetryRequestedOutput(outcome) ? "output-retry-effect-unknown" : undefined;
             outputRetries.push({ itemId: item.id, input: { runId: stored.run.runId, stageId: stage.stageId, attempt: stage.attempt, outputId: output.id, outputHash },
               summary: maskWorkflowText(output.summary), detail: outcome.detail === undefined ? undefined : maskWorkflowText(outcome.detail), refusal });
           }

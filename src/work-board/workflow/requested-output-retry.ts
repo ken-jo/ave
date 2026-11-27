@@ -16,7 +16,7 @@ function sameApprovedStage(stage: WorkItemStageRun | undefined, attempt: number,
 }
 
 /** Only a recorded pre-dispatch outcome proves that retry cannot duplicate a tool effect. */
-export function canRetryOutputFromPhone(previous: OutputExecution): boolean {
+export function canRetryRequestedOutput(previous: OutputExecution): boolean {
   return previous.status === "denied" || (previous.status === "failed" && (
     previous.detail === "output-execution-not-dispatched" || previous.detail === "output-args-not-displayable" || previous.detail === "workspace-unavailable"
   ));
@@ -101,7 +101,7 @@ export function createRecordedOutputEffects(deps: {
       if (isWorkflowPush(output.decl)) { reason = "push-retry-forbidden"; return null; }
       const previous = stage.outputExecutions?.find(row => row.id === outputId);
       if (previous?.status !== "failed" && previous?.status !== "denied") return null;
-      if (remote && !canRetryOutputFromPhone(previous)) { reason = "output-retry-effect-unknown"; return null; }
+      if (!canRetryRequestedOutput(previous)) { reason = "output-retry-effect-unknown"; return null; }
       selected = output;
       return { ...stored, stageRuns: stored.stageRuns.map(row => row === stage
         ? { ...stage, outputExecutions: stage.outputExecutions?.map(entry => entry === previous ? { id: outputId, status: "pending" } : entry) } : row) };

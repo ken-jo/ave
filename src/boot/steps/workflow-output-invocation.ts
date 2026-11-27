@@ -56,7 +56,7 @@ export function governedWorkflowOutput(registry: ToolRegistry, executor: ToolExe
           },
         });
         if (displayRefused) return "output-args-not-displayable";
-        if (bindingChanged) return dispatched ? "failed" : "output-execution-not-dispatched";
+        if (bindingChanged || signal.aborted && !dispatched) return dispatched ? "failed" : "output-execution-not-dispatched";
         if (!result || (dispatched && result.is_error)) return "failed";
         return dispatched ? "done" : "denied";
       } finally {
