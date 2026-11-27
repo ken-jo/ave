@@ -48,6 +48,7 @@ import type {
 } from "../../data/settings-store.js";
 import type { ActiveChatModel } from "../../shared/active-chat-model.js";
 import {
+  isVertexProjectConfigured,
   resolveMainActiveChatModel,
   type SubscriptionConnectionReader,
   type ActiveChatModelSettingsReader,
@@ -101,9 +102,10 @@ function normalizeSubscriptionModel(value: unknown): string | undefined | null {
 }
 
 /** The settings shape the renderer sees. Authoritative remote route lineage (`a2aRemote`) is main-only and never projected to the renderer. The upstream proxy (`upstreamProxy`) crosses only through its own permissions channels; the validated local model location stays in main. Every other stored field crosses as-is.
- * `activeChatModel` is the one derived field. A vendor block always names a model, so the stored settings cannot say whether chat has a model at all; only main, which holds the secret store, can. Every renderer surface that names the active model reads it from here. */
+ * Main projects the active model and project-authenticated route availability using host settings and credentials. */
 export type RendererSettingsSnapshot = Omit<AppSettings, "a2aRemote" | "upstreamProxy" | "memoryEmbedding"> & {
   readonly activeChatModel: ActiveChatModel;
+  readonly vertexProjectConfigured: boolean;
 };
 
 export async function rendererSettingsSnapshot(
@@ -113,7 +115,11 @@ export async function rendererSettingsSnapshot(
 ): Promise<RendererSettingsSnapshot> {
   // `upstreamProxy` has its own channels (permissions upstreamProxyGet/Set).
   const { a2aRemote: _mainOnly, upstreamProxy: _ownChannel, memoryEmbedding: _embeddingConfig, ...projected } = structuredClone(snapshot);
-  return { ...projected, activeChatModel: await resolveMainActiveChatModel(settingsService, undefined, isSubscriptionConnected) };
+  return {
+    ...projected,
+    activeChatModel: await resolveMainActiveChatModel(settingsService, undefined, isSubscriptionConnected),
+    vertexProjectConfigured: isVertexProjectConfigured(projected.llm?.vendors?.["vertex-ai"]?.vertexProject),
+  };
 }
 
 /** Shared by every handler that mutates settings and must re-broadcast the projected snapshot to all windows. */

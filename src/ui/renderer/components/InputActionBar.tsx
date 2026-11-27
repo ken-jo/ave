@@ -782,7 +782,7 @@ function ModelQuickPicker({
       const connectedVendors = new Set(await Promise.all([...vendors].map(async (vendor) => {
         if (activeChatModel?.kind === "api" && activeChatModel.vendor === vendor) return vendor;
         const block = getLlmVendorSettings(llm.vendors, vendor);
-        if (vendor === "vertex-ai") return block.vertexProject ? vendor : null;
+        if (vendor === "vertex-ai") return settings.vertexProjectConfigured ? vendor : null;
         const presetId = vendor === "openai-compatible" ? llm.marketplaceProviderPresetId : undefined;
         if (presetId) {
           const preset = settings.marketplace?.installedProviderPresets?.find((entry) => entry.providerId === presetId);

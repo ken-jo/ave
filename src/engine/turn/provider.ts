@@ -1,3 +1,4 @@
+import { isVertexProjectConfigured } from "./active-chat-model.js";
 import { createProvider, secretKeyFor } from "../llm/provider-factory.js";
 import { FallbackProvider } from "../llm/vercel/fallback-chain.js";
 import type { LLMProvider, LLMVendor, ProviderConfig } from "../llm/types.js";
@@ -153,7 +154,7 @@ export async function buildProvider(
     if (!apiKey && !isVertex && !canUseWithoutApiKey) {
       return null;
     }
-    if (isVertex && !block.vertexProject && !process.env.GOOGLE_CLOUD_PROJECT && !process.env.GCLOUD_PROJECT) {
+    if (isVertex && !isVertexProjectConfigured(block.vertexProject)) {
       return null;
     }
 

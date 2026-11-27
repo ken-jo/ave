@@ -858,6 +858,29 @@ describe("model card (status-row model cell)", () => {
     expect(hasApiKey).toHaveBeenCalledWith("openai");
   });
 
+  it.each([true, false])("filters the pinned project-authenticated alternative using the host verdict (%s)", async (available) => {
+    const settings = settingsWithPins();
+    const model = "example-project-model";
+    getSettings.mockResolvedValue({
+      ...settings,
+      vertexProjectConfigured: available,
+      llm: {
+        ...settings.llm,
+        pinnedModels: [...settings.llm.pinnedModels!, model],
+        modelListCache: {
+          ...settings.llm.modelListCache,
+          "vertex-ai": { vendor: "vertex-ai", models: [model] },
+        },
+      },
+    });
+    const { getByTestId, findByTestId } = renderBar({ onOpenModelSettings: vi.fn() });
+    fireEvent.click(getByTestId("iab-status-model"));
+    const card = await findByTestId("model-quick-picker");
+    await waitFor(() => expect(card.querySelectorAll("[role='option']")).toHaveLength(available ? 3 : 2));
+    expect(card.textContent?.includes(model)).toBe(available);
+    expect(card.querySelector("[aria-selected='true']")?.textContent).toContain("qwen3.8-27b-gguf");
+  });
+
   it("checks the saved model when its subscription provider is connected", async () => {
     getSettings.mockResolvedValue({
       ...settingsWithPins(),
