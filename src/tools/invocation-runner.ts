@@ -11,6 +11,7 @@ import { selectDeclaredPathValues } from "../shared/dotted-field-value.js";
 import { isConfinedHostShellExecution } from "../permissions/host-shell-execution-plan.js";
 import { dispatchReviewerForHeadless, dispatchReviewerForInteractiveAuto } from "./pipeline/reviewer-dispatch.js";
 import { criticalDeleteTargetFor } from "../permissions/sensitive-paths.js";
+import { windowsObligationsApply } from "../permissions/admitted-obligation.js";
 import { assertWindowsTarget, observeWindowsTarget, sealsHold, TargetIdentityChangedError, type TargetSeal } from "../permissions/target-seal.js";
 import { hookChainFromDispatch } from "./pipeline/audit-entries.js";
 import { runScriptHook, scriptHookRefusal } from "./invocation-services.js";
@@ -2087,7 +2088,7 @@ async function runToolInvocationAttempt(
         const grantedDirectory = decision.choice === "allow-session" ? suggestedParent ?? outOfAllowedTarget.filePath : approvedDirectory;
         // The card approves this directory as it resolves now; each grant commit verifies it again.
         let directorySeal: TargetSeal | undefined;
-        if (process.platform === "win32") {
+        if (windowsObligationsApply()) {
           try {
             directorySeal = withLocalityDecision(() => {
               assertFileTargetsUnchanged();
