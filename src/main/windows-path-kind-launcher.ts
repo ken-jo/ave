@@ -1,5 +1,5 @@
 import { execFile, spawnSync } from "node:child_process";
-import { accessSync, readFileSync } from "node:fs";
+import { accessSync, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { access } from "node:fs/promises";
 import { dirname, join, win32 } from "node:path";
 import { lockWindowsExecutable, lockWindowsExecutableAsync, WindowsExecutableError } from "../../scripts/lib/windows-locked-executable.mjs";
@@ -24,6 +24,18 @@ export function windowsPathKindHelperIn(resourcePath: string): string {
   return join(resourcePath, "windows-path-kind", process.arch, "ave-path-kind.exe");
 }
 
+export function windowsWorkbookLockerBindingIn(resourcePath: string, isPackaged: boolean): string {
+  const modules = isPackaged ? join(resourcePath, "app.asar.unpacked", "node_modules") : join(resourcePath, "..", "node_modules");
+  return join(modules, "@koromix", `koffi-win32-${process.arch}`, `win32_${process.arch}`, "koffi.node");
+}
+
+export function resolveWindowsWorkbookLockerBinding(resourcePath: string, isPackaged: boolean): string {
+  const path = windowsWorkbookLockerBindingIn(resourcePath, isPackaged);
+  const info = lstatSync(path);
+  if (!info.isFile() || info.nlink !== 1) throw new Error("Expected a regular Windows executable locker binding");
+  return realpathSync.native(path);
+}
+
 export function resolveWindowsPathKindHelper(resourcePath = getHostResources().resourcePath): string {
   const binary = windowsPathKindHelperIn(resourcePath);
   try {
@@ -44,8 +56,8 @@ export function withWindowsPathKindHelper<T>(launch: (helper: string) => T, reso
   if (!pinned()) return launch(resolveWindowsPathKindHelper(resourcePath));
   let executable: ReturnType<typeof lockWindowsExecutable>;
   try {
-    // The packaged workbook script runs outside the archive module tree.
-    const binding = packagedWorkbook ? join(resourcePath, "app.asar.unpacked", "node_modules", "koffi") : undefined;
+    // An absolute native binding needs no package resolution in the confined workbook process.
+    const binding = workbook ? resolveWindowsWorkbookLockerBinding(resourcePath, Boolean(packagedWorkbook)) : undefined;
     executable = lockWindowsExecutable(windowsPathKindHelperIn(resourcePath), binding);
   } catch (error) {
     throw helperOpenFailure(error);

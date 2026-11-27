@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, symlinkSync, readdirSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync, existsSync, symlinkSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
@@ -9,9 +9,10 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { build } from "esbuild";
 import { buildSkillScripts } from "../../../scripts/build-skill-scripts.mjs";
 import { windowsPeImageDigest } from "../../../scripts/lib/windows-path-kind-image-digest.mjs";
-import { windowsPathKindHelperIn } from "../../main/windows-path-kind-launcher.js";
-import { stageWindowsPathKindHelper } from "../../__tests__/support/bundled-skill-resources.js";
+import { windowsPathKindHelperIn, windowsWorkbookLockerBindingIn } from "../../main/windows-path-kind-launcher.js";
+import { stageWindowsPathKindHelper, stageWindowsWorkbookLockerBinding } from "../../__tests__/support/bundled-skill-resources.js";
 import { configureHostResources } from "../../main/host-resources.js";
+import { hostScriptInvocationReadPaths, hostScriptWriteDenyPaths } from "../../main/host-script-runtime.js";
 import { editWorkbookFile } from "../../skills/xlsx-edit.js";
 import { parseTableDocument } from "../table-document-reader.js";
 import { readDocumentResponse } from "../preview-document-protocol.js";
@@ -70,10 +71,7 @@ describe("XLSX skill command", () => {
       const resources = join(directory, "resources");
       const scripts = join(resources, "skill-scripts");
       stageWindowsPathKindHelper(resources);
-      const modules = join(resources, "app.asar.unpacked", "node_modules");
-      for (const pkg of ["koffi", `@koromix/koffi-win32-${process.arch}`]) {
-        cpSync(resolve("node_modules", pkg), join(modules, pkg), { recursive: true, dereference: true });
-      }
+      stageWindowsWorkbookLockerBinding(resources, true);
       const pathKindSha256 = pin === "missing" ? null : pin === "mismatched" ? "0".repeat(64)
         : windowsPeImageDigest(readFileSync(windowsPathKindHelperIn(resources)));
       const { directory: built } = await buildSkillScripts({ pathKindSha256, directory: join(directory, "built-scripts") });
@@ -102,6 +100,50 @@ child.execFileSync = (...args) => {
         expect(result.status, result.stderr).toBe(1);
         expect(result.stderr).toContain("[workbook-acl-unreadable]");
         expect(readFileSync(path).equals(before)).toBe(true);
+      }
+    },
+  );
+
+  it.skipIf(process.platform !== "win32").each([false, true])(
+    "edits with only the declared read grants for a pinned bundle (packaged=%s)", async (isPackaged) => {
+      const root = realpathSync.native(directory);
+      const resources = join(root, "resources");
+      const workspace = join(root, "workspace");
+      mkdirSync(workspace);
+      stageWindowsPathKindHelper(resources);
+      stageWindowsWorkbookLockerBinding(resources, isPackaged);
+      const binding = windowsWorkbookLockerBindingIn(resources, isPackaged);
+      const helper = windowsPathKindHelperIn(resources);
+      const scripts = isPackaged ? join(resources, "skill-scripts") : join(root, "dist", "skill-scripts");
+      await buildSkillScripts({ directory: scripts, pathKindSha256: windowsPeImageDigest(readFileSync(helper)) });
+      const script = join(scripts, "edit-xlsx.cjs");
+      const path = await save(await fixture(), join("workspace", "book.xlsx"));
+      const request = join(workspace, "request.json");
+      writeFileSync(request, JSON.stringify({ sheet: 0, edits: [{ cell: "B1", value: 21 }] }));
+
+      configureHostResources({ resourcePath: resources, isPackaged });
+      try {
+        const runtime = realpathSync.native(process.execPath);
+        const grants = hostScriptInvocationReadPaths([process.execPath, script], { ELECTRON_RUN_AS_NODE: "1" });
+        expect(new Set(grants)).toEqual(new Set([process.execPath, runtime, resolve(runtime, ".."), script, helper, binding]));
+        expect(hostScriptWriteDenyPaths()).toContain(binding);
+        const preload = join(workspace, "enforce-module-reads.cjs");
+        writeFileSync(preload, `const Module = require("node:module");
+const load = Module._load;
+const allowed = new Set(${JSON.stringify([...grants, preload])});
+Module._load = function (request, ...args) {
+  if (!Module.isBuiltin(request) && !allowed.has(request)) throw new Error("Module outside the declared reads: " + request);
+  return load.call(this, request, ...args);
+};
+`);
+        const result = spawnSync(process.execPath, ["--require", preload, script, path, request], {
+          cwd: workspace, encoding: "utf8", env: { ...process.env, ELECTRON_RUN_AS_NODE: "1", NODE_OPTIONS: "" },
+        });
+        expect(result.status, result.stderr).toBe(0);
+        const edited = await JSZip.loadAsync(readFileSync(path));
+        expect(await edited.file("xl/worksheets/sheet1.xml")!.async("string")).toContain('<v>21</v>');
+      } finally {
+        configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
       }
     },
   );

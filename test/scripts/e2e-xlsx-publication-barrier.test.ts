@@ -10,11 +10,11 @@ import { pathToFileURL } from "node:url";
 import { build } from "esbuild";
 import * as XLSX from "xlsx";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { stageWindowsPathKindHelper } from "../../src/__tests__/support/bundled-skill-resources.js";
+import { stageWindowsPathKindHelper, stageWindowsWorkbookLockerBinding } from "../../src/__tests__/support/bundled-skill-resources.js";
 import { configureHostResources } from "../../src/main/host-resources.js";
 import { hostScriptInvocationReadPaths, hostScriptRuntimePaths, hostScriptWriteDenyPaths, isVerifiedHostScript } from "../../src/main/host-script-runtime.js";
 import { resolveRuntimePathsFromModuleUrl } from "../../src/main/main-paths.js";
-import { windowsPathKindHelperIn } from "../../src/main/windows-path-kind-launcher.js";
+import { windowsPathKindHelperIn, windowsWorkbookLockerBindingIn } from "../../src/main/windows-path-kind-launcher.js";
 import { rankMxcFilesystem } from "../../src/permissions/mxc-windows.js";
 import * as powerShellExecutable from "../../src/shared/powershell-executable.js";
 import { win32SystemBinary } from "../../src/shared/windows-system-path.js";
@@ -48,6 +48,7 @@ beforeAll(async () => {
   writeFileSync(join(checkout, "build", "icon.png"), "icon");
   mkdirSync(join(checkout, "resources"));
   stageWindowsPathKindHelper(join(checkout, "resources"));
+  stageWindowsWorkbookLockerBinding(join(checkout, "resources"), false);
   sharedScript = join(scripts, "edit-xlsx.cjs");
   await build({ entryPoints: [resolve("src/skills/xlsx-edit-cli.ts")], outfile: sharedScript,
     bundle: true, platform: "node", format: "cjs", target: "node22", minify: true, logLevel: "silent" });
@@ -107,14 +108,19 @@ describe("workbook publication build", () => {
       const allowRead = hostScriptInvocationReadPaths(argv, { ELECTRON_RUN_AS_NODE: "1" });
       expect(allowRead).toContain(fixture.scriptPath);
       if (process.platform === "win32") {
-        const helper = windowsPathKindHelperIn(join(fixture.root, "resources"));
+        const resources = join(fixture.root, "resources");
+        const helper = windowsPathKindHelperIn(resources);
+        const binding = windowsWorkbookLockerBindingIn(resources, false);
         const denyWrite = hostScriptWriteDenyPaths();
         const grants = rankMxcFilesystem(shellPolicyModel({
           allowRead, allowWrite: [workspace], denyWrite, denyRead: [], protectedFloor: [],
         }));
-        expect(grants.readonly).toContain(helper);
-        expect(denyWrite).toContain(helper);
-        expect(grants.readwrite).not.toContain(helper);
+        for (const file of [helper, binding]) {
+          expect(grants.readonly).toContain(file);
+          expect(denyWrite).toContain(file);
+          expect(grants.readwrite).not.toContain(file);
+        }
+        expect(grants.readonly).not.toContain(dirname(binding));
         expect([...grants.readonly, ...grants.readwrite].filter(grant => win32.parse(grant).root === grant)).toEqual([]);
       }
       const command = `ELECTRON_RUN_AS_NODE=1 ${argv.map(shellQuote).join(" ")}`;
@@ -793,7 +799,9 @@ describe("workbook publication build", () => {
       const ast = normalizePowerShellAstSummary(JSON.parse(String(reply.stdout)));
       const reads = powerShellHostScriptReadPaths(ast, source);
       expect(reads).toContain(fixture.scriptPath);
-      expect(reads).toContain(windowsPathKindHelperIn(join(fixture.root, "resources")));
+      const resources = join(fixture.root, "resources");
+      expect(reads).toContain(windowsPathKindHelperIn(resources));
+      expect(reads).toContain(windowsWorkbookLockerBindingIn(resources, false));
       const [invocation] = ast.commands;
       if (!invocation) throw new Error("The rendered command did not parse");
       expect(awaitedHostScriptCommand(source, invocation)).not.toBeNull();

@@ -3,7 +3,7 @@ import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import { admitLocalRoute, localFs, withLocalityDecision } from "../shared/local-path-io.js";
 import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { getConfiguredHostResources, type HostResources } from "./host-resources.js";
-import { windowsPathKindHelperIn } from "./windows-path-kind-launcher.js";
+import { resolveWindowsWorkbookLockerBinding, windowsPathKindHelperIn, windowsWorkbookLockerBindingIn } from "./windows-path-kind-launcher.js";
 
 interface ScriptRuntimePaths { javascriptRuntime: string; bundledScriptsDirectory: string }
 interface ScriptRootSnapshot { device: bigint; inode: bigint; manifestDigest: string }
@@ -42,7 +42,14 @@ export function hostScriptWriteDenyPaths(): readonly string[] {
   const paths = hostScriptRuntimePaths();
   if (!paths || !resources) return [];
   const denied = [paths.bundledScriptsDirectory, paths.javascriptRuntime];
-  if (process.platform === "win32") denied.push(windowsPathKindHelperIn(resources.resourcePath));
+  if (process.platform === "win32") {
+    denied.push(windowsPathKindHelperIn(resources.resourcePath));
+    const binding = windowsWorkbookLockerBindingIn(resources.resourcePath, resources.isPackaged);
+    try {
+      const resolved = resolveWindowsWorkbookLockerBinding(resources.resourcePath, resources.isPackaged);
+      denied.push(binding, resolved);
+    } catch { /* No usable binding at this location. */ }
+  }
   for (const path of [...denied]) {
     try { denied.push(realpathSync.native(path)); } catch { /* Missing resources stay denied by name. */ }
   }
@@ -107,6 +114,9 @@ export function hostScriptInvocationReadPaths(
       const info = lstatSync(helper);
       if (info.isFile() && info.nlink === 1 && realpathSync.native(helper) === helper) allowed.push(helper);
     } catch { /* Missing helper grants no read access. */ }
+    try {
+      allowed.push(resolveWindowsWorkbookLockerBinding(resources.resourcePath, resources.isPackaged));
+    } catch { /* Missing binding grants no read access. */ }
   }
   return [...new Set(allowed)];
 }
