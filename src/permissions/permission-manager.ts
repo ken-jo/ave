@@ -656,6 +656,7 @@ export class PermissionManager {
   private readonly judgeBreaker = new JudgeCircuitBreaker(DEFAULT_JUDGE_SETTINGS.breaker);
   private resolveJudgeRootSession: (sessionId: string) => string = (sessionId) => sessionId;
   private verdictCache: VerdictCache | null = null;
+  private reviewerVerdictCacheEnabled = true;
   private recentlyDenied: RecentlyDeniedStore | null = null;
   private readonly pipelineRequests = new WeakMap<PermissionCheckResult, { request: PermissionDecisionRequest; policyEpoch: string; policyContextEpoch: string; hostTerminalContext?: HostTerminalPermissionContext }>();
   private reviewerCacheScope: Record<string, unknown> = {};
@@ -699,6 +700,7 @@ export class PermissionManager {
     cache: VerdictCache;
     recentlyDenied?: RecentlyDeniedStore;
     cacheScope?: Record<string, unknown>;
+    verdictCacheEnabled?: boolean;
     // True when persisted mode is "llm" but wiring degraded to the rule classifier (provider/key not configured). Defaults to false so disabled and successfully configured callers clear it.
     degradedToRule?: boolean;
     // The user selected a reviewer model that cannot run (not offered, or its provider is not connected). Every review then fails as `unavailable` with this reason: the foreground asks with a modal, headless denies. No other model, and no rule-only classifier, stands in for the choice.
@@ -710,6 +712,7 @@ export class PermissionManager {
     this.reviewerModel = deps.model;
     this.reviewerUnavailableReason = deps.unavailableReason;
     this.verdictCache = deps.cache;
+    this.reviewerVerdictCacheEnabled = deps.verdictCacheEnabled ?? true;
     this.recentlyDenied = deps.recentlyDenied ?? null;
     this.reviewerCacheScope = deps.cacheScope ?? {};
     this.reviewerDegradedToRule = deps.degradedToRule ?? false;
@@ -2193,7 +2196,7 @@ export class PermissionManager {
     toolName: string,
     input: ReviewerDispatchInput,
     routineScope: Record<string, unknown> | undefined,
-    options: { abortSignal?: AbortSignal; tracingClassifier: TracingRiskClassifier | null; cacheScope?: Record<string, unknown>; stageOwnModel?: boolean },
+    options: { abortSignal?: AbortSignal; tracingClassifier: TracingRiskClassifier | null; verdictCacheEnabled: boolean; cacheScope?: Record<string, unknown>; stageOwnModel?: boolean },
   ): Promise<ReviewerAssessmentResult> {
     // Freeze the canonical scope before review can await; the same path grades raw arguments and later appears on the exact remembered-allow card.
     const workingDirectory = input.executionCwd === undefined
@@ -2323,8 +2326,8 @@ export class PermissionManager {
     };
 
     // Include the sandbox capability in the cache scope so a change to OS isolation invalidates stale verdicts produced under different sandbox assumptions. Capture this live state immediately before cache lookup: no await may sit between wrap-state sampling and cache lookup, or a worker un-wrap could replay a verdict relaxed under stale confinement.
-    const cacheCtx = buildCacheContext(sandboxCacheState);
-    const cacheResult = cache.lookup(lookupKey, cacheCtx);
+    const cacheCtx = options.verdictCacheEnabled ? buildCacheContext(sandboxCacheState) : undefined;
+    const cacheResult = cacheCtx === undefined ? undefined : cache.lookup(lookupKey, cacheCtx);
     let verdict: RiskVerdict;
     let ruleVerdictForAudit: RiskVerdict["level"] | null = null;
     let llmVerdictForAudit: RiskVerdict["level"] | null = null;
@@ -2365,7 +2368,7 @@ export class PermissionManager {
         scope: userApproval.scope,
         verdictAtApproval: userApproval.verdictAtApproval,
       });
-    } else if ((!preparedReview || providerPromptHash !== undefined) && cacheResult.hit && cacheResult.verdict) {
+    } else if ((!preparedReview || providerPromptHash !== undefined) && cacheResult?.hit && cacheResult.verdict) {
       const ruleVerdict = preparedReview?.ruleVerdict ?? new RuleBasedRiskClassifier().classify(reviewerContext ?? buildReviewerContext());
       ruleVerdictForAudit = ruleVerdict.level;
       verdict = preparedReview ? maxVerdict(ruleVerdict, cacheResult.verdict) : cacheResult.verdict;
@@ -2400,7 +2403,7 @@ export class PermissionManager {
         } else {
           // Only a successful fresh classification may become a base-cache entry. malformed/error/timeout fallback verdicts remain fail-safe for this invocation and can never reappear as an eligible "cache" rationale outcome on the next call.
           const cacheVerdict = preparedReview ? (providerPromptHash === undefined ? null : trace.llmVerdict) : verdict;
-          if (outcome === "fresh" && cacheVerdict !== null) {
+          if (cacheCtx !== undefined && outcome === "fresh" && cacheVerdict !== null) {
             // The verdict cache is the one sink written BEFORE the common redaction point below, so it redacts its own copy. A cache hit then replays an already-masked reason.
             await cache.store(lookupKey, cacheCtx, redactVerdictReason(cacheVerdict));
           }
@@ -2466,7 +2469,7 @@ export class PermissionManager {
     });
 
     return {
-      verdict, outcome, approvalBasis: approvalBasisFor(ruleVerdictForAudit ?? verdict.level, outcome), cacheReason: cacheResult.reason,
+      verdict, outcome, approvalBasis: approvalBasisFor(ruleVerdictForAudit ?? verdict.level, outcome), cacheReason: cacheResult?.reason ?? "miss-not-found",
     };
   }
 
@@ -2517,6 +2520,8 @@ export class PermissionManager {
     const ruleVerdict = new RuleBasedRiskClassifier().classify(invocation);
     let reviewer: ReviewerAssessmentResult | undefined;
     let reviewerStageId: string | undefined;
+    // Keep cache policy with the classifier selected for this dispatch.
+    const reviewerVerdictCacheEnabled = this.reviewerVerdictCacheEnabled;
     const chain = deps.chain.map((stage) => {
       const builtin = stage.judge;
       if (!(builtin instanceof BuiltinLlmJudge)) return stage;
@@ -2530,6 +2535,7 @@ export class PermissionManager {
           }, context?.routineScope, {
             abortSignal: options?.abortSignal,
             tracingClassifier: builtin.getClassifier(),
+            verdictCacheEnabled: reviewerVerdictCacheEnabled || stage.settings.model !== undefined,
             ...(stage.settings.model ? { stageOwnModel: true } : {}),
             ...(stage.settings.model || policyRedacted ? {
               cacheScope: {

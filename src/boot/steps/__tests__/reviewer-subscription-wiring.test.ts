@@ -235,3 +235,387 @@ it.each([false, true])("blocks existing reviewer authority before a production c
     await cleanupTmpDir(tempDir);
   }
 });
+
+const AUTH_LOSS_CASES = [
+  ["direct-plan settings logout", "chatgpt-plan", "logout"],
+  ["direct-plan refresh invalid_grant", "chatgpt-plan", "invalid_grant"],
+  ["managed ACP logout", "grok-build", "logout"],
+  ["ACP forget", "kimi-code", "forget"],
+  ["ACP startup auth required", "grok-build", "startup"],
+  ["direct-plan refresh invalid_client", "chatgpt-plan", "invalid_client"],
+  ["CLI signed out", "codex", "signed-out"],
+] as const;
+
+async function prepareAuthLoss(
+  provider: (typeof AUTH_LOSS_CASES)[number][1],
+  loss: (typeof AUTH_LOSS_CASES)[number][2],
+) {
+  const { SubscriptionRuntimeService } = await import("../../../main/subscription-runtime-service.js");
+  const { claimFakeRuntimeDirectories, createSubscriptionRuntimeNamespace } =
+    await import("../../../__tests__/support/subscription-runtime-namespace.js");
+  const { ChatGptPlanSession } = await import("../../../main/chatgpt-plan/session.js");
+  const { ChatGptPlanRuntime } = await import("../../../main/chatgpt-plan/runtime.js");
+  const { AcpSubscriptionSessionError } = await import("../../../main/acp-subscription-session-client.js");
+  const { acpSubscriptionStatus } = await import("../../../shared/acp-subscription.js");
+  type RuntimeOptions = NonNullable<Parameters<typeof SubscriptionRuntimeService.create>[1]>;
+
+  let now = Date.now();
+  const expiresAt = now + 3_600_000;
+  let planRecord = JSON.stringify({
+    version: 1, issuer: "https://auth.openai.com", clientId: "oaiapp_1", welcomed: true,
+    subject: "fixture-subject", email: "alice@example.com",
+    tokens: {
+      accessToken: "fixture-access", refreshToken: "fixture-refresh", idToken: "fixture-id",
+      expiresAt, savedAt: now, scopes: ["chatgpt.tokens.use.direct"],
+    },
+  });
+  const planFetch: typeof fetch = async () => loss === "logout"
+    ? new Response(null, { status: 200 })
+    : Response.json({ error: loss }, { status: 400 });
+  const planSession = new ChatGptPlanSession({
+    fetch: planFetch, now: () => now,
+    secrets: {
+      isSecretStorageEncrypted: async () => true,
+      getEncryptedSecret: async () => planRecord,
+      setSecret: async (_key, record) => { planRecord = record; },
+      deleteSecret: async () => { planRecord = ""; },
+    },
+    hostId: async () => "fixture-host", openAuthorizationUrl: vi.fn(), startListener: vi.fn(),
+    verifier: { verify: vi.fn(), prefetchKeys: vi.fn() },
+  });
+
+  let connection: "connected" | "signed-out" = "connected";
+  let runtime: "ready" | "not-configured" = "ready";
+  const acpStatus = async () => {
+    if (provider === "chatgpt-plan" || provider === "codex") throw new Error("Expected an ACP selection");
+    return acpSubscriptionStatus(provider, runtime, connection);
+  };
+  const openAcp = vi.fn(async () => { throw new AcpSubscriptionSessionError("acp-session-authentication-required"); });
+  const service = await SubscriptionRuntimeService.create(vi.fn(), {
+    namespace: createSubscriptionRuntimeNamespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories,
+    codexClient: {
+      getStatus: async () => ({ runtime: "ready", connection, planType: null, pendingLogin: false, version: null }),
+      stop: vi.fn(),
+    } as unknown as RuntimeOptions["codexClient"],
+    claudeCodeClient: { stop: vi.fn() } as unknown as RuntimeOptions["claudeCodeClient"],
+    acpRegistry: {
+      getStatus: acpStatus, verify: acpStatus, openTextSession: openAcp,
+      logout: async () => { connection = "signed-out"; return acpStatus(); },
+      forgetExecutable: async () => { runtime = "not-configured"; connection = "signed-out"; return acpStatus(); },
+      stopAll: vi.fn(),
+    } as unknown as RuntimeOptions["acpRegistry"],
+    chatGptPlanRuntime: new ChatGptPlanRuntime(planSession, planFetch),
+  });
+
+  return {
+    stop: () => service.stop(),
+    async loseAuth() {
+      if (loss === "invalid_grant" || loss === "invalid_client") {
+        now = expiresAt;
+        await expect(service.requireChatGptPlan().confirmSession()).rejects.toMatchObject({
+          code: loss === "invalid_grant" ? "subscription-chat-unavailable" : "subscription-operation-failed",
+        });
+      } else if (loss === "logout") {
+        expect((await service.logout(provider)).connection).toBe("signed-out");
+      } else if (loss === "forget") {
+        expect((await service.forgetExecutable(provider)).runtime).toBe("not-configured");
+      } else if (loss === "signed-out") {
+        connection = "signed-out";
+      }
+    },
+    async checkAuthorization() {
+      if (provider === "chatgpt-plan") await service.requireChatGptPlan().accessToken();
+      else {
+        const selection = { kind: "subscription", provider } as const;
+        await (await service.openTextSession(selection)).stop();
+      }
+    },
+    openAcp,
+  };
+}
+
+async function withLiveReviewer(
+  provider: (typeof AUTH_LOSS_CASES)[number][1] | "api",
+  test: (fixture: {
+    manager: PermissionManager;
+    directory: string;
+    getCache: () => VerdictCache;
+    seedVerdict: (headless: boolean) => Promise<ReturnType<PermissionManager["resolveReviewedPermission"]>>;
+    loseAuth: () => Promise<void>;
+    reply: ReturnType<typeof vi.fn<LLMProvider["streamTurn"]>>;
+    dispatch: (headless: boolean) => Promise<{
+      review: Awaited<ReturnType<PermissionManager["dispatchReviewer"]>>;
+      result: ReturnType<PermissionManager["resolveReviewedPermission"]>;
+    }>;
+  }) => Promise<void>,
+  loss?: (typeof AUTH_LOSS_CASES)[number][2],
+) {
+  const tempDir = mkdtempSync(join(tmpdir(), "reviewer-live-"));
+  vi.resetModules();
+  const resources = await import("../../../main/host-resources.js");
+  resources.configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
+  const { DEFAULT_JUDGE_SETTINGS } = await import("../../../permissions/judge/judge-settings.js");
+  vi.doMock("electron", () => ({ BrowserWindow: { getAllWindows: () => [] } }));
+  vi.doMock("../../../permissions/permission-settings-store.js", async importOriginal => ({
+    ...await importOriginal<typeof import("../../../permissions/permission-settings-store.js")>(),
+    readJudgeSettings: () => ({ settings: DEFAULT_JUDGE_SETTINGS, issues: [] }),
+    readPermissionSettings: () => ({ permissions: { blockReadsOutsideWorkingDirectories: false }, fault: null }),
+  }));
+  const replyWithVerdict: LLMProvider["streamTurn"] = async function* () {
+    yield { type: "text_delta", text: '{"level":"low","reason":"Fixture review"}' };
+    yield { type: "message_complete", stopReason: "end_turn" };
+  };
+  const reply = vi.fn(replyWithVerdict);
+  let cache: VerdictCache | undefined;
+  vi.doMock("../reviewer-wiring.js", async importOriginal => {
+    const original = await importOriginal<typeof import("../reviewer-wiring.js")>();
+    return {
+      ...original,
+      wireReviewerAgent: (deps: Parameters<typeof original.wireReviewerAgent>[0]) => {
+        const wired = original.wireReviewerAgent({
+          ...deps,
+          ...(provider === "api" ? { streamProviderFor: (): LLMProvider => ({ vendor: "openai", streamTurn: reply }) } : {}),
+          readSettings: () => ({ mode: "llm", fallbackOnError: "deny" }),
+          verdictCachePath: join(tempDir, "cache.jsonl"),
+          recentlyDenied: makeRecentlyDeniedStore(join(tempDir, "recent.json")),
+        });
+        cache = wired.cache;
+        return wired;
+      },
+    };
+  });
+  let auth: Awaited<ReturnType<typeof prepareAuthLoss>> | undefined;
+  try {
+    if (provider !== "api" && loss) auth = await prepareAuthLoss(provider, loss);
+    const { wireReviewerAndPermissions } = await import("../reviewer-permission-wiring.js");
+    const { PermissionManager } = await import("../../../permissions/permission-manager.js");
+    const manager = new PermissionManager(join(tempDir, "permissions.json"));
+    manager.setMode("auto");
+    const selection = provider === "api" ? { kind: "api" } as const :
+      { kind: "subscription", provider, model: "fixture-model" } as const;
+    const context = {
+      host: createBootHostFixture(), toolRegistry: { setDenyRules: vi.fn() }, permissionManager: manager,
+      approvalGate: { setOwnerAwayAutoSkipMinutes: vi.fn() }, getMainWindow: () => null,
+      settingsService: {
+        onChanged: vi.fn(), getSecret: vi.fn(() => "fixture-key"),
+        get: (key: string) => key === "llm" ? {
+          provider: "openai", activeChatRuntime: selection, vendors: { openai: { model: "fixture-model" } },
+        } : {},
+      },
+      llmFetch: vi.fn(), singleHopNetworkFetch: vi.fn(),
+      bootAuditLogger: { appendPermissionAuditEntry: vi.fn(), logShadow: vi.fn() },
+      resolveRootSessionId: (id: string) => id,
+      subscriptionProviderFactory: vi.fn((): LLMProvider => ({ vendor: "openai", streamTurn: reply })),
+    };
+    const setReviewer = vi.spyOn(manager, "setReviewer");
+    await wireReviewerAndPermissions(context as never);
+    let invocation = 0;
+    const dispatch = async (headless: boolean) => {
+      const sessionId = "live-review";
+      const permission = manager.checkDetailed("network_probe", "builtin", "network", undefined, { sessionId, headless });
+      const review = await manager.dispatchReviewer("network_probe", {
+        invocationId: String(++invocation), sessionId, source: "builtin", category: "network",
+        pathFields: [], finalInput: { url: "http://localhost:3456" }, trustOrigin: "llm-tool-arg",
+        executionCwd: tempDir, allowedDirectories: [tempDir], sensitivePathsAdjacent: [], permissionDecision: permission,
+      });
+      return { review, result: manager.resolveReviewedPermission(permission, review) };
+    };
+    const seedVerdict = async (headless: boolean) => {
+      // Seed and flush with the same dependencies and main's original cache behavior.
+      const wiring = setReviewer.mock.lastCall?.[0];
+      if (!wiring) throw new Error("Missing reviewer wiring");
+      const { classifier, cache: seedCache, recentlyDenied, model, cacheScope } = wiring;
+      manager.setReviewer({ classifier, cache: seedCache, recentlyDenied, model, cacheScope });
+      const first = await dispatch(headless);
+      expect(first.review.outcome).toBe("fresh");
+      expect((await dispatch(headless)).review.outcome).toBe("cache");
+      await seedCache.flush();
+      await wireReviewerAndPermissions(context as never);
+      expect(manager.getVerdictCache()).not.toBe(seedCache);
+      return first.result;
+    };
+    const loseAuth = async () => {
+      const route = auth;
+      if (!route) throw new Error("Missing route failure fixture");
+      await route.loseAuth();
+      reply.mockClear();
+      reply.mockImplementation(async function* (params) {
+        await route.checkAuthorization();
+        yield* replyWithVerdict(params);
+      });
+    };
+    const getCache = () => {
+      const installedCache = manager.getVerdictCache();
+      if (!installedCache) throw new Error("Missing reviewer cache");
+      return installedCache;
+    };
+    await test({ manager, directory: tempDir, getCache, reply, dispatch, seedVerdict, loseAuth });
+    if (loss === "startup") expect(auth?.openAcp).toHaveBeenCalled();
+  } finally {
+    await auth?.stop();
+    await cache?.flush();
+    vi.doUnmock("electron");
+    vi.doUnmock("../reviewer-wiring.js");
+    vi.doUnmock("../../../permissions/permission-settings-store.js");
+    vi.resetModules();
+    await cleanupTmpDir(tempDir);
+  }
+}
+
+it.each(AUTH_LOSS_CASES)("fails closed with an empty verdict cache after %s", async (_case, provider, loss) => {
+  await withLiveReviewer(provider, async ({ reply, dispatch, loseAuth }) => {
+    await loseAuth();
+    for (const headless of [false, true]) {
+      reply.mockClear();
+      const { review, result } = await dispatch(headless);
+      expect(reply).toHaveBeenCalled();
+      expect(review).toMatchObject({ outcome: "error", verdict: { level: "high" } });
+      expect(result.decision).toBe(headless ? "deny" : "ask");
+    }
+  }, loss);
+});
+
+it.each(AUTH_LOSS_CASES)("re-reviews an identical request after %s despite a persisted allow", async (_case, provider, loss) => {
+  await withLiveReviewer(provider, async ({ seedVerdict, reply, dispatch, getCache, loseAuth }) => {
+    await seedVerdict(true);
+    const lookup = vi.spyOn(getCache(), "lookup");
+    const store = vi.spyOn(getCache(), "store");
+
+    await loseAuth();
+    const { review, result } = await dispatch(true);
+    expect(result.decision).toBe("deny");
+    expect(review.outcome).toBe("error");
+    expect(reply).toHaveBeenCalled();
+    expect(lookup).not.toHaveBeenCalled();
+    expect(store).not.toHaveBeenCalled();
+  }, loss);
+});
+
+it("keeps cache hits for an API-key follow-chat reviewer", async () => {
+  await withLiveReviewer("api", async ({ reply, dispatch }) => {
+    expect((await dispatch(true)).review.outcome).toBe("fresh");
+    expect((await dispatch(true)).review.outcome).toBe("cache");
+    expect(reply).toHaveBeenCalledOnce();
+  });
+});
+
+it("preserves cache hits for an explicit independent model", async () => {
+  await withLiveReviewer("grok-build", async ({ seedVerdict, manager, reply, dispatch }) => {
+    await seedVerdict(true);
+    const { BuiltinLlmJudge } = await import("../../../permissions/judge/builtin-llm-judge.js");
+    const { judgeSettings, collectingAudit } = await import("../../../permissions/judge/__tests__/judge-request-fixture.js");
+    const stage = { id: "independent", provider: "builtin-llm", model: { vendor: "openai", model: "fixture-independent" } } as const;
+    const classifyWithTrace = vi.fn(async () => {
+      const verdict = { level: "low", reason: "Independent verdict" } as const;
+      return { ruleVerdict: verdict, finalVerdict: verdict, llmVerdict: verdict, outcome: "fresh" as const };
+    });
+    manager.setJudge({
+      settings: judgeSettings({ chain: [stage], categories: { shell: true, network: true, write: true } }),
+      chain: [{ settings: stage, judge: new BuiltinLlmJudge({ classifyWithTrace }, stage.model.model) }],
+      breaker: manager.getJudgeBreaker(), audit: collectingAudit().logger,
+    });
+    reply.mockClear();
+    reply.mockImplementation(() => { throw new Error("subscription-chat-unavailable"); });
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const { review, result } = await dispatch(true);
+      expect(result.decision).toBe("allow");
+      expect(review.outcome).toBe(attempt === 0 ? "fresh" : "cache");
+    }
+    expect(classifyWithTrace).toHaveBeenCalledOnce();
+    expect(reply).not.toHaveBeenCalled();
+  });
+});
+
+it("does not replay the authoritative subscription baseline in shadow mode", async () => {
+  await withLiveReviewer("grok-build", async ({ seedVerdict, manager, reply, dispatch, loseAuth }) => {
+    await seedVerdict(true);
+    const { judgeSettings, scriptedStage, collectingAudit } = await import("../../../permissions/judge/__tests__/judge-request-fixture.js");
+    const stage = scriptedStage("observer");
+    const judge = vi.fn(async () => ({ decision: "allow" as const, rationale: "Shadow observation" }));
+    manager.setJudge({
+      settings: judgeSettings({ chain: [stage], mode: "shadow", categories: { shell: true, network: true, write: true } }),
+      chain: [{ settings: stage, judge: { id: "observer", version: "fixture", judge } }],
+      breaker: manager.getJudgeBreaker(), audit: collectingAudit().logger,
+    });
+
+    await loseAuth();
+    const { review, result } = await dispatch(true);
+    expect(result.decision).toBe("deny");
+    expect(review.outcome).toBe("error");
+    expect(judge).toHaveBeenCalledOnce();
+    expect(reply).toHaveBeenCalled();
+  }, "logout");
+});
+
+it("reviews logical surface actions live after subscription auth loss", async () => {
+  await withLiveReviewer("grok-build", async ({ manager, reply, directory, getCache, loseAuth }) => {
+    const { issueUserOwnedBrowserScope } = await import("../../../permissions/user-owned-browser-scope.js");
+    const sessionId = "logical-review";
+    const userOwnedBrowser = issueUserOwnedBrowserScope({
+      kind: "browser-origin", origin: "https://example.test", tabOpener: "user", tabId: "tab", documentId: 1, controlGeneration: 1,
+    }, () => true);
+    manager.setUserOwnedSurfaceChoice(sessionId, "browser", "auto");
+    reply.mockImplementation(async function* () {
+      yield { type: "text_delta", text: '{"consistent":true,"reason":"Requested action"}' };
+      yield { type: "message_complete", stopReason: "end_turn" };
+    });
+    let invocation = 0;
+    const dispatchSurface = async () => {
+      const permission = manager.checkDetailed("browser_action", "builtin", "read", undefined, {
+        sessionId, trustOrigin: "llm-tool-arg", userOwnedBrowser,
+      });
+      const review = await manager.dispatchReviewer("browser_action", {
+        invocationId: String(++invocation), sessionId, source: "builtin", category: "read", pathFields: [],
+        finalInput: { tabId: "tab", action: "read details" }, executionCwd: directory, allowedDirectories: [directory],
+        sensitivePathsAdjacent: [], trustOrigin: "llm-tool-arg", permissionDecision: permission,
+        conversationContext: { recentUserMessage: "Read my current tab", currentTaskStep: "Read the details" },
+      });
+      return manager.resolveReviewedPermission(permission, review);
+    };
+    const lookup = vi.spyOn(getCache(), "lookup");
+    expect((await dispatchSurface()).decision).toBe("allow");
+    await loseAuth();
+    expect(await dispatchSurface()).toMatchObject({ decision: "ask", reviewer: { outcome: "error" } });
+    expect(reply).toHaveBeenCalledOnce();
+    expect(lookup).not.toHaveBeenCalled();
+  }, "logout");
+});
+
+it("does not start a rationale round from a stored subscription verdict", async () => {
+  await withLiveReviewer("chatgpt-plan", async ({ dispatch, manager, reply, seedVerdict, loseAuth }) => {
+    const { isRationaleEligible } = await import("../../../tools/pipeline/rationale-control.js");
+    const { createTestRequestAnchor } = await import("../../../tools/pipeline/__tests__/rationale-fixtures.js");
+    const anchor = createTestRequestAnchor({ sessionId: "live-review" });
+    const eligible = (permission: Awaited<ReturnType<typeof dispatch>>["result"]) => isRationaleEligible({
+      permission, anchor, invocationTrustOrigin: "llm-tool-arg",
+      rationaleProvenance: { startedFromUserKeyboard: true, taint: "none" },
+    });
+    reply.mockImplementation(async function* () {
+      yield { type: "text_delta", text: '{"level":"high","reason":"Extra operation risk"}' };
+      yield { type: "message_complete", stopReason: "end_turn" };
+    });
+    expect(eligible(await seedVerdict(false))).toBe(true);
+    manager.beginPermissionTurn("live-review");
+    await loseAuth();
+    const { review, result } = await dispatch(false);
+    expect(result.decision).toBe("ask");
+    expect(eligible(result)).toBe(false);
+    expect(review.outcome).toBe("error");
+    expect(reply).toHaveBeenCalled();
+  }, "logout");
+});
+
+it("neither reads nor writes cache entries during successful subscription review", async () => {
+  await withLiveReviewer("chatgpt-plan", async ({ dispatch, reply, getCache }) => {
+    const lookup = vi.spyOn(getCache(), "lookup");
+    const store = vi.spyOn(getCache(), "store");
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const { review, result } = await dispatch(true);
+      expect(result.decision).toBe("allow");
+      expect(review.outcome).toBe("fresh");
+    }
+    expect(reply).toHaveBeenCalledTimes(2);
+    expect(lookup).not.toHaveBeenCalled();
+    expect(store).not.toHaveBeenCalled();
+  });
+});

@@ -234,6 +234,7 @@ export function wireReviewerAgent(deps: WireReviewerDeps): WireReviewerResult {
   deps.permissionManager.setReviewer({
     classifier,
     cache,
+    verdictCacheEnabled: !effectiveSettings.provider.startsWith("subscription:"),
     recentlyDenied,
     degradedToRule,
     ...(runtimeMode === "llm" ? { model: `${effectiveSettings.provider}/${effectiveSettings.model}` } : {}),
