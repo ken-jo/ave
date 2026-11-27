@@ -97,8 +97,10 @@ import {
 } from "../permissions/asrt-sandbox.js";
 import { createAveHomeBoundarySnapshot } from "../permissions/ave-home-boundary-snapshot.js";
 import { openEgressInvocation, type ShellEgressContext } from "../permissions/egress-invocations.js";
-import { isWindowsPathAtOrUnder, MXC_BASH_UNAVAILABLE_MESSAGE, powerShellMxcCommandLine } from "../permissions/mxc-windows.js";
+import { isWindowsPathAtOrUnder, mayIndicateMxcShellStartupFailure, MXC_BASH_UNAVAILABLE_MESSAGE, powerShellMxcCommandLine } from "../permissions/mxc-windows.js";
+import { recheckWindowsContainerBackendAfterShellFailure, type WindowsBackendObservation } from "../permissions/windows-confinement-evidence.js";
 import { prepareMxcPosixShellLaunch } from "./mxc-posix-shell-launch.js";
+import { MxcCwdChangedError } from "../permissions/mxc-shell-supervisor-client.js";
 import { prepareMxcShellLaunch, type MxcParserPreparationStage, type MxcShellLaunch, type MxcShellPreparationStage } from "./mxc-shell-launch.js";
 import { deferWatchedReceipt } from "../permissions/windows-watched-rows.js";
 import { createContainedShellLifecycle } from "./contained-shell-lifecycle.js";
@@ -130,13 +132,16 @@ import {
   resolveHostShellWorkingDirectory,
   withHostShellExecutionHandoff,
   holdHostShellSpawnDirectory,
+  hostShellPermitDirectoryIdentity,
   HostShellDirectoryHoldError,
   assertHostShellSpawnDirectory,
+  assertHostShellSpawnDirectoryCurrent,
   type HostShellSpawnAuthorization,
   type HostShellSpawnDirectoryHold,
 } from "../permissions/host-shell-execution-permit.js";
+import { captureShellWorkingDirectoryIdentity, matchesShellWorkingDirectoryIdentity, type ShellWorkingDirectoryIdentity } from "../permissions/shell-working-directory-identity.js";
 import { hostShellWorkingDirectoryPrelude } from "./host-shell-cwd-guard.js";
-import { attachHostShellControlChannel } from "./host-shell-control-channel.js";
+import { attachHostShellControlChannel, hostShellGrantAuthorizer } from "./host-shell-control-channel.js";
 import { containerShellAllowedDirectories, deriveSandboxWritePaths } from "../permissions/sandbox-write-jail.js";
 import { resolveShellTimeoutMs, TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import {
@@ -334,7 +339,7 @@ interface OutputCollectorOptions {
   readonly observation?: AgentTerminalObservationLease;
 }
 
-function createOutputCollector(child: PipedChild, options: OutputCollectorOptions = {}) {
+function createOutputCollector(child: Pick<PipedChild, "stdout" | "stderr">, options: OutputCollectorOptions = {}) {
   const factory = options.captureFactory;
   const cwdProbe = options.cwdProbe;
   // Four bytes cover any UTF-8 code point. The display cap remains in UTF-16
@@ -2788,6 +2793,13 @@ function launcherError(error: unknown): Error {
   return new Error(code === undefined ? "container launcher error" : `container launcher error ${code}`);
 }
 
+function confirmContainerAfterLauncherError(error: unknown, dispatch: WindowsBackendObservation): void {
+  const code = validatedErrorCode(error);
+  if (code === "ENOENT" || code === "ENOEXEC" || code === "EACCES" || code === "EPERM") {
+    void recheckWindowsContainerBackendAfterShellFailure(dispatch);
+  }
+}
+
 // The parser's output and stderr are never shown: how it ended is reported in fixed words.
 function powerShellParserEnding(aborted: boolean, timedOut: boolean, timeoutSeconds: number, code: number | null): string {
   if (aborted) return "Shell command cancelled.";
@@ -2835,6 +2847,7 @@ async function runPosixContainerShell(input: {
       egressToken: egress.token, commandLine: input.commandLine, cwd: input.cwd,
       allowRead: read.allowRead, allowWrite: writePaths, denyRead: read.denyRead, floorPierces: read.floorPierces,
       env: input.env, timeoutMs,
+      ...(input.spawnAuthorization === undefined ? {} : { cwdIdentity: input.spawnAuthorization.cwdIdentity }),
     }, lifecycle));
     await refreshShellRemoteAuthority();
     input.signal?.throwIfAborted();
@@ -2842,8 +2855,11 @@ async function runPosixContainerShell(input: {
       { mode: "isolated", detail: "filesystem/process confinement" }, egress.token);
     assertShellRemoteAuthority();
     assertManagedChildProcessAdmissionOpen(label);
-    assertHostShellSpawnDirectory(input.spawnAuthorization);
-    const { child, completion } = launch.start(label);
+    // macOS spends the permit's execution handoff at the grant, after the workload has checked the cwd it inherited;
+    // Linux spends it here, before the start.
+    if (launch.spendsPermitAtGrant) assertHostShellSpawnDirectoryCurrent(input.spawnAuthorization);
+    else assertHostShellSpawnDirectory(input.spawnAuthorization);
+    const { child, completion } = launch.start(label, hostShellGrantAuthorizer(input.spawnAuthorization));
     // Own the spawned supervisor even when output setup throws.
     void completion.catch(() => {});
     collector = createOutputCollector(child, {
@@ -2852,18 +2868,27 @@ async function runPosixContainerShell(input: {
     child.stdout.on("data", collector.collect);
     child.stderr.on("data", collector.collectStderr);
     const exit = await completion;
-    const interrupted = exit.cancelled || exit.timedOut || exit.cleanupUnverified || exit.failure !== undefined;
+    const failure = "failure" in exit ? exit.failure : undefined;
+    const interrupted = exit.cancelled || exit.timedOut || exit.cleanupUnverified || failure !== undefined;
     const artifact = await collector.finish(interrupted);
     collector.finishObservation(exit.code, exit.cancelled ? "cancelled" : interrupted || exit.rejected ? "failed" : undefined);
-    if (exit.rejected) {
+    if (("cwdChanged" in exit && exit.cwdChanged) || ("grantWithheld" in exit && exit.grantWithheld)) {
+      // Nothing ran. A permit's refusal reads as the host route's revoked approval.
+      result = input.spawnAuthorization === undefined
+        ? { output: t("sandboxPolicy.containerShellNotStarted"), isError: true, metadata: { sandboxed: false, sandboxAttempted: true } }
+        : { output: `spawn failed: ${HOST_SHELL_AUTHORIZATION_REVOKED_ERROR}`, isError: true, metadata: { sandboxed: false, sandboxAttempted: true } };
+    } else if (exit.rejected) {
       result = {
-        output: t("sandboxPolicy.containerStartRefused"), isError: true,
+        output: [process.platform === "linux" ? t("sandboxPolicy.linuxContainerStartRefused") : t("sandboxPolicy.containerStartRefused"),
+          // A launcher that failed after the command began still had its writes quarantined; say so.
+          ...("cleanupNotice" in exit && typeof exit.cleanupNotice === "string" ? [exit.cleanupNotice] : [])].join("\n"), isError: true,
         metadata: { sandboxed: false, sandboxAttempted: true, isolation: "unavailable" },
       };
     } else {
       const policyNotices = [...read.policyNotices,
         ...(launch.carvedReadLimitedAt?.map(folder => t("sandboxPolicy.carvedReadLimited", { folder })) ?? []),
         ...launch.narrowedWriteRoots.map(({ root }) => t("sandboxPolicy.containerWriteWithheld", { root })),
+        ...("cleanupNotice" in exit && typeof exit.cleanupNotice === "string" ? [exit.cleanupNotice] : []),
       ];
       // The SDK reports a shell ended by a signal, or a child lost before exec, as -1; 255 is a literal exit status.
       const noExitCode = exit.code === -1;
@@ -2871,9 +2896,11 @@ async function runPosixContainerShell(input: {
         ? collector.format() : collector.format({ code: exit.code, signal: null });
       const ending = exit.cancelled ? t("sandboxPolicy.containerShellCancelled")
         : exit.timedOut ? t("sandboxPolicy.containerShellTimedOut", { seconds: timeoutMs / 1000 })
-          : exit.cleanupUnverified ? t("sandboxPolicy.containerShellCleanupUnverified")
-            : exit.failure ? t("sandboxPolicy.containerShellRefused", { reason: exit.failure.code })
-              : noExitCode ? t("sandboxPolicy.containerShellNoExitCode") : "";
+          : "startFailed" in exit && exit.startFailed ? t("sandboxPolicy.containerShellStartFailed")
+            : exit.cleanupUnverified ? t("sandboxPolicy.containerShellCleanupUnverified")
+              : "transportFailed" in exit && exit.transportFailed ? t("sandboxPolicy.containerShellTransportFailed")
+                : failure ? t("sandboxPolicy.containerShellRefused", { reason: failure.code })
+                  : noExitCode ? t("sandboxPolicy.containerShellNoExitCode") : "";
       const output = await annotateWithSandboxViolations(egress.token, [format, ending].filter(Boolean).join("\n"), undefined, policyNotices);
       result = {
         output, isError: interrupted || exit.code !== 0,
@@ -2896,10 +2923,17 @@ async function runPosixContainerShell(input: {
       logReleaseFailures(label, await lifecycle.dispose());
       throw error;
     }
+    // A revoked approval is a refused spawn, worded as the wrap route words it. The container was not what failed,
+    // and nothing ran, so the result claims no isolation either way.
+    const cwdChanged = error instanceof MxcCwdChangedError;
+    const revoked = (error instanceof Error && error.message === HOST_SHELL_AUTHORIZATION_REVOKED_ERROR) || (cwdChanged && input.spawnAuthorization !== undefined);
     result = input.signal?.aborted
       ? { output: t("sandboxPolicy.containerShellCancelled"), isError: true, metadata: { aborted: true, sandboxed: false } }
-      : { output: t("sandboxPolicy.containerShellRefused", { reason: shellFailureText([error], "code") }), isError: true,
-        metadata: { sandboxed: false, sandboxAttempted: true, isolation: "unavailable" } };
+      : revoked ? { output: `spawn failed: ${HOST_SHELL_AUTHORIZATION_REVOKED_ERROR}`, isError: true, metadata: { sandboxed: false, sandboxAttempted: true } }
+        : cwdChanged ? { output: t("sandboxPolicy.containerShellNotStarted"), isError: true, metadata: { sandboxed: false, sandboxAttempted: true } }
+        : { output: t(process.platform === "linux" ? "sandboxPolicy.linuxContainerShellRefused" : "sandboxPolicy.containerShellRefused",
+          { reason: shellFailureText([error], "code") }), isError: true,
+          metadata: { sandboxed: false, sandboxAttempted: true, isolation: "unavailable" } };
   }
   return withReleaseFailures(result, await lifecycle.dispose(), "code");
 }
@@ -2927,7 +2961,7 @@ export async function spawnWithSandbox(
   cwdHold = directoryHold;
   const { shell, homePath, hostHome: home, environment } = preparedShellCommand(prepared);
   if (!homePath) throw new Error("Sandbox shell preparation has no owned HOME");
-  if (plan?.platform === "darwin" && plan.substrate === "mxc") {
+  if ((plan?.platform === "darwin" || plan?.platform === "linux") && plan.substrate === "mxc") {
     const { argv, probe } = preparedShellCwdProbe(prepared);
     return await runPosixContainerShell({
       command, commandLine: `exec ${[shell.cmd, ...argv].map(shellQuote).join(" ")}`, cwd: resolvedCwd,
@@ -3873,11 +3907,17 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
       }
     }
     const parsesInMxc = hostShellPlan.mode === "asrt" && isWindowsContainerShell(hostShellPlan);
+    const mxcCwdIdentity = parsesInMxc && process.platform === "win32"
+      ? ctx.windowsContainerShellCwd !== undefined ? ctx.windowsContainerShellCwd
+        : ctx.hostShellExecutionPermit !== undefined ? hostShellPermitDirectoryIdentity(ctx.hostShellExecutionPermit)
+          : captureShellWorkingDirectoryIdentity(resolvedCwd)
+      : undefined;
     const markMxcTiming = parsesInMxc ? startMxcPowerShellTiming() : undefined;
     let commandAst: PowerShellAstSummary;
     try {
-      const parsed = parsesInMxc
-        ? await parsePowerShellAstInMxc(input.command, resolvedCwd, ctx, input.timeoutSeconds, markMxcTiming)
+      if (parsesInMxc && mxcCwdIdentity == null) return mxcSpawnFailure("working directory admission is unavailable");
+      const parsed = mxcCwdIdentity != null
+        ? await parsePowerShellAstInMxc(input.command, resolvedCwd, mxcCwdIdentity, ctx, input.timeoutSeconds, markMxcTiming)
         : await parsePowerShellAst(input.command, startupPinned || hostSpawnAuthorization !== undefined);
       if ("failure" in parsed) return parsed.failure;
       commandAst = parsed;
@@ -3890,9 +3930,10 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
       return { output: `PowerShell command blocked: ${structuralViolation}`, isError: true };
     }
     const commandReadPaths: string[] = [];
+    const policyCwd = mxcCwdIdentity?.realpath ?? resolvedCwd;
     const commandPathViolation = findPowerShellAstPathViolation(
       commandAst,
-      resolvedCwd,
+      policyCwd,
       ctx.cwd,
       ctx.extraAllowedDirectories,
       ctx.blockReadsOutsideWorkingDirectories === true,
@@ -3932,7 +3973,7 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
       };
     }
     const runtimeReads = powerShellHostScriptReadPaths(commandAst, input.command);
-    const spawnCwd = hostSpawnAuthorization?.cwdIdentity.realpath ?? resolvedCwd;
+    const spawnCwd = mxcCwdIdentity?.realpath ?? hostSpawnAuthorization?.cwdIdentity.realpath ?? resolvedCwd;
     let workbookIdentity: string | undefined;
     if (commandAst.commands.some(command => isPowerShellWindowsWorkbook(command))) {
       const operand = commandAst.commands[0]?.arguments[2];
@@ -3958,9 +3999,11 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
       const command = runtimeReads.length > 0 ? awaitedHostScriptCommand(input.command, commandAst.commands[0]!) : input.command;
       if (command === null) return { output: "PowerShell command blocked: host script runtime has no parser extent", isError: true };
       if (isWindowsContainerShell(hostShellPlan)) {
+        if (mxcCwdIdentity == null) return mxcSpawnFailure("working directory admission is unavailable");
         const checked = await checkedShellResult(() => spawnPowerShellInMxc(
           command,
-          spawnCwd,
+          resolvedCwd,
+          mxcCwdIdentity,
           writePaths,
           input.timeoutSeconds, ctx.abortSignal, outputCapture,
           outputProgress,
@@ -4270,17 +4313,17 @@ function startMxcPowerShellTiming(): MxcPowerShellTiming | undefined {
   };
 }
 
-async function parsePowerShellAstInMxc(command: string, cwd: string, ctx: ToolExecutionContext, timeoutSeconds: number, markTiming?: MxcPowerShellTiming): Promise<PowerShellAstSummary | { failure: ToolExecutionResult }> {
+async function parsePowerShellAstInMxc(command: string, cwd: string, identity: ShellWorkingDirectoryIdentity, ctx: ToolExecutionContext, timeoutSeconds: number, markTiming?: MxcPowerShellTiming): Promise<PowerShellAstSummary | { failure: ToolExecutionResult }> {
   // Only AST input is embedded; decoding never executes the supplied source.
   const input = Buffer.from(command, "utf8").toString("base64");
   const parserScript = POWER_SHELL_AST_PARSER.replace("[Console]::In.ReadToEnd()", `[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${input}'))`);
   const writePaths = withLocalityDecision(() => deriveSandboxWritePaths({
     ...(ctx.ownerPluginSandboxRoot !== undefined ? { ownerPluginSandboxRoot: ctx.ownerPluginSandboxRoot } : {}),
-    allowedDirectories: containerShellAllowedDirectories(cwd, ctx.extraAllowedDirectories),
+    allowedDirectories: containerShellAllowedDirectories(identity.realpath, ctx.extraAllowedDirectories),
   }));
   markTiming?.("parser-write-roots-ready");
   const response = createPowerShellParserResponse();
-  const result = await spawnPowerShellInMxc(parserScript, cwd, writePaths, timeoutSeconds, ctx.abortSignal, undefined, undefined,
+  const result = await spawnPowerShellInMxc(parserScript, cwd, identity, writePaths, timeoutSeconds, ctx.abortSignal, undefined, undefined,
     typeof ctx.metadata.toolUseId === "string" ? ctx.metadata.toolUseId : undefined, response, [], undefined, boundarySessionOf(ctx),
     undefined, [], markTiming);
   if (result.isError) return { failure: result };
@@ -4433,7 +4476,7 @@ async function spawnPowerShellWithSandbox(
   catch (error) { sandboxHome.cleanup(); throw error; }
   const sandboxCommand = isWindows ? powerShellLaunch.args.at(-1)!
     : [executable, ...powerShellLaunch.args].map(posixSingleQuote).join(" ");
-  if (plan?.platform === "darwin" && plan.substrate === "mxc") {
+  if ((plan?.platform === "darwin" || plan?.platform === "linux") && plan.substrate === "mxc") {
     try {
       return await runPosixContainerShell({
         command, commandLine: `exec ${sandboxCommand}`, cwd, writePaths,
@@ -4653,7 +4696,8 @@ async function spawnPowerShellWithSandbox(
  */
 async function spawnPowerShellInMxc(
   command: string,
-  cwd: string,
+  requestedCwd: string,
+  cwdIdentity: ShellWorkingDirectoryIdentity,
   writePaths: readonly string[],
   timeoutSeconds: number,
   signal?: AbortSignal,
@@ -4678,9 +4722,10 @@ async function spawnPowerShellInMxc(
   const installation = resolveTrustedPowerShellExecutable();
   const systemExecutable = win32SystemBinary("WindowsPowerShell/v1.0/powershell.exe");
   if (installation === null || installation.kind !== "windows-powershell"
-    || win32Path.normalize(installation.executable).toLowerCase() !== systemExecutable.toLowerCase()) {
+    || installation.assertStillValid === undefined || win32Path.normalize(installation.executable).toLowerCase() !== systemExecutable.toLowerCase()) {
     return mxcSpawnFailure("trusted system installation is unavailable");
   }
+  const assertInterpreter = installation.assertStillValid;
   const markParserTiming = parserResponse === undefined || markTiming === undefined ? undefined
     : (stage: MxcPowerShellParserStage) => markTiming(`parser-${stage}`);
   markParserTiming?.("installation-ready");
@@ -4688,6 +4733,12 @@ async function spawnPowerShellInMxc(
   // failure is formatted only after disposal, from the raw errors.
   const lifecycle = createContainedShellLifecycle();
   const controllerRevoked = new Error("remote-controller-revoked");
+  const gate = currentEffectGateContext();
+  const assertController = () => {
+    if (!isRemoteControllerBoundToSession(gate?.permissionContext?.remoteControllerAuthority, gate?.sessionId)) {
+      throw new Error("remote-controller-revoked");
+    }
+  };
   let failurePrefix = "could not create isolated HOME: ";
   let observation: AgentTerminalObservationLease | undefined;
   let collector: ReturnType<typeof createOutputCollector> | undefined;
@@ -4700,16 +4751,26 @@ async function spawnPowerShellInMxc(
   };
   let token: string;
   let launch: MxcShellLaunch;
-  let child: PipedChild;
+  let child: ChildProcessByStdio<Writable, Readable, Readable>;
+  let backendObservation: WindowsBackendObservation;
   let held: HeldWindowsRun | undefined;
   let policyNotices: readonly string[];
+  const cwd = cwdIdentity.realpath;
+  const assertWorkingDirectory = (): void => {
+    if (!matchesShellWorkingDirectoryIdentity(requestedCwd, cwdIdentity)) throw new HostShellDirectoryHoldError();
+  };
   try {
     const sandboxHome = createSandboxProcessHome();
     failurePrefix = "";
     lifecycle.defer(() => sandboxHome.cleanup());
     markParserTiming?.("home-ready");
-    const cwdHold = await holdHostShellSpawnDirectory(spawnAuthorization);
+    assertWorkingDirectory();
+    const cwdHold = await holdHostShellSpawnDirectory(spawnAuthorization, cwdIdentity);
     lifecycle.defer(() => cwdHold.dispose());
+    const holdStdio = cwdHold.stdio;
+    if (holdStdio === undefined) throw new HostShellDirectoryHoldError();
+    assertWorkingDirectory();
+    cwdHold.assertHeld();
     if (parserResponse === undefined) markTiming?.("cwd-hold-ready");
     else markParserTiming?.("cwd-hold-ready");
     const powerShellLaunch = preparePowerShellLaunch(verified?.command ?? command, powerShellExecutionEnvironment(verified, buildSafeChildEnv({ ...sandboxHome.env })), sandboxHome);
@@ -4753,34 +4814,45 @@ async function spawnPowerShellInMxc(
       sandboxHome: sandboxHome.path,
       env: powerShellExecutionEnvironment(verified, powerShellLaunch.env, workbookIdentity),
       timeoutMs: resolveShellTimeoutMs(timeoutSeconds),
-      directoryHeld: cwdHold.stdio !== undefined,
+      directoryHeld: true,
       exists: existsSync,
+      assertWorkingDirectory,
+      assertCommand: () => {
+        assertInterpreter();
+        if (verified !== undefined && verifiedShellExecution(verified.handle, verified.identity) === undefined) {
+          throw new Error("Verified shell command is no longer available for this invocation");
+        }
+      },
+      assertDelivery: () => {
+        assertController();
+        assertManagedChildProcessAdmissionOpen(MXC_SHELL_LABEL);
+        cwdHold.assertHeld();
+      },
       ...(parserResponse === undefined && markTiming !== undefined ? { markTiming } : {}),
       ...(markParserTiming !== undefined ? { markParserTiming } : {}),
     }, lifecycle));
     signal?.throwIfAborted();
-    const gate = currentEffectGateContext();
     if (!await refreshRemoteControllerBoundToSession(gate?.permissionContext?.remoteControllerAuthority, gate?.sessionId)) throw controllerRevoked;
     observation = parserResponse === undefined ? startShellObservation(command, cwd,
       { mode: "isolated", detail: "filesystem/process confinement" }, token) : undefined;
-    if (!isRemoteControllerBoundToSession(gate?.permissionContext?.remoteControllerAuthority, gate?.sessionId)) throw new Error("remote-controller-revoked");
+    assertController();
     assertManagedChildProcessAdmissionOpen(MXC_SHELL_LABEL);
     if (detectMxcShellCapability() === undefined) throw new Error("Container shell route is no longer available");
     const [cmd, ...args] = launch.argv;
     if (cmd === undefined) throw new Error("Container launcher is missing");
-    boundarySnapshot.run(() => launch.activate(() => {
+    const launcherEnv = buildSafeChildEnv({});
+    const bindHeldPolicy = launch.bindHeldPolicy;
+    const target = bindHeldPolicy === undefined ? cwdHold.command(cmd, args) : cwdHold.command(cmd, args, true);
+    backendObservation = boundarySnapshot.run(() => launch.activate(() => {
       try {
         assertHostShellSpawnDirectory(spawnAuthorization);
+        assertWorkingDirectory();
         cwdHold.assertHeld();
       } catch (error) {
         throw error instanceof HostShellDirectoryHoldError ? error : launcherError(error);
       }
     }));
     try {
-      const bindHeldPolicy = launch.bindHeldPolicy;
-      const holdStdio = cwdHold.stdio;
-      if (bindHeldPolicy !== undefined && holdStdio === undefined) throw new Error("Windows sandbox policy requires a directory hold");
-      const target = bindHeldPolicy === undefined ? cwdHold.command(cmd, args) : cwdHold.command(cmd, args, true);
       if (parserResponse === undefined) markTiming?.("launch");
       else markParserTiming?.("launch");
       child = spawn(target.executable, target.args, {
@@ -4788,19 +4860,21 @@ async function spawnPowerShellInMxc(
         // nothing in the workspace sits beside it; the container's working
         // directory travels in the request.
         cwd: win32Path.dirname(cmd),
-        stdio: holdStdio === undefined ? ["ignore", "pipe", "pipe"] : bindHeldPolicy === undefined ? holdStdio : [...holdStdio, "pipe", "pipe"],
+        stdio: bindHeldPolicy === undefined ? holdStdio : [...holdStdio, "pipe", "pipe"],
         shell: false,
         windowsHide: true,
         // The launcher's own environment: the container's is in the request.
-        env: buildSafeChildEnv({}),
-      }) as PipedChild;
+        env: launcherEnv,
+      });
       const launcher = child;
       held = bindForegroundShellHold(cwdHold, launcher, sessionId, bindHeldPolicy === undefined ? undefined : {
         bindReader: (pid, onFailure) => bindHeldPolicy(launcher, pid, onFailure),
         onFailure: () => lifecycle.revoke(),
       });
     } catch (error) {
-      throw error instanceof HostShellDirectoryHoldError ? error : launcherError(error);
+      if (error instanceof HostShellDirectoryHoldError) throw error;
+      confirmContainerAfterLauncherError(error, backendObservation);
+      throw launcherError(error);
     }
   } catch (error) {
     lifecycle.revoke();
@@ -4876,6 +4950,7 @@ async function spawnPowerShellInMxc(
       void produce().then(resolveResult, fault);
     };
     let lifetime: ReturnType<typeof watchShellLifetime> | undefined;
+    let shellDiagnostics = "";
     let closed: Promise<void> | undefined;
     let unstartedLauncher: Error | undefined;
     const finishSpawnFailure = async (err: Error, pin?: WindowsHoldVerdict): Promise<void> => {
@@ -4896,6 +4971,7 @@ async function spawnPowerShellInMxc(
       });
     };
     spawned.on("error", (err) => {
+      if (spawned.pid === undefined) confirmContainerAfterLauncherError(err, backendObservation);
       if (run !== undefined) {
         if (spawned.pid === undefined) unstartedLauncher = err;
         else shellTaskLog.error({ label: MXC_SHELL_LABEL, err: shellFailureText([launcherError(err)]) }, "held contained shell reported an error");
@@ -4915,10 +4991,13 @@ async function spawnPowerShellInMxc(
       closed = checkedShellClose(spawned, waitForClose, run);
       if (run === undefined) trackManagedChildProcess(spawned, { killProcessGroup: false, label: MXC_SHELL_LABEL });
       if (launch.bindHeldPolicy === undefined) launch.bindChild(spawned);
-      collector = createOutputCollector(spawned, { captureFactory: outputCaptureFactory, progress, observation });
-      spawned.stdout.on("data", parserResponse === undefined ? collector.collect : parserResponse.collect);
-      // The parser's stderr is drained, never kept.
-      spawned.stderr.on("data", parserResponse === undefined ? collector.collectStderr : () => {});
+      const outputCollector = createOutputCollector(spawned, { captureFactory: outputCaptureFactory, progress, observation });
+      collector = outputCollector;
+      spawned.stdout.on("data", parserResponse === undefined ? outputCollector.collect : parserResponse.collect);
+      spawned.stderr.on("data", (chunk: Buffer) => {
+        if (shellDiagnostics.length < 4096) shellDiagnostics += chunk.toString().slice(0, 4096 - shellDiagnostics.length);
+        if (parserResponse === undefined) outputCollector.collectStderr(chunk);
+      });
       // Timeout and cancellation revoke the invocation before the kill starts.
       lifetime = watchShellLifetime(spawned, timeoutSeconds, signal, () => lifecycle.revoke(), run);
     } catch (error) {
@@ -4941,6 +5020,9 @@ async function spawnPowerShellInMxc(
       if (closed !== undefined) await closed;
       watch.dispose();
       settle(async () => {
+        if (!watch.aborted && !watch.timedOut && exitSignal === null && !failedPin(pin) && mayIndicateMxcShellStartupFailure(code, shellDiagnostics)) {
+          await recheckWindowsContainerBackendAfterShellFailure(backendObservation);
+        }
         const metadata = { ...watch.metadata(), ...commandExitMetadata(code, pin), timedOut: watch.timedOut, sandboxed: true };
         let completed: SpawnResult = { output: "", isError: true, metadata };
         const failures = await runReleaseSteps([

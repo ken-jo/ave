@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  containerHolderStopMs,
   MAX_TIMER_DELAY_MS,
   nativePluginChildStopBudgetMs,
   resolveShellTimeoutMs,
@@ -20,8 +21,12 @@ describe("TOOL_TIMEOUT_POLICY — single source of truth invariants", () => {
     expect(nativePluginChildStopBudgetMs()).toBe(
       TOOL_TIMEOUT_POLICY.pluginStartupDefaultMs
         + TOOL_TIMEOUT_POLICY.pluginShutdownKillGraceMs
-        + TOOL_TIMEOUT_POLICY.windowsProcessTreeKillMs,
+        + containerHolderStopMs(),
     );
+    // The container's own stop: a Windows process tree kill; a macOS holder's grace, output drain, group kill and label sweep.
+    expect(containerHolderStopMs("win32")).toBe(TOOL_TIMEOUT_POLICY.windowsProcessTreeKillMs);
+    expect(containerHolderStopMs("darwin")).toBe(TOOL_TIMEOUT_POLICY.mxcMacHolderTermGraceMs + TOOL_TIMEOUT_POLICY.mxcMacHolderOutputDrainMs
+      + TOOL_TIMEOUT_POLICY.processTreeKillMs + TOOL_TIMEOUT_POLICY.mxcMacHolderSweepMs);
   });
 
   it("reserves executor cleanup headroom for an oversized shell timeout", () => {

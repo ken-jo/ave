@@ -76,7 +76,6 @@ const RAW_IMPORTERS: Readonly<Record<string, readonly string[]>> = {
   // Out of scope for this owner: other launch sites with their own lifetime contracts, and boot/shutdown wiring.
   "src/boot/steps/marketplace-setup.ts": ["src/permissions/asrt-sandbox.ts:*"],
   "src/main/app-shutdown.ts": ["releaseAsrtSandboxForExit"],
-  "src/tools/mxc-shell-launch.ts": ["releaseEgressInvocation"],
   "src/main/memory-map/inference-child.ts": ["cleanupAsrtSandboxAfterCommand", "createSandboxProcessHome"],
   "src/main/terminal/pty-manager.ts": ["cleanupAsrtSandboxAfterCommand", "createSandboxProcessHome"],
   "src/mcp/mcp-client.ts": ["cleanupAsrtSandboxAfterCommand", "createSandboxProcessHome", "wrapBundledCommand"],
@@ -84,6 +83,7 @@ const RAW_IMPORTERS: Readonly<Record<string, readonly string[]>> = {
   "src/plugins/isolation/out-of-process-plugin.ts": ["cleanupAsrtSandboxAfterCommand", "createSandboxProcessHome", "holdWindowsFilesystemGrant"],
   "src/tools/powershell-launch.ts": ["createSandboxProcessHome"],
   "src/tools/prepared-shell-invocation.ts": ["createSandboxProcessHome"],
+  "src/tools/shell-egress-admission.ts": ["releaseEgressInvocation"],
   "src/tools/shell-tools.ts": ["cleanupAsrtSandboxAfterCommand", "createSandboxProcessHome"],
 };
 
@@ -299,7 +299,7 @@ function containedHookAwaitsRelease(source: string): boolean {
   return appearsInOrder(source, "const stop = (): void => { void holder.release().catch",
     "timedOut = true; stop();", "cancelled = true; stop();", 'input.abortSignal?.addEventListener("abort", onAbort',
     "if (input.abortSignal?.aborted) onAbort()", "writeError = error as Error;\n    stop();",
-    "input.timeoutMs + TOOL_TIMEOUT_POLICY.windowsProcessTreeKillMs", "settleTimer = setTimeout(",
+    "input.timeoutMs + containerHolderStopMs()", "settleTimer = setTimeout(",
     "await Promise.race([owned.completion, unsettled])", 'if (result === "unsettled") {\n      stop();',
     'return deny(t("be_scriptHookRunner.containedSettleDeadline"', "await Promise.race([stdoutEnded,",
     "await holder.release();", 'return deny(t("be_scriptHookRunner.containedTerminationUnverified"', "return input.outcome(");

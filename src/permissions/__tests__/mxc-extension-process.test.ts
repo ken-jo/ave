@@ -3,12 +3,11 @@ import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { createMxcNativeProcess } from "../../__tests__/support/mxc-supervisor.js";
 import { describe, expect, it, vi } from "vitest";
-import { MxcNativeProcess } from "../mxc-native-process.js";
+import { MxcNativeProcess, SEATBELT_CLEANUP_WARNINGS } from "../mxc-native-process.js";
 import { MxcCapabilityUnavailableError, MxcNativeCallStackError, MxcProcessCleanupError, MxcProcessContractError, MxcSupervisorLostError } from "../mxc-extension-errors.js";
 import { mxcModuleDiagnostics, encodeMxcFrame, MxcFrameDecoder, MXC_FRAME_MAX_BYTES, MXC_START_EVIDENCE_FIELDS, MXC_STREAM_CHUNK_BYTES, type MxcStreamFrame } from "../mxc-extension-protocol.js";
 import PINS from "../mxc-launcher-pins.json" with { type: "json" };
 import { assertMxcShellCallStack, MXC_SHELL_ASYNC_STACK_BYTES } from "../mxc-shell-supervisor-bootstrap.js";
-import { SEATBELT_CLEANUP_WARNING } from "../mxc-shell-supervisor-service.js";
 
 const GENERATION = "a".repeat(64);
 const KEY = Buffer.alloc(32, 1);
@@ -20,7 +19,8 @@ const STARTED = { requestDigest: "c".repeat(64), startEvidence: { installedPaylo
 describe("native shell supervisor protocol", () => {
   const header = { version: 1, generation: GENERATION, sequence: 0 } as const;
   const requestPath = resolve("request.json");
-  const shellStart = { ...header, type: "shell-start", requestPath, requestSha256: "c".repeat(64) } as const;
+  const cwdIdentity = { realpath: resolve("."), dev: "16777229", ino: "18446744073709551615" };
+  const shellStart = { ...header, type: "shell-start", requestPath, requestSha256: "c".repeat(64), cwdIdentity } as const;
 
   it("authenticates the staged start and native child receipts", () => {
     const shellReady = { ...header, type: "shell-ready", id: 42 } as const;
@@ -31,6 +31,20 @@ describe("native shell supervisor protocol", () => {
     expect(() => encode({ ...shellStart, requestSha256: "invalid" })).toThrow(MxcProcessContractError);
     expect(() => encode({ ...shellStart, requestPath: "relative.json" })).toThrow(MxcProcessContractError);
     expect(() => encode({ ...shellReady, id: 0 })).toThrow(MxcProcessContractError);
+    const verified = { ...header, type: "shell-cwd-verified", id: 42 } as const;
+    expect([...new MxcFrameDecoder(GENERATION, KEY, "supervisor").read(encode(verified))]).toEqual([verified]);
+  });
+
+  it("refuses a staged start without a complete, absolute cwd identity", () => {
+    const { cwdIdentity: _omitted, ...withoutIdentity } = shellStart;
+    for (const frame of [
+      withoutIdentity,
+      { ...shellStart, cwdIdentity: { ...cwdIdentity, realpath: "relative" } },
+      { ...shellStart, cwdIdentity: { ...cwdIdentity, dev: "-1" } },
+      { ...shellStart, cwdIdentity: { ...cwdIdentity, ino: "01" } },
+      { ...shellStart, cwdIdentity: { ...cwdIdentity, extra: "x" } },
+      { ...shellStart, cwdIdentity: { realpath: cwdIdentity.realpath, dev: cwdIdentity.dev } },
+    ]) expect(() => encodeMxcFrame(frame as never, KEY, "host")).toThrow(MxcProcessContractError);
   });
 
   it("retains the SDK refusal code in the terminal frame", () => {
@@ -39,9 +53,10 @@ describe("native shell supervisor protocol", () => {
     expect([...decoder.read(encode(refusal))]).toEqual([refusal]);
   });
 
-  it("matches the exit cleanup warning in the pinned native library", () => {
-    const library = join("node_modules", PINS.package, PINS.targets["darwin-arm64"].library.member);
-    expect(readFileSync(library).includes(SEATBELT_CLEANUP_WARNING)).toBe(true);
+  it("matches every post-run cleanup warning in the pinned native library", () => {
+    const library = readFileSync(join("node_modules", PINS.package, PINS.targets["darwin-arm64"].library.member));
+    // A reworded pin fails here instead of reporting an unconfirmed cleanup as a clean exit.
+    for (const warning of SEATBELT_CLEANUP_WARNINGS) expect(library.includes(warning), warning).toBe(true);
   });
 
   it("refuses a supervisor whose SDK koffi instance keeps a different asynchronous call stack", () => {

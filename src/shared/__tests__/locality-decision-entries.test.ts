@@ -60,7 +60,8 @@ const entries: Readonly<Record<string, readonly string[]>> = {
   "src/permissions/admitted-obligation.ts": ["admitLocalRoute(entry.target)"],
   "src/permissions/rules/git-repository-inputs.ts": ["inspectRepositoryInDecision(cwd)"],
   "src/tools/shell-executable-read-paths.ts": ["admitLocalRoute(executable.target)"],
-  "src/permissions/confined-child.ts": ["admitLocalRoute(executable.target,", "admitWindowsLookupPaths([...grants.read, ...grants.write]", "admitWindowsLookupPaths([spec.cwd]", "rankMxcFilesystem(admitted.model)"],
+  // Both platform arms reach their lookups through `holderPaths().targets`.
+  "src/permissions/confined-child.ts": ["admitLocalRoute(executable.target,", "paths.targets([...grants.read, ...grants.write]", "paths.targets([spec.cwd]", "rankMxcFilesystem(windows.model)"],
   "src/main/host-script-runtime.ts": ["admitLocalRoute(left)", "admitLocalRoute(right)"],
 };
 

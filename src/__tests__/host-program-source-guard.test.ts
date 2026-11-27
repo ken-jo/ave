@@ -48,6 +48,8 @@ const LAUNCH_FILES = [
   "main/host-api/mapped-drive-root.ts",
   "main/host-runtime-probe.ts",
   "main/managed-child-processes.ts",
+  // Starts the app's own runtime on a fixed absolute entry for unconfined local inference; no program is looked up.
+  "main/memory-map/inference-child-win32.ts",
   "main/process-group-reaper.ts",
   "main/python-runtime.ts",
   "main/tailnet-cli.ts",
@@ -64,13 +66,17 @@ const LAUNCH_FILES = [
   "permissions/asrt-sandbox.ts",
   "permissions/asrt-windows-support.ts",
   "permissions/confined-child.ts",
+  "permissions/holder-label-sweep.ts", // macOS holder sweep: the pinned helper's absolute resource path, empty env
   "permissions/judge/external-judge.ts",
   "permissions/mxc-extension-process.ts",
+  "permissions/mxc-linux.ts", // Linux container probe and canary: the hash-pinned launcher under the absolute resource path
   "permissions/mxc-policy-pipe.ts",
   "permissions/mxc-runtime-root.ts",
   "permissions/mxc-shell-supervisor-client.ts", // macOS shell supervisor: process.execPath as Node, safe env without loader overrides
   "permissions/mxc-windows.ts",
   "permissions/offline-process-sandbox.ts",
+  "permissions/seatbelt-holder-boot.ts", // macOS holder boot check and watcher: the pinned helper and /bin/sleep by absolute path
+  "permissions/seatbelt-holder-launch.ts", // macOS holder chain: /bin/sh launch gate, /usr/bin/sandbox-exec, the admitted command
   "permissions/srt-win-integrity.ts",
   "permissions/verified-shell-command.ts",
   "permissions/windows-acl-grant-holder.ts",
@@ -78,6 +84,7 @@ const LAUNCH_FILES = [
   "permissions/worker-spawn.ts",
   "plugins/installed-entry-fs.ts",
   "plugins/isolation/child-loopback-link.ts",
+  "sandbox/linux-container-shell.ts", // Linux shell supervisor: the hash-pinned launcher, proved at boot, under the absolute resource path
   "shared/ave-home-configuration.ts",
   "shared/ave-home.ts",
   "shared/host-git.ts",

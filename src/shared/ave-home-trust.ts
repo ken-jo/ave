@@ -87,6 +87,8 @@ const COVERED_FILES: readonly string[] = Object.freeze([
   "agent-plugin-trust/hooks/approvals.json",
   "agent-plugin-trust/mcp/approvals.json",
   "skill-approvals.json",
+  "skill-memory/lessons.json",
+  "skill-memory/pending.json",
   "routine/routines.json",
   "work-board/templates.json",
   "work-board/workflow-runs.json",
@@ -360,6 +362,13 @@ export async function readAveHomeInput(path: string): Promise<AveHomeInput> {
 export function readTrustedAveHomeInputSync(path: string): Buffer | undefined {
   const input = readAveHomeInputSync(path);
   return input.status === "trusted" ? input.bytes : undefined;
+}
+
+/** Recheck trust for bytes already read from the same regular-file revision, with no new content read. */
+export function isCachedAveHomeFileTrusted(path: string, digest: string, uid: number): boolean {
+  if (isInRefusedAveHome(path)) return false;
+  const gate = gateFor(path);
+  return gate === undefined || (gate.kind === "file" && verdict(gate.trust, gate.key, digest, [uid]).trusted);
 }
 
 function readRefusedInput(path: string): AveHomeInput {

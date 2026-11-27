@@ -21,7 +21,7 @@ import { existingWindowsGrants, expandWindowsGrantRequests, pinWindowsFilesystem
 import { assertWindowsGrantGrammar, expandWindowsGrantPath, windowsGrantBase, type ExpandedWindowsGrant } from "./windows-grant-targets.js";
 import { admittedWindowsEntry, assertWindowsAclPolicyBudget, expandWindowsAclDenyLists, expandWindowsFsPaths, isAdmittedWindowsEntry, setWindowsAclRecoveryListener, WindowsSandboxError, type WindowsAclRecoveryReport, type WindowsAdmission } from "@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js";
 import { readAsrtSignalReleaseClaim } from "./asrt-signal-ownership.js";
-import { getSrtWinArchitecture, markSrtWinRuntimeReleased, markSrtWinRuntimeReleasePending, prepareSrtWinExecutable, srtWinPrivateDirectories } from "./srt-win-integrity.js";
+import { getSrtWinArchitecture, getSrtWinIntegrityEpoch, invalidateSrtWinIntegrity, markSrtWinRuntimeReleased, markSrtWinRuntimeReleasePending, prepareSrtWinExecutable, srtWinPrivateDirectories } from "./srt-win-integrity.js";
 import { noteConfinedProcessesMayRun } from "../lib/confined-process-phase.js";
 import { chmodSync, lstatSync, mkdirSync, realpathSync } from "node:fs";
 import { listAuthorizedWorkspaceRoots } from "./workspace-authorized-roots.js";
@@ -75,7 +75,8 @@ import {
 } from "./egress-relay/relay.js";
 import { asrtInvocationListenersSupported, noteAsrtUnixSocketPolicy } from "./egress-identity.js";
 import {
-  getWindowsExtensionBackendPlan,
+  getExtensionBackendPlan,
+  getMacHolderCapability,
   isPluginWorkerConfinementRequestedAtBoot,
   isShellSandboxRequestedAtBoot,
 } from "./sandbox-capability.js";
@@ -124,7 +125,12 @@ export function getVendoredSrtWinExePath(): string {
 
 // The verified private execution image; the package path is never executed.
 export function getVerifiedSrtWinExePath(): string {
-  return prepareSrtWinExecutable(getVendoredSrtWinExePath());
+  try {
+    return prepareSrtWinExecutable(getVendoredSrtWinExePath());
+  } catch (error) {
+    invalidateSrtWinIntegrity();
+    throw error;
+  }
 }
 
 // ASRT's vendored seccomp arch directories (`getVendorArchitecture`); ia32 and others have none.
@@ -455,9 +461,11 @@ interface WindowsWrapDenies {
 }
 
 type WindowsDocumentsQuery = (signal?: AbortSignal) => Promise<string>;
+type WindowsAccountRuntime = Pick<typeof import("@anthropic-ai/sandbox-runtime"), "getWindowsSandboxUserStatus" | "getWindowsSandboxUserStatusAsync" | "resolveSrtWin" | "verifyWindowsWfpEgress">;
 
 interface AsrtSandboxSession {
   readonly linuxWrapperPrograms?: LinuxWrapperPrograms;
+  readonly windowsAccountRuntime?: WindowsAccountRuntime;
   readonly queryWindowsDocumentsPath?: WindowsDocumentsQuery;
   sharedWindowsDocumentsPath?: () => string;
   readonly windowsLiveGrants: Map<string, WindowsLiveGrantCounts>;
@@ -1391,12 +1399,18 @@ async function loadSandboxManager() {
   return mod.SandboxManager;
 }
 
+async function loadWindowsSandboxRuntime() {
+  return await import("@anthropic-ai/sandbox-runtime");
+}
+
 // Whether initializeAsrtSandbox has run to completion in this process. This is the host-tool spawn path's gate: tool code (bash.ts/powershell.ts) asks THIS module — not the settings service — whether to route through ASRT, so the gate is decided once at boot and cannot be re-evaluated mid-run. That preserves the seal-after-boot security property the registry had: there is no runtime channel to flip the sandbox on/off after boot. Set to `true` only on a successful `initialize`; stays `false` after resetAsrtSandbox.
 let active = false;
 let sandboxInitializationPending = false;
 let sandboxResetPending: Promise<void> | undefined;
-// Set with `active` when boot initialized ASRT as the Windows proxy only.
-let windowsExternalConfinement = false;
+// Set with `active` when extensions run in containers and the wrap is only the egress proxy (and, on macOS, the
+// terminal's sandbox): Windows under its container plan, macOS once its holder route is on. The wrap then never counts
+// as extension or offline-child confinement, so an unproven container asks instead of falling to the wrap.
+let holderConfinementIsExternal = false;
 
 // Whether the ASRT runtime is initialized in this process. ASRT activates when the shell sandbox OR plugin-worker confinement was requested, so this alone does not say a given substrate is confined: a spawn path asks isShellSandboxActive or isPluginWorkerConfinementActive. The raw state is for the runtime's own plumbing (wrap self-gates, the shared network config refresh) and for paths that serve both kinds.
 export function isAsrtSandboxActive(): boolean {
@@ -1405,7 +1419,64 @@ export function isAsrtSandboxActive(): boolean {
 
 /** Offline host processes always require OS isolation, independently of shell and extension routing. */
 export function isOfflineProcessConfinementActive(): boolean {
-  return active && !windowsExternalConfinement && getAveHomePrivacyFailure() === undefined;
+  return active && !holderConfinementIsExternal && getAveHomePrivacyFailure() === undefined;
+}
+
+/** macOS once its holder route is on: an offline host process runs in an offline holder, never on the wrap, and only on
+ * the boot check's proof. Like the wrap it needs the shared Ave home privacy floor; it follows neither setting. */
+export function isOfflineHolderConfinementActive(): boolean {
+  return process.platform === "darwin" && active && holderConfinementIsExternal && getMacHolderCapability()?.state === "ready"
+    && getAveHomePrivacyFailure() === undefined;
+}
+
+function requireWindowsSandboxUserSid(user: ReturnType<WindowsAccountRuntime["getWindowsSandboxUserStatus"]>): string {
+  if (user.provisioned !== true || user.credPresent !== true || !user.sid) {
+    throw new Error("Windows sandbox user is not provisioned");
+  }
+  return user.sid;
+}
+
+/** The background gate must account for a live account runtime or a live container proxy. */
+export function isWindowsBackgroundConfinementRuntimeActive(): boolean {
+  return active;
+}
+
+/** Identities that every piece of Windows confinement evidence is bound to: the session, its liveness and its deny protection. */
+export function getWindowsConfinementRoute(): readonly unknown[] {
+  return [sandboxSession, active, sandboxSession?.windowsDenyFailure];
+}
+
+/** Binds evidence to the verified private executable and any intervening integrity refusal. */
+export function getWindowsAccountConfinementHelperIdentity(): string | undefined {
+  if (process.platform !== "win32" || sandboxSession?.windowsAccountRuntime === undefined || !isOfflineProcessConfinementActive()) return undefined;
+  const helper = getVerifiedSrtWinExePath();
+  const stamp = lstatSync(helper, { bigint: true });
+  if (!stamp.isFile()) throw new Error("Windows sandbox helper identity is unavailable");
+  return JSON.stringify([helper, ...[stamp.dev, stamp.ino, stamp.size, stamp.ctimeNs, stamp.mtimeNs].map(String), getSrtWinIntegrityEpoch()]);
+}
+
+/** Asks the helper, off the event loop, whether the live session still has its account, credential, identity and egress enforcement. */
+export async function isWindowsAccountConfinementOperational(): Promise<boolean> {
+  const session = sandboxSession;
+  const runtime = session?.windowsAccountRuntime;
+  if (process.platform !== "win32" || session === undefined || runtime === undefined || !isOfflineProcessConfinementActive()) return false;
+  try {
+    assertWindowsDenyProtection();
+    const identity = getWindowsAccountConfinementHelperIdentity();
+    if (identity === undefined) return false;
+    const resolved = runtime.resolveSrtWin({ path: getVerifiedSrtWinExePath() });
+    const assertHelper = () => {
+      assertWindowsSession(session);
+      if (getWindowsAccountConfinementHelperIdentity() !== identity) throw new Error("Windows sandbox helper changed before spawn");
+    };
+    const srtWin = Object.freeze({ ...resolved, get exe() { assertHelper(); return resolved.exe; } });
+    requireWindowsSandboxUserSid(await runtime.getWindowsSandboxUserStatusAsync({ srtWin }));
+    await runtime.verifyWindowsWfpEgress({ proxyPortRange: [...getWindowsProxyPortRange()], srtWin });
+    assertHelper();
+    return isOfflineProcessConfinementActive();
+  } catch {
+    return false;
+  }
 }
 
 // Host-shell spawn gate (bash / powershell tools, the workspace terminal): ASRT is active AND the shell sandbox (`features.osToolSandbox`) was requested at boot.
@@ -1416,7 +1487,7 @@ export function isShellSandboxActive(): boolean {
 // Extension confinement status: ASRT is active AND plugin-worker confinement (`features.pluginWorkerConfinement`) was requested at boot. The shell sandbox setting never decides this.
 export function isPluginWorkerConfinementActive(): boolean {
   if (getAveHomePrivacyFailure() !== undefined) return false;
-  return active && isPluginWorkerConfinementRequestedAtBoot() && !windowsExternalConfinement;
+  return active && isPluginWorkerConfinementRequestedAtBoot() && !holderConfinementIsExternal;
 }
 
 /** What the gate answers a waiting start now, with no consent: a backend that became ready after boot confines it. */
@@ -1432,13 +1503,22 @@ export function probeExtensionStart(holder?: "worker"): ExtensionStartRecheck {
 // Refuse an extension start that nothing would confine unless a person consented to this one start.
 // `backend: "mxc"` is the native entry. A legacy adapter may declare `holder: "worker"` so a selected container backend refuses it with the worker transport code (D1); every other legacy holder gets the holder-neutral native-entry refusal.
 // `start` carries the per-start consent. `hostOwned` is a host process (the inference child): outside this floor, so it has no consent route and keeps its own gate.
-export function assertExtensionStartAllowed(options?: { readonly backend: "mxc" } | {
+export function assertExtensionStartAllowed(options?: { readonly backend: "mxc"; readonly userHook?: true } | {
   readonly holder?: "worker";
   readonly start?: ExtensionStartPresentation;
   readonly hostOwned?: true;
 }): void {
-  const plan = process.platform === "win32" ? getWindowsExtensionBackendPlan() : undefined;
+  // The platforms whose extensions run in containers: Windows, and macOS once its holder route is on.
+  const containerPlatform = process.platform === "win32" || (process.platform === "darwin" && isContainerHolderRouteEnabled("darwin"));
+  const plan = containerPlatform ? getExtensionBackendPlan() : undefined;
   const nativeEntry = options !== undefined && "backend" in options;
+  // A macOS user hook follows the shell setting: its native entry needs this run's holder route, not the extension plan.
+  if (nativeEntry && options.userHook === true && process.platform === "darwin") {
+    if (!containerPlatform || getMacHolderCapability()?.state !== "ready") {
+      throw new MxcProcessContractError("Native extension backend is not ready for this start");
+    }
+    return;
+  }
   const legacy = options !== undefined && "backend" in options ? undefined : options;
   if (plan?.readiness === "checking" || plan?.readiness === "rejected") {
     throw new MxcExtensionReadinessRefusedError();
@@ -1450,7 +1530,7 @@ export function assertExtensionStartAllowed(options?: { readonly backend: "mxc" 
     throw new MxcProcessContractError("Native extension backend is not ready for this start");
   }
   // Intentionally gated by the boot request: a user who turned isolation off is not asked.
-  if (process.platform !== "win32" || !isPluginWorkerConfinementRequestedAtBoot()) return;
+  if (!containerPlatform || !isPluginWorkerConfinementRequestedAtBoot()) return;
   const waivable = !nativeEntry && legacy?.hostOwned !== true;
   const failure = getAveHomePrivacyFailure();
   // An unpublished home, a helper that gave no answer, and every start with no consent route are refused here.
@@ -1809,6 +1889,24 @@ function getProtectedReadDenyPaths(
 
 // The MXC admitted rank uses this floor to withhold reads under protected paths
 // and recognize the reviewed exceptions carried by the policy.
+/**
+ * The floors every macOS holder profile restates, whatever its caller asked for (`seatbelt-holder-launch.ts`): the
+ * sensitive read floor, the Ave home's read boundary and the sandbox private roots as read boundaries a holder's own
+ * grant may re-open beneath, the protected read floor as secrets, the user's own read denies, and the sensitive write
+ * floor. The write-root protections are added per start from the holder's write roots.
+ */
+export function seatbeltHolderFloorRows(): readonly PolicyFloorRow[] {
+  const userDenies = getUserReadDenies();
+  return Object.freeze([
+    ...[...getDefaultSensitiveReadDenyPaths(), ...aveHomeReadBoundaryRoots(), ...appOwnedSandboxPrivateRoots()]
+      .map((path) => policyFloorRow(path, "denied", "read-boundary", false)),
+    ...getProtectedReadDenyFloor().filter((path) => !userDenies.includes(path)).map((path) => policyFloorRow(path, "denied", "secrets", false)),
+    ...userDenies.map((path) => policyFloorRow(path, "denied", "user-deny", false)),
+    ...getDefaultSensitiveWriteDenyEntries().map((entry) =>
+      policyFloorRow(typeof entry === "string" ? entry : entry.path, "ro", "protected-name", typeof entry !== "string")),
+  ]);
+}
+
 export function getProtectedReadDenyFloor(): readonly string[] {
   return getProtectedReadDenyPaths();
 }
@@ -1816,6 +1914,10 @@ export function getProtectedReadDenyFloor(): readonly string[] {
 /** The read denies the user configured, which no host pierce covers. */
 export function getUserReadDenies(): readonly string[] {
   return _baseTrustedSettings?.denyRead ?? [];
+}
+
+export function getUserWriteDenies(): readonly FilesystemPathEntry[] {
+  return _baseTrustedSettings?.denyWrite ?? [];
 }
 
 // The protected read deny covering `path`, if any. A plugin's chosen directory is refused when one does: its read half would re-allow the deny on every platform, and on Linux its write half would too.
@@ -3129,7 +3231,7 @@ async function discardFailedAsrtInitialization(
   active = false;
   loadedSandboxManagerForRelease = undefined;
   containerOnlyConfig = undefined;
-  windowsExternalConfinement = false;
+  holderConfinementIsExternal = false;
   await stopEgressRelayService().catch((error: unknown) => {
     log.error("discarding a failed initialization: egress relay stop failed: %s", errorMessage(error));
   });
@@ -3256,8 +3358,11 @@ async function initializeSandboxRuntime(
     assertAveHomePrivacyForConfinement();
   }
   // Containers confine this session's Windows children, so only the egress relay serves them: the wrap runtime stays unloaded.
-  const SandboxManager = process.platform === "win32" && trustedSettings.windows?.externalConfinement === true
-    ? undefined : await loadSandboxManager();
+  const isWindows = process.platform === "win32";
+  const runtime = isWindows && trustedSettings.windows?.externalConfinement !== true
+    ? await loadWindowsSandboxRuntime()
+    : undefined;
+  const SandboxManager = isWindows ? runtime?.SandboxManager : await loadSandboxManager();
   startupSignal?.throwIfAborted();
   const linuxWrapperPrograms = process.platform === "linux" ? preflightLinuxPrograms ?? requireLinuxWrapperPrograms() : undefined;
   const backgroundInitialization = process.platform === "win32"
@@ -3268,7 +3373,8 @@ async function initializeSandboxRuntime(
     : trustedSettings;
   // Remember the base settings so worker-UDS register/unregister can rebuild the SHARED config additively (see the WORKER UDS header). On a fresh init there are no registered worker sockets yet, so the effective config equals the base; withWorkerUnixSockets is a no-op until a worker registers.
   _baseTrustedSettings = initialSettings;
-  sandboxSession = { linuxWrapperPrograms, queryWindowsDocumentsPath, sharedWindowsDocumentsPath: trustedSettings.resolveWindowsDocumentsPath,
+  sandboxSession = { linuxWrapperPrograms, windowsAccountRuntime: process.platform === "win32" ? runtime : undefined,
+    queryWindowsDocumentsPath, sharedWindowsDocumentsPath: trustedSettings.resolveWindowsDocumentsPath,
     windowsLiveGrants: new Map(), windowsLiveGrantCount: 0, windowsLiveGrantRevision: 0, windowsWrapDenyRead: new Set(), windowsWrapDenyWrite: new Map(), windowsPendingWrapDenies: new Set(), windowsDenyRevision: 0 };
   const session = sandboxSession;
   let fullConfig: SandboxRuntimeConfig;
@@ -3294,7 +3400,7 @@ async function initializeSandboxRuntime(
     if (SandboxManager === undefined) {
       checkWindowsSandboxStampTargets(config.filesystem);
       containerOnlyConfig = config;
-      windowsExternalConfinement = true;
+      holderConfinementIsExternal = true;
       active = true;
       return { isCurrent: (): boolean => active && sandboxSession === session };
     }
@@ -3340,8 +3446,9 @@ async function initializeSandboxRuntime(
     await discardFailedAsrtInitialization(SandboxManager);
     throw windowsAclBudgetError(error, configuredDenies);
   }
-  windowsExternalConfinement =
-    process.platform === "win32" && initialSettings.windows?.externalConfinement === true;
+  holderConfinementIsExternal = process.platform === "win32"
+    ? initialSettings.windows?.externalConfinement === true
+    : process.platform === "darwin" && isContainerHolderRouteEnabled("darwin");
   loadedSandboxManagerForRelease = SandboxManager;
   active = true;
   const isCurrent = (): boolean => active && sandboxSession === session;
@@ -3352,7 +3459,7 @@ async function initializeSandboxRuntime(
       try { publishRequiredWindowsWriteDenies(protectedRows); }
       catch (error) { return { status: "failed", error }; }
       _baseTrustedSettings = trustedSettings;
-      windowsExternalConfinement = false;
+      holderConfinementIsExternal = false;
       return { status: "ready" };
     },
     (error: unknown): WindowsIsolationResult =>
@@ -3366,18 +3473,33 @@ export async function checkAsrtDependencies(): Promise<{
   errors: string[];
   warnings: string[];
   dependencyFailure?: unknown;
+  /** Affirmative Windows inventory evidence. Dependency and setup errors cannot supply it. */
+  accountBackendAbsent?: true;
   linuxWrapperPrograms?: LinuxWrapperPrograms;
 }> {
   if (process.platform === "win32") {
     const mod = await import("@anthropic-ai/sandbox-runtime");
     // A missing bundled binary is a failed check, not a boot crash: ASRT's own implicit-resolve path reports it the same way, and the gate turns it into `windows-sandbox-missing` (sandbox-start-failure.ts).
-    let srtWin: ReturnType<typeof mod.resolveSrtWin>;
     try {
-      srtWin = mod.resolveSrtWin({ path: getVerifiedSrtWinExePath() });
+      const srtWin = mod.resolveSrtWin({ path: getVerifiedSrtWinExePath() });
+      const { user, wfp } = await mod.checkWindowsSandboxStatusAsync({ srtWin });
+      if (user.provisioned === false && user.groupExists === false && user.credPresent === false
+        && user.inBuiltinUsers === false && user.inSandboxGroup === false && user.hiddenFromLogon === false
+        && user.sid === undefined && user.groupSid === undefined && user.markerVersion === undefined
+        && user.caCertThumb === undefined && user.caCertPem === undefined
+        && wfp.state === "absent" && wfp.filters === 0 && wfp.userSid === undefined
+        && wfp.portRange === undefined && wfp.hint === undefined) {
+        return { errors: [], warnings: [], accountBackendAbsent: true };
+      }
+      if (user.provisioned !== true || user.groupExists !== true || user.credPresent !== true) {
+        return { errors: [`Windows sandbox account setup is incomplete. ${mod.windowsInstallInstructions(undefined)}`], warnings: [] };
+      }
+      // When enumeration is unavailable, initialization still requires the behavioral egress probe.
+      if (wfp.state === "installed" || wfp.state === "cannot-read") return { errors: [], warnings: [] };
+      return { errors: [`Windows sandbox network filters are unavailable. ${mod.windowsInstallInstructions(undefined)}`], warnings: [] };
     } catch (error) {
       return { errors: [errorMessage(error)], warnings: [], dependencyFailure: error };
     }
-    return mod.checkWindowsDependenciesAsync({ srtWin });
   }
   const SandboxManager = await loadSandboxManager();
   if (process.platform === "linux" && SandboxManager.isSupportedPlatform()) {
@@ -3899,12 +4021,7 @@ async function grantWindowsWorkerFilesystemAccessTurnBody(
 
   const srtWin = timeStep("srtWinPrepMs", () => resolveSrtWin({ path: getVerifiedSrtWinExePath() }));
   const user = timeStep("userStatusMs", () => getWindowsSandboxUserStatus({ srtWin }));
-  const sandboxUserSid = user.sid;
-  if (!user.provisioned || !user.credPresent || sandboxUserSid === undefined) {
-    throw new Error(
-      "grantWindowsWorkerFilesystemAccess: Windows sandbox user is not provisioned",
-    );
-  }
+  const sandboxUserSid = requireWindowsSandboxUserSid(user);
 
   const { requests, allowRead, allowWrite, writeIdentities } = withLocalityDecision(() => {
     // Keep the identity that passed admission through the native grant and rollback.
@@ -4317,7 +4434,7 @@ async function resetSandboxRuntime(): Promise<void> {
   // The host owns the processes. Their invocation release, after termination, still owns bare-layout cleanup even if the runtime is reset first.
   active = false;
   loadedSandboxManagerForRelease = undefined;
-  windowsExternalConfinement = false;
+  holderConfinementIsExternal = false;
   const containerOnly = containerOnlyConfig !== undefined;
   containerOnlyConfig = undefined;
   // Reset base settings and live socket holders so reinitialization cannot inherit stale allowances.

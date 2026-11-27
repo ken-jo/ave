@@ -53,13 +53,16 @@ describe("stage workspace session contract", () => {
 });
 
 describe("macOS container spawn directory contract", () => {
-  it("checks the approved directory just before the supervisor starts, for both callers", () => {
+  it("checks the approved directory just before the supervisor starts and spends the permit at the workload's grant, for both callers", () => {
     const posixRunner = shellTools.slice(shellTools.indexOf("async function runPosixContainerShell("), shellTools.indexOf("export async function spawnWithSandbox("));
-    const check = posixRunner.indexOf("assertHostShellSpawnDirectory(input.spawnAuthorization);");
-    const start = posixRunner.indexOf("launch.start(label)");
+    const check = posixRunner.indexOf("if (launch.spendsPermitAtGrant) assertHostShellSpawnDirectoryCurrent(input.spawnAuthorization);");
+    const start = posixRunner.indexOf("launch.start(label, hostShellGrantAuthorizer(input.spawnAuthorization))");
     expect(check).toBeGreaterThan(-1);
     expect(start).toBeGreaterThan(check);
     expect(posixRunner.slice(check, start)).not.toMatch(/\bawait\b/u);
+    expect(posixRunner.match(/assertHostShellSpawnDirectoryCurrent\(/gu)).toHaveLength(1);
+    // Only the route without a grant (Linux) spends the permit before the start; macOS would leave nothing for its handoff.
+    expect(posixRunner).toContain("else assertHostShellSpawnDirectory(input.spawnAuthorization);");
     expect(posixRunner.match(/assertHostShellSpawnDirectory\(/gu)).toHaveLength(1);
     for (const [start, end] of [["export async function spawnWithSandbox(", "async function spawnWithTimeout("], ["async function spawnPowerShellWithSandbox(", "async function spawnPowerShellInMxc("]] as const) {
       const route = shellTools.slice(shellTools.indexOf(start), shellTools.indexOf(end));

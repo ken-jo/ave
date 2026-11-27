@@ -190,6 +190,8 @@ export interface OwnedDir {
   replaceFileFrom(name: string, staged: OwnedDir, stagedName: string, id: NodeId, canReplace?: () => void): void;
   /** A regular file with one name, verified by identity; undefined when nothing is there. */
   readFile(name: string): Buffer | undefined;
+  /** Identity and change times of a regular file without following links. */
+  fileVersion(name: string): string | undefined;
   /** Hash a regular file by identity without following links. Undefined for a missing or non-file entry. */
   hashFile(name: string): { sha256: string; size: number } | undefined;
   /** Removes one entry and everything below it without following a link. With `expect`, only while the entry is what that id names. */
@@ -359,6 +361,13 @@ class Dir implements OwnedDir {
     const file = this.openFile(name, true);
     if (file === undefined) return undefined;
     try { return readFileSync(file.fd); } finally { closeSync(file.fd); }
+  }
+
+  fileVersion(name: string): string | undefined {
+    this.check();
+    const stat = stats(join(this.path, entryName(name)));
+    this.check();
+    return stat?.isFile() ? `${idOf(stat)}:${stat.mtimeNs}:${stat.ctimeNs}` : undefined;
   }
 
   hashFile(name: string): { sha256: string; size: number } | undefined {

@@ -4,6 +4,7 @@ import { hasUserKeyboardIntent, USER_KEYBOARD_REQUIRED } from "../../shared/chat
 import { isSubAgentMaxRounds } from "../../shared/subagent-policy.js";
 import { telemetryPatchError } from "../../shared/telemetry-policy.js";
 import { containsSecuritySettings } from "../../shared/security-settings.js";
+import { refreshWindowsBackgroundAdmission } from "../../permissions/windows-background-features.js";
 import { isWebSearchProvider } from "../../data/settings-normalization.js";
 /** Settings domain IPC handlers. Covers: ave:settings:*, ave:shell:open-external */
 import { DEFAULT_SETTINGS } from "../../data/settings-defaults.js";
@@ -45,7 +46,9 @@ import type {
   ShortcutSettings,
   AppSettings,
   SettingsService,
+  SettingsWriteAdmission,
 } from "../../data/settings-store.js";
+import { SettingsWriteRefusedError } from "../../data/settings-store.js";
 import type { ActiveChatModel } from "../../shared/active-chat-model.js";
 import {
   isVertexProjectConfigured,
@@ -103,8 +106,8 @@ function normalizeSubscriptionModel(value: unknown): string | undefined | null {
     : null;
 }
 
-/** The settings shape the renderer sees. Authoritative remote route lineage (`a2aRemote`) is main-only and never projected to the renderer. The upstream proxy (`upstreamProxy`) crosses only through its own permissions channels; the validated local model location stays in main. Every other stored field crosses as-is.
- * Main projects the active model and project-authenticated route availability using host settings and credentials. */
+/** Renderer projection of settings and host-resolved route availability.
+ * Remote lineage, proxy configuration, and embedding secrets stay in main. The session indexing switch is projected only when applicable. */
 export type RendererSettingsSnapshot = Omit<AppSettings, "a2aRemote" | "upstreamProxy" | "memoryEmbedding"> & {
   readonly activeChatModel: ActiveChatModel;
   readonly subscriptionRevision: number;
@@ -129,6 +132,13 @@ export async function rendererSettingsSnapshot(
     snapshot = settingsService.getAll();
   }
   const { a2aRemote: _mainOnly, upstreamProxy: _ownChannel, memoryEmbedding: _embeddingConfig, ...projected } = structuredClone(snapshot);
+  if (process.platform === "win32") {
+    if ((await refreshWindowsBackgroundAdmission("switches")).areSwitchesAvailable()) {
+      projected.features = { ...projected.features, sessionIndexingWithoutContainment: projected.features?.sessionIndexingWithoutContainment ?? true };
+    } else {
+      delete projected.features?.sessionIndexingWithoutContainment;
+    }
+  }
   return {
     ...projected,
     activeChatModel,
@@ -569,6 +579,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     previousActiveChatRuntime: LLMSettings["activeChatRuntime"],
     failedActiveChatRuntime: LLMSettings["activeChatRuntime"],
     transitionRevision: number,
+    rebindSettledReviewer: () => Promise<void>,
   ): Promise<{ runtime: LLMSettings["activeChatRuntime"] } | null> => {
     // Only the request that still owns the active selection may undo it; a newer selection binds execution itself.
     if (transitionRevision !== activeChatRuntimeTransitionRevision) return null;
@@ -593,12 +604,14 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
       // The restoring save failed as well, so memory is back on the settings on disk. Bind execution to them rather than to the runtime that could not be saved.
       if (transitionRevision === activeChatRuntimeTransitionRevision) {
         await bindExecutionToSettings();
+        await rebindSettledReviewer();
         await broadcastSettingsSnapshot(deps, () => transitionRevision === activeChatRuntimeTransitionRevision);
       }
       return null;
     }
     if (!ownsRestoration()) return null;
 
+    await rebindSettledReviewer();
     await broadcastSettingsSnapshot(deps, ownsRestoration);
     return ownsRestoration() ? { runtime: restoredRuntime } : null;
   };
@@ -612,7 +625,8 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     const nextSubscriptionProvider = activeChatRuntime?.kind === "subscription"
       ? activeChatRuntime.provider
       : null;
-    if (!sameActiveChatRuntime(previousLlm.activeChatRuntime, activeChatRuntime)) {
+    const routeChanged = !sameActiveChatRuntime(previousLlm.activeChatRuntime, activeChatRuntime);
+    if (routeChanged) {
       // A provider selection is an authentication-boundary change. Abort both interactive loops before exposing
       // the new selection so a prior API tool round cannot issue another request after subscription activation.
       const reason = new Error("active chat runtime changed");
@@ -620,8 +634,22 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
       deps.sideChatConversationLoop?.abortCurrentTurn?.(reason);
       for (const paneLoop of deps.paneChatLoops?.all() ?? []) paneLoop.abortCurrentTurn?.(reason);
     }
-    const persistSelection = settingsService.patch({ llm: { activeChatRuntime } });
+    const permissionManager = conversationLoop.permissionManager;
+    const reconfiguration = permissionManager?.beginChatRuntimeReviewerReconfiguration(routeChanged);
     const transitionRevision = ++activeChatRuntimeTransitionRevision;
+    const rebindSettledReviewer = async (): Promise<void> => {
+      if (reconfiguration === undefined || transitionRevision !== activeChatRuntimeTransitionRevision) return;
+      permissionManager?.settleChatRuntimeReviewerReconfiguration(reconfiguration);
+      for (let attempt = 0; attempt < 2 && transitionRevision === activeChatRuntimeTransitionRevision; attempt++) {
+        try {
+          await deps.rewireReviewerAgent?.();
+          return;
+        } catch {
+          // Only a successful rewire of this settled generation can release the hold.
+        }
+      }
+    };
+    const persistSelection = settingsService.patch({ llm: { activeChatRuntime } });
     const ownsTransition = (): boolean => (
       transitionRevision === activeChatRuntimeTransitionRevision
       && sameActiveChatRuntime(settingsService.get("llm").activeChatRuntime, activeChatRuntime)
@@ -643,6 +671,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
           previousLlm.activeChatRuntime,
           activeChatRuntime,
           transitionRevision,
+          rebindSettledReviewer,
         );
       } catch {
         // The renderer must never be told that the new runtime became active when its exact persisted predecessor could not be restored.
@@ -659,6 +688,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     // broadcast/status effects; its executable bindings were already applied synchronously by its own call.
     if (!ownsTransition()) return;
 
+    await rebindSettledReviewer();
     await broadcastSettingsSnapshot(deps, ownsTransition);
     if (!ownsTransition()) return;
     if (previousSubscriptionProvider && previousSubscriptionProvider !== nextSubscriptionProvider) {
@@ -819,6 +849,16 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
         return { ok: false, error: "invalid-foundry-endpoint", message: (err as Error).message };
       }
     }
+    // The last await before the patch: the admission is decided here and nothing below yields until the merge is applied.
+    const features = partial?.features;
+    let switchAdmission: SettingsWriteAdmission | undefined;
+    if (process.platform === "win32" && features && typeof features === "object" && Object.hasOwn(features, "sessionIndexingWithoutContainment")) {
+      if (typeof features.sessionIndexingWithoutContainment !== "boolean") return { ok: false, error: "invalid-input" };
+      const admission = await refreshWindowsBackgroundAdmission("switches");
+      if (!admission.areSwitchesAvailable()) return { ok: false, error: "invalid-input" };
+      // The same admission travels to the step that saves the switch.
+      switchAdmission = { field: ["features", "sessionIndexingWithoutContainment"], canCommit: () => admission.areSwitchesAvailable() };
+    }
     // Reviewer LLM follows the active chat provider/model. Capture the active identity before patching
     // so provider/model/baseUrl/Vertex changes can refresh reviewer wiring and cache scope immediately.
     const prevLlm = settingsService.get("llm");
@@ -844,7 +884,15 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
       if (!parsed.ok) return { ok: false, error: "invalid-input" };
       partial = { ...partial, system: { ...partial.system, mainLayout: browserTabRegistry.prepareLayoutBindings(window.id, parsed.layout) } };
     }
-    const persistSettings = settingsService.patch(partial);
+    let switchRefused = false;
+    const persistSettings = switchAdmission === undefined
+      ? settingsService.patch(partial)
+      : settingsService.patch(partial, { admission: switchAdmission }).catch((error: unknown) => {
+        if (!(error instanceof SettingsWriteRefusedError)) throw error;
+        // The rest of the patch is on disk and still needs its follow-up.
+        switchRefused = true;
+        return settingsService.getAll();
+      });
     if (layoutPatch !== undefined) browserTabRegistry.trackBindingWrite(persistSettings);
     // SettingsService applies its merge before awaiting disk persistence. Capture this request's exact LLM snapshot before another renderer can supersede it.
     const appliedLlm = settingsService.get("llm");
@@ -940,6 +988,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     reconcileShortcutStartupIfChanged();
     if (marketplaceWritten) hooks?.marketplaceSettingsChanged();
     await broadcastSettingsSnapshot(deps);
+    if (switchRefused) return { ok: false, error: "invalid-input" };
     return rendererSettingsSnapshot(settingsService, result, deps.isSubscriptionConnected);
   });
 

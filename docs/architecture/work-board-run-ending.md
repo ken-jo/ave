@@ -183,7 +183,10 @@ write is never a confirmation: a write is confirmed by reading the file back.
     of any other shape, which says neither which operation it was nor which
     entry.
 
-  A board that shows nothing keeps every marker.
+  A board that shows nothing keeps every marker. If read-back continues to
+  fail, Stop for a run held by an unknown delete waits until the next board
+  event that can resolve the marker. The run’s effect authority stays revoked
+  while it waits.
 - A held row or card stays deletable by the user. That delete publishes a
   fresh intent for the marker's run, owned by it, and the same run-file write
   drops the old marker; from there the new delete's own lifecycle applies.
@@ -314,8 +317,9 @@ superseded attempt is dropped before any new preparation.
   (`run_mismatch`) while its run holds events, and while its write cannot be
   stored, as before.
   The chain advances after each covered write. Workspace effects run
-  separately and reserve each stage they touch. A join waits for its input
-  seals. Winding settles after the last observed child exit, and pending
+  separately and reserve each stage they touch. The board must still name the
+  live run before a join queues its input seals. The join waits for those seals
+  and checks the run again before integration. Winding settles after the last observed child exit, and pending
   seals can record attempt-bound results after settlement. If the board
   temporarily refuses a seal result, the host retains it in the original
   run's queue through settlement and replays it on a permitted read. The

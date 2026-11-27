@@ -176,6 +176,7 @@ function makeDeps(options: {
       requestAndWait: answeringRequestAndWait(() => ({ choice: options.approvalChoice ?? "allow-once" })),
       resolve: vi.fn((_requestId: string, decision: unknown) => decision),
       resolveFromDesktopRendererWithFreshIdentity: vi.fn((_requestId: string, decision: unknown) => decision),
+      hasRecentRequestedOutputResolution: vi.fn((_requestId: string) => false),
       defersAllowSaves: vi.fn(() => false),
       capturePendingRequestAuthority: vi.fn(() => ({
         controller: { refresh: vi.fn(async () => true), isCurrent: vi.fn(() => true) },
@@ -429,6 +430,18 @@ describe("permissions IPC handlers", () => {
 
     expect(result).toMatchObject({ ok: false, error: "permission-audit-write-failed" });
     expect(permissionManager.setModePersist).not.toHaveBeenCalled();
+  });
+
+  it("reports an already settled requested-output card to the desktop", async () => {
+    const { deps } = await setup();
+    deps.approvalGate.resolveFromDesktopRendererWithFreshIdentity.mockResolvedValueOnce(null);
+    deps.approvalGate.hasRecentRequestedOutputResolution.mockReturnValueOnce(true);
+
+    expect(await invoke(PERMISSIONS.approvalRespond, { requestId: "output-card", choice: "allow-once" })).toEqual({
+      ok: false,
+      error: "approval-already-resolved",
+    });
+    expect(deps.approvalGate.hasRecentRequestedOutputResolution).toHaveBeenCalledWith("output-card");
   });
 
   it("suggests LLM permission review after repeated default-mode approvals", async () => {

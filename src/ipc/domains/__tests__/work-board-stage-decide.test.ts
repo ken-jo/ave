@@ -30,6 +30,7 @@ import type { IpcDeps } from "../../types.js";
 import { auditUnauthorized, UNAUTHORIZED_FRAME, validateHostRendererSender } from "../../gated.js";
 import { defaultWorkspaceProject, resolveAuthorizedWorkspaceProject } from "../../../main/project-root-authorization.js";
 import { resultHashOf } from "../../../shared/workflow-template-output.js";
+import { STAGE_TOOL_CALLS_REFUSED } from "../../../shared/workflow-template-types.js";
 import { MAX_PLAN_NOTE_LENGTH, type WorkItemCreateResult, workBoardOriginSessionId } from "../../../shared/work-board-types.js";
 import { registeredIpcHandlers } from "./test-helpers.js";
 
@@ -79,6 +80,7 @@ function setup(privacy: { piiRedactEnabled: boolean } = { piiRedactEnabled: fals
     adoptParkedTemplateRuns: vi.fn(async () => {}),
   };
   const log = vi.fn();
+  const recordWorkBoardOwnerInput = vi.fn(async () => {});
   const base = { title: "t", status: "in_progress", status_resolved: "in_progress", priority: "medium", created_at: "x", updated_at: "x" };
   const create = vi.fn(async (input: { title: string; projectRoot: string }) =>
     ({ status: "created", itemId: 7, item: { ...base, ...input, id: 7 } }));
@@ -90,13 +92,14 @@ function setup(privacy: { piiRedactEnabled: boolean } = { piiRedactEnabled: fals
         : { status: "not_found", itemId: id },
     },
     workBoardEngine: engine,
+    conversationLoop: { deps: { skillMemory: { recordWorkBoardOwnerInput } } },
     settingsService: { get: (key: string) => (key === "privacy" ? privacy : undefined) },
     auditLogger: { log },
     getMainWindow: () => window,
     getAppWindows: () => [window],
   } as unknown as IpcDeps);
   const event = { sender: owner, senderFrame: owner.mainFrame };
-  return { event, engine, log, create };
+  return { event, engine, log, create, recordWorkBoardOwnerInput };
 }
 
 const decisions = [
@@ -193,7 +196,7 @@ it("starts a template run only from a gesture and the tuple the card showed, and
   const options = { template: TUPLE, templateSource: { kind: "schedule-attachment", attachmentId: "att-1", pin: TUPLE } };
   await expect(decide(WORK_BOARD.run, event, 7, options)).resolves.toEqual({ status: "awaiting_approval" });
   expect(engine.runItem).toHaveBeenCalledTimes(1);
-  expect(engine.runItem).toHaveBeenCalledWith(7, { templateSource: { kind: "local-create-and-run", pin: TUPLE } });
+  expect(engine.runItem).toHaveBeenCalledWith(7, { templateSource: { kind: "local-create-and-run", pin: TUPLE }, approvalSurface: event.sender });
 });
 
 it("creates and runs only the new item described by the native launch receipt", async () => {
@@ -209,7 +212,70 @@ it("creates and runs only the new item described by the native launch receipt", 
   await expect(decide(WORK_BOARD.add, event, input, launch)).resolves.toMatchObject({ status: "created", itemId: 7 });
   expect(engine.runItem).toHaveBeenCalledExactlyOnceWith(7, {
     templateSource: { kind: "local-create-and-run", pin: TUPLE, projectRoot },
+    approvalSurface: event.sender,
   });
+});
+
+it("records the exact typed detail only with a live native add gesture", async () => {
+  const { event, recordWorkBoardOwnerInput } = setup();
+  const input = { title: "Review", detail: "Run the checks.", projectRoot: defaultWorkspaceProject().projectRoot };
+  const add = handler(WORK_BOARD.add);
+  pressWorkBoardTestKey(event);
+  const created = await add(event, input, undefined, undefined, true);
+  expect(created).toMatchObject({ status: "created", item: input });
+  expect(recordWorkBoardOwnerInput).toHaveBeenCalledExactlyOnceWith(expect.objectContaining(input));
+  await expect(add(event, input, undefined, undefined, true)).resolves.toMatchObject({ status: "created" });
+  expect(recordWorkBoardOwnerInput).toHaveBeenCalledOnce();
+});
+
+it("does not record a detail the store did not preserve verbatim", async () => {
+  const { create, event, recordWorkBoardOwnerInput } = setup();
+  const input = { title: "Review", detail: "Run the checks.", projectRoot: defaultWorkspaceProject().projectRoot };
+  create.mockImplementationOnce(async () => ({
+    status: "created", itemId: 7, item: {
+      ...input, detail: "Different detail", id: 7, status: "in_progress",
+      status_resolved: "in_progress", priority: "medium", created_at: "x", updated_at: "x",
+    },
+  }));
+  pressWorkBoardTestKey(event);
+  await expect(handler(WORK_BOARD.add)(event, input, undefined, undefined, true)).resolves.toMatchObject({ status: "created" });
+  expect(recordWorkBoardOwnerInput).not.toHaveBeenCalled();
+});
+
+it.each(["pasted detail", "programmatic detail"])("creates an item without recording unverified %s", async (detail) => {
+  const { event, recordWorkBoardOwnerInput } = setup();
+  const input = { title: "Review", detail, projectRoot: defaultWorkspaceProject().projectRoot };
+  pressWorkBoardTestKey(event);
+  await expect(handler(WORK_BOARD.add)(event, input)).resolves.toMatchObject({ status: "created" });
+  expect(recordWorkBoardOwnerInput).not.toHaveBeenCalled();
+});
+
+it("refuses evidence from a non-owner frame or an expired native add gesture", async () => {
+  const { event, recordWorkBoardOwnerInput } = setup();
+  const input = { title: "Review", detail: "Run the checks.", projectRoot: defaultWorkspaceProject().projectRoot };
+  const add = handler(WORK_BOARD.add);
+  const subframe = { ...event, senderFrame: { ...event.senderFrame } };
+  const now = vi.spyOn(Date, "now");
+  try {
+    now.mockReturnValue(1_000);
+    pressWorkBoardTestKey(event);
+    await expect(add(subframe, input, undefined, undefined, true)).resolves.toMatchObject({ status: "created" });
+    now.mockReturnValue(6_001);
+    await expect(add(event, input, undefined, undefined, true)).resolves.toMatchObject({ status: "created" });
+    expect(recordWorkBoardOwnerInput).not.toHaveBeenCalled();
+  } finally {
+    now.mockRestore();
+  }
+});
+
+it("records typed detail using the validated create-and-run decision receipt", async () => {
+  const { event, recordWorkBoardOwnerInput } = setup();
+  const projectRoot = defaultWorkspaceProject().projectRoot;
+  const input = { title: "Review", detail: "Run the checks.", templateId: TUPLE.templateId, projectRoot };
+  const launch = { ...TUPLE, projectRoot };
+  const token = await captureWorkBoardTestGesture(handler, event, WORK_BOARD.add, input, launch);
+  await expect(handler(WORK_BOARD.add)(event, input, launch, token, true)).resolves.toMatchObject({ status: "created" });
+  expect(recordWorkBoardOwnerInput).toHaveBeenCalledExactlyOnceWith(expect.objectContaining(input));
 });
 
 it("leaves an ordinary run as it was: no gesture, no source", async () => {
@@ -240,6 +306,29 @@ async function awaiting(h: Harness, finish: Parameters<Harness["children"][numbe
   await run;
   return { id, item: await h.item(id) };
 }
+
+it("retries a host-refused stage through IPC and persists the successful attempt", async () => {
+  const h = await stageRunHarness({ observeRunWork: true });
+  await h.runThenEnd(async () => {
+    const { id, item } = await awaiting(h, { ok: true, stopReason: "end_turn", toolCallCount: 1, allToolCallsRefused: true }, [autoStageOf("a")]);
+    expect(item.stageRuns[0]).toMatchObject({ status: "failed", failure: "error", failureReason: STAGE_TOOL_CALLS_REFUSED });
+    const owner = workBoardTestSender();
+    const window = { isDestroyed: () => false, webContents: owner };
+    registerWorkBoardHandlers({
+      workBoardStore: h.board, workBoardEngine: h.engine, settingsService: { get: () => undefined },
+      auditLogger: new AuditLogger(join(h.dir, "audit")), getMainWindow: () => window, getAppWindows: () => [window],
+    } as unknown as IpcDeps);
+    const event = { sender: owner, senderFrame: owner.mainFrame };
+    await bindDefaultProject(event);
+    await expect(decide(WORK_BOARD.retryStage, event, id, { runId: item.runId, stageId: "a", attempt: 1 })).resolves.toEqual({ ok: true });
+    (await h.untilLive(1))[0].finish({ summary: "Retried successfully" });
+    await h.until(id, row => row.runStatus === "completed");
+    const retried = await h.stageRun(id, "a");
+    expect(retried).toMatchObject({ attempt: 2, status: "passed", output: "Retried successfully" });
+    expect(retried).not.toHaveProperty("failure");
+    expect(retried).not.toHaveProperty("failureReason");
+  });
+});
 
 // The engine's own writes behind a stage decision and a template run's start go through the same copy as every board write.
 it.each<[string, string, Parameters<typeof stageRunHarness>[0], (h: Harness) => Promise<[string, unknown[]]>]>([
@@ -749,7 +838,7 @@ it("keeps a B stage and its descendant approval details out of the launching A w
 });
 
 it("a click approves a stage with requested outputs and shows the full request", async () => {
-  const execute = vi.fn(async ({ output }: { output: { id: string } }) => ({ id: output.id, status: "failed" as const, detail: "output-execution-failed" }));
+  const execute = vi.fn(async ({ output }: { output: { id: string } }) => ({ id: output.id, status: "failed" as const, detail: "output-execution-not-dispatched" }));
   const h = await stageRunHarness({ observeRunWork: true, workflow: { outputs: { execute, accept: input => acceptRequestedOutput(input, createHostGit()) } } });
   await h.runThenEnd(async () => {
     const decl = { kind: "send-message", owner: "plugin", ownerId: "delivery", toolName: "send" } as const;
@@ -799,7 +888,10 @@ it("a click approves a stage with requested outputs and shows the full request",
     await expect(handler(WORK_BOARD.decideStage)(event, id, approval, token)).resolves.toMatchObject({ ok: false });
     expect(execute).toHaveBeenCalledTimes(1);
     const view = await handler(WORK_BOARD.get)(event, id);
-    expect(view).toMatchObject({ item: { workflowRun: { stages: [{ outputExecutions: [{ status: "failed", detail: "output-execution-failed" }] }] } } });
+    expect(view).toMatchObject({ item: { workflowRun: { stages: [{
+      outputExecutions: [{ status: "failed", detail: "output-execution-not-dispatched" }],
+      outputRetry: { hash: binding.outputHash, ids: [stage.requestedOutputs?.[0].id] },
+    }] } } });
 
     const retry = { runId: binding.runId, stageId: binding.stageId, attempt: binding.attempt,
       outputHash: binding.outputHash, outputId: stage.requestedOutputs?.[0].id };

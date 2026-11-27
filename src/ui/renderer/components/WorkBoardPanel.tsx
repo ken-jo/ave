@@ -373,24 +373,26 @@ function LiveRunChip({
   run,
   startedAt,
   toolApprovalPending,
+  reviewPending,
 }: {
   run: WorkItemRunState;
   startedAt: string | undefined;
   /** One of the run's tool approvals waits for the user: the run is paused on it. */
   toolApprovalPending: boolean;
+  reviewPending: boolean;
 }) {
-  const now = useNowTick(true);
-  const label = liveChipLabel(run.phase);
+  const now = useNowTick(!reviewPending);
+  const label = reviewPending ? t("workBoard.liveChipAwaitingReview") : liveChipLabel(run.phase);
   if (label === null) return null;
   const turn = currentPhaseTurn(run);
   const startMs = startedAt ? Date.parse(startedAt) : Number.NaN;
   // Stopping and a waiting tool approval outrank the phase word: they are what the run is doing now.
-  const state = run.stopping ? "stopping" : toolApprovalPending ? "tool-approval" : (run.phase ?? "starting");
+  const state = run.stopping ? "stopping" : toolApprovalPending ? "tool-approval" : reviewPending ? "awaiting-review" : (run.phase ?? "starting");
   const parts = [run.stopping ? t("workBoard.liveChipStopping") : toolApprovalPending ? t("workBoard.liveChipToolApproval") : label];
-  if (!run.stopping && turn !== undefined) parts.push(t("workBoard.liveChipTurn", { turn }));
-  if (!run.stopping && !toolApprovalPending && Number.isFinite(startMs)) parts.push(formatElapsed(now - startMs));
+  if (!run.stopping && !reviewPending && turn !== undefined) parts.push(t("workBoard.liveChipTurn", { turn }));
+  if (!run.stopping && !toolApprovalPending && !reviewPending && Number.isFinite(startMs)) parts.push(formatElapsed(now - startMs));
   // A plan or a tool call waiting on the user is "needs your answer": the warning token, as in the agent status slot.
-  const awaiting = toolApprovalPending || run.phase === "awaiting_approval";
+  const awaiting = toolApprovalPending || reviewPending || run.phase === "awaiting_approval";
   const tone = run.stopping
     ? "border-border bg-muted text-muted-foreground"
     : awaiting
@@ -400,7 +402,7 @@ function LiveRunChip({
     <span
       className={`inline-flex min-w-0 max-w-full items-center gap-1 whitespace-nowrap rounded px-1.5 py-0.5 text-tiny font-medium leading-none tabular-nums border ${tone}`}
       data-testid="work-board-live-chip"
-      data-phase={run.phase ?? "starting"}
+      data-phase={reviewPending ? "awaiting_approval" : run.phase ?? "starting"}
       data-state={state}
     >
       {awaiting && !run.stopping ? (
@@ -430,6 +432,7 @@ interface CardActions {
   stepsShowingId: number | null;
   /** The head tool approval each item's run waits on, for items whose run waits on one. */
   toolApprovals: ReadonlyMap<number, readonly ApprovalRequest[]>;
+  pendingOutputItemIds: ReadonlySet<number>;
   approvalSurface: WorkBoardToolApprovalSurface;
 }
 
@@ -449,7 +452,8 @@ function WorkItemCard({ item, run, actions }: WorkItemCardProps) {
   const isCompleted = item.status === "completed";
   const runMissing = item.templateRunError === "template-run-not-found";
   const live = run !== undefined && isRunInFlight(run) ? run : undefined;
-  const narration = latestTurn(live);
+  const templateRun = item.runPin !== undefined || run?.workflowRun !== undefined;
+  const narration = templateRun ? undefined : latestTurn(live);
   const toolApproval = live ? actions.toolApprovals.get(item.id)?.[0] : undefined;
   const stepsShowing = actions.stepsShowingId === item.id;
   const narrationLine = (className: string) => (
@@ -483,7 +487,7 @@ function WorkItemCard({ item, run, actions }: WorkItemCardProps) {
         )}
         {` · ${toolApproval.toolName}`}
       </p>
-    ) : (
+    ) : templateRun ? null : (
       <p className={className} data-testid="work-board-live-narration" title={narration?.text}>
         {narration ? (
           <>
@@ -535,7 +539,12 @@ function WorkItemCard({ item, run, actions }: WorkItemCardProps) {
                     {t("workBoard.overdueBadge")}
                   </Badge>
                 )}
-                <LiveRunChip run={live} startedAt={runStartedAt(item)} toolApprovalPending={toolApproval !== undefined} />
+                <LiveRunChip
+                  run={live}
+                  startedAt={runStartedAt(item)}
+                  toolApprovalPending={toolApproval !== undefined || actions.pendingOutputItemIds.has(item.id)}
+                  reviewPending={item.templateRunState === "awaiting_review"}
+                />
                 {/* A strut in the due line's type, so this row is exactly as tall as the due line it replaces. */}
                 <span aria-hidden="true" className="invisible w-0 text-dense">{"\u200b"}</span>
                 {!item.detail && narrationLine("min-w-0 flex-1 truncate text-dense text-muted-foreground")}
@@ -543,8 +552,8 @@ function WorkItemCard({ item, run, actions }: WorkItemCardProps) {
               {item.detail && (
                 <div className="mt-1.5 grid [contain:inline-size]">
                   <p
-                    aria-hidden="true"
-                    className="invisible col-start-1 row-start-1 line-clamp-2 break-words text-dense leading-relaxed [overflow-wrap:anywhere]"
+                    aria-hidden={!templateRun || toolApproval !== undefined || Boolean(live.heldNotice)}
+                    className={`${templateRun && !toolApproval && !live.heldNotice ? "" : "invisible "}col-start-1 row-start-1 line-clamp-2 break-words text-dense leading-relaxed [overflow-wrap:anywhere]`}
                   >
                     {item.detail}
                   </p>
@@ -881,6 +890,7 @@ export function WorkItemCreateDialog({ api, project, onClose, onCreated }: Creat
               onChange={(e) => setDetail(e.target.value)}
               rows={3}
               data-testid="work-board-create-detail"
+              data-skill-memory-source="work-board"
             />
           </Label>
           <div className="grid gap-3 sm:grid-cols-2">
@@ -1957,7 +1967,9 @@ export function WorkBoardPanel({
     if (workflowDialog?.kind !== "launch-notice" || !workflowDialog.opening || !projectRootEquals(scopeRoot, workflowDialog.target.projectRoot)) return;
     setWorkflowDialog({ kind: "run", item: workflowDialog.item, requestedVersion: workflowDialog.version });
   }, [scopeRoot, workflowDialog]);
-  const { byItem: toolApprovals, surface: approvalSurfaceValue } = useBoardApprovals(visibleRunItems, runState, scopeRoot, project?.isDefault === true);
+  const { byItem: toolApprovals, pendingOutputItemIds, surface: approvalSurfaceValue } = useBoardApprovals(
+    visibleRunItems, runState, scopeRoot, project?.isDefault === true, workflowItem,
+  );
   const approvalSurface = useToolApprovalSurface(api);
 
   // The live step panel: which run it follows, whether it jumps to a newly started run, and whether a settled run stays listed.
@@ -2114,8 +2126,9 @@ export function WorkBoardPanel({
     onShowSteps: showSteps,
     stepsShowingId: stepsOpen ? stepsItemId : null,
     toolApprovals,
+    pendingOutputItemIds,
     approvalSurface,
-  }), [onStart, onComplete, onReopen, onRun, clearRun, onOpenDetail, onOpenWorkflowRun, showSteps, stepsOpen, stepsItemId, toolApprovals, approvalSurface]);
+  }), [onStart, onComplete, onReopen, onRun, clearRun, onOpenDetail, onOpenWorkflowRun, showSteps, stepsOpen, stepsItemId, toolApprovals, pendingOutputItemIds, approvalSurface]);
 
   // Below the narrow panel width the overview's columns become status tabs and the step panel docks below the board.
   const [statusTab, setStatusTab] = useState<"planned" | "in-progress" | "review" | "completed">("in-progress");

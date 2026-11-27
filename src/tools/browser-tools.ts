@@ -32,13 +32,14 @@ interface BrowserTabsAccess<G extends BrowserGuest = BrowserGuest> {
   liveTabInWindow(handle: string, windowId: number): BrowserTabRecord<G> | undefined;
   listTabs(windowId: number): BrowserTabView[];
   listSessionTabs(windowId: number, actor: BrowserSessionActor, includeDirectChildren: boolean): BrowserTabView[];
-  assertActorAccess(tab: BrowserTabRecord<G>, actor: BrowserSessionActor): void;
+  tabActionAccess(windowId: number, handle: string, actor: BrowserSessionActor): { tab: BrowserTabRecord<G>; paused: boolean } | undefined;
   acquireControl(tab: BrowserTabRecord<G>, actor: BrowserSessionActor): BrowserControlLease;
   releaseControl(tabId: string, leaseId: string): void;
   /** The tab a conversation acts on when a call names none (its pane chat's tab, else the shown one). */
   defaultBrowserTab(windowId: number, sessionId: string, ownerSessionId?: string): DefaultBrowserTab;
   /** The pane a pane chat is bound to, if any. */
   conversationSurface(windowId: number, sessionId: string): { kind: "browser" | "terminal"; tabId: string } | undefined;
+  emptyBrowserPaneTab(windowId: number, sessionId: string): string | undefined;
   requestTabOp(
     windowId: number,
     op: { op: "new"; url: string; sessionId?: string; inTabId?: string; actor: BrowserSessionActor; active?: boolean } | { op: "select" | "close"; tabId: string; actor: BrowserSessionActor },
@@ -140,6 +141,7 @@ export interface ResolvedBrowserTab<G extends BrowserGuest> {
   readonly tab: BrowserTabRecord<G>;
   readonly origin: string | null;
   readonly opener: BrowserTabOpener;
+  readonly paused: boolean;
 }
 
 /** Scope resolution shared by the policy hooks and the execute bodies. */
@@ -148,10 +150,12 @@ export interface BrowserToolPolicy<G extends BrowserGuest> {
   /** The tab an input names (or the window's shown tab), within the session's window. */
   resolveTab(input: BrowserToolInput, sessionId: string | undefined): ResolvedBrowserTab<G> | undefined;
   /** Where browser_tab_new opens a page: a new tab, the empty page a pane chat is bound to (`inTabId`), or nowhere (why). */
-  tabNewTarget(scope: { windowId: number; hostSessionId: string }): { ok: true; inTabId?: string } | { ok: false; reason: string };
+  tabNewTarget(scope: { windowId: number; hostSessionId: string }, sessionId: string | undefined): { ok: true; inTabId?: string } | { ok: false; reason: string };
 }
 
 export function createBrowserTools<G extends BrowserGuest>(deps: BrowserToolDeps<G>): Tool[] {
+  const tabAccess = (windowId: number, handle: string, sessionId: string) =>
+    deps.tabs.tabActionAccess(windowId, handle, { sessionId, directParentSessionId: deps.liveOriginSessionId(sessionId) });
   const policy: BrowserToolPolicy<G> = {
     windowOf: (sessionId) => resolveSessionWindow(sessionId, deps),
     resolveTab: (input, sessionId) => {
@@ -160,27 +164,24 @@ export function createBrowserTools<G extends BrowserGuest>(deps: BrowserToolDeps
       if (input.tabId !== undefined && (typeof input.tabId !== "string" || !BROWSER_TAB_ID_PATTERN.test(input.tabId))) return undefined;
       const fallback = input.tabId === undefined ? deps.tabs.defaultBrowserTab(scope.windowId, scope.hostSessionId, sessionId) : undefined;
       const handle = (input.tabId as string | undefined) ?? (fallback?.ok ? fallback.handle : undefined);
-      if (handle === undefined) return undefined;
-      const tab = deps.tabs.liveTabInWindow(handle, scope.windowId);
-      if (!tab || !tab.guest || !sessionId) return undefined;
-      try { deps.tabs.assertActorAccess(tab, { sessionId, directParentSessionId: deps.liveOriginSessionId(sessionId) }); }
-      catch { return undefined; }
-      return { tab, origin: browserOrigin(tab.guest.getURL()), opener: tab.opener };
+      if (handle === undefined || !sessionId) return undefined;
+      const access = tabAccess(scope.windowId, handle, sessionId);
+      if (!access?.tab.guest) return undefined;
+      return { ...access, origin: browserOrigin(access.tab.guest.getURL()), opener: access.tab.opener };
     },
     // Only a main chat view opens new tabs. A side or pane chat acts in its attached page, or loads one into its empty pane.
-    tabNewTarget: (scope) => {
+    tabNewTarget: (scope, sessionId) => {
       if (deps.opensAgentTabs(scope.hostSessionId)) return { ok: true };
       const attached = deps.tabs.defaultBrowserTab(scope.windowId, scope.hostSessionId);
       if (attached.ok) {
-        const url = deps.tabs.liveTabInWindow(attached.handle, scope.windowId)?.guest?.getURL();
-        return { ok: false, reason: `this chat cannot open browser tabs; it works in ${attached.handle}${url ? ` (${url})` : ""}. `
-          + "Load a URL there with browser_navigate and omit tabId." };
+        const access = sessionId === undefined ? undefined : tabAccess(scope.windowId, attached.handle, sessionId);
+        if (!access) return { ok: false, reason: "this chat cannot open browser tabs. It cannot access its attached page." };
+        if (access.paused) return { ok: false, reason: "this chat cannot open browser tabs. Ask the user to resume browser control before navigating." };
+        const target = sessionId === scope.hostSessionId ? "omit tabId" : `pass tabId ${attached.handle}`;
+        return { ok: false, reason: `this chat cannot open browser tabs; it works in ${attached.handle}. Load a URL there with browser_navigate and ${target}.` };
       }
-      const bound = deps.tabs.conversationSurface(scope.windowId, scope.hostSessionId);
-      // Only a page that never loaded is empty; one that closed or crashed is gone.
-      if (bound?.kind === "browser" && !deps.tabs.listTabs(scope.windowId).some((tab) => tab.rendererTabId === bound.tabId)) {
-        return { ok: true, inTabId: bound.tabId };
-      }
+      const inTabId = deps.tabs.emptyBrowserPaneTab(scope.windowId, scope.hostSessionId);
+      if (inTabId !== undefined) return { ok: true, inTabId };
       return { ok: false, reason: `this chat cannot open browser tabs: ${attached.error}` };
     },
   };
@@ -355,7 +356,7 @@ export function createBrowserTools<G extends BrowserGuest>(deps: BrowserToolDeps
         const input = asInput(raw);
         const scope = policy.windowOf(ctx?.sessionId);
         if (input.tabId === undefined && scope && !deps.tabs.defaultBrowserTab(scope.windowId, scope.hostSessionId, ctx?.sessionId).ok) {
-          const opening = policy.tabNewTarget(scope);
+          const opening = policy.tabNewTarget(scope, ctx?.sessionId);
           if (opening.ok && (deps.tabs.conversationSurface(scope.windowId, scope.hostSessionId) === undefined || opening.inTabId !== undefined)) return urlScope(raw, "agent");
         }
         return undefined;

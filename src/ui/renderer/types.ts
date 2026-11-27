@@ -1,5 +1,6 @@
 import type { OpenJoinIpcResult } from "../../shared/work-board-types.js";
 import type { MemoryMapApi } from '../../shared/memory-map.js';
+import type { SkillMemoryApi } from "../../shared/skill-memory-types.js";
 import type { PermissionAuditIntegrity } from "../../audit/audit-schema.js";
 import type { ScheduleAttachment, ScheduleAttachmentRequest, WorkflowTemplateIpcResult, WorkflowTemplate, WorkflowTemplateRecord, WorkflowTemplateProposal, WorkflowTemplateDraftInput, WorkflowTemplateConfirmInput, WorkflowTemplateConfirmResult } from "../../shared/workflow-template-types.js";
 import type { NotificationToastPayload, NotificationClickPayload } from "../../shared/notification-types.js";
@@ -24,6 +25,7 @@ import type { ChatStreamEvent, ChatEntry } from "../../lib/chat-stream-state.js"
 import type { AgentSpawnEvent } from "../../shared/subagent-events.js";
 import type {
   ActiveWorkspaceSurface,
+  PaneChatSurface,
 } from "../../shared/browser-surface.js";
 import type { AppBootstrapStatus } from "../../shared/bootstrap-status.js";
 import type { SessionListQuery, SessionListResult } from "../../shared/session-lookup.js";
@@ -553,7 +555,7 @@ export type AvePreloadApi = {
       /** Opaque correlation echoed in the user prelude and used for scoped cancellation. */
       sendRequestId?: string,
       /** The pane tab a pane's own chat is bound to; its tools default to that tab. */
-      surface?: ActiveWorkspaceSurface,
+      surface?: PaneChatSurface,
       /** The side chat the sending view shows; a turn never lands in a pane's chat by accident. */
       sessionId?: string,
       /** The turn's true origin. A user send carries its gesture's one-shot intent; absent, main treats the send as a queue drain. */
@@ -813,6 +815,7 @@ export type AvePreloadApi = {
   starredAdd: (entry: { sessionId?: string; messageIndex: number; role: string; text: string }) => Promise<{ ok: boolean; entry?: { id: string; sessionId: string; messageIndex: number; role: string; text: string; starredAt: string } }>;
   starredRemove: (opts: { id?: string; sessionId?: string; messageIndex?: number }) => Promise<{ ok: boolean }>;
   memoryMap: MemoryMapApi;
+  skillMemory: SkillMemoryApi;
   memoryGetDetail: (id: string, opts?: ProjectQueryOptions, contentRevision?: string) => Promise<MemoryDetailResult>;
   memoryGetSummaries: (opts?: ProjectQueryOptions) => Promise<MemorySummariesResult>;
 
@@ -954,6 +957,7 @@ export type AvePreloadApi = {
   pauseRoutine: (id: string) => Promise<{ ok: true; routine: import("../../shared/routines-types.js").RoutineRecord } | { ok: false; error: string }>;
   resumeRoutine: (id: string) => Promise<{ ok: true; routine: import("../../shared/routines-types.js").RoutineRecord } | { ok: false; error: string }>;
   listRoutineOccurrences: (query: { projectRoot?: string; from: string; to: string }) => Promise<import("../../shared/routines-types.js").RoutineOccurrencesResult>;
+  onRoutinesChanged: (handler: () => void) => () => void;
   onRoutineFired: (
     handler: (event: import("../../shared/routines-types.js").RoutineFiredPayload) => void,
   ) => () => void;
@@ -1378,7 +1382,7 @@ type ApprovalSentenceSelectResult =
    * The queue reconciles against it: a card the surface that asked can no
    * longer take down (its tile closed, a navigation let go of it) goes here.
    */
-  onSettled: (cb: (payload: { requestId: string }) => void) => () => void;
+  onSettled: (cb: (payload: { requestId: string; resolvedBy?: import("../../shared/requested-output-card.js").RequestedOutputCardResolution }) => void) => () => void;
   respond: (decision: ApprovalDecision) => Promise<unknown>;
   /**
    * Requests the host is still waiting on, in the order they were asked.

@@ -37,12 +37,46 @@ const VARIANTS = {
         const holder = spawn("/bin/sleep", ["60"], { detached: true, stdio: ["ignore", "inherit", "inherit"] });
         holder.unref();
         writeFileSync(join(staging, "holder.pid"), String(holder.pid));
+        await channel.send({ type: "shell-cwd-verified", id: 1 });
+      } else if (frame.type === "spawn-authorized" && staging !== undefined) {
         await channel.send({ type: "shell-ready", id: 1 });
       } else if (frame.type === "stop" && staging !== undefined) {
         writeFileSync(join(staging, "stop-received"), String(Date.now()));
       }
     }
     await new Promise(() => {});
+  `,
+  // The real service over the verified SDK, whose spawn first replaces the request's working directory: after every
+  // check the supervisor makes and before the native child establishes its own. A `swap-mode` file beside that
+  // directory says how: `same-path` puts a new directory at the path, `link:<target>` a symbolic link to target.
+  "mxc-shell-supervisor-swap-cwd": `
+    import "./src/main/bare-program-lookup.ts";
+    import { mkdirSync, readFileSync, renameSync, symlinkSync } from "node:fs";
+    import { Socket } from "node:net";
+    import { dirname, join } from "node:path";
+    import { MxcExtensionChannel } from "./src/permissions/mxc-extension-channel.ts";
+    import { bootstrapMxcShellSupervisor, MXC_SHELL_ASYNC_STACK_BYTES } from "./src/permissions/mxc-shell-supervisor-bootstrap.ts";
+    import { serveMxcShellSupervisor } from "./src/permissions/mxc-shell-supervisor-service.ts";
+    import { readMxcSupervisorKey } from "./src/permissions/mxc-supervisor-transport.ts";
+    const [nodeModules, generation] = process.argv.slice(2);
+    const liveness = new Socket({ fd: 3, readable: true, writable: false });
+    const control = new Socket({ fd: 4, readable: true, writable: true, allowHalfOpen: true });
+    const key = await readMxcSupervisorKey(liveness);
+    const channel = new MxcExtensionChannel(control, control, generation, key, "supervisor");
+    const swap = (cwd) => {
+      const mode = readFileSync(join(dirname(cwd), "swap-mode"), "utf8");
+      renameSync(cwd, cwd + "-moved");
+      if (mode === "same-path") mkdirSync(cwd);
+      else if (mode.startsWith("link:")) symlinkSync(mode.slice(5), cwd);
+      else throw new Error("unknown swap mode");
+    };
+    const bootstrap = async () => {
+      const runtime = await bootstrapMxcShellSupervisor(nodeModules, false, MXC_SHELL_ASYNC_STACK_BYTES);
+      const spawn = async (request) => { swap(request.workingDirectory); return runtime.sdk.spawn(request); };
+      return { ...runtime, sdk: { MxcError: runtime.sdk.MxcError, spawn } };
+    };
+    await serveMxcShellSupervisor(channel, liveness, process.stdout, process.stderr, bootstrap, () => process.exit(1));
+    process.exit(0);
   `,
 } as const;
 
@@ -83,7 +117,8 @@ export async function buildNativeShellSupervisor() {
     // Same bundle and node modules, without the supervisor's asynchronous call stack setting.
     const defaultStackLocation = { ...location, entry: join(dirname(location.entry), "mxc-shell-supervisor-default-stack.js") };
     const ignoreStopLocation = { ...location, entry: join(dirname(location.entry), "mxc-shell-supervisor-ignore-stop.js") };
-    return { location, defaultStackLocation, ignoreStopLocation, resources, dispose };
+    const swapCwdLocation = { ...location, entry: join(dirname(location.entry), "mxc-shell-supervisor-swap-cwd.js") };
+    return { location, defaultStackLocation, ignoreStopLocation, swapCwdLocation, resources, dispose };
   } catch (error) {
     dispose();
     throw error;

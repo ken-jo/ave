@@ -1,53 +1,18 @@
 import assert from 'node:assert/strict';
-import { createServer } from 'node:http';
-import { createHash } from 'node:crypto';
 import { lstat, mkdtemp, mkdir, writeFile, open, readFile, readdir, realpath, rm, symlink } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { LocalModelManager, verifyModelFolder } from '../model-manager.js';
 import { LOCAL_MODEL_REVISION } from '../model-manifest.js';
-import type { FeatureNamespaceHandle } from '../../storage/feature-namespace.js';
+import { createModelManagerFixtures } from './model-manager-fixtures.js';
 vi.mock('node:fs/promises', async importOriginal => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
   return { ...actual, realpath: vi.fn(actual.realpath), rm: vi.fn(actual.rm) };
 });
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
-async function fixture(body = 'model', namespaceName = '', beforeSave?: () => void) {
-  const root = await mkdtemp(join(tmpdir(), 'memory-model-')); roots.push(root);
-  const files = [{ name: 'weights.bin', bytes: 5, sha256: createHash('sha256').update('model').digest('hex') }];
-  const namespaceDir = join(root, namespaceName);
-  let saved: string | undefined;
-  const namespace: FeatureNamespaceHandle = {
-    dir: namespaceDir, readJson: async (_, fallback) => fallback, writeJson: async () => {},
-    childDir: async name => { const path = join(namespaceDir, name); await mkdir(path, { recursive: true }); return path; },
-    createFile: name => open(join(namespaceDir, name), 'wx'),
-  };
-  const server = createServer((_, response) => { response.end(body); });
-  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
-  const port = (server.address() as { port: number }).port;
-  const manager = new LocalModelManager({ namespace, files, readPath: () => saved, savePath: path => { beforeSave?.(); saved = path; }, downloadFile: (_, signal) => fetch(`http://127.0.0.1:${port}`, { signal }) });
-  return { manager, root, files, saved: () => saved, setSaved: (path: string) => { saved = path; }, close: () => new Promise<void>(resolve => server.close(() => resolve())) };
-}
-async function linkedFixture(beforeSave?: () => void) {
-  const f = await fixture('model', join('via-link', 'ave', 'models'), beforeSave);
-  try {
-    const realRoot = join(f.root, 'real-root');
-    const parent = join(realRoot, 'ave', 'models', 'multilingual-e5-small');
-    const canonical = join(parent, LOCAL_MODEL_REVISION);
-    await mkdir(canonical, { recursive: true });
-    await writeFile(join(canonical, 'weights.bin'), 'wrong');
-    await symlink(realRoot, join(f.root, 'via-link'), process.platform === 'win32' ? 'junction' : 'dir');
-    const external = join(f.root, 'external');
-    await mkdir(external);
-    await writeFile(join(external, 'weights.bin'), 'model');
-    return { ...f, parent, external };
-  } catch (error) {
-    await f.close();
-    throw error;
-  }
-}
+const { fixture, linkedFixture } = createModelManagerFixtures(LocalModelManager, roots);
 describe('local model lifecycle', () => {
   it('reuses a verified recovery slot when the Ave home has a linked ancestor', async () => {
     const f = await linkedFixture();

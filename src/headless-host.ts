@@ -7,6 +7,7 @@ import { projectRoot } from "./main/main-paths.js";
 import { ensureWorkspaceCwd } from "./main/ensure-workspace-cwd.js";
 import { isAuthorizedWorkspaceProjectRoot } from "./main/project-root-authorization.js";
 import { acquireHostInstanceLock } from "./main/host-instance-lock.js";
+import { getTailnetObserverRuntimeState } from "./main/tailnet-surface-server.js";
 import { createWindowlessHost } from "./main/windowless-host.js";
 import { probeHostRuntimeResources } from "./main/host-runtime-probe.js";
 import { configureHostResources } from "./main/host-resources.js";
@@ -14,6 +15,7 @@ import { runAppShutdownCleanup, runIncompleteBootShutdown, runShutdownHooks } fr
 import { sealManagedChildProcessAdmission } from "./main/managed-child-processes.js";
 import { claimAsrtSignalRelease } from "./permissions/asrt-signal-ownership.js";
 import { setAppShutdownStarted } from "./main/app-state.js";
+import { TAILNET_OBSERVER_PORT_BLOCKED } from "./shared/tailnet-observer-config.js";
 import { errorMessage } from "./shared/error-message.js";
 import { HostExitAbortError } from "./shared/host-exit-abort.js";
 import { AveHomeConfigurationNotOwnerError } from "./shared/ave-home-configuration-access.js";
@@ -26,6 +28,7 @@ import {
   runExecTurn,
   waitForExecRelease,
 } from "./main/exec-mode.js";
+import { runWithSkillMemoryOwnerInput } from "./memory/skill-memory-service.js";
 import {
   initializeWorkloadBroker,
   isActiveWorkloadBrokerCwd,
@@ -133,7 +136,12 @@ export async function main(): Promise<number> {
         await Promise.race([runtime.startTailnetSurface(), bootstrapInterruption]);
       } catch (error) {
         if (interrupted) throw error;
-        process.stderr.write("headless: tailnet surface failed to start; serving the local API without it\n");
+        const block = errorMessage(error) === TAILNET_OBSERVER_PORT_BLOCKED
+          ? getTailnetObserverRuntimeState().portBlock
+          : null;
+        process.stderr.write(block === null
+          ? "headless: tailnet surface failed to start; serving the local API without it\n"
+          : `headless: tailnet observer port ${block.port} is blocked or in use; set AVE_TAILNET_OBSERVER_PORT\n`);
       }
       starting = false;
       process.stdout.write(`${JSON.stringify({ type: "server-ready", port: listener.port, pid: process.pid })}\n`);
@@ -148,6 +156,7 @@ export async function main(): Promise<number> {
     const { services } = runtime;
     return await runExecTurn({
       conversationLoop: services.conversationLoop,
+      runWithSkillMemoryOwnerInput,
       permissionManager: services.conversationLoop.permissionManager,
       approvalGate: services.approvalGate,
       settingsService: services.settingsService,

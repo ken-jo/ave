@@ -12,6 +12,7 @@ import type {
   BrowserSessionActor,
   BrowserTabControlView,
   BrowserTabOpRequest,
+  PaneChatSurface,
   SessionTabBindingsState,
 } from "../../shared/browser-surface.js";
 import { isSavedTerminalOrPage, type MainLayoutSnapshot, type SavedMainSurface, type SavedSurface } from "../../shared/main-layout.js";
@@ -28,6 +29,7 @@ interface WorkspaceTabBinding {
   readonly surface: ActiveWorkspaceSurface;
   owner: BrowserSessionActor | null;
   paneSessionId?: string;
+  browserSlotEmpty?: true;
   // Keep a closing pane turn addressed to its missing tab until its loop ends.
   closed?: boolean;
 }
@@ -729,6 +731,14 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     }
   }
 
+  tabActionAccess(windowId: number, handle: string, actor: BrowserSessionActor): { tab: BrowserTabRecord<G>; paused: boolean } | undefined {
+    const tab = this.liveTabInWindow(handle, windowId);
+    if (!tab?.guest) return undefined;
+    try { this.assertActorAccess(tab, actor); }
+    catch { return undefined; }
+    return { tab, paused: tab.controlMode === "human-paused" };
+  }
+
   acquireControl(tab: BrowserTabRecord<G>, actor: BrowserSessionActor): BrowserControlLease {
     this.assertActorAccess(tab, actor);
     if (tab.controlMode === "human-paused") throw new Error("browser control is paused; ask the user to resume this tab");
@@ -1185,11 +1195,14 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
 
   // Bind conversation `sessionId` to one tab of `windowId`: it is that pane's own chat. A pane holds one conversation at a time, so a conversation the
   // pane held before is released.
-  bindConversationSurface(sessionId: string, binding: { windowId: number; surface: ActiveWorkspaceSurface }): { ok: true } | { ok: false; error: "pane-chat-ended" } {
+  bindConversationSurface(sessionId: string, binding: { windowId: number; surface: PaneChatSurface }): { ok: true } | { ok: false; error: "pane-chat-ended" } {
     this.restoreSavedBindings();
     this.restoreBindings(binding.windowId);
     if (this.retiredWorkspaceTabs.has(windowTabKey(binding.windowId, binding.surface.tabId))) return { ok: false, error: "pane-chat-ended" };
-    const target = this.workspaceBinding(binding.windowId, binding.surface);
+    const { kind, tabId, browserSlotEmpty } = binding.surface;
+    const target = this.workspaceBinding(binding.windowId, { kind, tabId });
+    if (kind === "browser" && browserSlotEmpty === true) target.browserSlotEmpty = true;
+    else delete target.browserSlotEmpty;
     const affectedWindows = new Set([binding.windowId]);
     for (const entry of this.workspaceBindings.values()) {
       if (entry.paneSessionId === sessionId) {
@@ -1310,6 +1323,17 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     return [...this.workspaceBindings.values()].find((binding) => binding.windowId === windowId && binding.paneSessionId === sessionId)?.surface;
   }
 
+  emptyBrowserPaneTab(windowId: number, sessionId: string): string | undefined {
+    const surface = this.conversationSurface(windowId, sessionId);
+    if (surface?.kind !== "browser") return undefined;
+    const key = windowTabKey(windowId, surface.tabId);
+    const binding = this.workspaceBindings.get(key);
+    // A user navigation marks takeover before the renderer starts loading its guest.
+    if (!binding?.browserSlotEmpty || binding.closed || binding.owner || this.userOwnedTabs.has(key)
+      || this.handleByWindowTab.has(key) || this.retiredWorkspaceTabs.has(key) || this.isClosedByAgent(windowId, surface.tabId)) return undefined;
+    return surface.tabId;
+  }
+
   // The tab a conversation's browser tools act on when the call names none: the tab its pane chat is bound to, else the window's active browser tab. A
   // binding that cannot be honoured is an error, never another tab.
   defaultBrowserTab(windowId: number, sessionId: string, ownerSessionId = sessionId): DefaultBrowserTab {
@@ -1335,6 +1359,22 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
       return { ok: false, error: "the page this chat is bound to is closed or has not loaded; nothing was done" };
     }
     return { ok: true, handle: tab.handle };
+  }
+
+  browserPaneTarget(windowId: number, sessionId: string):
+    | { kind: "live"; handle: string }
+    | { kind: "empty" | "unavailable" | "blocked" | "paused" }
+    | undefined {
+    const bound = this.conversationSurface(windowId, sessionId);
+    if (bound?.kind !== "browser") return undefined;
+    const key = windowTabKey(windowId, bound.tabId);
+    if (this.retiredWorkspaceTabs.has(key) || this.isClosedByAgent(windowId, bound.tabId)) return { kind: "unavailable" };
+    const target = this.defaultBrowserTab(windowId, sessionId);
+    if (!target.ok) return { kind: this.emptyBrowserPaneTab(windowId, sessionId) === undefined ? "unavailable" : "empty" };
+    const access = this.tabActionAccess(windowId, target.handle, { sessionId });
+    if (!access) return { kind: "blocked" };
+    if (access.paused) return { kind: "paused" };
+    return { kind: "live", handle: target.handle };
   }
 
   // A live tab by handle, in any window. For approval hooks, which have no session.
@@ -1477,6 +1517,10 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
       if (!this.link || !this.link.sendTabOp(windowId, request)) {
         settle({ ok: false, error: "no-window-renderer" });
         return;
+      }
+      if (op.op === "new" && op.inTabId !== undefined) {
+        const binding = this.workspaceBindings.get(windowTabKey(windowId, op.inTabId));
+        if (binding) delete binding.browserSlotEmpty;
       }
       if (op.op === "select") this.settleSelectIfShown(windowId);
     });

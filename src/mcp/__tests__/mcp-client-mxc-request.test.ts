@@ -76,7 +76,7 @@ vi.mock("../../permissions/confined-child.js", async (original) => {
 });
 vi.mock("../../permissions/sandbox-capability.js", async (original) => ({
   ...await original<typeof import("../../permissions/sandbox-capability.js")>(),
-  getWindowsExtensionBackendPlan: () => state.plan,
+  getExtensionBackendPlan: () => state.plan,
 }));
 vi.mock("../../permissions/workspace-authorized-roots.js", () => ({ listAuthorizedWorkspaceRoots: () => [] }));
 vi.mock("../../shared/ave-home.js", async (original) => ({

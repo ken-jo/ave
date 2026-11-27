@@ -95,6 +95,8 @@ export interface ToolExecutionContext {
   verifiedShellCommand?: import("../permissions/verified-shell-command.js").VerifiedShellCommand;
   /** Opaque one-shot approval proof for a requested-sandbox plain-shell fallback. It is minted only after allow-once and is consumed by bash/PowerShell. */
   hostShellExecutionPermit?: HostShellExecutionPermit;
+  /** Host-private cwd admission for a Windows container shell. Null records an admission without usable proof. */
+  windowsContainerShellCwd?: import("../permissions/shell-working-directory-identity.js").ShellWorkingDirectoryIdentity | null;
   /** Per-invocation bookkeeping the executor threads to tools. `sessionId` is declared OPTIONAL on purpose: an invocation can be raised with no conversation behind it, and tools that cannot function unattributed
    * (`ask_user_question`, `skill_load`, `session_tasks`) refuse when it is missing. The executor therefore omits the key rather than substituting a placeholder, which would make every one of those refusals unreachable. */
   metadata: { sessionId?: string } & Record<string, unknown>;

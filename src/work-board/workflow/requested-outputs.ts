@@ -1,7 +1,9 @@
 import type { OutputExecution } from "./shipped-shapes.js";
 import { randomUUID } from "node:crypto";
 import type { WebContents } from "electron";
-import { approvalArgsAreDisplayable } from "../../shared/approval-args-display.js";
+import { approvalArgsAreDisplayable, MAX_REQUESTED_OUTPUT_ARGS_BYTES, requestedOutputArgsError } from "../../shared/approval-args-display.js";
+import type { TailnetControllerAuthority } from "../../shared/chat-origin.js";
+import type { RequestedOutputGateBinding } from "../../shared/requested-output-card.js";
 import { hasNonWhitespaceControlChars, hasInvisibleOrReorderingChars } from "../../shared/display-safe-text.js";
 import { maskSensitiveData } from "../../shared/dlp.js";
 import { hasOnlyKeys, isPlainRecord } from "../../shared/is-record.js";
@@ -14,7 +16,11 @@ import type { RunRef } from "./stage-workspace.js";
 export type OutputRefusal = "output-not-declared" | "remote-not-configured" | "too-many" | "args-too-large"
   | "needs-human-gate" | "output-remote-local-unsupported" | "output-args-not-displayable";
 const MAX_REQUESTED_OUTPUTS = 10;
-const MAX_ARGS_BYTES = 32 * 1024;
+
+export interface OutputApprovalSurface {
+  readonly desktop: WebContents | null;
+  readonly controller?: TailnetControllerAuthority;
+}
 
 type Accepted = { ok: true; output: RequestedOutput } | { ok: false; code: OutputRefusal };
 type OutputWorkspace = { root: string; repository?: string };
@@ -30,6 +36,7 @@ interface OutputIntake {
 export interface RequestedOutputHooks {
   accept(input: OutputIntake): Promise<Accepted>;
   execute(input: { run: RunRef; stageId: string; output: RequestedOutput; approvalSurface: WebContents | null;
+    binding?: RequestedOutputGateBinding; controller?: TailnetControllerAuthority;
     workspace: OutputWorkspace; canExecute: () => boolean; signal: AbortSignal;
     /** The run's effect authority (WorkBoardStore.runAuthority), checked by the push at process launch. */
     authority: AbortSignal }): Promise<OutputExecution>;
@@ -69,18 +76,9 @@ export async function acceptRequestedOutput(input: OutputIntake, git: HostGit): 
     if (!isPlainRecord(raw.args)) return { ok: false, code: "args-too-large" };
     try { args = canonicalWorkflowJson(raw.args); } catch { return { ok: false, code: "args-too-large" }; }
   }
-  if (Buffer.byteLength(args) > MAX_ARGS_BYTES || hasInvisibleOrReorderingChars(args)) {
-    return { ok: false, code: "args-too-large" };
-  }
-  if (!push) {
-    let hasInvisibleArgs = false;
-    const parsed: unknown = JSON.parse(args, (key, value: unknown) => {
-      if (hasInvisibleOrReorderingChars(key) || typeof value === "string" && hasInvisibleOrReorderingChars(value)) hasInvisibleArgs = true;
-      return value;
-    });
-    if (!approvalArgsAreDisplayable(parsed)) return { ok: false, code: "output-args-not-displayable" };
-    if (hasInvisibleArgs || maskSensitiveData(args).masked !== args) return { ok: false, code: "args-too-large" };
-  }
+  const displayError = push ? (Buffer.byteLength(args) > MAX_REQUESTED_OUTPUT_ARGS_BYTES || hasInvisibleOrReorderingChars(args) ? "args-too-large" : undefined)
+    : requestedOutputArgsError(JSON.parse(args), args);
+  if (displayError !== undefined) return { ok: false, code: displayError };
   return { ok: true, output: { id: randomUUID(), decl: { ...decl }, args, summary: maskSensitiveData(raw.summary).masked } };
 }
 
@@ -105,22 +103,30 @@ export function stageOutputIntake(hooks: RequestedOutputHooks, scope: Omit<Outpu
 
 export interface GovernedOutputAdapter {
   invoke(input: {
-    output: RequestedOutput; surface: WebContents; cwd: string; signal: AbortSignal; canExecute: () => boolean;
-  }): Promise<OutputExecution["status"]>;
+    output: RequestedOutput; surface: WebContents | null; cwd: string; signal: AbortSignal; canExecute: () => boolean;
+    binding: RequestedOutputGateBinding; projectRoot?: string; controller?: TailnetControllerAuthority;
+  }): Promise<OutputExecution["status"] | "output-args-not-displayable" | "output-execution-not-dispatched">;
 }
 
 export function createRequestedOutputHooks(git: HostGit, adapter: GovernedOutputAdapter, defaultWorkspaceRoot: string): RequestedOutputHooks {
   return {
     accept: input => acceptRequestedOutput(input, git),
-    async execute({ run, output, approvalSurface, workspace, canExecute, signal, authority }) {
+    async execute({ run, output, approvalSurface, binding, controller, workspace, canExecute, signal, authority }) {
       const { id, decl } = output;
       const args: unknown = JSON.parse(output.args);
       if (!isPlainRecord(args) || canonicalWorkflowJson(args) !== output.args) return { id, status: "failed", detail: "output-execution-failed" };
       if (signal.aborted || !canExecute()) return { id, status: "failed", detail: "output-execution-interrupted" };
-      if (isWorkflowPush(decl)) return { id, ...await executeWorkflowPush(git, workspace.repository, run.runId, args, canExecute, authority) };
-      if (!approvalSurface || approvalSurface.isDestroyed()) return { id, status: "denied", detail: "user-gesture-required" };
-      if (!approvalArgsAreDisplayable(args)) return { id, status: "failed", detail: "output-args-not-displayable" };
-      const status = await adapter.invoke({ output, surface: approvalSurface, signal, canExecute, cwd: run.projectRoot ?? defaultWorkspaceRoot });
+      if (isWorkflowPush(decl)) {
+        const { pairedShare, pairedShareGuard } = controller ?? {};
+        if (controller && (!pairedShare || !pairedShareGuard)) return { id, status: "failed", detail: "output-execution-interrupted" };
+        const refresh = pairedShare && pairedShareGuard ? () => pairedShareGuard.refreshCurrent(pairedShare) : undefined;
+        return { id, ...await executeWorkflowPush(git, workspace.repository, run.runId, args, canExecute, authority, refresh) };
+      }
+      if (!binding) return { id, status: "denied", detail: "user-gesture-required" };
+      if (!approvalArgsAreDisplayable(args) || requestedOutputArgsError(args, output.args)) return { id, status: "failed", detail: "output-args-not-displayable" };
+      const status = await adapter.invoke({ output, surface: approvalSurface, binding, controller, signal: AbortSignal.any([signal, authority]),
+        canExecute, projectRoot: run.projectRoot, cwd: run.projectRoot ?? defaultWorkspaceRoot });
+      if (status === "output-args-not-displayable" || status === "output-execution-not-dispatched") return { id, status: "failed", detail: status };
       if (signal.aborted && status !== "done") return { id, status: "failed", detail: "output-execution-interrupted" };
       return { id, status, ...(status === "failed" ? { detail: "output-execution-failed" } : {}) };
     },

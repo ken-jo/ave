@@ -197,6 +197,11 @@ let swept = false;
 
 const copies = new Map<string, { readonly executable: string; readonly arch: string }>();
 const copyDisposers = new Set<() => void>();
+let srtWinIntegrityEpoch = 0;
+
+export function getSrtWinIntegrityEpoch(): number { return srtWinIntegrityEpoch; }
+
+export function invalidateSrtWinIntegrity(): void { srtWinIntegrityEpoch += 1; }
 
 function ownPrivateCopy(directory: string): () => void {
   const dispose = (): void => {
@@ -305,9 +310,14 @@ export function srtWinSpawnEnvironment<V extends string | undefined>(executable:
 // Recheck immediately before each host-controlled helper spawn.
 export function assertSrtWinSpawnIntegrity(executable: string): void {
   if (process.platform !== "win32" || !isSrtWinHelper(executable)) return;
-  const copy = [...copies.values()].find((candidate) => candidate.executable === executable);
-  if (!copy) throw new SrtWinIntegrityError("srt-win-integrity-mismatch");
-  assertSrtWinDigest(readHelper(executable), copy.arch);
+  try {
+    const copy = [...copies.values()].find((candidate) => candidate.executable === executable);
+    if (!copy) throw new SrtWinIntegrityError("srt-win-integrity-mismatch");
+    assertSrtWinDigest(readHelper(executable), copy.arch);
+  } catch (error) {
+    invalidateSrtWinIntegrity();
+    throw error;
+  }
 }
 
 // Remove only the two known files and their two directories, never recursing or following a swapped-in directory link.

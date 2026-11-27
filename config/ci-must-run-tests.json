@@ -7,6 +7,11 @@
     "sandbox": [
       "src/sandbox/",
       "src/plugins/isolation/",
+      "src/permissions/__tests__/mxc-posix-ranking.test.ts",
+      "src/permissions/__tests__/mxc-linux.test.ts",
+      "src/permissions/__tests__/mxc-linux-raw-ip.test.ts",
+      "src/permissions/__tests__/mxc-linux-placeholders.test.ts",
+      "src/tools/__tests__/mxc-shell-source.test.ts",
       "src/tools/__tests__/bash-sandbox-home-integration.test.ts",
       "src/tools/__tests__/session-read-shell.test.ts",
       "src/tools/__tests__/xlsx-edit-sandbox.integration.test.ts",
@@ -87,6 +92,7 @@
       "test/scripts/preview-document-bundle.test.ts"
     ],
     "tree-invariants": [
+      "src/__tests__/windows-memory-import-graph.test.ts",
       "src/work-board/workflow/__tests__/host-git.test.ts",
       "test/scripts/plan-windows-tests.test.ts",
       "test/scripts/pre-push-markdown-policy.test.ts",
@@ -95,6 +101,7 @@
       "test/scripts/run-ci-suite.test.ts"
     ],
     "smoke": [
+      "src/main/memory-map/__tests__/local-runtime-release-gate.test.ts",
       "src/plugins/__tests__/tool-name-policy.test.ts",
       "src/__tests__/preload-shape.test.ts",
       "src/plugins/__tests__/public-contract-boundary.test.ts"

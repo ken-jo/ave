@@ -11,6 +11,7 @@ import {
   isAuthorizedTailnetObserver,
   startTailnetSurfaceServer,
   type TailnetPairingOptions,
+  type TailnetOutputSnapshot,
   type TailnetSurfaceServer,
   type TailnetWebOptions,
 } from "../tailnet-surface-server.js";
@@ -29,7 +30,9 @@ import { unknownToolEffects } from "../../__tests__/support/tool-effect-resolver
 import { listenFetchLoopback } from "../../shared/fetch-loopback-listener.js";
 import { openEgressRelay, startEgressRelayService, stopEgressRelayService } from "../../permissions/egress-relay/relay.js";
 import { openEgressInvocation } from "../../permissions/egress-invocations.js";
-import { TAILNET_WORK_DECISION_PATH, type TailnetWorkDecisionRequest, type TailnetWorkDecisionResponse, type TailnetWorkReview, type TailnetWorkReviewSnapshot } from "../../shared/tailnet-work-decisions.js";
+import { ApprovalGate } from "../../permissions/approval-gate.js";
+import * as allowedDirectories from "../../permissions/allowed-directories.js";
+import { TAILNET_OUTPUT_CARD_HEADER, TAILNET_WORK_DECISION_PATH, type TailnetWorkDecisionRequest, type TailnetWorkDecisionResponse, type TailnetWorkReview, type TailnetWorkReviewSnapshot } from "../../shared/tailnet-work-decisions.js";
 import type { TemplateGraph } from "../../shared/workflow-template-types.js";
 import { initializeRequiredSandbox, shouldSkipNativeSandboxTests } from "../../__tests__/support/native-sandbox.js";
 import * as tailnetListenerPolicy from "../../permissions/tailnet-listener-policy.js";
@@ -41,6 +44,7 @@ import { DEFAULT_SETTINGS } from "../../data/settings-defaults.js";
 import { aveHome } from "../../shared/ave-home.js";
 import { RoutinesStore } from "../../main/routines-store.js";
 import { createTailnetObserverConfigService } from "../../main/tailnet-observer-config-service.js";
+import { createTailnetOwnerIdentityPolicy } from "../../main/tailnet-owner-policy.js";
 import { maybeStartTailnetObserverServer, resetTailnetObserverServerForTests, stopTailnetObserverServer, type TailnetObserverConfigFile } from "../../main/tailnet-surface-server.js";
 import type { TailnetPairedSharingRuntime } from "../../main/tailnet-paired-sharing-runtime.js";
 import type { ConversationSurfaceRuntime } from "../../engine/conversation-surface-runtime.js";
@@ -2229,7 +2233,7 @@ it("refuses the live listener through an agent egress relay while the paired Web
   }
 });
 
-async function pairedWorkFixture(h: Awaited<ReturnType<typeof stageRunHarness>>) {
+async function pairedWorkFixture(h: Awaited<ReturnType<typeof stageRunHarness>>, approvalGate?: ApprovalGate) {
   if (process.platform === "win32") {
     const home = aveHome();
     protectAveHomeFixture(home);
@@ -2241,13 +2245,13 @@ async function pairedWorkFixture(h: Awaited<ReturnType<typeof stageRunHarness>>)
   const log = vi.fn();
   const runtime = createTailnetWorkDecisions({
     workBoardStore: h.board, workBoardEngine: h.engine, workflowTemplateStore: h.templates, routinesStore: routines,
-    settingsService: { get: key => DEFAULT_SETTINGS[key] }, auditLogger: { log }, toolRegistry: new ToolRegistry(),
+    settingsService: { get: key => DEFAULT_SETTINGS[key] }, auditLogger: { log }, toolRegistry: new ToolRegistry(), approvalGate,
   });
   if (!runtime) throw new Error("Work decision runtime unavailable");
   const list = vi.fn(runtime.list);
   const { server } = await fixture({
     pairedSharing: sharing.authorizer,
-    web: { origin: WEB_ORIGIN, workDecisions: { decide: runtime.decide, list, verifyServeTarget: async () => true, receipts: createReceiptStore() } },
+    web: { origin: WEB_ORIGIN, workDecisions: { ...runtime, list, verifyServeTarget: async () => true, receipts: createReceiptStore() } },
   });
   const snapshot = url(server, "/tailnet/v2/web/snapshot");
   const session = await openWebSession(server);
@@ -2264,6 +2268,67 @@ async function pairedWorkFixture(h: Awaited<ReturnType<typeof stageRunHarness>>)
   }
   return { server, sharing, snapshot, session, headers, list, log, routines, readReviews, postDecision };
 }
+
+it.each(["project access is revoked", "the approval settles"])(
+  "withholds prepared output card arguments and its handle when %s during the work list",
+  async change => {
+    const h = await stageRunHarness();
+    await h.runThenEnd(async () => {
+      const gate = new ApprovalGate(() => null);
+      const allowed = vi.spyOn(allowedDirectories, "sanitizeRuntimeAllowedDirectories").mockReturnValue([h.dir]);
+      const listing = deferred<void>();
+      const release = deferred<void>();
+      const invocation = new AbortController();
+      const sessionId = "output-review-session";
+      const outputId = "send";
+      const toolName = "send_report";
+      const requestId = crypto.randomUUID();
+      const body = "Arguments visible only while this project is authorized";
+      const unbind = gate.bindRequestedOutput(sessionId, {
+        binding: { itemId: 1, runId: "run", stageId: "review", attempt: 1, resultHash: "result", outputHash: "outputs", outputId },
+        toolName, source: "mcp", ownerId: "reports", projectRoot: h.dir, signal: invocation.signal,
+        canExecute: () => true, refuseDisplay: () => { throw new Error("Expected displayable args"); }, recordWinner: () => {},
+      });
+      try {
+        const { snapshot, headers, list } = await pairedWorkFixture(h, gate);
+        const read = () => fetch(snapshot, { headers: { ...headers, [TAILNET_OUTPUT_CARD_HEADER]: "1" } });
+        expect((await read()).status).toBe(200);
+        const pending = gate.requestAndWait({
+          id: requestId, sessionId, category: "tool", toolName, source: "mcp", args: { body },
+          reason: "Send report", invocationToolUseId: outputId, abortSignal: invocation.signal, createdAt: Date.now(),
+        });
+        expect(gate.pendingCount).toBe(1);
+        const live: TailnetWorkReviewSnapshot = (await (await read()).json()).snapshot;
+        const [card] = live.outputCards ?? [];
+        if (!card || !("handle" in card)) throw new Error("Expected a live execution card");
+        expect(card.content.argsText).toContain(body);
+        list.mockImplementationOnce(async () => {
+          listing.resolve();
+          await release.promise;
+          return [];
+        });
+        const inFlight = read();
+        await within(listing.promise, "work list to pause with a prepared output card");
+        if (change === "project access is revoked") allowed.mockReturnValue([]);
+        else {
+          invocation.abort();
+          await pending;
+        }
+        release.resolve();
+        const response = await inFlight;
+        expect(response.status).toBe(200);
+        const payload = await response.text();
+        expect(payload).not.toContain(body);
+        expect(payload).not.toContain(card.handle);
+      } finally {
+        release.resolve();
+        unbind();
+        gate.disposeAll();
+        allowed.mockRestore();
+      }
+    });
+  },
+);
 
 it("posts a real plan binding from the paired snapshot and withholds reviews after revocation", async () => {
   const h = await stageRunHarness();
@@ -2410,6 +2475,169 @@ it("retracts an unaccepted item after restart during workspace opening", async (
       await pending;
     }
   });
+});
+
+it("reports the port as applied when manual enable binds a fileless observer", async () => {
+  const env = {};
+  const port = await reservePort();
+  let file: TailnetObserverConfigFile | null = null;
+  const readConfigFile = async () => file;
+  const projection = createSharedConversationProjectionStore(createPlatformConversationTimeline());
+  stores.push(projection);
+  const service = createTailnetObserverConfigService({
+    env, readConfigFile,
+    writeConfigFile: async saved => { file = saved; },
+    pairedSharingBootstrapFailed: () => false,
+    readOwnDeviceAdmission: async () => false,
+    probeEnvironment: async () => ({
+      state: "ready", cliPath: null, login: null, dnsName: null,
+      tailnetName: null, serveConfigured: false, serveTargetPort: null, detail: null,
+    }),
+  });
+  try {
+    await expect(maybeStartTailnetObserverServer({
+      env,
+      encryption: unavailableSecretEncryption,
+      conversationSurfaceRuntime: { sharedProjection: projection } as ConversationSurfaceRuntime,
+      getCurrentConversationId: () => CONVERSATION_ID,
+      isConversationBusy: () => false,
+      dependencies: { readConfigFile },
+    })).resolves.toBeNull();
+    const { saved } = await service.snapshot();
+    await expect.soft(service.apply({
+      ...saved, enabled: true, authorization: APP_CAPABILITY, port,
+    })).resolves.toEqual({ outcome: "applied", restartNeeded: false });
+    await expect(service.snapshot()).resolves.toMatchObject({ listeningPort: port, portBlock: null });
+  } finally {
+    await stopTailnetObserverServer();
+    resetTailnetObserverServerForTests();
+  }
+});
+
+it.each([
+  { row: "A09", enableOverride: undefined, pinMatchesSave: true },
+  { row: "A09", enableOverride: undefined, pinMatchesSave: false },
+  { row: "A14", enableOverride: "1", pinMatchesSave: true },
+  { row: "A14", enableOverride: "1", pinMatchesSave: false },
+])("replaces the live authorization key for $row (pin matches save: $pinMatchesSave)", async ({
+  enableOverride, pinMatchesSave,
+}) => {
+  const port = await reservePort();
+  const savedPort = pinMatchesSave ? port : port === 28_173 ? 28_174 : 28_173;
+  const env = { AVE_TAILNET_OBSERVER: enableOverride, AVE_TAILNET_OBSERVER_PORT: String(port) };
+  const nextCapability = `${CAPABILITY}-next`;
+  let file: TailnetObserverConfigFile = {
+    enabled: true, authorization: APP_CAPABILITY, port: savedPort, pairedSharingEnabled: true,
+  };
+  const readConfigFile = async () => file;
+  const projection = createSharedConversationProjectionStore(createPlatformConversationTimeline());
+  stores.push(projection);
+  const sharing = pairedSharing({ observe: true, control: false });
+  const startServer = vi.fn(startTailnetSurfaceServer);
+  const settings = createTailnetObserverConfigService({
+    env, readConfigFile,
+    writeConfigFile: async saved => { file = saved; },
+    pairedSharingBootstrapFailed: () => false,
+    readOwnDeviceAdmission: async () => false,
+    probeEnvironment: async () => ({
+      state: "ready", cliPath: null, login: null, dnsName: null,
+      tailnetName: null, serveConfigured: false, serveTargetPort: null, detail: null,
+    }),
+  });
+  const status = async (capability: string) => {
+    const response = await fetch(`http://127.0.0.1:${port}/tailnet/v1/status`, {
+      headers: {
+        ...observerHeaders(),
+        Connection: "close",
+        "Tailscale-App-Capabilities": JSON.stringify({ [capability]: [{ role: "observer" }] }),
+      },
+    });
+    await response.text();
+    return response.status;
+  };
+  try {
+    await maybeStartTailnetObserverServer({
+      env,
+      encryption: unavailableSecretEncryption,
+      conversationSurfaceRuntime: { sharedProjection: projection } as ConversationSurfaceRuntime,
+      getCurrentConversationId: () => CONVERSATION_ID,
+      isConversationBusy: () => false,
+      tailnetPairedSharingRuntime: { authorizer: sharing.authorizer } as TailnetPairedSharingRuntime,
+      dependencies: { readConfigFile, startServer },
+    });
+    expect(await status(CAPABILITY)).toBe(200);
+    expect(await status(nextCapability)).toBe(401);
+    const { saved } = await settings.snapshot();
+    await expect(settings.apply({
+      ...saved, enabled: true, authorization: { kind: "app-capability", capability: nextCapability },
+    })).resolves.toEqual({ outcome: "applied", restartNeeded: false });
+    expect.soft(await status(CAPABILITY)).toBe(401);
+    expect.soft(await status(nextCapability)).toBe(200);
+    expect.soft(startServer).toHaveBeenCalledTimes(2);
+    expect(file.port).toBe(savedPort);
+  } finally {
+    await stopTailnetObserverServer();
+    resetTailnetObserverServerForTests();
+  }
+});
+
+it.each([
+  { row: "A06", changesPort: false, outcome: "saved" },
+  { row: "A07", changesPort: true, outcome: "restart-needed" },
+])("keeps the running observer grant requirement for $row", async ({ changesPort, outcome }) => {
+  const port = await reservePort();
+  const proposedPort = changesPort ? (port === 28_173 ? 28_174 : 28_173) : port;
+  const env = { AVE_TAILNET_OBSERVER: "1" };
+  let file: TailnetObserverConfigFile = { enabled: true, port, authorization: APP_CAPABILITY };
+  const readConfigFile = async () => file;
+  const projection = createSharedConversationProjectionStore(createPlatformConversationTimeline());
+  stores.push(projection);
+  const grantedHeaders = observerHeaders();
+  const identityOnlyHeaders = { "Tailscale-User-Login": grantedHeaders["Tailscale-User-Login"] };
+  const ownerPolicy = createTailnetOwnerIdentityPolicy({ getOwnerLogin: () => identityOnlyHeaders["Tailscale-User-Login"] });
+  const startServer = vi.fn((options: Parameters<typeof startTailnetSurfaceServer>[0]) =>
+    startTailnetSurfaceServer({ ...options, ...ownerPolicy }),
+  );
+  const settings = createTailnetObserverConfigService({
+    env, readConfigFile,
+    writeConfigFile: async saved => { file = saved; },
+    pairedSharingBootstrapFailed: () => false,
+    readOwnDeviceAdmission: async () => false,
+    probeEnvironment: async () => ({
+      state: "ready", cliPath: null, login: null, dnsName: null,
+      tailnetName: null, serveConfigured: false, serveTargetPort: null, detail: null,
+    }),
+  });
+  const status = async (headers: Record<string, string>) => {
+    const response = await fetch(`http://127.0.0.1:${port}/tailnet/v1/status`, {
+      headers: { ...headers, Connection: "close" },
+    });
+    await response.text();
+    return response.status;
+  };
+  try {
+    await maybeStartTailnetObserverServer({
+      env,
+      encryption: unavailableSecretEncryption,
+      conversationSurfaceRuntime: { sharedProjection: projection } as ConversationSurfaceRuntime,
+      getCurrentConversationId: () => CONVERSATION_ID,
+      isConversationBusy: () => false,
+      dependencies: { readConfigFile, startServer },
+    });
+    expect(await status(identityOnlyHeaders)).toBe(401);
+    expect(await status(grantedHeaders)).toBe(200);
+    const { saved } = await settings.snapshot();
+    await expect(settings.apply({
+      ...saved, enabled: false, port: proposedPort, authorization: { kind: "tailnet-identity" },
+    })).resolves.toEqual({ outcome, restartNeeded: changesPort });
+    expect.soft(file).toEqual({ port: proposedPort, authorization: { kind: "tailnet-identity" } });
+    expect.soft(await status(identityOnlyHeaders)).toBe(401);
+    expect.soft(await status(grantedHeaders)).toBe(200);
+    expect(startServer).toHaveBeenCalledOnce();
+  } finally {
+    await stopTailnetObserverServer();
+    resetTailnetObserverServerForTests();
+  }
 });
 
 it.each(["controller", "pairing", "web"] as const)("applies a saved %s reduction to the paired forced-on listener", async reduction => {
@@ -2640,7 +2868,7 @@ describe("phone work reviews", () => {
       },
     },
     {
-      kind: "stage", deny: "reject", binding: { itemId: 2, input: stageBinding },
+      kind: "stage", deny: "reject", binding: { itemId: 2, input: stageBinding }, reviewHandle: "140922fd-aab0-44b8-8fdd-559c4ed13a21",
       review: {
         kind: "stage-gate", key: "stage:2", itemId: 2, binding: stageBinding, title: "Stage review",
         result: "The stage result", outputs: [{
@@ -2675,11 +2903,11 @@ describe("phone work reviews", () => {
       },
     },
     {
-      kind: "requested-output", deny: "reject",
+      kind: "requested-output", deny: "reject", reviewHandle: "140922fd-aab0-44b8-8fdd-559c4ed13a21",
       binding: { input: { itemId: 2, runId, stageId: stageBinding.stageId, attempt: stageBinding.attempt, outputHash: stageBinding.outputHash } },
       review: { outputs: [{
         id: "output", decl: outputDecl,
-        summary: "Send the report", args: JSON.stringify(outputArgs), files: [{ path: "reports/output.txt", sha256: "b".repeat(64), size: 43 }],
+        summary: "Send the report", files: [{ path: "reports/output.txt", sha256: "b".repeat(64), size: 43 }],
       }] },
     },
   ] satisfies [TailnetWorkReview, ...TailnetWorkReview[]];
@@ -2694,6 +2922,7 @@ describe("phone work reviews", () => {
     response: (decision: TailnetWorkDecisionRequest) => TailnetWorkDecisionResponse | Promise<TailnetWorkDecisionResponse>,
     language = "en-US",
     grantedRoles: readonly ("observer" | "controller" | "work-decision")[] = roles,
+    outputSnapshot?: NonNullable<TailnetWebOptions["workDecisions"]>["outputSnapshot"],
   ) {
     const sharing = pairedSharing({ observe: true, control: true });
     const received: TailnetWorkDecisionRequest[] = [];
@@ -2707,6 +2936,7 @@ describe("phone work reviews", () => {
           return response(decision);
         },
         list: async () => reviews,
+        outputSnapshot,
         verifyServeTarget: async () => true,
         receipts: createReceiptStore(),
       } },
@@ -2785,10 +3015,11 @@ describe("phone work reviews", () => {
         for (const evidence of [
           '<img src="review-content">', "A complete plan", "The stage result", stageBinding.resultHash, stageBinding.outputHash,
           "reports/join.txt", "Conflict excerpt", joinBinding.conflictHash, "draft-revision", "Draft description", "prepare report",
-          pin.graphHash, "Existing schedule", "f".repeat(64), "send_report", "report-review", "reports/output.txt",
+          pin.graphHash, "Existing schedule", "f".repeat(64), "send_report", "reports/output.txt",
         ]) expect(section?.textContent).toContain(evidence);
         expect(section?.querySelector("textarea[maxlength=\"16384\"]")).toHaveProperty("value", "Run details");
         expect(section?.querySelector("img")).toBeNull();
+        expect(section?.textContent).not.toContain("report-review");
       } finally {
         browser.window.close();
       }
@@ -2802,6 +3033,99 @@ describe("phone work reviews", () => {
       expect(browser.window.document.querySelector("[data-work-kind]")).toBeNull();
       expect(requests.filter(request => request.method === "POST")).toHaveLength(0);
     } finally {
+      browser.window.close();
+    }
+  });
+
+  it("shows full execution arguments as text and closes the phone card on settlement", async () => {
+    const requestId = "140922fd-aab0-44b8-8fdd-559c4ed13a21";
+    const handle = `${requestId}.${Date.now() + 30_000}.${"a".repeat(64)}`;
+    const argsText = JSON.stringify({ body: `<img src="not-a-node"> ${"자료".repeat(500)}` }, null, 2);
+    let settled = false;
+    const projection = vi.fn(async (): Promise<TailnetOutputSnapshot> => () => ({ outputCards: settled
+      ? [{ requestId, resolvedBy: "tailnet-surface" }]
+      : [{ requestId, handle, content: { toolName: "send_report", ownerId: "reports", argsText, serviceEndpoint: "https://reports.example.test/tool" } }] }));
+    const { browser, received, waitForDecisions } = await openPhoneReviews([], () => {
+      settled = true;
+      return { ok: true, kind: "output-execution-card" };
+    }, "en", roles, projection);
+    try {
+      const card = browser.window.document.querySelector("#output-execution-cards article");
+      expect(card?.querySelector("pre")?.textContent).toBe(argsText);
+      expect(card?.querySelector("pre")?.tabIndex).toBe(0);
+      expect(card?.textContent).toContain("https://reports.example.test/tool");
+      expect(card?.querySelector("img")).toBeNull();
+      const allow = card?.querySelector<HTMLButtonElement>("button[data-work-action=approve]");
+      expect(allow?.textContent).toBe("Allow once");
+      allow?.click();
+      allow?.click();
+      await waitForDecisions(1);
+      expect(received[0]).toMatchObject({ kind: "output-execution-card", input: { handle, choice: "allow-once" } });
+      expect(projection).toHaveBeenCalledWith(expect.objectContaining({ outputPage: expect.objectContaining({ id: expect.any(String) }) }));
+      await waitForPhoneDom(browser, () => expect(card?.textContent).toContain("Resolved by phone"));
+      expect(card?.querySelector("button, pre")).toBeNull();
+    } finally { browser.window.close(); }
+  });
+
+  it("restores both choices after a refused phone POST and a fresh live offer", async () => {
+    const requestId = crypto.randomUUID();
+    const handle = `${requestId}.${Date.now() + 30_000}.${"a".repeat(64)}`;
+    const refreshedHandle = `${requestId}.${Date.now() + 30_000}.${"b".repeat(64)}`;
+    const content = { toolName: "send_report", ownerId: "reports", argsText: '{"body":"Ready"}' };
+    const refusal = deferred<TailnetWorkDecisionResponse>();
+    const listStarted = deferred<void>();
+    const releaseList = deferred<void>();
+    let currentHandle = handle;
+    let settled = false;
+    const projection = vi.fn(async (): Promise<TailnetOutputSnapshot> => () => ({ outputCards: settled
+      ? [{ requestId, resolvedBy: "tailnet-surface" }]
+      : [{ requestId, handle: currentHandle, content }] }));
+    const answer = vi.fn<() => Promise<TailnetWorkDecisionResponse>>()
+      .mockImplementationOnce(() => refusal.promise)
+      .mockImplementationOnce(async () => {
+        settled = true;
+        return { ok: true, kind: "output-execution-card" };
+      });
+    const { browser, received, waitForDecisions } = await openPhoneReviews([], answer, "en", roles, projection);
+    try {
+      const card = browser.window.document.querySelector("#output-execution-cards article");
+      const allow = card?.querySelector<HTMLButtonElement>("button[data-work-action=approve]");
+      const deny = card?.querySelector<HTMLButtonElement>("button[data-work-action=deny]");
+      if (!allow || !deny) throw new Error("Missing execution card choices");
+      allow.click();
+      await waitForDecisions(1);
+      expect(allow.disabled && deny.disabled).toBe(true);
+
+      projection.mockImplementationOnce(async () => {
+        listStarted.resolve();
+        await releaseList.promise;
+        return () => ({ outputCards: [{ requestId, handle, content }] });
+      });
+      const staleRendered = nextPhoneSnapshot(browser);
+      refreshPhoneReviews(browser);
+      await within(listStarted.promise, "snapshot started while the POST was pending");
+      refusal.resolve({ ok: false, error: "requested-output-card-unavailable" });
+      await waitForPhoneDom(browser, () => {
+        expect(card?.querySelector("[role=status]")?.textContent).toContain("The requested-output review is unavailable");
+      });
+      expect(allow.disabled && deny.disabled).toBe(true);
+      currentHandle = refreshedHandle;
+      releaseList.resolve();
+      await staleRendered;
+      expect(allow.disabled && deny.disabled).toBe(true);
+
+      await nextPhoneSnapshot(browser);
+      expect(allow.disabled).toBe(false);
+      expect(deny.disabled).toBe(false);
+      expect(received).toHaveLength(1);
+      deny.click();
+      await waitForDecisions(2);
+      expect(received[1]).toMatchObject({ kind: "output-execution-card", input: { handle: refreshedHandle, choice: "deny-once" } });
+      await waitForPhoneDom(browser, () => expect(card?.textContent).toContain("Resolved by phone"));
+      expect(card?.querySelector("button, pre")).toBeNull();
+    } finally {
+      refusal.resolve({ ok: false, error: "requested-output-card-unavailable" });
+      releaseList.resolve();
       browser.window.close();
     }
   });
@@ -3014,7 +3338,8 @@ describe("phone work reviews", () => {
             result.resolve(successes[kind]);
             await refreshed;
             expect(snapshotRequests()).toBeGreaterThan(before);
-            expect(recentPhoneResults(browser)?.textContent).toContain("Decision submitted.");
+            expect(recentPhoneResults(browser)?.textContent).toContain("reviewHandle" in original
+              ? "The gate was approved. Requested outputs may still need approval." : "Decision submitted.");
             expect(reviewStatus(browser, kind)).toBe("");
             expectActions(true, true);
             return;
@@ -3361,6 +3686,8 @@ describe("phone work reviews", () => {
         case "plan":
         case "stage": return { ok: true, kind: decision.kind, status: action === "reject" ? "rejected" : "approved" };
         case "join":
+        case "output-execution-card":
+        case "output-retry":
         case "requested-output": return { ok: true, kind: decision.kind };
         case "template-confirmation": return { ok: true, kind: decision.kind, pin };
         case "create-and-run": return { ok: true, kind: decision.kind, itemId: 5, runId };
@@ -3378,11 +3705,13 @@ describe("phone work reviews", () => {
       expect(received[0]).toEqual({
         id: expect.stringMatching(/^[a-f0-9-]{36}$/), scope: snapshotScope, kind: view.kind,
         ...view.binding, input: { ...view.binding.input, ...extraInput },
+        ...(action === "approve" && "reviewHandle" in view ? { reviewHandle: view.reviewHandle } : {}),
       });
       expect(requests.filter(request => request.method === "POST")).toEqual([{
         path: "/tailnet/v2/web/work-decisions", method: "POST", csrf: session.csrfToken, credentials: "same-origin",
       }]);
-      await waitForPhoneDom(browser, () => expect(button.closest(".work-review-card")?.querySelector('[role="status"]')?.textContent).toBe("Decision submitted."));
+      const expected = action === "approve" && "reviewHandle" in view ? "The gate was approved. Requested outputs may still need approval." : "Decision submitted.";
+      await waitForPhoneDom(browser, () => expect(button.closest(".work-review-card")?.querySelector('[role="status"]')?.textContent).toBe(expected));
       expect(button.disabled).toBe(true);
       if (index === 1) expect(phoneAction(browser, "requested-output", "approve").disabled).toBe(true);
     } finally {
@@ -3480,7 +3809,7 @@ describe("phone work reviews", () => {
       await waitForPhoneDom(browser, () => expect(document.querySelector('[data-work-kind="plan"] summary')?.textContent).toContain("Updated plan review"));
       expect(status("plan")).toBe(staleMessage);
       expect(status("join")).toBe("This work decision was already submitted.");
-      expect(status("requested-output")).toBe("Decision submitted.");
+      expect(status("requested-output")).toBe("The gate was approved. Requested outputs may still need approval.");
       expect(document.getElementById("work-review-feedback")?.textContent).toBe("");
       expect(requests.filter(request => request.method === "POST")).toHaveLength(3);
     } finally {

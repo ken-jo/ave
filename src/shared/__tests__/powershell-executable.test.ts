@@ -139,6 +139,7 @@ function windowsFixture(): void {
   vi.stubEnv("SystemRoot", "C:\\Windows");
   nativeFacts.read.mockImplementation((paths: readonly string[]) => paths.map((path) => ({
     exists: true, canonical: path, directory: entries.get(path)!.directory,
+    volumeSerial: "system-volume", fileId: path,
     ancestors: [], reparseTag: 0, attributes: 0, currentUserSid: STANDARD_USER, elevated: false,
     dacl: { owner: SYSTEM, nullDacl: false, aces: [{ type: 0, flags: 0, mask: 0x1f01ff, sid: SYSTEM }, { type: 0, flags: 0, mask: 0x1200a9, sid: STANDARD_USER }] },
   })));
@@ -150,7 +151,7 @@ describe("protected system shell image", () => {
     vi.stubEnv("PATH", "C:\\agent-controlled");
     vi.stubEnv("ProgramFiles", "C:\\agent-controlled");
     const { resolveTrustedPowerShellExecutable } = await import("../powershell-executable.js");
-    expect(resolveTrustedPowerShellExecutable("win32")).toEqual({ executable: WINDOWS_EXECUTABLE, kind: "windows-powershell" });
+    expect(resolveTrustedPowerShellExecutable("win32")).toEqual({ executable: WINDOWS_EXECUTABLE, kind: "windows-powershell", assertStillValid: expect.any(Function) });
     expect(nativeFacts.read.mock.calls.length).toBeGreaterThan(1);
     expect(nativeFacts.read.mock.calls.flatMap(([paths]) => paths)).toContain(`${WINDOWS_ROOT}\\Modules\\module.psd1`);
   });
@@ -191,7 +192,7 @@ describe("protected system shell image", () => {
     windowsFixture();
     for (let index = 0; index < 100; index += 1) add(WINDOWS_ROOT + "\\module" + index + ".dll", false);
     const { resolveTrustedPowerShellExecutable } = await import("../powershell-executable.js");
-    expect(resolveTrustedPowerShellExecutable("win32")).toEqual({ executable: WINDOWS_EXECUTABLE, kind: "windows-powershell" });
+    expect(resolveTrustedPowerShellExecutable("win32")).toEqual({ executable: WINDOWS_EXECUTABLE, kind: "windows-powershell", assertStillValid: expect.any(Function) });
     expect(nativeFacts.read.mock.calls.length).toBeGreaterThan(6);
     expect(nativeFacts.read.mock.calls.every(([paths]) => paths.length <= 16)).toBe(true);
   });
@@ -208,7 +209,7 @@ describe("protected system shell image", () => {
     expect(nativeFacts.read.mock.calls).toHaveLength(inspections);
     vi.resetModules();
     const restarted = await import("../powershell-executable.js");
-    expect(restarted.resolveTrustedPowerShellExecutable("win32")).toEqual({ executable: WINDOWS_EXECUTABLE, kind: "windows-powershell" });
+    expect(restarted.resolveTrustedPowerShellExecutable("win32")).toEqual({ executable: WINDOWS_EXECUTABLE, kind: "windows-powershell", assertStillValid: expect.any(Function) });
   });
 
   it("refuses inaccessible native evidence without launching an alternative shell", async () => {

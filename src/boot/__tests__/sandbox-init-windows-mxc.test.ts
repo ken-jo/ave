@@ -3,11 +3,14 @@ vi.mock("../../shared/windows-configuration-handles.js", async original => (awai
 vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
 
 /** Check each Windows substrate combination and the boot outcome reported to Settings. */
-import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { rmSync } from "node:fs";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { mkdtemp, readFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type BetterSqlite3 from "better-sqlite3";
+import { afterQueuedCallbacks, deferred } from "../../__tests__/support/deferred.js";
 import { readMxcRawIpProbeScript } from "../../__tests__/support/mxc-raw-ip-probe.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
@@ -21,12 +24,20 @@ const SANDBOX_ROOT_NAME = vi.hoisted(() => `ave-sandbox-init-windows-mxc-sandbox
 const h = vi.hoisted(() => ({
   initialize: vi.fn(),
   checkDeps: vi.fn(),
+  accountInventory: vi.fn(),
+  accountDependencies: vi.fn(),
+  offlineConfinement: vi.fn(),
+  accountOperational: vi.fn(),
+  requireLauncher: vi.fn(),
+  verifyLauncher: vi.fn(),
+  runtimeActive: vi.fn(),
   detectMxc: vi.fn(),
   startProbe: vi.fn(),
   logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
   handlers: new Map<string, (...args: unknown[]) => unknown>(),
   homesCalls: [] as string[],
   establishHomesError: undefined as Error | undefined,
+  homesParentError: undefined as Error | undefined,
 }));
 
 vi.mock("../../permissions/mxc-runtime-root.js", async (importOriginal) => {
@@ -39,9 +50,10 @@ vi.mock("../../permissions/mxc-runtime-root.js", async (importOriginal) => {
       if (h.establishHomesError !== undefined) throw h.establishHomesError;
       return "C:/example/ave-runtime/homes";
     },
-    mxcSandboxHomesParent: (...args: Parameters<typeof actual.mxcSandboxHomesParent>) => {
+    mxcSandboxHomesParent: () => {
       h.homesCalls.push("parent");
-      return actual.mxcSandboxHomesParent(...args);
+      if (h.homesParentError !== undefined) throw h.homesParentError;
+      return "C:/example/ave-runtime/homes";
     },
   };
 });
@@ -60,9 +72,23 @@ vi.mock("../dev-flags.js", async (original) => ({
   isPackagedElectronProcess: () => true,
 }));
 
-vi.mock("../../permissions/mxc-windows.js", () => ({
+vi.mock("../../permissions/mxc-windows.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../permissions/mxc-windows.js")>(),
   detectHostMxcPrerequisites: h.detectMxc,
   probeHostMxcPowerShellStart: h.startProbe,
+  getHostWxcExecIdentity: h.requireLauncher,
+  resolveHostWxcExecPath: h.verifyLauncher,
+}));
+
+vi.mock("@anthropic-ai/sandbox-runtime", () => ({
+  resolveSrtWin: ({ path }: { path: string }) => ({ exe: path, prependArgs: [] }),
+  checkWindowsDependenciesAsync: h.accountDependencies,
+  checkWindowsSandboxStatusAsync: h.accountInventory,
+  windowsInstallInstructions: () => "Complete Windows sandbox setup.",
+}));
+vi.mock("../../permissions/srt-win-integrity.js", async original => ({
+  ...await original<typeof import("../../permissions/srt-win-integrity.js")>(),
+  getVerifiedSrtWinExePath: () => "C:/example/resources/srt-win.exe",
 }));
 
 vi.mock("../../permissions/asrt-sandbox.js", async () => {
@@ -72,6 +98,12 @@ vi.mock("../../permissions/asrt-sandbox.js", async () => {
   const roots = join(tmpdir(), SANDBOX_ROOT_NAME);
   return {
     appOwnedSandboxTempRoot: () => join(roots, "tmp"),
+    isAsrtSandboxActive: h.runtimeActive,
+    isWindowsBackgroundConfinementRuntimeActive: h.runtimeActive,
+    isOfflineProcessConfinementActive: h.offlineConfinement,
+    isWindowsAccountConfinementOperational: async () => h.accountOperational(),
+    getWindowsConfinementRoute: () => [h.runtimeActive(), h.offlineConfinement()],
+    getWindowsAccountConfinementHelperIdentity: () => undefined,
     appOwnedSandboxHomeRoot: () => join(roots, "home"),
     sandboxTempPrincipalDirsInUse: () => new Set<string>(),
     ensureSandboxPrivateRoot: (root: string) => {
@@ -90,6 +122,19 @@ vi.mock("../../permissions/asrt-sandbox.js", async () => {
 });
 
 import { initSandboxGate } from "../steps/sandbox-init.js";
+import { HOST_CONTAINER_ABSENCE_PROBE } from "../../__tests__/support/mxc-probe-report.js";
+import { DEFAULT_SETTINGS } from "../../data/settings-defaults.js";
+import { createMemoryMapRuntime } from "../../ipc/domains/memory-map-runtime-win32.js";
+import { rendererSettingsSnapshot } from "../../ipc/domains/settings.js";
+import type { IpcDeps } from "../../ipc/types.js";
+import { assertLocalEmbeddingRuntime } from "../../main/memory-map/local-runtime-win32.js";
+import { SessionRepository } from "../../memory/session-repository.js";
+import { WindowsSessionRepository } from "../../memory/session-repository-win32.js";
+import { SessionSearchIndex } from "../../memory/session-search-index.js";
+import { registerMxcReleaseGateEvidence } from "../../permissions/mxc-extension-admission.js";
+import { detectMxcPrerequisites, pinnedWxcExecSha256 } from "../../permissions/mxc-windows.js";
+import { refreshWindowsBackgroundAdmission, sessionSearchIndexPolicySource } from "../../permissions/windows-background-features.js";
+import { invalidateWindowsBackendEvidence } from "../../permissions/windows-confinement-evidence.js";
 import { decidePermission } from "../../permissions/decision-pipeline.js";
 import { requiresUnsandboxedShellAsk } from "../../permissions/host-shell-execution-plan.js";
 import { ObligationRefusedError, setWindowsDenyUnenforceableAtBoot, windowsDenyUnenforceableAtBoot } from "../../permissions/admitted-obligation.js";
@@ -109,6 +154,9 @@ import {
   getSandboxBootOutcome,
   getWindowsMxcShellEgressMeasurement,
   getWindowsSandboxSubstrate,
+  markSandboxGatePendingAtBoot,
+  markSandboxHomesUnavailable,
+  setShellSandboxRequestedAtBoot,
   setSandboxStatusChangeListener,
 } from "../../permissions/sandbox-capability.js";
 
@@ -117,8 +165,25 @@ const SRT_WIN_MISSING = { errors: ["no srt-win path configured"], warnings: [] }
 // Boot-path checks precede the shell start probe.
 const MXC_OK = { state: "available", windowsBuild: "10.0.26300.9711" };
 const MXC_OLD = { state: "unavailable", reason: "container-unavailable", windowsBuild: "10.0.22631.4317", detail: "no container API" };
+const NO_CONTAINER = { ...MXC_OLD, baseContainerApiPresent: false, containerBackendAbsent: true };
+const EMPTY_ACCOUNT_INVENTORY = {
+  user: { provisioned: false, groupExists: false, credPresent: false, inBuiltinUsers: false,
+    inSandboxGroup: false, hiddenFromLogon: false, realUserSid: "S-1-5-21-1000" },
+  wfp: { state: "absent", filters: 0 },
+};
+const NO_ACCOUNT_BACKEND = { errors: [], warnings: [], accountBackendAbsent: true };
+const RELEASE_EVIDENCE = {
+  ownProxySucceeded: true, otherListenerRefused: true, directEgressRefused: true,
+  forgedLabelsAttributed: true, noWorkerPort: true, reparseSubstitutionRefused: true,
+};
 
 let harness: SandboxBootHarness;
+
+beforeAll(() => {
+  // Cache the host's native binding before the boot cases impersonate win32.
+  const Database = createRequire(import.meta.url)("better-sqlite3") as typeof BetterSqlite3;
+  new Database(":memory:").close();
+});
 
 beforeEach(() => {
   harness = createSandboxBootHarness();
@@ -129,13 +194,19 @@ beforeEach(() => {
   __resetWindowsSandboxSubstrateForTest();
   __resetSandboxHomesUnavailableForTest();
   h.initialize.mockReset();
-  h.initialize.mockResolvedValue(undefined);
+  h.initialize.mockImplementation(async () => { h.runtimeActive.mockReturnValue(true); });
+  h.offlineConfinement.mockReset().mockReturnValue(false);
+  h.accountOperational.mockReset().mockImplementation(() => h.offlineConfinement());
+  h.requireLauncher.mockReset().mockReturnValue("C:/example/resources/wxc-exec.exe");
+  h.verifyLauncher.mockReset().mockImplementation(async () => h.requireLauncher());
+  h.runtimeActive.mockReset().mockReturnValue(false);
   h.checkDeps.mockReset();
   h.detectMxc.mockReset();
   h.startProbe.mockReset();
   h.startProbe.mockResolvedValue({ state: "available", windowsBuild: "10.0.26300.9711" });
   h.homesCalls.length = 0;
   h.establishHomesError = undefined;
+  h.homesParentError = undefined;
   vi.stubEnv("AVE_SANDBOX_ENABLED", "");
   vi.stubEnv("AVE_PLUGIN_WORKER_CONFINEMENT", "");
 });
@@ -179,6 +250,498 @@ it.each([
   expect(() => assertAveHomePrivacyForConfinement()).toThrow(refusal);
   expect(logRefusal).toHaveBeenCalledWith(expect.objectContaining({ type: "error", output: expect.stringContaining("ave_home_privacy_refused") }));
   await vi.waitFor(() => expect(getWindowsSandboxSubstrate()).toMatchObject({ extensions: "none" }));
+});
+
+const ACCOUNT_DEPS_READY = { errors: [], warnings: [] };
+
+it.each([
+  { label: "operational account runtime", mxc: MXC_OLD, deps: ACCOUNT_DEPS_READY, accountStarted: true },
+  { label: "verified container shell", mxc: MXC_OK, deps: SRT_WIN_MISSING, containerStarted: true },
+  { label: "inconclusive container with dependencies only", mxc: MXC_OLD, deps: ACCOUNT_DEPS_READY, inactive: true },
+  { label: "inconclusive container without dependencies", mxc: MXC_OLD, deps: SRT_WIN_MISSING, inactive: true },
+  { label: "degraded after account initialization fails", mxc: MXC_OLD, deps: ACCOUNT_DEPS_READY, initFailure: "startup", inactive: true },
+  { label: "degraded after deferred account isolation fails", mxc: MXC_OLD, deps: ACCOUNT_DEPS_READY, initFailure: "background", inactive: true },
+  { label: "still checking", mxc: MXC_OK, deps: NO_ACCOUNT_BACKEND, inactive: true },
+  { label: "confirmed absent", mxc: NO_CONTAINER, deps: NO_ACCOUNT_BACKEND, absent: true },
+])("defers boot and reconciliation indexing with stored false until the backend is $label", async ({ mxc, deps, absent, inactive, accountStarted, containerStarted, initFailure }) => {
+  const unregister = registerMxcReleaseGateEvidence(RELEASE_EVIDENCE);
+  const dir = mkdtempSync(join(tmpdir(), "ave-boot-session-index-"));
+  const mainDir = join(dir, "main");
+  const isolatedDir = join(dir, "isolated");
+  const mainIndex = join(mainDir, "search", "index.db");
+  const isolatedIndex = join(isolatedDir, "search", "index.db");
+  const searchIndexPolicy = sessionSearchIndexPolicySource(() => false);
+  const sessionId = "aaaaaaaa-1111-2222-3333-444444444444";
+  const root = "C:/example/workspace";
+  try {
+    await new SessionRepository({ aveDir: mainDir }).saveSession(sessionId, [{ role: "user", content: "boot evidence" }]);
+    const isolatedSeed = new SessionRepository({ aveDir: isolatedDir });
+    await isolatedSeed.saveSession(sessionId, [{ role: "user", content: "detachment evidence" }]);
+    await isolatedSeed.saveSessionMetadata(sessionId, { sessionKind: "main", projectRoot: root, title: "Session" });
+    const main = new WindowsSessionRepository({ aveDir: mainDir, ...searchIndexPolicy });
+    const isolated = new WindowsSessionRepository({ aveDir: isolatedDir, ...searchIndexPolicy });
+    const originalMainIndex = readFileSync(mainIndex);
+    const originalIsolatedIndex = readFileSync(isolatedIndex);
+    const openIndex = vi.spyOn(SessionSearchIndex.prototype, "open");
+    const rebuildIndex = vi.spyOn(SessionSearchIndex.prototype, "writeRebuiltSessions");
+    const updateIndex = vi.spyOn(SessionSearchIndex.prototype, "upsertSession");
+    const discardIndex = vi.spyOn(SessionSearchIndex.prototype, "discard");
+    try {
+      markSandboxGatePendingAtBoot();
+      await main.verifyOrRebuildSearchIndex();
+      await expect(isolated.detachSessionsFromProject(root)).resolves.toBe(1);
+      await isolated.searchIndexIdle();
+      expect.soft(existsSync(mainIndex)).toBe(true);
+      expect.soft(existsSync(isolatedIndex)).toBe(true);
+      expect.soft(openIndex).not.toHaveBeenCalled();
+
+      setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: tmpdir(), sid: "S-1-5-21-1000" });
+      h.checkDeps.mockResolvedValue(deps);
+      h.detectMxc.mockResolvedValue(mxc);
+      if (initFailure === "startup") h.initialize.mockRejectedValueOnce(new Error("account isolation startup failed"));
+      if (initFailure === "background") {
+        h.initialize.mockResolvedValueOnce({
+          windowsIsolation: Promise.resolve({ status: "failed", error: new Error("account isolation setup failed") }),
+          isCurrent: () => true,
+        });
+      }
+      if (accountStarted) {
+      h.initialize.mockImplementationOnce(async () => {
+        h.runtimeActive.mockReturnValue(true);
+        h.offlineConfinement.mockReturnValue(true);
+      });
+      }
+      await initSandboxGate(harness.context(Boolean(accountStarted || containerStarted || initFailure), false));
+      if (containerStarted) await vi.waitFor(() => expect(getWindowsSandboxSubstrate()?.shells).toBe("mxc"));
+      if (initFailure) {
+        expect(h.initialize).toHaveBeenCalledOnce();
+        expect(getSandboxBootOutcome()).toMatchObject({ action: "degrade", reason: "degrade-windows-init-failed" });
+        expect(getWindowsSandboxSubstrate()).toMatchObject({
+          srtWinReady: true, shells: initFailure === "startup" ? "none" : "approved-host", extensions: "none",
+        });
+      }
+      await main.verifyOrRebuildSearchIndex();
+      await isolated.verifyOrRebuildSearchIndex();
+      expect(existsSync(mainIndex)).toBe(!absent);
+      expect(existsSync(isolatedIndex)).toBe(!absent);
+      if (inactive) {
+        await main.saveSession(sessionId, [{ role: "user", content: "deferred indexing update" }]);
+        await main.searchIndexIdle();
+        expect.soft((await refreshWindowsBackgroundAdmission()).searchIndexPolicy(false)).toBe("inactive");
+        expect.soft(readFileSync(mainIndex).equals(originalMainIndex)).toBe(true);
+        expect.soft(readFileSync(isolatedIndex).equals(originalIsolatedIndex)).toBe(true);
+        expect.soft(rebuildIndex).not.toHaveBeenCalled();
+        expect.soft(updateIndex).not.toHaveBeenCalled();
+        expect.soft(discardIndex).not.toHaveBeenCalled();
+      }
+      if (absent || inactive) {
+        expect.soft(await main.searchSessionsWithCurrentPolicy("boot evidence")).toHaveLength(0);
+        expect.soft(await isolated.searchSessionsWithCurrentPolicy("detachment evidence")).toHaveLength(0);
+        expect(openIndex).not.toHaveBeenCalled();
+      } else {
+        expect(await main.searchSessionsWithCurrentPolicy("boot evidence")).toHaveLength(1);
+        expect(await isolated.searchSessionsWithCurrentPolicy("detachment evidence", { projectRoot: root })).toHaveLength(0);
+        expect(await isolated.searchSessionsWithCurrentPolicy("detachment evidence")).toHaveLength(1);
+      }
+      expect(isolated.loadSessionMetadata(sessionId)?.projectRoot).toBeUndefined();
+    } finally {
+      openIndex.mockRestore();
+      rebuildIndex.mockRestore();
+      updateIndex.mockRestore();
+      discardIndex.mockRestore();
+      main.closeSearchIndex();
+      isolated.closeSearchIndex();
+    }
+  } finally {
+    unregister();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+it.each([
+  { label: "published HOME refusal", revoke: () => markSandboxHomesUnavailable() },
+  { label: "HOME parent identity loss", revoke: () => { h.homesParentError = new Error("HOME parent changed identity"); } },
+  { label: "withdrawn shell route", revoke: () => setShellSandboxRequestedAtBoot(false) },
+  { label: "stopped proxy runtime", revoke: () => h.runtimeActive.mockReturnValue(false) },
+  { label: "container launcher loss", preservesRoute: true, revoke: () => h.requireLauncher.mockImplementation(() => { throw new Error("launcher missing"); }) },
+  { label: "account readiness loss", preservesRoute: true, account: true, revoke: () => h.accountOperational.mockReturnValue(false) },
+  { label: "account egress or identity proof that cannot be gathered", preservesRoute: true, account: true,
+    revoke: () => h.accountOperational.mockImplementation(() => { throw new Error("egress proof failed"); }) },
+  { label: "container native startup loss", preservesRoute: true,
+    revoke: () => h.startProbe.mockResolvedValue({ state: "unavailable", reason: "powershell-start-failed", windowsBuild: "10.0.26300.9711" }) },
+  { label: "container start that cannot be attempted", preservesRoute: true, revoke: () => h.startProbe.mockRejectedValue(new Error("start failed")) },
+  { label: "loss signal before final admission", preservesRoute: true,
+    revoke: () => h.startProbe.mockImplementation(async () => { invalidateWindowsBackendEvidence(); return MXC_OK; }) },
+])("preserves the host index after live confinement loses health: $label", async ({ revoke, account, preservesRoute }) => {
+  const unregister = registerMxcReleaseGateEvidence(RELEASE_EVIDENCE);
+  const dir = mkdtempSync(join(tmpdir(), "ave-boot-session-index-"));
+  const indexPath = join(dir, "search", "index.db");
+  const sessionId = "aaaaaaaa-1111-2222-3333-444444444444";
+  const projectRoot = "C:/example/workspace";
+  const repository = new WindowsSessionRepository({ aveDir: dir, ...sessionSearchIndexPolicySource(() => false) });
+  try {
+    setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: tmpdir(), sid: "S-1-5-21-1000" });
+    h.checkDeps.mockResolvedValue(account ? ACCOUNT_DEPS_READY : SRT_WIN_MISSING);
+    h.detectMxc.mockResolvedValue(account ? MXC_OLD : MXC_OK);
+    if (account) h.initialize.mockImplementationOnce(async () => {
+      h.runtimeActive.mockReturnValue(true);
+      h.offlineConfinement.mockReturnValue(true);
+    });
+    await initSandboxGate(harness.context(true, false));
+    if (!account) {
+      await vi.waitFor(() => expect(getWindowsSandboxSubstrate()?.shells).toBe("mxc"));
+      expect(getHostShellExecutionPlan()).toMatchObject({ substrate: "mxc", sandboxed: true });
+    }
+    const publishedSubstrate = getWindowsSandboxSubstrate();
+    await repository.saveSession(sessionId, [{ role: "user", content: "indexed before refusal" }]);
+    await repository.saveSessionMetadata(sessionId, { projectRoot });
+    expect(await repository.searchSessionsWithCurrentPolicy("indexed before refusal", { projectRoot })).toHaveLength(1);
+    const originalIndex = readFileSync(indexPath);
+
+    revoke();
+    const openIndex = vi.spyOn(SessionSearchIndex.prototype, "open");
+    const rebuildIndex = vi.spyOn(SessionSearchIndex.prototype, "writeRebuiltSessions");
+    const updateIndex = vi.spyOn(SessionSearchIndex.prototype, "upsertSession");
+    const deleteRow = vi.spyOn(SessionSearchIndex.prototype, "deleteSession");
+    const discardIndex = vi.spyOn(SessionSearchIndex.prototype, "discard");
+    try {
+      await repository.verifyOrRebuildSearchIndex();
+      expect.soft(await repository.searchSessionsWithCurrentPolicy("indexed before refusal")).toEqual([]);
+      await repository.saveSession(sessionId, [{ role: "user", content: "changed after refusal" }]);
+      await repository.saveSessionMetadata(sessionId, { projectRoot, title: "Changed title" });
+      await expect(repository.detachSessionsFromProject(projectRoot)).resolves.toBe(1);
+      await repository.deleteSession(sessionId);
+      await repository.searchIndexIdle();
+      expect.soft((await refreshWindowsBackgroundAdmission()).searchIndexPolicy(false)).toBe("inactive");
+      expect.soft(openIndex).toHaveBeenCalledTimes(0);
+      expect.soft(rebuildIndex).toHaveBeenCalledTimes(0);
+      expect.soft(updateIndex).toHaveBeenCalledTimes(0);
+      expect.soft(deleteRow).toHaveBeenCalledTimes(0);
+      expect.soft(discardIndex).toHaveBeenCalledTimes(0);
+      if (preservesRoute) {
+        expect.soft(getWindowsSandboxSubstrate()).toBe(publishedSubstrate);
+        expect.soft(getSandboxHomesUnavailable()).toBe(false);
+        expect.soft(h.runtimeActive()).toBe(true);
+        if (account) expect.soft(h.offlineConfinement()).toBe(true);
+        else expect.soft(getHostShellExecutionPlan()).toMatchObject({ substrate: "mxc", sandboxed: true });
+      }
+      expect(readFileSync(indexPath).equals(originalIndex)).toBe(true);
+    } finally {
+      openIndex.mockRestore();
+      rebuildIndex.mockRestore();
+      updateIndex.mockRestore();
+      deleteRow.mockRestore();
+      discardIndex.mockRestore();
+    }
+  } finally {
+    repository.closeSearchIndex();
+    unregister();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+it.each(["route withdrawal", "launcher identity replacement", "launcher verification failure"] as const)(
+  "refuses a container receipt after %s with the same boot record", async loss => {
+    const unregister = registerMxcReleaseGateEvidence(RELEASE_EVIDENCE);
+    try {
+      setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: tmpdir(), sid: "S-1-5-21-1000" });
+      h.checkDeps.mockResolvedValue(SRT_WIN_MISSING);
+      h.detectMxc.mockResolvedValue(MXC_OK);
+      await initSandboxGate(harness.context(true, false));
+      await vi.waitFor(() => expect(getWindowsSandboxSubstrate()?.shells).toBe("mxc"));
+      const published = getWindowsSandboxSubstrate();
+      const answer = deferred<object>();
+      h.startProbe.mockClear().mockReturnValue(answer.promise);
+      if (loss === "launcher verification failure") h.verifyLauncher.mockRejectedValueOnce(new Error("launcher failed verification"));
+      const pending = refreshWindowsBackgroundAdmission();
+      if (loss !== "launcher verification failure") await vi.waitFor(() => expect(h.startProbe).toHaveBeenCalledOnce());
+      if (loss === "route withdrawal") {
+        setShellSandboxRequestedAtBoot(false);
+        setShellSandboxRequestedAtBoot(true);
+      }
+      answer.resolve(MXC_OK);
+      const admission = await pending;
+      if (loss === "launcher identity replacement") h.requireLauncher.mockReturnValue("replaced launcher identity");
+      expect(getWindowsSandboxSubstrate()).toBe(published);
+      expect(admission.searchIndexPolicy(true)).toBe("inactive");
+    } finally {
+      unregister();
+    }
+  },
+);
+
+it.each([false, true])("does no SQLite work for a superseded refresh (first inventory clean: %s)", async firstClean => {
+  const unregister = registerMxcReleaseGateEvidence(RELEASE_EVIDENCE);
+  const dir = mkdtempSync(join(tmpdir(), "ave-boot-session-index-"));
+  const sessionId = "aaaaaaaa-1111-2222-3333-444444444444";
+  const seed = new SessionRepository({ aveDir: dir });
+  await seed.saveSession(sessionId, [{ role: "user", content: "indexed before overlap" }]);
+  seed.closeSearchIndex();
+  const repository = new WindowsSessionRepository({ aveDir: dir, ...sessionSearchIndexPolicySource(() => false) });
+  try {
+    setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: tmpdir(), sid: "S-1-5-21-1000" });
+    h.checkDeps.mockResolvedValue(NO_ACCOUNT_BACKEND);
+    h.detectMxc.mockResolvedValue(NO_CONTAINER);
+    await initSandboxGate(harness.context(false, false));
+    h.checkDeps.mockClear();
+    const rejected = { ...NO_ACCOUNT_BACKEND, warnings: ["inventory incomplete"] };
+    h.checkDeps.mockResolvedValue(rejected).mockResolvedValueOnce(firstClean ? NO_ACCOUNT_BACKEND : rejected)
+      .mockResolvedValueOnce(firstClean ? rejected : NO_ACCOUNT_BACKEND);
+    const slow = deferred<object>();
+    const late = deferred<object>();
+    const lateProbeStarted = deferred<void>();
+    h.detectMxc.mockClear().mockReturnValueOnce(slow.promise).mockImplementationOnce(() => {
+      lateProbeStarted.resolve();
+      return late.promise;
+    });
+    const methods = ["open", "writeRebuiltSessions", "upsertSession", "deleteSession", "discard"] as const;
+    const sqlite = methods.map(method => vi.spyOn(SessionSearchIndex.prototype, method));
+    try {
+      const search = repository.searchSessionsWithCurrentPolicy("indexed before overlap");
+      await repository.saveSession(sessionId, [{ role: "user", content: "saved during overlap" }]);
+      const second = refreshWindowsBackgroundAdmission();
+      await afterQueuedCallbacks();
+      slow.resolve(NO_CONTAINER);
+      expect((await second).areSwitchesAvailable()).toBe(!firstClean);
+      expect(await search).toEqual([]);
+      await lateProbeStarted.promise;
+      for (const call of sqlite) expect.soft(call).not.toHaveBeenCalled();
+      late.resolve(NO_CONTAINER);
+      await repository.searchIndexIdle();
+      expect(h.detectMxc).toHaveBeenCalledTimes(2);
+      expect(h.checkDeps).toHaveBeenCalledTimes(3);
+      for (const call of sqlite) expect.soft(call).not.toHaveBeenCalled();
+    } finally {
+      slow.resolve(NO_CONTAINER);
+      late.resolve(NO_CONTAINER);
+      await repository.searchIndexIdle();
+      for (const call of sqlite) call.mockRestore();
+    }
+  } finally {
+    repository.closeSearchIndex();
+    unregister();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+it.each(["failed", "refused"] as const)("keeps progress and other reads responsive while a native answer is delayed, and indexes nothing once it has %s", async (outcome) => {
+  const unregister = registerMxcReleaseGateEvidence(RELEASE_EVIDENCE);
+  const dir = mkdtempSync(join(tmpdir(), "ave-boot-session-index-"));
+  const indexPath = join(dir, "search", "index.db");
+  const sessionId = "aaaaaaaa-1111-2222-3333-444444444444";
+  const repository = new WindowsSessionRepository({ aveDir: dir, ...sessionSearchIndexPolicySource(() => undefined) });
+  try {
+    setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: tmpdir(), sid: "S-1-5-21-1000" });
+    h.checkDeps.mockResolvedValue(SRT_WIN_MISSING);
+    h.detectMxc.mockResolvedValue(MXC_OK);
+    await initSandboxGate(harness.context(true, false));
+    await vi.waitFor(() => expect(getWindowsSandboxSubstrate()?.shells).toBe("mxc"));
+    await repository.saveSession(sessionId, [{ role: "user", content: "indexed before the delay" }]);
+    expect(await repository.searchSessionsWithCurrentPolicy("indexed before the delay")).toHaveLength(1);
+    const originalIndex = readFileSync(indexPath);
+
+    const answer = deferred<object>();
+    h.startProbe.mockClear().mockReturnValue(answer.promise);
+    const openIndex = vi.spyOn(SessionSearchIndex.prototype, "open");
+    const updateIndex = vi.spyOn(SessionSearchIndex.prototype, "upsertSession");
+    const discardIndex = vi.spyOn(SessionSearchIndex.prototype, "discard");
+    try {
+      const verify = repository.verifyOrRebuildSearchIndex();
+      await repository.saveSession(sessionId, [{ role: "user", content: "changed during the delay" }]);
+      await repository.saveSessionMetadata(sessionId, { title: "Saved during the delay" });
+      const search = repository.searchSessionsWithCurrentPolicy("indexed before the delay");
+      await expect(repository.appendSessionProgress(sessionId, [
+        { role: "user", content: "changed during the delay" }, { role: "assistant", content: "progress during the delay" },
+      ])).resolves.toEqual(expect.any(String));
+      await afterQueuedCallbacks();
+      expect(repository.loadSession(sessionId)).toHaveLength(2);
+      expect(repository.listSessions()).toHaveLength(1);
+      expect(repository.searchSessions("indexed before the delay")).toEqual([]);
+      // Both settings channels answer from the boot record of a present backend: no native query, no wait.
+      const settingsService = {
+        getAll: () => DEFAULT_SETTINGS,
+        get: (key: keyof typeof DEFAULT_SETTINGS) => DEFAULT_SETTINGS[key],
+        hasStoredSecret: async () => false,
+      };
+      const memoryMap = createMemoryMapRuntime({ settingsService, singleHopNetworkFetch: vi.fn() } as unknown as IpcDeps, vi.fn());
+      const inventories = h.detectMxc.mock.calls.length + h.checkDeps.mock.calls.length;
+      expect((await rendererSettingsSnapshot(settingsService as unknown as IpcDeps["settingsService"])).features ?? {})
+        .not.toHaveProperty("sessionIndexingWithoutContainment");
+      expect(await memoryMap.settingsGet()).not.toHaveProperty("localInferenceWithoutSandbox");
+      expect(h.detectMxc.mock.calls.length + h.checkDeps.mock.calls.length).toBe(inventories);
+      expect(h.startProbe).toHaveBeenCalledOnce();
+      expect(openIndex).toHaveBeenCalledTimes(0);
+
+      answer.resolve(outcome === "failed" ? Promise.reject(new Error("native answer failed"))
+        : { state: "unavailable", reason: "powershell-start-failed", windowsBuild: "10.0.26300.9711" });
+      await verify;
+      expect(await search).toEqual([]);
+      expect(openIndex).toHaveBeenCalledTimes(0);
+      expect(updateIndex).toHaveBeenCalledTimes(0);
+      expect(discardIndex).toHaveBeenCalledTimes(0);
+      expect(readFileSync(indexPath).equals(originalIndex)).toBe(true);
+    } finally {
+      openIndex.mockRestore();
+      updateIndex.mockRestore();
+      discardIndex.mockRestore();
+    }
+  } finally {
+    repository.closeSearchIndex();
+    unregister();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+it("refuses index work still waiting for a native answer when the store closes, and leaves it for repair", async () => {
+  const unregister = registerMxcReleaseGateEvidence(RELEASE_EVIDENCE);
+  const dir = mkdtempSync(join(tmpdir(), "ave-boot-session-index-"));
+  const sessionId = "aaaaaaaa-1111-2222-3333-444444444444";
+  const repository = new WindowsSessionRepository({ aveDir: dir, ...sessionSearchIndexPolicySource(() => undefined) });
+  try {
+    setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: tmpdir(), sid: "S-1-5-21-1000" });
+    h.checkDeps.mockResolvedValue(SRT_WIN_MISSING);
+    h.detectMxc.mockResolvedValue(MXC_OK);
+    await initSandboxGate(harness.context(true, false));
+    await vi.waitFor(() => expect(getWindowsSandboxSubstrate()?.shells).toBe("mxc"));
+    const answer = deferred<object>();
+    h.startProbe.mockReturnValue(answer.promise);
+    const openIndex = vi.spyOn(SessionSearchIndex.prototype, "open");
+    try {
+      await repository.saveSession(sessionId, [{ role: "user", content: "saved before closing" }]);
+      const search = repository.searchSessionsWithCurrentPolicy("saved before closing");
+      repository.closeSearchIndex();
+      expect(await search).toEqual([]);
+      expect(existsSync(join(dir, "sessions", ".search-repair.json"))).toBe(true);
+      answer.resolve(MXC_OK);
+      await repository.searchIndexIdle();
+      expect(openIndex).toHaveBeenCalledTimes(0);
+    } finally {
+      openIndex.mockRestore();
+    }
+  } finally {
+    repository.closeSearchIndex();
+    unregister();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+it.each([
+  ["a present account backend", () => h.checkDeps.mockResolvedValue(ACCOUNT_DEPS_READY)],
+  ["an account backend that cannot be queried", () => h.checkDeps.mockRejectedValue(new Error("inventory failed"))],
+  ["a present container backend", () => h.detectMxc.mockResolvedValue(MXC_OK)],
+  ["a container backend that cannot be queried", () => h.detectMxc.mockRejectedValue(new Error("probe failed"))],
+] as const)("stops unconfined indexing and both switches once published absence meets %s", async (_label, change) => {
+  const unregister = registerMxcReleaseGateEvidence(RELEASE_EVIDENCE);
+  const dir = mkdtempSync(join(tmpdir(), "ave-boot-session-index-"));
+  const indexPath = join(dir, "search", "index.db");
+  const sessionId = "aaaaaaaa-1111-2222-3333-444444444444";
+  const repository = new WindowsSessionRepository({ aveDir: dir, ...sessionSearchIndexPolicySource(() => true) });
+  try {
+    setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: tmpdir(), sid: "S-1-5-21-1000" });
+    h.checkDeps.mockResolvedValue(NO_ACCOUNT_BACKEND);
+    h.detectMxc.mockResolvedValue(NO_CONTAINER);
+    await initSandboxGate(harness.context(false, false));
+    const publishedSubstrate = getWindowsSandboxSubstrate();
+    expect((await refreshWindowsBackgroundAdmission("switches")).areSwitchesAvailable()).toBe(true);
+    expect(assertLocalEmbeddingRuntime(true, await refreshWindowsBackgroundAdmission())).toBe("unconfined");
+    const settingsService = {
+      getAll: () => DEFAULT_SETTINGS,
+      get: (key: keyof typeof DEFAULT_SETTINGS) => DEFAULT_SETTINGS[key],
+      set: vi.fn(),
+      hasStoredSecret: async () => false,
+    };
+    const memoryMap = createMemoryMapRuntime({ settingsService, singleHopNetworkFetch: vi.fn() } as unknown as IpcDeps, vi.fn());
+    const generalSettings = async () => (await rendererSettingsSnapshot(settingsService as unknown as IpcDeps["settingsService"])).features ?? {};
+    expect(await generalSettings()).toHaveProperty("sessionIndexingWithoutContainment");
+    expect(await memoryMap.settingsGet()).toHaveProperty("localInferenceWithoutSandbox");
+    await repository.saveSession(sessionId, [{ role: "user", content: "indexed without a backend" }]);
+    expect(await repository.searchSessionsWithCurrentPolicy("indexed without a backend")).toHaveLength(1);
+    const originalIndex = readFileSync(indexPath);
+
+    change();
+    const openIndex = vi.spyOn(SessionSearchIndex.prototype, "open");
+    const updateIndex = vi.spyOn(SessionSearchIndex.prototype, "upsertSession");
+    const discardIndex = vi.spyOn(SessionSearchIndex.prototype, "discard");
+    try {
+      await repository.verifyOrRebuildSearchIndex();
+      await repository.saveSession(sessionId, [{ role: "user", content: "changed after the backend appeared" }]);
+      await repository.searchIndexIdle();
+      expect.soft(await repository.searchSessionsWithCurrentPolicy("indexed without a backend")).toEqual([]);
+      expect.soft((await refreshWindowsBackgroundAdmission("switches")).areSwitchesAvailable()).toBe(false);
+      expect.soft(await generalSettings()).not.toHaveProperty("sessionIndexingWithoutContainment");
+      expect.soft(await memoryMap.settingsGet()).not.toHaveProperty("localInferenceWithoutSandbox");
+      await expect.soft(memoryMap.settingsSet({ localInferenceWithoutSandbox: false })).rejects.toMatchObject({ code: "local-runtime-unavailable" });
+      expect.soft(settingsService.set).not.toHaveBeenCalled();
+      const admission = await refreshWindowsBackgroundAdmission();
+      expect.soft(() => assertLocalEmbeddingRuntime(true, admission)).toThrow(expect.objectContaining({ code: "local-runtime-unavailable" }));
+      expect.soft(openIndex).toHaveBeenCalledTimes(0);
+      expect.soft(updateIndex).toHaveBeenCalledTimes(0);
+      expect.soft(discardIndex).toHaveBeenCalledTimes(0);
+      expect.soft(getWindowsSandboxSubstrate()).toBe(publishedSubstrate);
+      expect(readFileSync(indexPath).equals(originalIndex)).toBe(true);
+    } finally {
+      openIndex.mockRestore();
+      updateIndex.mockRestore();
+      discardIndex.mockRestore();
+    }
+  } finally {
+    repository.closeSearchIndex();
+    unregister();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+it.each([undefined, false])("retains indexes and recovers skipped writes across boots with preference %s", async (preference) => {
+  const unregister = registerMxcReleaseGateEvidence(RELEASE_EVIDENCE);
+  const dir = mkdtempSync(join(tmpdir(), "ave-boot-session-index-"));
+  const emptyDir = join(dir, "empty");
+  const index = join(dir, "search", "index.db");
+  const emptyIndex = join(emptyDir, "search", "index.db");
+  const searchIndexPolicy = sessionSearchIndexPolicySource(() => preference);
+  const beforeId = "aaaaaaaa-1111-2222-3333-444444444444";
+  const duringId = "bbbbbbbb-1111-2222-3333-444444444444";
+  try {
+    await new SessionRepository({ aveDir: dir }).saveSession(beforeId, [{ role: "user", content: "retained evidence" }]);
+    const originalIndex = readFileSync(index);
+    const main = new WindowsSessionRepository({ aveDir: dir, ...searchIndexPolicy });
+    const empty = new WindowsSessionRepository({ aveDir: emptyDir, ...searchIndexPolicy });
+    setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: tmpdir(), sid: "S-1-5-21-1000" });
+    h.checkDeps.mockResolvedValue(NO_ACCOUNT_BACKEND);
+    h.detectMxc.mockResolvedValue(MXC_OLD);
+    await initSandboxGate(harness.context(false, false));
+    const openIndex = vi.spyOn(SessionSearchIndex.prototype, "open");
+    try {
+      await main.verifyOrRebuildSearchIndex();
+      await empty.verifyOrRebuildSearchIndex();
+      await main.saveSession(duringId, [{ role: "user", content: "new transcript evidence" }]);
+      await empty.saveSession(duringId, [{ role: "user", content: "new transcript evidence" }]);
+      await Promise.all([main.searchIndexIdle(), empty.searchIndexIdle()]);
+      expect.soft(await main.searchSessionsWithCurrentPolicy("retained evidence")).toEqual([]);
+      expect.soft(readFileSync(index).equals(originalIndex)).toBe(true);
+      expect.soft(existsSync(emptyIndex)).toBe(false);
+      expect.soft(openIndex).not.toHaveBeenCalled();
+    } finally {
+      openIndex.mockRestore();
+    }
+
+    markSandboxGatePendingAtBoot();
+    h.checkDeps.mockResolvedValue(ACCOUNT_DEPS_READY);
+    h.initialize.mockImplementationOnce(async () => {
+      h.runtimeActive.mockReturnValue(true);
+      h.offlineConfinement.mockReturnValue(true);
+    });
+    await initSandboxGate(harness.context(true, false));
+    const restarted = new WindowsSessionRepository({ aveDir: dir, ...searchIndexPolicy });
+    const restartedEmpty = new WindowsSessionRepository({ aveDir: emptyDir, ...searchIndexPolicy });
+    await restarted.verifyOrRebuildSearchIndex();
+    await restartedEmpty.verifyOrRebuildSearchIndex();
+    expect(await restarted.searchSessionsWithCurrentPolicy("retained evidence")).toHaveLength(1);
+    expect(await restarted.searchSessionsWithCurrentPolicy("new transcript evidence")).toHaveLength(1);
+    expect(await restartedEmpty.searchSessionsWithCurrentPolicy("new transcript evidence")).toHaveLength(1);
+  } finally {
+    unregister();
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 describe("initSandboxGate — Windows sandbox HOME parent", () => {
@@ -265,7 +828,187 @@ describe("initSandboxGate — Windows sandbox HOME parent", () => {
   });
 });
 
+it.each([false, true])("checks background feature availability with both tool scopes off only after release readiness (%s)", async released => {
+  const unregister = released ? registerMxcReleaseGateEvidence(RELEASE_EVIDENCE) : undefined;
+  try {
+    setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: tmpdir(), sid: "S-1-5-21-1000" });
+    h.checkDeps.mockResolvedValue(NO_ACCOUNT_BACKEND);
+    h.detectMxc.mockResolvedValue(NO_CONTAINER);
+    await initSandboxGate(harness.context(false, false));
+    expect(h.detectMxc).toHaveBeenCalledTimes(released ? 1 : 0);
+    expect((await refreshWindowsBackgroundAdmission()).areSwitchesAvailable()).toBe(released);
+    expect(h.startProbe).not.toHaveBeenCalled();
+    expect(h.initialize).not.toHaveBeenCalled();
+    expect(getSandboxBootOutcome()).toMatchObject({ action: "skip", reason: "gate-off" });
+  } finally {
+    unregister?.();
+  }
+});
+
+const ABSENCE_FACTS = HOST_CONTAINER_ABSENCE_PROBE.probes;
+
+it.each([
+  ["container", true],
+  ["container", false],
+  ["account", true],
+  ["account", false],
+] as const)("preserves the host index when backend absence carries a warning (%s, preference %s)", async (backend, preference) => {
+  const unregister = registerMxcReleaseGateEvidence(RELEASE_EVIDENCE);
+  const dir = mkdtempSync(join(tmpdir(), "ave-boot-session-index-"));
+  const indexPath = join(dir, "search", "index.db");
+  const sessionId = "aaaaaaaa-1111-2222-3333-444444444444";
+  const searchIndexPolicy = sessionSearchIndexPolicySource(() => preference);
+  const repository = new WindowsSessionRepository({ aveDir: dir, ...searchIndexPolicy });
+  const warning = "host capability query could not complete";
+  try {
+    await new SessionRepository({ aveDir: dir }).saveSession(sessionId, [{ role: "user", content: "retained evidence" }]);
+    const originalIndex = readFileSync(indexPath);
+    setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: tmpdir(), sid: "S-1-5-21-1000" });
+    h.checkDeps.mockResolvedValue(backend === "account" ? { ...NO_ACCOUNT_BACKEND, warnings: [warning] } : NO_ACCOUNT_BACKEND);
+    const run = vi.fn(async () => ({
+      code: 0, stderr: "",
+      stdout: JSON.stringify(backend === "container"
+        ? { ...HOST_CONTAINER_ABSENCE_PROBE, warnings: [warning] } : HOST_CONTAINER_ABSENCE_PROBE),
+    }));
+    h.detectMxc.mockImplementation(() => detectMxcPrerequisites({
+      platform: "win32", arch: "x64", resourcePath: "C:\\example\\resources", windowsBuild: null,
+      systemRoot: "C:\\Windows", probeDirectory: "C:\\example\\probe", exists: () => true,
+      sha256: async () => pinnedWxcExecSha256("x64") ?? "", run,
+    }));
+    await initSandboxGate(harness.context(false, false));
+    expect(run).toHaveBeenCalledOnce();
+
+    const openIndex = vi.spyOn(SessionSearchIndex.prototype, "open");
+    const discardIndex = vi.spyOn(SessionSearchIndex.prototype, "discard");
+    try {
+      await repository.verifyOrRebuildSearchIndex();
+      await repository.saveSession(sessionId, [{ role: "user", content: "changed evidence" }]);
+      await repository.searchIndexIdle();
+      expect.soft((await refreshWindowsBackgroundAdmission()).searchIndexPolicy(preference)).toBe("inactive");
+      expect.soft((await refreshWindowsBackgroundAdmission()).areSwitchesAvailable()).toBe(false);
+      expect.soft(openIndex).toHaveBeenCalledTimes(0);
+      expect.soft(discardIndex).toHaveBeenCalledTimes(0);
+      expect(existsSync(indexPath) && readFileSync(indexPath).equals(originalIndex)).toBe(true);
+    } finally {
+      openIndex.mockRestore();
+      discardIndex.mockRestore();
+    }
+  } finally {
+    repository.closeSearchIndex();
+    unregister();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+it.each([
+  { label: "partial probe", response: { error: HOST_CONTAINER_ABSENCE_PROBE.error, probes: { baseContainerApiPresent: false } } },
+  { label: "missing host fact", response: { ...HOST_CONTAINER_ABSENCE_PROBE,
+    probes: { ...ABSENCE_FACTS, baseContainerSupportsEnumeratePaths: undefined } } },
+  { label: "contradictory enumeration", response: { ...HOST_CONTAINER_ABSENCE_PROBE,
+    probes: { ...ABSENCE_FACTS, baseContainerSupportsEnumeratePaths: true } } },
+  { label: "contradictory proxy support", response: { ...HOST_CONTAINER_ABSENCE_PROBE,
+    probes: { ...ABSENCE_FACTS, baseContainerSupportsIdentitylessLoopbackProxy: true } } },
+  { label: "generic detector error", response: { ...HOST_CONTAINER_ABSENCE_PROBE, error: "host capability query failed" } },
+  { label: "duplicate raw API fact", response: JSON.stringify(HOST_CONTAINER_ABSENCE_PROBE).replace(
+    '"baseContainerApiPresent":false', '"baseContainerApiPresent":true,"baseContainerApiPresent":false',
+  ) },
+  { label: "definitive host absence", response: HOST_CONTAINER_ABSENCE_PROBE, available: true, inventory: EMPTY_ACCOUNT_INVENTORY },
+  { label: "account group remains", mxc: NO_CONTAINER, inventory: { ...EMPTY_ACCOUNT_INVENTORY, user: { ...EMPTY_ACCOUNT_INVENTORY.user, groupExists: true } } },
+  { label: "account setup marker remains", mxc: NO_CONTAINER, inventory: { ...EMPTY_ACCOUNT_INVENTORY, user: { ...EMPTY_ACCOUNT_INVENTORY.user, markerVersion: 1 } } },
+  { label: "network filters remain", mxc: NO_CONTAINER, inventory: { ...EMPTY_ACCOUNT_INVENTORY, wfp: { state: "absent", filters: 1 } } },
+  { label: "network inventory unreadable", mxc: NO_CONTAINER, inventory: { ...EMPTY_ACCOUNT_INVENTORY, wfp: { state: "cannot-read", filters: 0 } } },
+  { label: "account inventory probe failed", mxc: NO_CONTAINER, inventory: new Error("inventory unavailable") },
+  { label: "container API present", mxc: { ...MXC_OLD, baseContainerApiPresent: true }, deps: NO_ACCOUNT_BACKEND },
+  { label: "container API fact missing", mxc: MXC_OLD, deps: NO_ACCOUNT_BACKEND },
+  { label: "contradictory container facts", mxc: { ...NO_CONTAINER, baseContainerApiPresent: true }, deps: NO_ACCOUNT_BACKEND },
+  { label: "launcher missing", mxc: { ...MXC_OLD, reason: "binary-missing" }, deps: NO_ACCOUNT_BACKEND },
+  { label: "launcher mismatched", mxc: { ...MXC_OLD, reason: "launcher-mismatch" }, deps: NO_ACCOUNT_BACKEND },
+  { label: "probe failed", mxc: { ...MXC_OLD, reason: "probe-failed" }, deps: NO_ACCOUNT_BACKEND },
+  { label: "runtime root unproved", mxc: NO_CONTAINER, deps: NO_ACCOUNT_BACKEND, rootFailed: true },
+  { label: "account dependency missing", mxc: NO_CONTAINER, deps: SRT_WIN_MISSING },
+  { label: "account dependency integrity failed", mxc: NO_CONTAINER, deps: {
+    errors: ["helper integrity check failed"], warnings: [], dependencyFailure: { code: "srt-win-integrity-mismatch" },
+  } },
+  { label: "account setup failed", mxc: NO_CONTAINER, deps: { errors: ["setup failed"], warnings: [] } },
+  { label: "contradictory account result", mxc: NO_CONTAINER, deps: { ...NO_ACCOUNT_BACKEND, errors: ["setup failed"] } },
+  { label: "backend ready", mxc: NO_CONTAINER, deps: { errors: [], warnings: [] } },
+])("projects settings and admits unconfined inference only with boot evidence: $label", async ({ mxc, deps, response, available, rootFailed, inventory }) => {
+  const unregister = registerMxcReleaseGateEvidence(RELEASE_EVIDENCE);
+  try {
+    setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: tmpdir(), sid: "S-1-5-21-1000" });
+    if (rootFailed) h.establishHomesError = new Error("root not private");
+    h.checkDeps.mockResolvedValue(deps ?? NO_ACCOUNT_BACKEND);
+    if (inventory !== undefined) {
+      h.accountDependencies.mockReset().mockResolvedValue({ errors: ["Sandbox account is not provisioned"], warnings: [] });
+      h.accountInventory.mockReset().mockImplementation(async () => {
+        if (inventory instanceof Error) throw inventory;
+        return inventory;
+      });
+      h.checkDeps.mockImplementation((await vi.importActual<typeof import("../../permissions/asrt-sandbox.js")>(
+        "../../permissions/asrt-sandbox.js",
+      )).checkAsrtDependencies);
+    }
+    const run = vi.fn(async () => ({
+      code: 0, stdout: typeof response === "string" ? response : JSON.stringify(response), stderr: "",
+    }));
+    if (response) {
+      h.detectMxc.mockImplementation(() => detectMxcPrerequisites({
+        platform: "win32", arch: "x64", resourcePath: "C:\\example\\resources", windowsBuild: null,
+        systemRoot: "C:\\Windows", probeDirectory: "C:\\example\\probe", exists: () => true,
+        sha256: async () => pinnedWxcExecSha256("x64") ?? "", run,
+      }));
+    } else {
+      h.detectMxc.mockResolvedValue(mxc);
+    }
+    await initSandboxGate(harness.context(false, false));
+    if (response) expect(run).toHaveBeenCalledOnce();
+    if (inventory !== undefined) {
+      expect(getWindowsSandboxSubstrate()?.accountBackendAbsent).toBe(available ? true : undefined);
+    }
+
+    const settingsService = {
+      getAll: () => DEFAULT_SETTINGS,
+      get: (key: keyof typeof DEFAULT_SETTINGS) => DEFAULT_SETTINGS[key],
+      hasStoredSecret: async () => false,
+    };
+    const resolveScope = vi.fn(() => { throw new Error("unexpected local build"); });
+    const memoryMap = createMemoryMapRuntime({ settingsService, singleHopNetworkFetch: vi.fn() } as unknown as IpcDeps, resolveScope);
+    const generalSettings = await rendererSettingsSnapshot(settingsService as unknown as IpcDeps["settingsService"]);
+    const embeddingSettings = await memoryMap.settingsGet();
+    expect.soft(Object.hasOwn(generalSettings.features ?? {}, "sessionIndexingWithoutContainment")).toBe(Boolean(available));
+    expect.soft(Object.hasOwn(embeddingSettings, "localInferenceWithoutSandbox")).toBe(Boolean(available));
+    if (available) {
+      expect(assertLocalEmbeddingRuntime(undefined, await refreshWindowsBackgroundAdmission())).toBe("unconfined");
+      expect(h.accountInventory.mock.calls.length).toBeGreaterThan(1);
+      h.accountInventory.mockResolvedValue({ ...EMPTY_ACCOUNT_INVENTORY, wfp: { state: "cannot-read", filters: 0 } });
+      expect((await refreshWindowsBackgroundAdmission()).areSwitchesAvailable()).toBe(false);
+    }
+    else await expect((async () => memoryMap.build(undefined, "11111111-1111-4111-8111-111111111111",
+      {} as Parameters<typeof memoryMap.build>[2], {}, () => {}))())
+      .rejects.toMatchObject({ code: "local-runtime-unavailable" });
+    expect(resolveScope).not.toHaveBeenCalled();
+  } finally {
+    unregister();
+  }
+});
+
 describe("initSandboxGate — Windows MXC substrate", () => {
+  it("withholds boot shell evidence when the measured launcher changes before publication", async () => {
+    h.checkDeps.mockResolvedValue(SRT_WIN_MISSING);
+    h.detectMxc.mockResolvedValue(MXC_OK);
+    const measured = { ...MXC_OK, rawIpProbe: { rawIp: "blocked", reason: "blocked", evidenceKind: "measured", reachableTargets: [], udpArrival: "absent" } };
+    const result = deferred<typeof measured>();
+    h.startProbe.mockReturnValue(result.promise);
+    await initSandboxGate(harness.context(true, false));
+    await vi.waitFor(() => expect(h.startProbe).toHaveBeenCalledOnce());
+    h.requireLauncher.mockReturnValue("replacement launcher");
+    result.resolve(measured);
+    await afterQueuedCallbacks();
+    expect(getWindowsSandboxSubstrate()).toMatchObject({ shells: "approved-host", mxc: { state: "unavailable", reason: "launcher-mismatch" } });
+    expect(getWindowsSandboxSubstrate()?.shellEgressProtocolCoverage).toBeUndefined();
+    expect(getWindowsMxcShellEgressMeasurement()).toBeUndefined();
+  });
+
   it("starts the real container probe at boot with nothing saved and carries shells in containers once it passes", async () => {
     h.checkDeps.mockResolvedValue(SRT_WIN_MISSING);
     h.detectMxc.mockResolvedValue(MXC_OK);

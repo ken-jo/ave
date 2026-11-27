@@ -1,5 +1,6 @@
-import { lstatSync, opendirSync, realpathSync } from "node:fs";
+import { accessSync, constants, lstatSync, opendirSync, realpathSync, statSync } from "node:fs";
 import { posix } from "node:path";
+import { sameFileIdentity } from "../lib/file-identity.js";
 import type { ContainerBackend } from "../shared/container-platform.js";
 import { canonicalWhereItExists } from "./mxc-runtime-root.js";
 import { mxcPolicyRows, type MxcFilesystemGrants, type MxcPolicyRows } from "./mxc-windows.js";
@@ -9,6 +10,7 @@ type NestedGrantRule = "deny-wins" | "most-specific";
 
 const NESTED_GRANT_RULE: Readonly<Partial<Record<ContainerBackend, NestedGrantRule>>> = Object.freeze({
   seatbelt: "deny-wins",
+  bubblewrap: "most-specific",
 });
 
 export interface PosixPolicyLookups {
@@ -18,18 +20,32 @@ export interface PosixPolicyLookups {
   canonical(path: string): string;
   /** List child names without following links, up to the requested bound. */
   children(path: string, limit: number): readonly string[];
+  /** Whether the host account can read the path and search it if it is a directory. */
+  readable(path: string): boolean;
+  /** Directory identity, without following a final link. */
+  directoryIdentity(path: string): { readonly device: bigint; readonly inode: bigint } | undefined;
   readonly home: string;
   readonly foldsCase: boolean;
 }
 
 export type PosixPolicyRefusal =
   | "backend-unmeasured" | "pattern-row" | "relative-row" | "nested-grant-under-deny" | "deny-without-outcome"
-  | "chain-unreadable" | "grant-limit-exceeded";
+  | "chain-unreadable" | "grant-limit-exceeded" | "root-write-grant" | "placeholder-parent-unproved";
+
+interface BubblewrapPlaceholder {
+  readonly path: string;
+  readonly ancestor: string;
+  readonly device: bigint;
+  readonly inode: bigint;
+  readonly parents: readonly string[];
+}
 
 export interface PosixFilesystemGrants extends MxcFilesystemGrants {
   readonly chainFolders: readonly string[];
   readonly ungrantedDenies: readonly string[];
   readonly carvedReadLimitedAt?: readonly string[];
+  readonly pins?: readonly string[];
+  readonly placeholders?: readonly BubblewrapPlaceholder[];
 }
 
 function isAbsent(error: unknown): boolean {
@@ -71,6 +87,25 @@ export function posixPolicyLookups(home: string, foldsCase: boolean): PosixPolic
         directory.closeSync();
       }
       return names;
+    },
+    readable(path) {
+      try {
+        accessSync(path, constants.R_OK | (statSync(path).isDirectory() ? constants.X_OK : 0));
+        return true;
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (isAbsent(error) || code === "EACCES" || code === "EPERM") return false;
+        throw error;
+      }
+    },
+    directoryIdentity(path) {
+      try {
+        const stat = lstatSync(path, { bigint: true });
+        return stat.isDirectory() ? { device: stat.dev, inode: stat.ino } : undefined;
+      } catch (error) {
+        if (isAbsent(error)) return undefined;
+        throw error;
+      }
     },
   };
 }
@@ -133,6 +168,7 @@ function assertDenyOutcomes(
 
 const MAX_CARVE_ENTRIES = 2_000;
 const MAX_CARVE_GRANTS = 400;
+const BUBBLEWRAP_PRIVATE_MOUNTS = ["/proc", "/dev", "/run"] as const;
 
 function carveGrants(
   readwrite: readonly string[], readonly: readonly string[], readDenies: readonly string[],
@@ -239,6 +275,9 @@ function carveGrants(
 function rankRows(model: PolicyModel, nestedRule: NestedGrantRule, lookups: PosixPolicyLookups): PosixFilesystemGrants {
   const canonicalRows = { ...model, rows: model.rows.map((row) => ({ ...row, path: canonicalPath(row.path, row.literal, lookups) })) };
   const rows: MxcPolicyRows = mxcPolicyRows(canonicalRows);
+  if (nestedRule === "most-specific" && rows.writeGrants.includes("/")) {
+    throw new PosixContainerPolicyError("root-write-grant", "Container cannot grant write access to /");
+  }
   const key = (path: string) => pathKey(path, lookups.foldsCase);
   const covers = (root: string, path: string) => atOrUnder(path, root, lookups.foldsCase);
   const strictlyCovers = (root: string, path: string) => key(root) !== key(path) && covers(root, path);
@@ -301,7 +340,13 @@ function rankRows(model: PolicyModel, nestedRule: NestedGrantRule, lookups: Posi
     const writeFloor = writeFloorRows.filter((path) => readwrite.some((grant) => strictlyCovers(grant, path)));
     const writableKeys = new Set(readwrite.map(key));
     const readonly = dedupe([
-      ...requestedReadonly, ...writeFloor.filter((path) => !coveredBy(path, denied)),
+      ...requestedReadonly, ...writeFloor.filter((path) => {
+        const deny = nearestEnclosing(path, denied, lookups.foldsCase);
+        if (deny === undefined) return true;
+        if (nestedRule === "deny-wins") return false;
+        const write = nearestEnclosing(path, readwrite, lookups.foldsCase);
+        return write !== undefined && write.length > deny.length;
+      }),
     ]).filter((path) => !writableKeys.has(key(path)));
 
     return { readwrite, readonly, denied };
@@ -314,13 +359,113 @@ function rankRows(model: PolicyModel, nestedRule: NestedGrantRule, lookups: Posi
   return { ...result, ungrantedDenies: readDenies.filter(deny => !deniedKeys.has(key(deny))) };
 }
 
+function bubblewrapReadBase(result: PosixFilesystemGrants, lookups: PosixPolicyLookups): PosixFilesystemGrants {
+  if (!result.readonly.includes("/")) return result;
+
+  const children = lookups.children("/", MAX_CARVE_ENTRIES + 1);
+  if (children.length > MAX_CARVE_ENTRIES) {
+    throw new PosixContainerPolicyError("grant-limit-exceeded", "Container cannot enumerate the root within its grant limit");
+  }
+  const readonly = result.readonly.filter((path) => path !== "/");
+  const excluded = [...BUBBLEWRAP_PRIVATE_MOUNTS, ...result.denied, ...result.readwrite, ...readonly];
+  const rootGrants = new Set<string>();
+  for (const name of children) {
+    const path = posix.join("/", name);
+    if (BUBBLEWRAP_PRIVATE_MOUNTS.some((root) => atOrUnder(path, root, false)) || !lookups.readable(path)) continue;
+
+    const canonical = canonicalPath(path, true, lookups);
+    if (canonical === "/" || !lookups.exists(canonical) || excluded.some((root) => atOrUnder(canonical, root, false))) continue;
+    rootGrants.add(canonical);
+  }
+
+  for (const path of rootGrants) {
+    let parent = posix.dirname(path);
+    while (parent !== "/" && !rootGrants.has(parent)) parent = posix.dirname(parent);
+    if (parent === "/") readonly.push(path);
+  }
+  return { ...result, readonly };
+}
+
+function applyBubblewrapRows(result: PosixFilesystemGrants, lookups: PosixPolicyLookups): PosixFilesystemGrants {
+  const { readwrite, readonly, denied } = bubblewrapReadBase(result, lookups);
+  const enclosingRows = [...readwrite, ...readonly, ...denied];
+  const writeRows = new Set(readwrite);
+  const pins = new Set<string>();
+  const placeholders: BubblewrapPlaceholder[] = [];
+  const projectedReadonly: string[] = [];
+  const projectedDenied: string[] = [];
+  // A nested write root is a mount point, but the folders above it inside the enclosing write root are not. Renaming one
+  // of them carries the nested mount, and every row below it, away, so each existing folder between the two is pinned.
+  for (const path of readwrite) {
+    const parent = posix.dirname(path);
+    if (parent === path) continue;
+    const enclosing = nearestEnclosing(parent, enclosingRows, false);
+    if (enclosing === undefined || !writeRows.has(enclosing)) continue;
+    for (let folder = parent; folder !== enclosing; folder = posix.dirname(folder)) {
+      if (lookups.directoryIdentity(folder) !== undefined) pins.add(folder);
+    }
+  }
+  for (const [path, isDenied] of [
+    ...readonly.map((path) => [path, false] as const),
+    ...denied.map((path) => [path, true] as const),
+  ]) {
+    const parent = posix.dirname(path);
+    const enclosing = nearestEnclosing(parent, enclosingRows, false);
+    const exists = lookups.exists(path);
+    if (exists) (isDenied ? projectedDenied : projectedReadonly).push(path);
+    if (enclosing === undefined || !writeRows.has(enclosing)) continue;
+    for (let folder = parent; folder !== enclosing; folder = posix.dirname(folder)) {
+      if (!exists || lookups.directoryIdentity(folder) !== undefined) pins.add(folder);
+    }
+    if (exists) continue;
+
+    const parents: string[] = [];
+    let ancestor = parent;
+    let identity = lookups.directoryIdentity(ancestor);
+    while (identity === undefined && ancestor !== enclosing && !lookups.exists(ancestor)) {
+      parents.unshift(ancestor);
+      ancestor = posix.dirname(ancestor);
+      identity = lookups.directoryIdentity(ancestor);
+    }
+    if (identity === undefined) {
+      throw new PosixContainerPolicyError("placeholder-parent-unproved", `Container cannot prove a parent of: ${path}`);
+    }
+    placeholders.push({ path, ancestor, ...identity, parents });
+    projectedDenied.push(path);
+  }
+
+  const writable = [...readwrite, ...pins];
+  const firstExcess = [...writable, ...projectedReadonly, ...projectedDenied][MAX_CARVE_GRANTS];
+  if (firstExcess !== undefined) {
+    throw new PosixContainerPolicyError("grant-limit-exceeded", `Container grant limit (${MAX_CARVE_GRANTS}) exceeded at: ${firstExcess}`);
+  }
+  return { ...result, readwrite: writable, readonly: projectedReadonly, denied: projectedDenied, pins: [...pins], placeholders };
+}
+
 /** Rank the literal rows and retain the carve information needed to render the profile. */
 export function rankPosixContainerRows(
   model: PolicyModel, backend: ContainerBackend, lookups: PosixPolicyLookups,
 ): PosixFilesystemGrants {
   const rule = Object.hasOwn(NESTED_GRANT_RULE, backend) ? NESTED_GRANT_RULE[backend] : undefined;
   if (rule === undefined) throw new PosixContainerPolicyError("backend-unmeasured", `Container precedence is unmeasured for ${backend}`);
-  return rankRows(model, rule, lookups);
+  const result = rankRows(model, rule, lookups);
+  return backend === "bubblewrap" ? applyBubblewrapRows(result, lookups) : result;
 }
 
 export { assertDenyOutcomes as _assertPosixDenyOutcomesForTest, rankRows as _rankPosixContainerRowsForTest };
+
+/** Whether the volume holding `path` folds case, measured on the first ancestor name with a letter. */
+export function posixPathFoldsCase(path: string): boolean {
+  const device = lstatSync(path, { bigint: true }).dev;
+  for (let entry = path; entry !== "/"; entry = posix.dirname(entry)) {
+    const original = lstatSync(entry, { bigint: true });
+    if (original.dev !== device) break;
+    const name = posix.basename(entry);
+    const variant = name.replace(/[a-z]/iu, letter => letter === letter.toLowerCase() ? letter.toUpperCase() : letter.toLowerCase());
+    if (variant === name) continue;
+    const other = lstatSync(posix.join(posix.dirname(entry), variant), { bigint: true, throwIfNoEntry: false });
+    return other !== undefined && sameFileIdentity(original, other);
+  }
+  // Unknown volumes retain case-sensitive path keys and the extra write-floor variants.
+  return false;
+}

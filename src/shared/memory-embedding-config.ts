@@ -14,3 +14,23 @@ export function normalizeMemoryEmbeddingConfig(value: unknown): MemoryEmbeddingC
   const { consent, ...config } = parsed.data;
   return consent ? { ...config, consent } : config;
 }
+
+export const DEFAULT_LOCAL_INFERENCE_WITHOUT_SANDBOX = true;
+const WindowsConfigSchema = z.object({
+  localModelPath: z.string().min(1).max(32768).refine(value => !value.includes('\0')).optional(),
+  localInferenceWithoutSandbox: z.boolean().optional().catch(undefined),
+  source: z.enum(['local', 'provider']).optional(), providerId: z.string().min(1).max(128).optional(), modelId: z.string().min(1).max(256).optional(),
+  consent: z.unknown().transform(value => MemoryEmbeddingConsentSchema.safeParse(value).data).optional(),
+}).strict().refine(value => value.source !== 'provider' || Boolean(value.providerId && value.modelId), 'Provider selection is incomplete');
+
+export type WindowsMemoryEmbeddingConfig = z.infer<typeof WindowsConfigSchema>;
+export function normalizeWindowsMemoryEmbeddingConfig(value: unknown): WindowsMemoryEmbeddingConfig | undefined {
+  const parsed = WindowsConfigSchema.safeParse(value);
+  if (!parsed.success) return undefined;
+  const { consent, localInferenceWithoutSandbox, ...config } = parsed.data;
+  return {
+    ...config,
+    ...(localInferenceWithoutSandbox === undefined ? {} : { localInferenceWithoutSandbox }),
+    ...(consent ? { consent } : {}),
+  };
+}

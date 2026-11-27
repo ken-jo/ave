@@ -22,27 +22,34 @@ export function mxcRequestDigest(request: ContainerRequest): string {
 }
 
 type StreamFrame = { type: "stdin" | "stdout" | "stderr"; data: string };
-type ControlFrame = { type: "stdin-end" | "stop" | "creating" | "spawning" | "spawn-authorized" };
+type ControlFrame = { type: "stdin-end" | "stop" | "creating" | "spawning" };
+type WindowsExtensionReleaseFrame = { type: "spawn-authorized"; releasePath?: string; releaseDigest?: string };
 type StoppedFrame = { type: "stopped"; spawnPendingAtCancellation: boolean };
 type NativeCreatedFrame = { type: "native-created"; id: number; processHandle: string };
 type NativeObservedFrame = { type: "native-observed"; id: number };
 type StartFrame = { type: "start"; request: ContainerRequest };
-type ShellStartFrame = { type: "shell-start"; requestPath: string; requestSha256: string };
+/** The staged cwd's realpath and its stat dev and inode, as decimal strings: the bigints a JSON frame can carry. */
+type MxcShellCwdIdentity = { realpath: string; dev: string; ino: string };
+type ShellStartFrame = { type: "shell-start"; requestPath: string; requestSha256: string; cwdIdentity: MxcShellCwdIdentity };
+/** The workload checked its inherited cwd and waits for the host's grant (`spawn-authorized`) before user code runs. */
+type ShellCwdVerifiedFrame = { type: "shell-cwd-verified"; id: number };
 type ShellReadyFrame = { type: "shell-ready"; id: number };
 type ReadyFrame = { type: "ready"; id: number; nodeVersion: string; nativeModules: string[]; nativeModuleCount: number; nativeModulesTruncated: boolean; ownerHandle: string;
   requestDigest: string; startEvidence: MxcExtensionStartEvidence };
 type ExitFrame = { type: "exit"; exitCode: number; timedOut: boolean };
 type FailureFrame = { type: "error"; message: string } & (
-  { code: "contract" | "integrity" | "capability-unavailable" | "cleanup-unverified" | "supervisor-lost" }
+  { code: "contract" | "integrity" | "capability-unavailable" | "cleanup-unverified" | "supervisor-lost" | "cwd-changed"; backendLoss?: "extension" | "common" }
   | { code: "start-refused"; sdkCode?: string }
 );
-export type MxcStreamFrame = (StreamFrame | ControlFrame | StoppedFrame | NativeCreatedFrame | NativeObservedFrame | StartFrame | ReadyFrame | ShellStartFrame | ShellReadyFrame | ExitFrame | FailureFrame) & {
+export type MxcStreamFrame = (StreamFrame | ControlFrame | WindowsExtensionReleaseFrame | StoppedFrame | NativeCreatedFrame | NativeObservedFrame | StartFrame | ReadyFrame | ShellStartFrame | ShellCwdVerifiedFrame | ShellReadyFrame | ExitFrame | FailureFrame) & {
   version: 1;
   generation: string;
   sequence: number;
 };
 
-function validateFrame(value: unknown, generation: string, sequence: number): asserts value is MxcStreamFrame {
+export type MxcFrameProtocol = "shell" | "windows-extension";
+
+function validateFrame(value: unknown, generation: string, sequence: number, protocol: MxcFrameProtocol): asserts value is MxcStreamFrame {
   const fail = (): never => { throw new MxcProcessContractError("Invalid supervisor frame"); };
   if (!value || typeof value !== "object" || Array.isArray(value)) fail();
   if (!/^[a-f0-9]{64}$/.test(generation) || !Number.isSafeInteger(sequence) || sequence < 0) fail();
@@ -55,7 +62,16 @@ function validateFrame(value: unknown, generation: string, sequence: number): as
         || Buffer.byteLength(frame.data, "base64") > MXC_STREAM_CHUNK_BYTES) fail();
       fields = ["data"];
       break;
-    case "stdin-end": case "stop": case "creating": case "spawning": case "spawn-authorized": fields = []; break;
+    case "stdin-end": case "stop": case "creating": case "spawning": fields = []; break;
+    case "spawn-authorized":
+      fields = [];
+      if (protocol !== "windows-extension") break;
+      if (frame.releasePath !== undefined || frame.releaseDigest !== undefined) {
+        if (typeof frame.releasePath !== "string" || frame.releasePath.length > 32768 || frame.releasePath.includes("\0")
+          || typeof frame.releaseDigest !== "string" || !/^[a-f0-9]{64}$/u.test(frame.releaseDigest)) fail();
+      }
+      fields = ["releasePath", "releaseDigest"];
+      break;
     case "native-created":
       if (typeof frame.processHandle !== "string" || !/^[1-9][0-9]{0,19}$/.test(frame.processHandle)
         || BigInt(frame.processHandle) >= 18446744073709551615n) fail();
@@ -76,8 +92,10 @@ function validateFrame(value: unknown, generation: string, sequence: number): as
       if (typeof frame.requestPath !== "string" || frame.requestPath.length > 32768
         || !isAbsolute(frame.requestPath) || frame.requestPath.includes("\0")
         || typeof frame.requestSha256 !== "string" || !/^[a-f0-9]{64}$/.test(frame.requestSha256)) fail();
-      fields = ["requestPath", "requestSha256"];
+      validateShellCwdIdentity(frame.cwdIdentity);
+      fields = ["requestPath", "requestSha256", "cwdIdentity"];
       break;
+    case "shell-cwd-verified":
     case "shell-ready":
       if (!Number.isSafeInteger(frame.id) || (frame.id as number) <= 0 || (frame.id as number) > 0xffffffff) fail();
       fields = ["id"];
@@ -102,18 +120,31 @@ function validateFrame(value: unknown, generation: string, sequence: number): as
       fields = ["exitCode", "timedOut"];
       break;
     case "error":
-      if (!["contract", "integrity", "capability-unavailable", "cleanup-unverified", "supervisor-lost", "start-refused"].includes(String(frame.code))
+      if (!["contract", "integrity", "capability-unavailable", "cleanup-unverified", "supervisor-lost", "start-refused", "cwd-changed"].includes(String(frame.code))
         || typeof frame.message !== "string" || frame.message.length > 1024) fail();
       fields = ["code", "message"];
       if (frame.code === "start-refused") {
         if (Object.hasOwn(frame, "sdkCode") && (typeof frame.sdkCode !== "string" || !/^[a-z_]{1,64}$/.test(frame.sdkCode))) fail();
         fields.push("sdkCode");
+      } else if (protocol === "windows-extension") {
+        if (frame.backendLoss !== undefined && frame.backendLoss !== "extension" && frame.backendLoss !== "common") fail();
+        fields.push("backendLoss");
       }
       break;
     default: return fail();
   }
   const allowed = new Set(["version", "generation", "sequence", "type", ...fields]);
   if (Object.keys(frame).some((key) => !allowed.has(key))) fail();
+}
+
+function validateShellCwdIdentity(value: unknown): void {
+  const fail = (): never => { throw new MxcProcessContractError("Invalid supervisor frame"); };
+  if (!value || typeof value !== "object" || Array.isArray(value)) fail();
+  const identity = value as Record<string, unknown>;
+  if (Object.keys(identity).length !== 3 || typeof identity.realpath !== "string" || identity.realpath.length > 32768
+    || !isAbsolute(identity.realpath) || identity.realpath.includes("\0")
+    || typeof identity.dev !== "string" || !/^(?:0|[1-9][0-9]{0,19})$/u.test(identity.dev)
+    || typeof identity.ino !== "string" || !/^(?:0|[1-9][0-9]{0,19})$/u.test(identity.ino)) fail();
 }
 
 type ChannelDirection = "host" | "supervisor";
@@ -123,8 +154,8 @@ function authenticate(body: Buffer, key: Buffer, direction: ChannelDirection): B
   return createHmac("sha256", key).update(direction).update(body).digest();
 }
 
-export function encodeMxcFrame(frame: MxcStreamFrame, key: Buffer, direction: ChannelDirection): Buffer {
-  validateFrame(frame, frame.generation, frame.sequence);
+export function encodeMxcFrame(frame: MxcStreamFrame, key: Buffer, direction: ChannelDirection, protocol: MxcFrameProtocol = "shell"): Buffer {
+  validateFrame(frame, frame.generation, frame.sequence, protocol);
   const body = Buffer.from(JSON.stringify(frame));
   if (body.length + MAC_BYTES > MXC_FRAME_MAX_BYTES) throw new MxcProcessContractError("Supervisor frame exceeds limit");
   const header = Buffer.alloc(4);
@@ -141,7 +172,8 @@ export class MxcFrameDecoder {
   private sequence = 0;
   private failed = false;
 
-  constructor(private readonly generation: string, private readonly key: Buffer, private readonly direction: ChannelDirection) {
+  constructor(private readonly generation: string, private readonly key: Buffer, private readonly direction: ChannelDirection,
+    private readonly protocol: MxcFrameProtocol = "shell") {
     if (key.length !== MAC_BYTES) throw new MxcProcessContractError("Invalid supervisor channel key");
     if (!/^[a-f0-9]{64}$/.test(generation)) throw new MxcProcessContractError("Invalid supervisor generation");
   }
@@ -171,7 +203,7 @@ export class MxcFrameDecoder {
           throw new MxcProcessContractError("Supervisor authentication failed");
         }
         const frame: unknown = JSON.parse(body.toString("utf8"));
-        validateFrame(frame, this.generation, this.sequence);
+        validateFrame(frame, this.generation, this.sequence, this.protocol);
         this.sequence += 1;
         this.headerBytes = 0;
         this.bodyBytes = 0;

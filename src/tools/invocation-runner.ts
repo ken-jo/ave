@@ -432,7 +432,7 @@ export async function runToolInvocation(
             entry: { ...common, decision: "deny", denyReasons: [{ reason, source: "hook-input-mutation" }] }, kind: "denied" }));
         }
         if (denied) {
-          const result = { tool_use_id: toolUse.id, content: appendContext(reason), is_error: true, durationMs: Date.now() - startedAt };
+          const result: ToolResult = { tool_use_id: toolUse.id, content: appendContext(reason), is_error: true, hostRefused: true, durationMs: Date.now() - startedAt };
           opts.callbacks?.onToolEnd?.(toolUse.name, result.content, true, { groupId, toolUseId: toolUse.id, displayOrder }, undefined, result.durationMs);
           return result;
         }
@@ -633,7 +633,7 @@ async function runToolInvocationAttempt(
       const durationMs = Date.now() - startTime;
       await auditCurrentToolCall(sessionId, toolUse.name, "builtin", "high", toolUse.input, t("be_executor.toolNotFoundAudit"), true, startTime, { decision: "deny", reason: t("be_executor.toolNotFoundAudit"), provenance: RULE_PROVENANCE }, Infinity, permissionContext, undefined, executionCwd);
       callbacks?.onToolEnd?.(toolUse.name, t("be_executor.toolNotFound", { name: toolUse.name }), true, meta, undefined, durationMs);
-      return withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: t("be_executor.toolNotFound", { name: toolUse.name }), is_error: true, durationMs });
+      return withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: t("be_executor.toolNotFound", { name: toolUse.name }), is_error: true, hostRefused: true, durationMs });
     }
     governedTool = tool.operationPolicy !== undefined;
     let generationAccess: ReturnType<
@@ -689,7 +689,7 @@ async function runToolInvocationAttempt(
         return withHostShellExecutionPlan({
           tool_use_id: toolUse.id,
           content: reason,
-          is_error: true,
+          is_error: true, ...(!shutdownEnded && { hostRefused: true as const }),
           durationMs,
         });
       }
@@ -735,7 +735,7 @@ async function runToolInvocationAttempt(
       return withHostShellExecutionPlan({
         tool_use_id: toolUse.id,
         content: reason,
-        is_error: true,
+        is_error: true, hostRefused: true,
         durationMs,
       });
     }
@@ -786,7 +786,7 @@ async function runToolInvocationAttempt(
         undefined,
         hookChain,
       );
-      return withHostShellExecutionPlan({ tool_use_id: toolUse.id, content, is_error: true, durationMs });
+      return withHostShellExecutionPlan({ tool_use_id: toolUse.id, content, is_error: true, hostRefused: true, durationMs });
     };
 
     // ── The model MUST NOT execute a tool hidden from it ──
@@ -819,7 +819,7 @@ async function runToolInvocationAttempt(
           };
         await auditCurrentToolCall(sessionId, toolUse.name, source, trust, toolUse.input, deny.reason, true, startTime, deny, Infinity, permissionContext, invocationCategory, executionCwd);
         callbacks?.onToolEnd?.(toolUse.name, modelFacing, true, meta, undefined, durationMs);
-        return withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: modelFacing, is_error: true, durationMs });
+        return withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: modelFacing, is_error: true, hostRefused: true, durationMs });
       }
     }
 
@@ -860,7 +860,7 @@ async function runToolInvocationAttempt(
       emitToolStart(callbacks, toolUse.name, toolUse.input, meta);
       callbacks?.onToolEnd?.(toolUse.name, msg, true, meta, undefined, durationMs);
       await auditCurrentToolCall(sessionId, toolUse.name, source, trust, toolUse.input, msg, true, startTime, blockedPermission, Infinity, permissionContext, invocationCategory, executionCwd);
-      return withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, durationMs });
+      return withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, hostRefused: true, durationMs });
     }
 
     if (!permissionContext?.trustOrigin) {
@@ -873,7 +873,7 @@ async function runToolInvocationAttempt(
       emitToolStart(callbacks, toolUse.name, toolUse.input, meta);
       callbacks?.onToolEnd?.(toolUse.name, msg, true, meta, undefined, durationMs);
       await auditCurrentToolCall(sessionId, toolUse.name, source, trust, toolUse.input, msg, true, startTime, blockedPermission, Infinity, permissionContext, invocationCategory, executionCwd);
-      return withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, durationMs });
+      return withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, hostRefused: true, durationMs });
     }
 
 
@@ -897,7 +897,7 @@ async function runToolInvocationAttempt(
       emitToolStart(callbacks, toolUse.name, toolUse.input, meta);
       callbacks?.onToolEnd?.(toolUse.name, msg, true, meta, undefined, durationMs);
       await auditCurrentToolCall(sessionId, toolUse.name, source, trust, toolUse.input, msg, true, startTime, blockedPermission, Infinity, permissionContext, invocationCategory, executionCwd);
-      return withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, durationMs });
+      return withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, hostRefused: true, durationMs });
     }
     // A `cd` in an earlier bash call of this session becomes this call's
     // explicit directory here, before PreToolUse hooks and every permission,
@@ -939,7 +939,7 @@ async function runToolInvocationAttempt(
       emitToolStart(callbacks, toolUse.name, toolUse.input, meta);
       callbacks?.onToolEnd?.(toolUse.name, msg, true, meta, undefined, durationMs);
       await auditCurrentToolCall(sessionId, toolUse.name, source, trust, toolUse.input, msg, true, startTime, refusal(msg, RULE_PROVENANCE), Infinity, permissionContext, invocationCategory, executionCwd);
-      return withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, durationMs });
+      return withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, hostRefused: true, durationMs });
     }
 
     const rewrittenInput = preResult.action === "modify" && preResult.updatedInput
@@ -1018,7 +1018,7 @@ async function runToolInvocationAttempt(
         return withHostShellExecutionPlan({
           tool_use_id: toolUse.id,
           content: msg,
-          is_error: true,
+          is_error: true, hostRefused: true,
           durationMs,
         });
       }
@@ -1107,7 +1107,7 @@ async function runToolInvocationAttempt(
     emitToolStart(callbacks, toolUse.name, finalInput, meta);
     callbacks?.onToolEnd?.(toolUse.name, msg, true, meta, undefined, durationMs);
     await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, msg, true, startTime, denied, Infinity, permissionContext, invocationCategory, executionCwd, undefined, undefined, hookChainFromDispatch("pre", scriptPre));
-    return withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, durationMs });
+    return withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, hostRefused: true, durationMs });
   }
 
 
@@ -1360,7 +1360,7 @@ async function runToolInvocationAttempt(
       return withHostShellExecutionPlan({
         tool_use_id: toolUse.id,
         content: msg,
-        is_error: true,
+        is_error: true, ...(!unavailable && { hostRefused: true as const }),
         durationMs,
       });
     }
@@ -1518,7 +1518,7 @@ async function runToolInvocationAttempt(
         return withHostShellExecutionPlan({
           tool_use_id: toolUse.id,
           content: msg,
-          is_error: true,
+          is_error: true, hostRefused: true,
           durationMs,
         });
       }
@@ -1635,7 +1635,7 @@ async function runToolInvocationAttempt(
       emitToolStart(callbacks, toolUse.name, finalInput, meta);
       callbacks?.onToolEnd?.(toolUse.name, reason, true, meta, undefined, durationMs);
       await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, reason, true, startTime, refusal(reason, RULE_PROVENANCE), Infinity, invocationPermissionContext, invocationCategory, executionCwd);
-      return withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: reason, is_error: true, durationMs });
+      return withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: reason, is_error: true, hostRefused: true, durationMs });
     };
     const denyUnresolvedFileTargets = async (reason: string): Promise<ToolResult> => {
       const result = await denyFileTargets(reason);
@@ -1670,7 +1670,7 @@ async function runToolInvocationAttempt(
       callbacks?.onToolEnd?.(toolUse.name, msg, true, meta, undefined, durationMs);
       await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, msg, true, startTime,
         refusal(reason, RULE_PROVENANCE), Infinity, invocationPermissionContext, invocationCategory, executionCwd);
-      return withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, durationMs });
+      return withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, hostRefused: true, durationMs });
     };
     const requestOutOfAllowedDirectoryAccess = async (
       // `realPath`: the resolved location in its on-disk spelling; `canonicalPath` is the case-folded matching form.
@@ -1757,7 +1757,7 @@ async function runToolInvocationAttempt(
       if (directoryPermission.decision === "deny") {
         const msg = directoryPermission.reason;
         await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, msg, true, startTime, directoryPermission, Infinity, invocationPermissionContext, invocationCategory, executionCwd);
-        return { allowed: false, result: withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, durationMs: Date.now() - startTime,
+        return { allowed: false, result: withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, hostRefused: true, durationMs: Date.now() - startTime,
           ...(directoryPermission.reasonCode === "no-approver" && !headless && invocationPermissionContext.approvalSurface === "unavailable"
             ? { authorizationRequired: issueAuthorizationRequiredControl({ kind: "tool", toolName: toolUse.name, source, category: invocationCategory, reason: "approval-surface-unavailable" }) } : {}),
         }) };
@@ -1800,7 +1800,7 @@ async function runToolInvocationAttempt(
         emitToolStart(callbacks, toolUse.name, finalInput, meta);
         callbacks?.onToolEnd?.(toolUse.name, msg, true, meta, undefined, durationMs);
         await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, msg, true, startTime, refusal(dirLayerResult.reason, RULE_PROVENANCE), Infinity, invocationPermissionContext, invocationCategory, executionCwd);
-        return { allowed: false, result: withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, durationMs }) };
+        return { allowed: false, result: withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, hostRefused: true, durationMs }) };
       }
       // Detect whether the request path itself is a directory (e.g.
       // `list_files /Users/example`) so the auto-suggest goes to the path
@@ -1989,7 +1989,7 @@ async function runToolInvocationAttempt(
           await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, reason, true, startTime,
             denied, Infinity, invocationPermissionContext, invocationCategory, executionCwd, undefined, undefined,
             hookChainFromDispatch("perm", permissionHook));
-          return { allowed: false, result: withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: reason, is_error: true, durationMs: Date.now() - startTime }) };
+          return { allowed: false, result: withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: reason, is_error: true, hostRefused: true, durationMs: Date.now() - startTime }) };
         }
         const finishDirectoryDenial = async (decision: ApprovalDecision, surfaceRefused = false) => {
           if (isHostApprovalCancelledDecision(decision)) {
@@ -2014,7 +2014,7 @@ async function runToolInvocationAttempt(
           callbacks?.onToolEnd?.(toolUse.name, msg, true, meta, undefined, durationMs);
           await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, msg, true, startTime,
             hostFailure?.permission ?? { ...dirLayerResult, decision: "deny" }, Infinity, invocationPermissionContext, invocationCategory, executionCwd);
-          return { allowed: false as const, approvalDecision: decision, result: withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, durationMs }) };
+          return { allowed: false as const, approvalDecision: decision, result: withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, hostRefused: true, durationMs }) };
         };
         let decision;
         try {
@@ -2063,7 +2063,7 @@ async function runToolInvocationAttempt(
               : verdict?.kind === "stale" ? t("be_executor.answerQuestionChanged") : "Permission policy changed during approval.";
           const denied = refusal(reason, verdict?.kind === "recheck-failed" ? HOST_PROVENANCE : RULE_PROVENANCE);
           await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, denied.reason, true, startTime, denied, Infinity, invocationPermissionContext, invocationCategory, executionCwd);
-          return { allowed: false, result: withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: denied.reason, is_error: true, durationMs: Date.now() - startTime }) };
+          return { allowed: false, result: withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: denied.reason, is_error: true, hostRefused: true, durationMs: Date.now() - startTime }) };
         }
         const directoryAnswer = verdict.proof;
         const surfaceResolution = await resolveUserOwnedSurfaceApproval({ manager, gate: services.approvalGate, permission: dirLayerResult, decision,
@@ -2175,7 +2175,7 @@ async function runToolInvocationAttempt(
             emitToolStart(callbacks, toolUse.name, finalInput, meta);
             callbacks?.onToolEnd?.(toolUse.name, msg, true, meta, undefined, durationMs);
             await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, msg, true, startTime, hostRefusalOfApproval(`folder rule save failed: ${dirResult.ok ? "unexpected result" : dirResult.error}`, approvedPermissionResult.provenance), Infinity, invocationPermissionContext, invocationCategory, executionCwd);
-            return { allowed: false, result: withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, durationMs }) };
+            return { allowed: false, result: withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, hostRefused: true, durationMs }) };
           }
           publishScope?.();
           return { allowed: true, approvalDecision: decision, approvedDirectory, scope: "always", permissionResult: approvedPermissionResult, humanApproved: surfaceResolution.answer, directorySeal };
@@ -2206,7 +2206,7 @@ async function runToolInvocationAttempt(
             emitToolStart(callbacks, toolUse.name, finalInput, meta);
             callbacks?.onToolEnd?.(toolUse.name, msg, true, meta, undefined, durationMs);
             await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, msg, true, startTime, hostRefusalOfApproval(`session folder registration failed: ${dirResult.ok ? "unexpected result" : dirResult.error}`, approvedPermissionResult.provenance), Infinity, invocationPermissionContext, invocationCategory, executionCwd);
-            return { allowed: false, result: withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, durationMs }) };
+            return { allowed: false, result: withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, hostRefused: true, durationMs }) };
           }
           return { allowed: true, approvalDecision: decision, approvedDirectory: sessionScopePath, scope: "session", permissionResult: approvedPermissionResult, humanApproved: surfaceResolution.answer ?? directoryAnswer, directorySeal };
         }
@@ -2503,7 +2503,7 @@ async function runToolInvocationAttempt(
         emitToolStart(callbacks, toolUse.name, finalInput, meta);
         callbacks?.onToolEnd?.(toolUse.name, msg, true, meta, undefined, durationMs);
         await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, msg, true, startTime, blockedPermission, Infinity, invocationPermissionContext, invocationCategory, executionCwd);
-        return withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, durationMs });
+        return withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, hostRefused: true, durationMs });
       }
     }
 
@@ -2526,7 +2526,7 @@ async function runToolInvocationAttempt(
       emitToolStart(callbacks, toolUse.name, finalInput, meta);
       callbacks?.onToolEnd?.(toolUse.name, msg, true, meta, undefined, durationMs);
       await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, msg, true, startTime, { decision: "deny", reason: auditReason, provenance: RULE_PROVENANCE }, Infinity, invocationPermissionContext, invocationCategory, executionCwd);
-      return withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, durationMs });
+      return withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, hostRefused: true, durationMs });
     };
     if (
       isCanonicalPowerShellTool(tool) &&
@@ -2727,7 +2727,7 @@ async function runToolInvocationAttempt(
         emitToolStart(callbacks, toolUse.name, finalInput, meta);
         callbacks?.onToolEnd?.(toolUse.name, msg, true, meta, undefined, durationMs);
         await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, msg, true, startTime, blockedPermission, Infinity, invocationPermissionContext, invocationCategory, executionCwd);
-        return withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, durationMs });
+        return withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, hostRefused: true, durationMs });
       }
     }
 
@@ -2753,7 +2753,7 @@ async function runToolInvocationAttempt(
       emitToolStart(callbacks, toolUse.name, finalInput, meta);
       callbacks?.onToolEnd?.(toolUse.name, msg, true, meta, undefined, durationMs);
       await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, msg, true, startTime, blockedPermission, Infinity, invocationPermissionContext, invocationCategory, executionCwd);
-      return withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, durationMs });
+      return withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, hostRefused: true, durationMs });
     }
 
     let projectRoots: string[];
@@ -3103,6 +3103,7 @@ async function runToolInvocationAttempt(
       checkCurrentPermission: authorization.checkCurrentPermission,
       replayRootBinding: opts.replayRootBinding,
       approvedInvocation: opts.approvedInvocation,
+      refreshApprovedInvocation: opts.refreshApprovedInvocation,
       fileTargetSeal,
       imageTargetPath: isWindows && tool.name === "view_image" ? canonicalTargets[0]?.runtimePath : undefined,
       abortSignal,

@@ -15,6 +15,7 @@
  * builder, and the plugin/MCP lifecycle all consume this shape.
  */
 import { z } from "zod";
+import { markHostRefusal } from "./host-refusal.js";
 import { isBrowserToolName } from "../shared/browser-tools.js";
 import type {
   ToolSource,
@@ -76,6 +77,8 @@ export interface Tool {
   readonly description: string;
   readonly source: ToolSource;
   readonly category: ToolCategory;
+  /** This builtin has an effect beyond reading local data even when routed as a read. */
+  readonly requiresAttendedStage?: true;
   readonly unattendedEffect?: import("../permissions/tool-effect-evidence.js").ToolEffectEvidence;
   readonly effectAnnotations?: import("../permissions/tool-effect-evidence.js").ExternalEffectAnnotations;
   readonly categoryForInput?: (input: unknown, ctx?: ToolPolicyContext) => ToolCategory;
@@ -163,7 +166,7 @@ export function isModelExposedTool(tool: Pick<Tool, "modelVisible">): boolean {
 /** Only fixed-category local reads are visible and executable in an unattended stage. */
 export function isUnattendedReadTool(tool: Tool): boolean {
   return tool.source === "builtin" && tool.category === "read" && isModelExposedTool(tool)
-    && !isBrowserToolName(tool.name)
+    && !tool.requiresAttendedStage && !isBrowserToolName(tool.name)
     && !tool.arbitraryEgress && !tool.requiresMcpScope && !tool.appInvokable
     && tool.categoryForInput === undefined && tool.decisionOverride === undefined
     && tool.operationPolicy === undefined;
@@ -202,8 +205,9 @@ export abstract class ZodTool<TSchema extends z.ZodTypeAny = z.ZodTypeAny>
     rawInput: unknown,
     ctx: ToolExecutionContext,
   ): Promise<ToolExecutionResult> {
-    const parsed = this.inputSchema.parse(rawInput) as z.infer<TSchema>;
-    return this.executeTyped(parsed, ctx);
+    const parsed = this.inputSchema.safeParse(rawInput);
+    if (!parsed.success) throw markHostRefusal(parsed.error);
+    return this.executeTyped(parsed.data as z.infer<TSchema>, ctx);
   }
 
   /** Typed execution after Zod parsing. Subclasses implement this; the public {@link execute} entry point threads raw LLM-supplied input through the zod schema before dispatching. */
@@ -228,6 +232,7 @@ export interface DynamicToolSpec {
   workerId?: string;
   mcpServerId?: string;
   mcpReadOnlyHint?: boolean;
+  requiresAttendedStage?: Tool["requiresAttendedStage"];
   unattendedEffect?: Tool["unattendedEffect"];
   effectAnnotations?: Tool["effectAnnotations"];
   mcpRuleIdentity?: Tool["mcpRuleIdentity"];
@@ -274,6 +279,7 @@ export function createDynamicTool(spec: DynamicToolSpec): Tool {
     workerId: spec.workerId,
     mcpServerId: spec.mcpServerId,
     mcpReadOnlyHint: spec.mcpReadOnlyHint,
+    ...(spec.requiresAttendedStage && { requiresAttendedStage: true }),
     unattendedEffect: spec.unattendedEffect,
     effectAnnotations: spec.effectAnnotations,
     mcpRuleIdentity: spec.mcpRuleIdentity,

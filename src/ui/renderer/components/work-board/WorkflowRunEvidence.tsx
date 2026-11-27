@@ -32,6 +32,7 @@ export function WorkflowStageEvidence({ stage, stageName, retry }: {
   });
   return (
     <div className="space-y-3">
+      {stage.failureReason && <p className="text-destructive">{t(stage.failureReason)}</p>}
       {stage.breaker && <p>
         {t(stage.breaker.open ? "workflowTemplates.breakerOpen" : "workflowTemplates.breakerClosed", {
           consecutive: stage.breaker.consecutive, total: stage.breaker.total,

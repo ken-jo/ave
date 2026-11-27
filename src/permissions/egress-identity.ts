@@ -20,7 +20,7 @@ export function egressIdentityStrength(
   context?: { readonly identity?: "listener" | "username"; readonly attributionKey?: string },
 ): EgressIdentityStrength {
   if (process.platform === "win32" && context?.identity === "listener") return "kernel-channel";
-  if (process.platform === "darwin" && context?.attributionKey !== undefined) {
+  if ((process.platform === "darwin" || process.platform === "linux") && context?.attributionKey !== undefined) {
     const owner = egressInvocationOwner(context.attributionKey);
     if (owner?.kind === "shell" && owner.requiresListener === true) return "shared";
   }

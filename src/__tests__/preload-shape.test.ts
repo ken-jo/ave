@@ -18,6 +18,7 @@ import { DEFAULT_APPEARANCE } from "../shared/appearance-settings.js";
  */
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { WORK_BOARD, ALERTS } from "../shared/ipc-channels.js";
+import { CHANNELS } from "../contract/app-contract.js";
 import type { AveApi } from "../ui/renderer/types.js";
 
 const exposed = new Map<string, unknown>();
@@ -85,6 +86,14 @@ beforeAll(async () => {
 });
 
 describe("preload contextBridge world shape lock", () => {
+  it("forwards lesson deletion on the existing owner decision channel", async () => {
+    const api = exposed.get("aveApi") as AveApi;
+    const decision = { scopeId: "scope", action: "delete", lessonId: "lesson", digest: "version" } as const;
+    mockInvoke.mockResolvedValueOnce({ ok: true });
+    await expect(api.skillMemory.decide(decision)).resolves.toEqual({ ok: true });
+    expect(mockInvoke).toHaveBeenLastCalledWith(CHANNELS.skillMemory.decide, decision);
+  });
+
   it("bridges retained run reads, progress snapshots and gesture-bound decisions", async () => {
     const api = exposed.get("aveApi") as AveApi;
     const runId = "run-a";
@@ -191,6 +200,10 @@ describe("preload contextBridge world shape lock", () => {
     for (const name of [...exposed.keys()].sort()) {
       worlds[name] = deepShape(exposed.get(name));
     }
+    const map = (exposed.get('aveApi') as AveApi).memoryMap;
+    expect(typeof map.buildView).toBe(process.platform === 'win32' ? 'function' : 'undefined');
+    const internal = worlds.aveApi as { memoryMap: string[] };
+    internal.memoryMap = internal.memoryMap.filter(name => name !== 'buildView');
     expect(worlds).toMatchInlineSnapshot(`
       {
         "__aveDevMode": "boolean",
@@ -642,6 +655,7 @@ describe("preload contextBridge world shape lock", () => {
           "onRoutineFired": "function",
           "onRoutineRunningFinished": "function",
           "onRoutineRunningStarted": "function",
+          "onRoutinesChanged": "function",
           "onSessionGoalChanged": "function",
           "onSessionTasksChanged": "function",
           "onSettingsUpdated": "function",
@@ -725,6 +739,10 @@ describe("preload contextBridge world shape lock", () => {
             "onStream",
             "paneHistory",
             "send",
+          ],
+          "skillMemory": [
+            "decide",
+            "list",
           ],
           "skipAppUpdate": "function",
           "starredAdd": "function",

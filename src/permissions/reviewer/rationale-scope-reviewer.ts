@@ -142,6 +142,7 @@ export class LlmRationaleScopeReviewer implements RationaleScopeReviewer {
   constructor(
     private readonly provider: LlmReviewerProvider,
     private readonly model: string,
+    private readonly isHeld?: () => boolean,
   ) {}
 
   async reevaluate(input: RationaleScopeReviewInput): Promise<ReviewerScopeReevaluation> {
@@ -156,6 +157,9 @@ export class LlmRationaleScopeReviewer implements RationaleScopeReviewer {
         !input.verifiedUserMessages.includes(input.verifiedUserMessage) ||
         Buffer.byteLength(canonicalStringify(input.verifiedUserMessages), "utf8") > MAX_RATIONALE_USER_CONTEXT_BYTES || !input.hostSafetyFacts) {
       throw new Error("rationale response binding mismatch");
+    }
+    if (this.isHeld?.()) {
+      return createReviewerScopeReevaluation({ control: input.control, outcome: "unavailable", now });
     }
 
     let completion: Awaited<ReturnType<LlmReviewerProvider["complete"]>>;

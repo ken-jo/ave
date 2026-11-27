@@ -38,6 +38,8 @@
 *.so binary
 *.wasm binary
 *.pdf binary
+# Pinned extensionless executables: the Linux shell filter is hashed against its pin byte for byte.
+resources/linux-shell-seccomp/*/apply-seccomp binary
 
 # ---------------------------------------------------------------------------
 # Text the heuristic misreads as binary.

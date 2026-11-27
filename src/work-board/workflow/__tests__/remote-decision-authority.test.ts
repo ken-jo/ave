@@ -266,3 +266,27 @@ it("refuses revocation after the board enters executing and before the scheduler
     }
   });
 });
+
+it("classifies a revoked provisional launch as interrupted after the board commits", async () => {
+  const h = await stageRunHarness({ observeRunWork: true });
+  await h.runThenEnd(async () => {
+    const version = await h.confirm([stageOf("a")]);
+    const authority = { refreshCurrent: async () => true, isCurrent: () => true };
+    const { itemId, remoteProvisional } = await provisionalItem(h, version.templateId, authority);
+    const accept = h.board.acceptProvisionalTemplateStart.bind(h.board);
+    const spy = vi.spyOn(h.board, "acceptProvisionalTemplateStart").mockImplementation((id, runId, guard, canLaunch, launch) =>
+      accept(id, runId, guard, canLaunch, () => {
+        h.board.revokeRun(id, runId);
+        launch();
+      }));
+    const onTemplateStarted = vi.fn();
+    try {
+      const result = await h.engine.runItem(itemId, {
+        templateSource: { kind: "tailnet-create-and-run", pin: h.pinOf(version) }, authority, remoteProvisional, onTemplateStarted,
+      });
+      expect(result.reasonCode).not.toBe("run-state-unavailable");
+      expect(h.children).toHaveLength(0);
+      expect(onTemplateStarted).not.toHaveBeenCalled();
+    } finally { spy.mockRestore(); }
+  });
+});

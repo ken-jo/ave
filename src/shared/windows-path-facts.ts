@@ -172,20 +172,40 @@ function helperLaunchFailureCode(error: unknown): string | undefined {
   return typeof code === "string" && /^E[A-Z0-9]{1,31}$/u.test(code) && code !== "ENOBUFS" ? code : undefined;
 }
 
-function requestNative(mode: "--pin" | "--dacl", flags: readonly string[], paths: readonly string[], input?: Buffer): string {
-  let output: Buffer;
+function windowsPinBatches(helper: string, paths: readonly string[]): string[][] {
+  const fixed = windowsCommandLineLength(helper, ["--pin"]);
+  const batches: string[][] = [];
+  let batch: string[] = [];
+  let units = fixed;
+  for (const path of paths) {
+    const cost = windowsCommandLineLength(path, []);
+    if (batch.length && units + cost > WINDOWS_COMMAND_LINE_LIMIT) {
+      batches.push(batch);
+      batch = [];
+      units = fixed;
+    }
+    batch.push(path);
+    units += cost;
+  }
+  if (batch.length) batches.push(batch);
+  return batches;
+}
+
+function requestNative(helper: string, mode: "--pin" | "--dacl", flags: readonly string[], paths: readonly string[], input?: Buffer): string {
+  const args = [mode, ...flags, ...(input === undefined ? paths : ["--stdin"])];
+  if (windowsCommandLineLength(helper, args) > WINDOWS_COMMAND_LINE_LIMIT) {
+    throw Object.assign(new Error("Windows path facts command line exceeds the process limit"), { code: "E2BIG" });
+  }
+  const output = execFileSync(helper, args, {
+    windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.windowsAclRequestMs,
+    maxBuffer: MAX_PATH_FACTS_OUTPUT_BYTES, input,
+  });
+  return decodeWindowsNativeReply(output);
+}
+
+function withPathFactsHelper<T>(flags: readonly string[], launch: (helper: string) => T): T {
   try {
-    const launch = (helper: string) => {
-      const args = [mode, ...flags, ...(input === undefined ? paths : ["--stdin"])];
-      if (windowsCommandLineLength(helper, args) > WINDOWS_COMMAND_LINE_LIMIT) {
-        throw Object.assign(new Error("Windows path facts command line exceeds the process limit"), { code: "E2BIG" });
-      }
-      return execFileSync(helper, args, {
-        windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.windowsAclRequestMs,
-        maxBuffer: MAX_PATH_FACTS_OUTPUT_BYTES, input,
-      });
-    };
-    output = runWindowsNative(() => withWindowsPathKindHelper(launch));
+    return runWindowsNative(() => withWindowsPathKindHelper(launch));
   } catch (error) {
     // Spawn and timeout errors name the helper's install path; only their code is kept.
     if (isWindowsPathKindHelperTimeout(error)) {
@@ -201,15 +221,20 @@ function requestNative(mode: "--pin" | "--dacl", flags: readonly string[], paths
     }
     throw failure ?? error;
   }
-  return decodeWindowsNativeReply(output);
 }
 
-function request(paths: readonly string[], mode: "--pin" | "--dacl", flags: readonly string[] = []): WindowsPathFacts[] {
+function request(paths: readonly string[], mode: "--pin" | "--dacl", flags: readonly string[] = [], batch = false): WindowsPathFacts[] {
   if (paths.length === 0) return [];
   const framed = mode === "--dacl" && flags.includes("--parent") && !flags.includes("--content");
   if (!framed && paths.some(path => !isAbsolute(path))) throw new Error("Windows path facts require absolute paths");
-  const output = requestNative(mode, flags, paths, framed ? encodeParentDaclFrame(paths) : undefined);
-  return decodeWindowsPathFacts(output, paths.length, mode, flags, framed ? paths : undefined);
+  const input = framed ? encodeParentDaclFrame(paths) : undefined;
+  return withPathFactsHelper(flags, helper => {
+    const batches = batch ? windowsPinBatches(helper, paths) : [paths];
+    return batches.flatMap(operands => {
+      const output = requestNative(helper, mode, flags, operands, input);
+      return decodeWindowsPathFacts(output, operands.length, mode, flags, framed ? operands : undefined);
+    });
+  });
 }
 
 export function decodeWindowsPathFacts(output: string, expectedRows: number, mode: "--pin" | "--dacl", flags: readonly string[] = [], expectedPaths?: readonly string[]): WindowsPathFacts[] {
@@ -250,8 +275,8 @@ export function decodeWindowsPathFacts(output: string, expectedRows: number, mod
   return rows as WindowsPathFacts[];
 }
 
-export function pinWindowsPaths(paths: readonly string[]): readonly WindowsPathFacts[] {
-  return request(paths, "--pin");
+export function pinWindowsPaths(paths: readonly string[], options?: { batch?: boolean }): readonly WindowsPathFacts[] {
+  return request(paths, "--pin", [], options?.batch);
 }
 
 /** The job launcher's own record of a held run. "ok": its job was proven empty and the helper confirmed the held directory
@@ -272,8 +297,15 @@ export interface HeldWindowsPolicy {
   onFailure(): void;
 }
 
+export interface WindowsDirectoryHandleSource {
+  readonly pid: number;
+  readonly creationTime: string;
+  readonly handles: readonly string[];
+}
+
 export interface HeldWindowsDirectory {
   readonly facts: WindowsPathFacts;
+  readonly source?: WindowsDirectoryHandleSource;
   /** Job launcher arguments for a held command. */
   readonly launcherArgs: readonly string[];
   /** The job launcher invocation that starts `executable` with `launcherArgs`. */
@@ -297,12 +329,12 @@ const HELD_POLICY_REPORT_BYTES = 16;
 
 /** Hold a directory and every ancestor against rename and delete until `release`; undefined when the helper did not hold it.
  * The handles and the kill-on-close job live in the helper, so its exit stops the launcher and everything it started. */
-export function holdWindowsDirectory(path: string): Promise<HeldWindowsDirectory | undefined> {
+export function holdWindowsDirectory(path: string, forSupervisor = false): Promise<HeldWindowsDirectory | undefined> {
   if (!isAbsolute(path)) return Promise.resolve(undefined);
   let child: ChildProcess;
   try {
     child = runWindowsNative(() => withWindowsPathKindHelper((helper) =>
-      spawn(helper, ["--hold", path], { windowsHide: true, stdio: ["pipe", "pipe", "ignore", "pipe"] })));
+      spawn(helper, [forSupervisor ? "--hold-for-supervisor" : "--hold", path], { windowsHide: true, stdio: ["pipe", "pipe", "ignore", "pipe"] })));
   } catch {
     return Promise.resolve(undefined);
   }
@@ -476,8 +508,9 @@ export function holdWindowsDirectory(path: string): Promise<HeldWindowsDirectory
     if (lost || released) onLost();
     return run;
   };
-  const held = (facts: WindowsPathFacts): HeldWindowsDirectory => ({
+  const held = (facts: WindowsPathFacts, source?: WindowsDirectoryHandleSource): HeldWindowsDirectory => ({
     facts,
+    ...(source === undefined ? {} : { source }),
     launcherArgs: ["--hold"],
     command: (executable, args, heldPolicy) => ({ executable: resolveWindowsJobLauncher(), args: [heldPolicy ? "--hold-policy-v1" : "--hold", executable, ...args] }),
     stdio: ["pipe", "pipe", "pipe", "pipe", "pipe"],
@@ -522,8 +555,16 @@ export function holdWindowsDirectory(path: string): Promise<HeldWindowsDirectory
       chunks.push(newline < 0 ? chunk : chunk.subarray(0, frameBytes));
       if (newline < 0) return;
       try {
-        const [facts] = decodeWindowsPathFacts(decodeWindowsNativeReply(Buffer.concat(chunks, received)), 1, "--pin");
-        settle(facts === undefined || child.pid === undefined ? undefined : held(facts));
+        const output = decodeWindowsNativeReply(Buffer.concat(chunks, received));
+        const [facts] = decodeWindowsPathFacts(output, 1, "--pin");
+        if (facts === undefined || child.pid === undefined) { settle(undefined); return; }
+        if (!forSupervisor) { settle(held(facts)); return; }
+        const [{ creationTime, handles }] = JSON.parse(output) as { creationTime: unknown; handles: unknown }[];
+        const isNativeValue = (value: unknown): value is string => typeof value === "string"
+          && /^[1-9][0-9]{0,19}$/u.test(value) && BigInt(value) < 0xffffffffffffffffn;
+        if (!isNativeValue(creationTime) || !Array.isArray(handles) || handles.length !== facts.ancestors.length + 1
+          || !handles.every(isNativeValue)) { settle(undefined); return; }
+        settle(held(facts, Object.freeze({ pid: child.pid, creationTime, handles: Object.freeze(handles) })));
       } catch {
         settle(undefined);
       }
@@ -647,7 +688,9 @@ function isFileDacl(value: unknown): value is WindowsFileDacl {
 export function readWindowsFileDacls(paths: readonly string[]): readonly WindowsFileDacl[] {
   if (paths.length === 0) return [];
   if (paths.some(path => !isAbsolute(path))) throw new Error("Windows path facts require absolute paths");
-  const rows: unknown = JSON.parse(requestNative("--dacl", ["--file-access"], paths));
+  const flags = ["--file-access"];
+  const output = withPathFactsHelper(flags, helper => requestNative(helper, "--dacl", flags, paths));
+  const rows: unknown = JSON.parse(output);
   if (!Array.isArray(rows) || rows.length !== paths.length || !rows.every(isFileDacl)) throw new Error("Invalid Windows file DACL response");
   return rows;
 }

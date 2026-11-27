@@ -177,7 +177,7 @@ describe.skipIf(process.platform === "win32")("saved-session native shell policy
 
   it("chooses the proved macOS container for a PowerShell shell tool", async () => {
     setProcessPlatform("darwin");
-    setContainerShellSubstrate({ state: "available" });
+    setContainerShellSubstrate("darwin", { state: "available" });
     const result = await new PowerShellTool().execute({ command: "Write-Output fixture", timeoutSeconds: 5 }, {
       cwd, extraAllowedDirectories: [], blockReadsOutsideWorkingDirectories: true, metadata: {},
     });

@@ -126,10 +126,13 @@ the receipt is never a self-attesting trust root. A failed admission stays faile
 until install or uninstall; it is not retried on every status read. An integrity
 or signature failure found at a later launch invalidates the completed admission
 in the same process, so status reports the error at once and later uses fail
-without trusting the stale result. Each launch
-recomputes the asynchronous identity digest, and the synchronous check
-immediately before spawn covers a constant set of anchors (namespace, slot,
-payload, application root, executables and extension).
+without trusting the stale result. Each launch recomputes the asynchronous
+identity digest, compares the payload tree bytes with the recorded tree digest,
+and checks the extension against its pinned hash. This verifies the bytes read
+during the recheck. The synchronous check immediately before spawn covers only
+the recorded anchors (namespace, slot, payload, application root, executables
+and extension). On every platform, same-user in-place changes between the
+byte recheck and process creation are outside that guarantee.
 Extraction is into Ave-owned storage and runs no downloaded maintainer script
 or global installer. Platform extraction prerequisites and native validation
 remain separate from the existence of a manifest entry.

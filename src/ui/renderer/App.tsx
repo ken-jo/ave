@@ -27,6 +27,7 @@ import type { ChatEntry } from "../../lib/chat-stream-state.js";
 import { McpAppPipPanel } from "./components/McpAppPipPanel.js";
 import { McpAppFullscreenPanel } from "./components/McpAppFullscreenPanel.js";
 import { MemoryView } from "./components/MemoryView.js";
+import { MemoryViewWin32 } from "./components/MemoryViewWin32.js";
 import { SchedulePanel } from "./components/schedule/SchedulePanel.js";
 import { WorkBoardPanel } from "./components/WorkBoardPanel.js";
 import { ProjectHomeView } from "./components/ProjectHomeView.js";
@@ -64,7 +65,7 @@ import { RecentlyDeniedDialog } from "./dialogs/RecentlyDeniedDialog.js";
 import { PluginBackgroundEffectsPrompt } from "./dialogs/PluginBackgroundEffectsPrompt.js";
 import { SpotlightTour } from "./components/SpotlightTour.js";
 import { DevConsoleToggle } from "./components/DevConsoleToggle.js";
-import { ApprovalLaneCard, unattributedRequestLabel } from "./components/permissions/ApprovalDock.js";
+import { ApprovalLaneCard, ApprovalRequestStatus, unattributedRequestLabel } from "./components/permissions/ApprovalDock.js";
 import { OverlayCardRegion } from "./components/OverlayCardRegion.js";
 import type { ApprovalRequest } from "./types.js";
 import type { UserApprovalHitPayload, UserApprovalVerdict } from "../../shared/permissions-events.js";
@@ -889,7 +890,14 @@ export function App() {
   const { updates: marketplaceUpdates, skip: skipMarketplaceUpdates } = useMarketplaceUpdates(api);
   const { announcements: marketplaceAnnouncements, dismiss: dismissMarketplaceAnnouncement } = useMarketplaceAnnouncements(api);
   const { status: bootstrapStatus, dismiss: dismissBootstrapStatus, retry: retryBootstrap } = useBootstrapStatus(api);
-  const approvals = useApproval();
+  const notifyOutputResolution = useCallback((requestId: string, by: "tailnet-surface" | "expired") => {
+    statusUpsertToast(`output-approval:${requestId}`, {
+      severity: "info",
+      message: by === "expired" ? t("tailnetWorkReviews.outputApprovalExpired")
+        : t("tailnetWorkReviews.outputResolvedBy", { surface: t("tailnetWorkReviews.phoneSurface") }),
+    });
+  }, [statusUpsertToast, t]);
+  const approvals = useApproval(notifyOutputResolution);
   const { queue: approvalQueue, decide: handleApprovalDecide, claims: approvalClaims } = approvals;
   // Conversation cards stay with their owning surface; unowned host/plugin cards use the focused pane. One selector drives
   // both cards and attention dots.
@@ -2115,8 +2123,9 @@ export function App() {
     };
 
     if (view === "memory") {
+      const MemoryMapView = /Windows/i.test(navigator.userAgent) ? MemoryViewWin32 : MemoryView;
       return viewPane("memory", (
-        <MemoryView
+        <MemoryMapView
           onOpenEmbeddingSettings={() => navigateToSettingsPath({ tab: "chat", section: "memory-embeddings" })}
           api={api}
           project={activeProject ?? defaultWorkspaceProject}
@@ -2866,6 +2875,8 @@ export function App() {
                 </main>
               </div>
             </div>
+
+            <ApprovalRequestStatus queue={pendingAnswers.unattributed} />
 
             {/* App-level dialogs that remain available after removing setup flows. */}
             {openSubAgentSession && <SubAgentConversationDialog api={api} session={sessions.find((row) => row.id === openSubAgentSession.id) ?? openSubAgentSession} onClose={() => setOpenSubAgentSession(null)} />}

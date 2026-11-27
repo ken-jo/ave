@@ -1,0 +1,509 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+  <title>Skill-scoped memory · Ave</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --background: light-dark(#fff, #0d1117);
+      --foreground: light-dark(#0a0e12, #f6fbff);
+      --card: light-dark(#f8f8f8, #11161b);
+      --muted: light-dark(#f1f2f3, #1a1e23);
+      --muted-foreground: light-dark(#575f68, #a0a7ac);
+      --accent: light-dark(#e8ecf0, #1e2329);
+      --border: light-dark(#d1d9e0, #2d3238);
+      --ring: light-dark(#0969da, #79b8ff);
+      --primary: var(--foreground);
+      --primary-foreground: var(--background);
+      --destructive: light-dark(#a42922, #ff8880);
+      --chart-1: light-dark(#0969da, #58a6ff);
+      --chart-2: light-dark(#1a7f37, #56b76a);
+      --chart-3: light-dark(#8250df, #bf9bff);
+      --chrome-band-height: 36px;
+      --chrome-gap: 8px;
+      --shell-card-radius: 12px;
+      font: 14px/1.45 system-ui, sans-serif;
+    }
+    :root[data-theme="light"] { color-scheme: light; }
+    :root[data-theme="dark"] { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body { margin: 0; color: var(--foreground); background: var(--muted); }
+    h1, h2, h3, p, dl, dd { margin: 0; }
+    h1 { font-size: clamp(25px, 3vw, 34px); line-height: 1.15; letter-spacing: -.035em; }
+    h2 { font-size: 23px; line-height: 1.22; letter-spacing: -.025em; }
+    h3 { font-size: 15px; }
+    button, select { font: inherit; color: inherit; }
+    button { cursor: pointer; }
+    button:focus-visible, select:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+    button[aria-pressed="true"] { background: var(--accent); }
+    button[aria-current="true"] { border-color: var(--ring); background: var(--accent); }
+    .page { max-width: 1392px; margin: auto; padding: 30px clamp(12px, 3vw, 34px) 24px; }
+    .top, .toolbar, .chrome, .workspace-heading, .panel-heading, .actions, .meta, .crumbs {
+      display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    }
+    .top, .toolbar, .workspace-heading, .panel-heading { justify-content: space-between; }
+    .top { align-items: end; gap: 16px; }
+    .toolbar { margin: 16px 0 14px; }
+    .control, .segmented button {
+      min-height: 34px; border: 1px solid var(--border); border-radius: 7px;
+      background: var(--background); padding: 5px 10px; font-weight: 550;
+    }
+    .control:hover, .segmented button:hover, .entry:hover, button.skill:hover { background: var(--accent); }
+    .segmented { display: flex; flex-wrap: wrap; gap: 3px; padding: 3px; border: 1px solid var(--border); border-radius: 9px; background: var(--card); }
+    .segmented button { min-height: 31px; border-color: transparent; background: transparent; }
+    .segmented button[aria-pressed="true"] { background: var(--accent); border-color: var(--border); }
+    .muted { color: var(--muted-foreground); }
+    .small, .meta { font-size: 12px; }
+    .window { border: 1px solid var(--border); border-radius: var(--shell-card-radius); overflow: hidden; background: var(--background); box-shadow: 0 12px 35px #0002; }
+    .chrome { min-height: var(--chrome-band-height); padding: 6px 14px; border-bottom: 1px solid var(--border); background: var(--card); }
+    .traffic { display: flex; gap: 5px; margin-inline-end: 9px; }
+    .traffic i { width: 8px; height: 8px; border-radius: 50%; background: var(--border); }
+    .crumbs > span + span::before { content: '/'; margin-inline-end: 8px; color: var(--muted-foreground); }
+    .shell { display: grid; grid-template-columns: 52px 232px minmax(0, 1fr); min-height: 600px; }
+    .rail { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 12px 5px; background: var(--card); border-inline-end: 1px solid var(--border); }
+    .rail button { display: grid; place-items: center; width: 36px; height: 36px; border: 1px solid transparent; border-radius: 8px; background: transparent; }
+    .rail button:hover { background: var(--accent); }
+    .rail-icon { display: block; width: 17px; height: 16px; border: 1.5px solid; border-radius: 3px; position: relative; }
+    .rail-icon::after { content: ''; position: absolute; inset: 3px 4px; border-block: 1px solid; }
+    .rail-icon.settings { border-radius: 50%; }
+    .rail-icon.settings::after { inset: 4px; border: 1px solid; border-radius: 50%; }
+    .sidebar { padding: 16px 12px; background: var(--card); border-inline-end: 1px solid var(--border); }
+    .sidebar select { width: 100%; margin: 5px 0 19px; }
+    .sidebar h3 { margin: 0 3px 7px; }
+    .skills { display: grid; gap: 5px; }
+    .skill { display: flex; align-items: center; justify-content: space-between; gap: 7px; width: 100%; min-height: 39px; padding: 6px 8px; text-align: start; background: transparent; border: 1px solid transparent; border-radius: 7px; }
+    .skill[aria-pressed="true"] { border-color: var(--border); }
+    .skill-name { display: flex; align-items: center; gap: 7px; }
+    .mark { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--mark, var(--muted-foreground)); }
+    .workspace { min-width: 0; display: flex; flex-direction: column; }
+    .workspace-heading { min-height: 78px; padding: 13px 16px; border-bottom: 1px solid var(--border); }
+    .workspace-heading .small { margin-top: 3px; }
+    .panes { flex: 1; display: grid; grid-template-columns: minmax(0, 1fr) minmax(246px, 34%); gap: var(--chrome-gap); padding: var(--chrome-gap); background: var(--muted); }
+    .collection, .inspector { min-width: 0; border: 1px solid var(--border); border-radius: var(--shell-card-radius); background: var(--background); }
+    .collection { padding: 13px; }
+    .panel-heading { margin-bottom: 10px; }
+    .entry-list { display: grid; align-content: start; gap: 7px; }
+    .entry {
+      display: grid; gap: 5px; width: 100%; text-align: start; padding: 10px; border: 1px solid var(--border);
+      border-radius: 8px; background: var(--background); overflow-wrap: anywhere;
+    }
+    .entry strong { font-size: 14px; }
+    .meta { color: var(--muted-foreground); gap: 6px; }
+    .inspector { display: flex; flex-direction: column; }
+    .inspect-section { padding: 13px; }
+    .inspect-section + .inspect-section, .inspector > .actions { border-top: 1px solid var(--border); }
+    .inspector .actions { padding: 10px 13px; margin-top: auto; }
+    .inspector h3 { margin-bottom: 7px; }
+    .inspector .meta { margin: 6px 0 9px; }
+    .details { display: grid; gap: 7px; }
+    .details div { display: grid; grid-template-columns: minmax(67px, 28%) 1fr; gap: 7px; }
+    .details dt { color: var(--muted-foreground); }
+    .policy-note { margin-top: 9px; }
+    .primary, .primary:hover { background: var(--primary); border-color: var(--primary); color: var(--primary-foreground); }
+    .danger { color: var(--destructive); }
+    .empty { padding: 12px 8px; color: var(--muted-foreground); }
+    .settings-workspace { grid-column: 2 / -1; }
+    .settings-body { padding: 16px; }
+    .setting-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px; border: 1px solid var(--border); border-radius: 8px; }
+    .setting-row p { margin-top: 4px; max-width: 48ch; }
+    .settings-icon { margin-top: auto; }
+    .details dd { overflow-wrap: anywhere; }
+    .status:empty { display: none; }
+    .status { min-height: 24px; padding-top: 10px; }
+    dialog { width: min(440px, calc(100% - 32px)); max-height: calc(100% - 32px); color: var(--foreground); background: var(--background); border: 1px solid var(--border); border-radius: var(--shell-card-radius); padding: 19px; box-shadow: 0 12px 35px #0004; }
+    dialog::backdrop { background: #0008; }
+    dialog p, dialog .actions { margin-top: 12px; }
+    .dialog-preview { padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--card); }
+    @media (max-width: 930px) {
+      .shell { grid-template-columns: 44px 166px minmax(0, 1fr); }
+      .panes { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 620px) {
+      .page { padding-top: 16px; }
+      .shell { grid-template-columns: minmax(0, 1fr); }
+      .rail { flex-direction: row; border-inline-end: 0; padding: 4px 12px; }
+      .settings-workspace { grid-column: 1; }
+      .settings-icon { margin: 0 0 0 auto; }
+      .sidebar { border-inline-end: 0; border-block: 1px solid var(--border); padding: 10px; }
+      .sidebar select { margin: 3px 0 8px; }
+      .skills { display: flex; flex-wrap: wrap; }
+      .skill { width: auto; }
+      .workspace-heading { min-height: 0; padding: 10px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="top">
+      <h1 id="title"></h1>
+      <div class="actions">
+        <select class="control" id="locale"><option value="en" lang="en">English</option><option value="ko" lang="ko">한국어</option></select>
+        <select class="control" id="theme"><option value="system"></option><option value="light"></option><option value="dark"></option></select>
+      </div>
+    </header>
+    <div class="toolbar">
+      <p class="muted small" id="sample"></p>
+      <div class="actions">
+        <select class="control" id="run-type"><option value="attended"></option><option value="headless"></option><option value="scheduled"></option></select>
+        <button type="button" class="control" id="finish" data-action="finish"></button>
+      </div>
+    </div>
+    <div class="window" id="window"></div>
+    <p class="status" id="status" role="status"></p>
+  </main>
+  <dialog id="dialog" aria-labelledby="dialog-title"></dialog>
+  <script>
+    const copy = {
+      en: {
+        title: 'Skill-scoped memory', room: 'Control room', language: 'Language', theme: 'Theme', system: 'System theme',
+        light: 'Light', dark: 'Dark', sample: 'Interactive mockup · fictional records', complete: 'Complete sample run',
+        runType: 'Sample run type', attended: 'Attended', headless: 'Headless', scheduled: 'Scheduled',
+        memory: 'Memory', skills: 'Skills', settings: 'Settings', project: 'Project', active: 'Active',
+        pending: 'Needs review', history: 'History', filters: 'Skill memory views', noEntries: 'No entries in this view.',
+        choose: 'Select a lesson to see its content and source.', scope: 'Skill and project', source: 'Source',
+        applied: 'Applied automatically', staged: 'Staged for review', approved: 'Applied after review',
+        rejected: 'Rejected', undone: 'Undone', owner: 'Account owner', provenance: 'Provenance',
+        before: 'Before hash', after: 'After hash', noVersion: 'None',
+        activeHelp: 'Available the next time this skill runs in this project.',
+        pendingHelp: 'Held in the review list until you apply or reject it.',
+        toggle: 'Automatically improve skill memory', on: 'On', off: 'Off',
+        settingsHelp: 'After a task or session ends, Ave can save lessons to its managed skill memory. Headless and scheduled runs only stage lessons for review.',
+        review: 'Review proposal', approve: 'Apply lesson', reject: 'Reject proposal',
+        cancel: 'Cancel', undo: 'Undo change', reviewQuestion: 'Apply this lesson to the displayed skill and project?',
+        undoQuestion: 'Restore the previous version of this lesson?',
+        messageOn: 'Automatic skill improvement is on.', messageOff: 'Automatic skill improvement is off.',
+        skipped: 'Automatic skill improvement is off. The review was skipped.',
+        duplicate: 'This lesson is already in skill memory or awaiting review.',
+        appliedMessage: 'Lesson saved automatically. View the change in History.',
+        stagedMessage: 'Lesson added to Needs review.', approvedMessage: 'Lesson applied. View the change in History.',
+        rejectedMessage: 'Proposal rejected.', undoneMessage: 'Change undone and recorded in History.',
+        north: 'Northstar', harbor: 'Harbor', release: 'Release checklist', changes: 'Change review', research: 'Research digest',
+        freeze: 'Keep release freeze dates visible', freezeText: 'During the release freeze, include the next eligible deployment date in the handoff.',
+        receipts: 'Record the rollout evidence', receiptsText: 'Each release handoff pairs the rollout receipt with the smoke-check result.',
+        receiptsPreviousText: 'Each release handoff includes the rollout receipt.',
+        focus: 'Lead with the affected behavior', focusText: 'Review summaries open with the behavior a user can observe and the check that exercised it.',
+        evidence: 'Link raw measurements', evidenceText: 'Measurement summaries include the source file and its collection date.',
+        backup: 'Confirm the rollback owner', backupText: 'The rollback owner is named before release handoff.',
+        compare: 'Keep the comparison window fixed', compareText: 'Every dataset in a comparison uses the same time window.'
+      },
+      ko: {
+        title: '스킬별 메모리', room: '관제실', language: '언어', theme: '테마', system: '시스템 테마',
+        light: '라이트', dark: '다크', sample: '인터랙티브 목업 · 예시 데이터', complete: '예시 실행 완료',
+        runType: '예시 실행 유형', attended: '사용자 참석', headless: '헤드리스', scheduled: '예약 실행',
+        memory: '메모리', skills: '스킬', settings: '설정', project: '프로젝트', active: '사용 중',
+        pending: '검토 대기', history: '변경 이력', filters: '스킬 메모리 보기', noEntries: '표시할 항목이 없습니다.',
+        choose: '항목을 선택하면 내용과 출처를 볼 수 있습니다.', scope: '스킬 및 프로젝트', source: '출처',
+        applied: '자동 적용', staged: '검토 대기에 추가', approved: '검토 후 적용',
+        rejected: '거절', undone: '되돌림', owner: '계정 소유자', provenance: '변경 근거',
+        before: '변경 전 해시', after: '변경 후 해시', noVersion: '없음',
+        activeHelp: '이 프로젝트에서 해당 스킬을 다음에 실행할 때 사용합니다.',
+        pendingHelp: '사용자가 적용하거나 거절할 때까지 검토 대기에 남습니다.',
+        toggle: '스킬 메모리 자동 개선', on: '켜짐', off: '꺼짐',
+        settingsHelp: '작업이나 세션이 끝나면 Ave 관리 스킬 메모리에 배운 내용을 저장합니다. 헤드리스와 예약 실행에서 만든 제안은 검토 대기에 쌓입니다.',
+        review: '제안 검토', approve: '메모리 적용', reject: '제안 거절',
+        cancel: '취소', undo: '변경 되돌리기', reviewQuestion: '표시된 프로젝트의 스킬 메모리에 이 내용을 적용할까요?',
+        undoQuestion: '이 메모리를 변경 전 상태로 되돌릴까요?',
+        messageOn: '스킬 메모리 자동 개선을 켰습니다.', messageOff: '스킬 메모리 자동 개선을 껐습니다.',
+        skipped: '스킬 메모리 자동 개선이 꺼져 있어 검토를 건너뛰었습니다.',
+        duplicate: '이미 저장되어 있거나 검토 중인 메모리입니다.',
+        appliedMessage: '메모리를 자동 저장했습니다. 변경 이력에서 확인할 수 있습니다.',
+        stagedMessage: '제안을 검토 대기에 추가했습니다.', approvedMessage: '메모리를 적용했습니다. 변경 이력에서 확인할 수 있습니다.',
+        rejectedMessage: '제안을 거절했습니다.', undoneMessage: '변경을 되돌리고 이력에 남겼습니다.',
+        north: '노스스타', harbor: '하버', release: '릴리스 체크리스트', changes: '변경 검토', research: '리서치 요약',
+        freeze: '배포 동결 뒤 첫 배포일 표시', freezeText: '릴리스 동결 기간에는 인수인계 문서에 다음 배포 가능일을 적습니다.',
+        receipts: '롤아웃 근거 기록', receiptsText: '릴리스 인수인계마다 롤아웃 확인 기록과 스모크 테스트 결과를 함께 남깁니다.',
+        receiptsPreviousText: '릴리스 인수인계에 롤아웃 확인 기록을 남깁니다.',
+        focus: '사용자에게 보이는 변경부터 설명', focusText: '검토 요약 첫머리에 사용자가 확인할 수 있는 동작과 그 동작을 검증한 체크를 적습니다.',
+        evidence: '원본 측정값 연결', evidenceText: '측정 요약에 원본 파일과 수집일을 적습니다.',
+        backup: '롤백 담당자 확인', backupText: '릴리스 인수인계 전에 롤백 담당자를 정합니다.',
+        compare: '동일한 기간으로 비교', compareText: '비교에 포함된 모든 데이터에 동일한 시간 범위를 적용합니다.'
+      }
+    };
+
+    const projects = ['north', 'harbor'];
+    const skills = { release: '--chart-1', changes: '--chart-2', research: '--chart-3' };
+    const exampleLessons = {
+      release: { attended: 'backup', headless: 'freeze', scheduled: 'receipts' },
+      changes: { attended: 'focus', headless: 'evidence', scheduled: 'compare' },
+      research: { attended: 'compare', headless: 'evidence', scheduled: 'focus' }
+    };
+    const views = ['active', 'pending', 'history'];
+    const state = {
+      locale: 'en', page: 'skills', project: 'north', skill: 'release', view: 'active',
+      selected: null, enabled: true, message: ''
+    };
+    const ledger = [];
+    const byId = id => document.getElementById(id);
+    const t = key => copy[state.locale][key];
+    const pressed = active => `aria-pressed="${active}"`;
+    const inScope = (project, skill) => ledger.filter(row => row.project === project && row.skill === skill);
+    const latest = rows => [...new Map(rows.map(row => [row.lesson, row])).values()];
+    const recordsForView = rows => state.view === 'history' ? rows : latest(rows).filter(row => row.state === state.view);
+
+    function record({ project, skill, lesson, version = lesson, runType, run, event, state: nextState, before = null, after = null }) {
+      const row = { id: ledger.length + 1, project, skill, lesson, version, runType, run, event, state: nextState, before, after };
+      ledger.push(row);
+      return row;
+    }
+
+    const hashes = {
+      receiptsPrevious: '2273cb8c507e5e75ff3f22e293a6ad64c932deb6675feba77831ade092e7ab16',
+      freeze: '6811666560cfcac61894305ef1468a268badf21bbf8342b0557672a1743232f3', receipts: 'ba886ae163c988e8ea13d70dee7d9a376088e00ce6330f86abe3a93bc1354858', focus: '5da7d70d0965621620087c25abdbbe44e7b05d2203f2ac2347d0b2aebf24c0f0',
+      evidence: 'a22bb25e9e0d1b031df4f5fd5faaeec383bf761a88b0b8054f4a13834cfcb034', backup: '3faf1e638fbaa7b2e46416827bef85cf42bb381cad3ea2a28165f8e103b6dfa4', compare: 'acb3c6e4da9a81edd199a93eea3176f02e9ec3a685efd2fe227766507efbd569'
+    };
+
+    function recordCompletion(project, skill, lesson, runType, run, version = lesson, before = null) {
+      const attended = runType === 'attended';
+      return record({ project, skill, lesson, version, runType, run, event: attended ? 'applied' : 'staged',
+        state: attended ? 'active' : 'pending', before, after: attended ? version : null });
+    }
+
+    recordCompletion('north', 'release', 'receipts', 'attended', 'T-101', 'receiptsPrevious');
+    recordCompletion('north', 'release', 'receipts', 'attended', 'T-104', 'receipts', 'receiptsPrevious');
+    recordCompletion('north', 'release', 'freeze', 'scheduled', 'T-109');
+    recordCompletion('north', 'changes', 'focus', 'attended', 'T-111');
+    recordCompletion('north', 'research', 'evidence', 'headless', 'T-115');
+    recordCompletion('harbor', 'release', 'backup', 'headless', 'T-117');
+    let runNumber = 117;
+
+    function action(id, label, style = '') {
+      return `<button type="button" class="control ${style}" data-action="${id}">${t(label)}</button>`;
+    }
+
+    function selectedRow() {
+      const rows = recordsForView(inScope(state.project, state.skill));
+      return rows.find(row => row.id === state.selected) ?? rows.at(-1);
+    }
+
+    function canUndo(row) {
+      if (!row?.after || row.state !== 'active') return false;
+      return latest(inScope(row.project, row.skill)).find(current => current.lesson === row.lesson)?.id === row.id;
+    }
+
+    function inspector(row) {
+      if (!row) return `<aside class="inspector"><p class="inspect-section muted">${t('choose')}</p></aside>`;
+      const history = state.view === 'history';
+      const actor = ['approved', 'rejected', 'undone'].includes(row.event) ? t('owner') : 'Ave';
+      return `<aside class="inspector" aria-label="${t('provenance')}">
+        <section class="inspect-section">
+          <h3>${t(row.lesson)}</h3>
+          <p>${t(row.version + 'Text')}</p>
+          ${history ? '' : `<p class="policy-note small muted">${t(row.state === 'active' ? 'activeHelp' : 'pendingHelp')}</p>`}
+        </section>
+        <section class="inspect-section">
+          <dl class="details small">
+            <div><dt>${t('scope')}</dt><dd>${t(row.skill)} · ${t(row.project)}</dd></div>
+            <div><dt>${t('source')}</dt><dd>${t(row.runType)} · ${row.run}</dd></div>
+            ${history ? `<div><dt>${t('provenance')}</dt><dd>${t(row.event)} · ${actor}</dd></div>
+              <div><dt>${t('before')}</dt><dd>${row.before ? `<code>${hashes[row.before]}</code>` : t('noVersion')}</dd></div>
+              <div><dt>${t('after')}</dt><dd>${row.after ? `<code>${hashes[row.after]}</code>` : t('noVersion')}</dd></div>` : ''}
+          </dl>
+        </section>
+        ${row.state === 'pending' && !history ? `<div class="actions">${action('review', 'review', 'primary')}</div>` : ''}
+        ${history && canUndo(row) ? `<div class="actions">${action('undo', 'undo')}</div>` : ''}
+      </aside>`;
+    }
+
+    function rows(records) {
+      if (!records.length) return `<p class="empty small">${t('noEntries')}</p>`;
+      return `<div class="entry-list">${[...records].reverse().map(row => `
+        <button type="button" class="entry" data-action="entry:${row.id}" aria-current="${row.id === state.selected}">
+          <strong>${t(row.lesson)}</strong>
+          <span class="meta">${state.view === 'history' ? t(row.event) + ' · ' : ''}${t(row.runType)} · ${row.run}</span>
+        </button>`).join('')}</div>`;
+    }
+
+    function skillSidebar() {
+      return `<aside class="sidebar">
+        <label class="small muted" for="project">${t('project')}</label>
+        <select id="project" class="control">${projects.map(project => `<option value="${project}" ${project === state.project ? 'selected' : ''}>${t(project)}</option>`).join('')}</select>
+        <h3>${t('skills')}</h3>
+        <div class="skills">${Object.entries(skills).map(([skill, color]) => `
+          <button type="button" class="skill" data-action="skill:${skill}" ${pressed(skill === state.skill)}>
+            <span class="skill-name"><span class="mark" style="--mark:var(${color})"></span>${t(skill)}</span>
+          </button>`).join('')}</div>
+      </aside>`;
+    }
+
+    function skillWorkspace() {
+      const scope = inScope(state.project, state.skill);
+      const pendingCount = latest(scope).filter(row => row.state === 'pending').length;
+      return `<section class="workspace">
+        <header class="workspace-heading">
+          <div><h2>${t(state.skill)}</h2><p class="small muted">${t(state.project)}</p></div>
+          <div class="segmented" role="group" aria-label="${t('filters')}">${views.map(view => `
+            <button type="button" data-action="view:${view}" ${pressed(view === state.view)}>${t(view)}${view === 'pending' && pendingCount ? ` (${pendingCount})` : ''}</button>`).join('')}</div>
+        </header>
+        <div class="panes">
+          <section class="collection" aria-label="${t(state.view)}">${rows(recordsForView(scope))}</section>
+          ${inspector(selectedRow())}
+        </div>
+      </section>`;
+    }
+
+    function settingsWorkspace() {
+      return `<section class="workspace settings-workspace">
+        <header class="workspace-heading"><h2>${t('settings')}</h2></header>
+        <div class="settings-body">
+          <div class="setting-row">
+            <div><h3 id="toggle-label">${t('toggle')}</h3><p class="small muted" id="toggle-help">${t('settingsHelp')}</p></div>
+            <button type="button" class="control" role="switch" aria-checked="${state.enabled}" aria-labelledby="toggle-label" aria-describedby="toggle-help" data-action="toggle">${t(state.enabled ? 'on' : 'off')}</button>
+          </div>
+        </div>
+      </section>`;
+    }
+
+    function render() {
+      const lastFocus = document.activeElement?.dataset.action;
+      const settings = state.page === 'settings';
+      state.selected = selectedRow()?.id;
+      document.documentElement.lang = state.locale;
+      document.title = `${t('title')} · Ave`;
+      for (const key of ['title', 'sample']) byId(key).textContent = t(key);
+      byId('finish').textContent = t('complete');
+      byId('locale').setAttribute('aria-label', t('language'));
+      byId('theme').setAttribute('aria-label', t('theme'));
+      byId('run-type').setAttribute('aria-label', t('runType'));
+      for (const id of ['theme', 'run-type']) {
+        for (const option of byId(id).options) option.textContent = t(option.value);
+      }
+      byId('status').textContent = state.message ? t(state.message) : '';
+      byId('window').innerHTML = `
+        <div class="chrome">
+          <span class="traffic" aria-hidden="true"><i></i><i></i><i></i></span>
+          <b>Ave</b>
+          <div class="crumbs small muted"><span>${t('room')}</span>${settings ? `<span>${t('settings')}</span>` : `<span>${t('memory')}</span><span>${t('skills')}</span>`}</div>
+        </div>
+        <div class="shell">
+          <nav class="rail" aria-label="${t('room')}">
+            <button type="button" data-action="page:skills" ${pressed(!settings)} aria-label="${t('memory')} · ${t('skills')}" title="${t('memory')} · ${t('skills')}"><span class="rail-icon" aria-hidden="true"></span></button>
+            <button type="button" class="settings-icon" data-action="page:settings" ${pressed(settings)} aria-label="${t('settings')}" title="${t('settings')}"><span class="rail-icon settings" aria-hidden="true"></span></button>
+          </nav>
+          ${settings ? settingsWorkspace() : skillSidebar() + skillWorkspace()}
+        </div>`;
+      if (lastFocus) document.querySelector(`[data-action="${lastFocus}"]`)?.focus();
+    }
+
+    function finishRun() {
+      if (!state.enabled) {
+        state.message = 'skipped';
+        return;
+      }
+      const runType = byId('run-type').value;
+      const lesson = exampleLessons[state.skill][runType];
+      const existing = latest(inScope(state.project, state.skill)).find(row => row.lesson === lesson);
+      if (existing?.state === 'pending' || existing?.state === 'active') {
+        state.message = 'duplicate';
+        return;
+      }
+      const row = recordCompletion(state.project, state.skill, lesson, runType, `T-${++runNumber}`);
+      state.page = 'skills';
+      state.view = row.state;
+      state.selected = row.id;
+      state.message = row.state === 'active' ? 'appliedMessage' : 'stagedMessage';
+    }
+
+    const dialog = byId('dialog');
+    let dialogRow;
+
+    function openDialog(command) {
+      const row = selectedRow();
+      const reviewing = command === 'review';
+      if (!row || (reviewing ? state.view !== 'pending' || row.state !== 'pending' : !canUndo(row))) return;
+      dialogRow = row;
+      dialog.innerHTML = `<h2 id="dialog-title">${t(command)}</h2>
+        <p>${t(reviewing ? 'reviewQuestion' : 'undoQuestion')}</p>
+        <div class="dialog-preview">
+          <strong>${t(row.lesson)}</strong>
+          <div class="meta">${t(row.skill)} · ${t(row.project)} · ${row.run}</div>
+          <p>${t(row.version + 'Text')}</p>
+        </div>
+        <div class="actions">${action('cancel', 'cancel')}
+          ${reviewing ? action('reject', 'reject', 'danger') + action('approve', 'approve', 'primary') : action('confirm-undo', 'undo', 'primary')}
+        </div>`;
+      dialog.showModal();
+    }
+
+    function decide(command) {
+      if (!dialog.open || dialogRow !== selectedRow()) return;
+      const row = dialogRow;
+      const undo = command === 'confirm-undo';
+      if (undo ? !canUndo(row) : row.state !== 'pending' || state.view !== 'pending') return;
+      const approve = command === 'approve';
+      const next = record({ ...row, event: undo ? 'undone' : approve ? 'approved' : 'rejected',
+        state: approve || (undo && row.before) ? 'active' : 'inactive',
+        version: undo && row.before ? row.before : row.version,
+        before: undo ? row.after : null, after: undo ? row.before : approve ? row.version : null });
+      state.view = 'history';
+      state.selected = next.id;
+      state.message = undo ? 'undoneMessage' : approve ? 'approvedMessage' : 'rejectedMessage';
+      dialog.close();
+      render();
+      byId('window').querySelector('[aria-current="true"]')?.focus();
+    }
+
+    document.addEventListener('click', event => {
+      const button = event.target.closest('[data-action]');
+      if (!button) return;
+      const [command, value] = button.dataset.action.split(':');
+      switch (command) {
+        case 'page':
+          state.page = value;
+          break;
+        case 'toggle':
+          state.enabled = !state.enabled;
+          state.message = state.enabled ? 'messageOn' : 'messageOff';
+          break;
+        case 'finish':
+          finishRun();
+          break;
+        case 'skill':
+          state.skill = value;
+          state.selected = null;
+          break;
+        case 'view':
+          state.view = value;
+          state.selected = null;
+          break;
+        case 'entry':
+          state.selected = Number(value);
+          break;
+        case 'review':
+        case 'undo':
+          openDialog(command);
+          return;
+        case 'cancel':
+          dialog.close();
+          return;
+        case 'approve':
+        case 'reject':
+        case 'confirm-undo':
+          decide(command);
+          return;
+        default:
+          return;
+      }
+      render();
+    });
+
+    document.addEventListener('change', event => {
+      const { id, value } = event.target;
+      if (id === 'theme') {
+        if (value === 'system') delete document.documentElement.dataset.theme;
+        else document.documentElement.dataset.theme = value;
+      }
+      if (id === 'locale' || id === 'project') {
+        state[id] = value;
+        if (id === 'project') state.selected = null;
+        render();
+        byId(id).focus();
+      }
+    });
+
+    render();
+  </script>
+</body>
+</html>

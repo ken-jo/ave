@@ -11,7 +11,7 @@ import { workBoardDecisionKey } from "../../../shared/work-board-decision-intent
 import { outputHashOf, resultHashOf } from "../../../shared/workflow-template-output.js";
 import type { StageEnvelope } from "../../../shared/workflow-template-types.js";
 import { createHostGit } from "../host-git.js";
-import { acceptRequestedOutput, createRequestedOutputHooks, requestedOutputHash, stageOutputIntake } from "../requested-outputs.js";
+import { acceptRequestedOutput, createRequestedOutputHooks, requestedOutputHash, stageOutputIntake, type GovernedOutputAdapter } from "../requested-outputs.js";
 import { runBranch } from "../workspace-layout.js";
 import { stageOf } from "./stage-fixtures.js";
 import { fixturePushRemote, gitFixture } from "./stage-git-fixture.js";
@@ -116,9 +116,9 @@ function gesture(channel: typeof WORK_BOARD.decideStage | typeof WORK_BOARD.retr
 
 async function parked(body: (fixture: Awaited<ReturnType<typeof stageRunHarness>>, id: number, binding: {
   stageId: string; runId: string; attempt: number; resultHash: string; outputHash: string; decision: "approve";
-}, invoke: ReturnType<typeof vi.fn>) => Promise<void>, opts: { calls?: number; fail?: boolean } = {}) {
-  const invoke = vi.fn(async () => "done" as const);
-  if (opts.fail) invoke.mockRejectedValueOnce(new Error("Transient tool failure"));
+}, invoke: ReturnType<typeof vi.fn>) => Promise<void>, opts: { calls?: number; refuseBeforeDispatch?: boolean } = {}) {
+  const invoke = vi.fn<GovernedOutputAdapter["invoke"]>(async () => "done");
+  if (opts.refuseBeforeDispatch) invoke.mockResolvedValueOnce("output-execution-not-dispatched");
   const fixture = await stageRunHarness({ observeRunWork: true, workflow: {
     outputs: createRequestedOutputHooks(createHostGit(), { invoke }, process.cwd()),
   } });
@@ -175,25 +175,29 @@ it("a rejected gate executes nothing", () => parked(async (h, id, binding, invok
   expect(invoke).not.toHaveBeenCalled();
 }));
 
-it("a failed output leaves the stage passed and can be retried under the same hash", () => parked(async (h, id, binding, invoke) => {
+it("an output that failed before dispatch leaves the stage passed and can be retried under the same hash", () => parked(async (h, id, binding, invoke) => {
   await expect(h.engine.decideStageGate(id, binding, { kind: "local-desktop", receipt: gesture(WORK_BOARD.decideStage, id, binding) })).resolves.toMatchObject({ ok: true });
   await h.until(id, item => item.runStatus === "completed");
   const stage = await h.stageRun(id, "review");
-  expect(stage).toMatchObject({ status: "passed", outputExecutions: [{ status: "failed" }] });
+  expect(stage).toMatchObject({ status: "passed", outputExecutions: [{ status: "failed", detail: "output-execution-not-dispatched" }] });
   const { runId, stageId, attempt, outputHash } = binding;
   const retry = { runId, stageId, attempt, outputHash, outputId: stage.outputExecutions?.[0].id ?? "" };
   await expect(h.engine.retryOutput(id, retry, gesture(WORK_BOARD.retryOutput, id, retry))).resolves.toEqual({ ok: true });
   expect((await h.stageRun(id, "review")).outputExecutions).toMatchObject([{ status: "done" }]);
   expect(invoke).toHaveBeenCalledTimes(2);
-}, { fail: true }));
+}, { refuseBeforeDispatch: true }));
 
 it.each(["missing workspace", "unconfirmed execution"] as const)("handles %s after restart without calling the tool again", scenario => parked(async (h, id, binding, invoke) => {
+  if (scenario === "unconfirmed execution") invoke.mockRejectedValueOnce(new Error("Transient tool failure"));
   await expect(h.engine.decideStageGate(id, binding, { kind: "local-desktop", receipt: gesture(WORK_BOARD.decideStage, id, binding) }))
     .resolves.toMatchObject({ ok: true });
   await h.until(id, item => item.runStatus === "completed");
   const { runId, stageId, attempt, outputHash } = binding;
   const [outcome] = (await h.stageRun(id, stageId)).outputExecutions ?? [];
   if (!outcome) throw new Error("Missing output outcome");
+  if (scenario === "unconfirmed execution") {
+    expect(outcome).toMatchObject({ status: "failed", detail: "output-execution-failed" });
+  }
   expect(await h.board.updateRun(id, runId, run => ({
     ...run,
     stageRuns: run.stageRuns.map(stage => stage.stageId !== stageId ? stage
@@ -212,7 +216,7 @@ it.each(["missing workspace", "unconfirmed execution"] as const)("handles %s aft
     expect((await h.stageRun(id, stageId)).outputExecutions).toEqual([{ id: outcome.id, status: "pending" }]);
   }
   expect(invoke).toHaveBeenCalledTimes(1);
-}, { fail: true }));
+}, { refuseBeforeDispatch: scenario === "missing workspace" }));
 
 async function pushGate(decision: "approve" | "reject", changeRef = false) {
   const fixture = gitFixture();

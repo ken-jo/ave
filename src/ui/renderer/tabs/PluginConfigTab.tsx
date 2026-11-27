@@ -70,6 +70,7 @@ const CONFINEMENT_I18N_KEY: Record<NonNullable<PluginCardSummary["confinement"]>
   "linux-bubblewrap": "pluginConfigTab.confinementLinuxBubblewrap",
   "windows-srt": "pluginConfigTab.confinementWindowsSrt",
   "windows-mxc": "pluginConfigTab.confinementWindowsMxc",
+  "macos-seatbelt": "pluginConfigTab.confinementMacosSeatbelt",
   unconfined: "pluginConfigTab.confinementUnconfined",
   "not-spawned": "pluginConfigTab.confinementNotSpawned",
 };

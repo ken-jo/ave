@@ -1,6 +1,6 @@
 import { WORK_BOARD } from "../../../../shared/ipc-channels.js";
 import { workBoardDecisionProps } from "../../../../shared/work-board-decision-intent.js";
-import { useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { Button } from "../../../../components/ui/button.js";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../../../../components/ui/dialog.js";
 import { useTranslation } from "../../../../i18n/react.js";
@@ -36,6 +36,20 @@ export function WorkflowTemplateProposalCard({ name, result, completed }: {
   const [editing, setEditing] = useState(false);
   const [error, setError] = useState<"workflowTemplates.unavailable" | "workflowTemplates.saveFailed" | undefined>();
   const trigger = useRef<HTMLButtonElement>(null);
+  const dialog = useRef<HTMLDivElement>(null);
+  const savedStatus = useRef<HTMLParagraphElement>(null);
+  const focusAtSave = useRef<Element | null>(null);
+
+  const isSaved = saved !== undefined;
+  useLayoutEffect(() => {
+    if (!isSaved) return;
+    const previousFocus = focusAtSave.current;
+    focusAtSave.current = null;
+    if (previousFocus && (document.activeElement === previousFocus || document.activeElement === document.body)) {
+      savedStatus.current?.focus();
+    }
+  }, [isSaved]);
+
   const id = completed && name === WORKFLOW_TEMPLATE_PROPOSE_TOOL ? proposalIdFromResult(result) : undefined;
   if (!id) return null;
 
@@ -56,6 +70,13 @@ export function WorkflowTemplateProposalCard({ name, result, completed }: {
     }
   }
 
+  function handleSaved(qualification: UnattendedQualification) {
+    const active = document.activeElement;
+    focusAtSave.current = active === trigger.current || dialog.current?.contains(active) ? active : null;
+    setSaved(qualification);
+    setOpen(false);
+  }
+
   async function handleConfirm() {
     if (!proposal || proposal.id !== id || busy) return;
     setError(undefined);
@@ -66,8 +87,7 @@ export function WorkflowTemplateProposalCard({ name, result, completed }: {
         expectedDraftRevision: proposal.id,
       });
       if (response.ok) {
-        setSaved(response.value.unattended);
-        setOpen(false);
+        handleSaved(response.value.unattended);
       } else if (response.error === "no-draft" || response.error === "stale-draft" || response.error === "scope-not-authorised") {
         setError("workflowTemplates.unavailable");
         setProposal(undefined);
@@ -80,7 +100,7 @@ export function WorkflowTemplateProposalCard({ name, result, completed }: {
   }
 
   if (saved) return <div className="px-3 text-sm">
-    <p role="status" tabIndex={-1} ref={element => { element?.focus(); }}>{t("workflowTemplates.saved")}</p>
+    <p role="status" tabIndex={-1} ref={savedStatus}>{t("workflowTemplates.saved")}</p>
     <WorkflowUnattendedMark qualification={saved} />
   </div>;
   return (
@@ -89,14 +109,14 @@ export function WorkflowTemplateProposalCard({ name, result, completed }: {
         {t("workflowTemplates.review")}
       </Button>
       <Dialog open={open} onOpenChange={next => { if (!busy) setOpen(next); }}>
-        <DialogContent size={editing ? "2xl" : "lg"} onCloseAutoFocus={event => { event.preventDefault(); trigger.current?.focus(); }}>
+        <DialogContent ref={dialog} size={editing ? "2xl" : "lg"} onCloseAutoFocus={event => { event.preventDefault(); trigger.current?.focus(); }}>
           <DialogHeader>
             <DialogTitle>{proposal ? revealHiddenCharacters(proposal.draft.name, { lineBreaks: true }) : t("workflowTemplates.review")}</DialogTitle>
             <DialogDescription>{t("workflowTemplates.confirmationDescription")}</DialogDescription>
           </DialogHeader>
           {proposal && editing ? (
             <WorkflowDraftReview api={window.aveApi} templateId={null} initialDraft={proposal.draft} projects={[]}
-              onBusyChange={setBusy} onSaved={({ unattended }) => { setSaved(unattended); setOpen(false); }} />
+              onBusyChange={setBusy} onSaved={({ unattended }) => handleSaved(unattended)} />
           ) : (
             <>
               {proposal && <WorkflowTemplateDetails {...proposal} />}

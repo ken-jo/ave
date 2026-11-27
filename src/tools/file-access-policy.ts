@@ -10,6 +10,7 @@ import {
 } from "../permissions/sensitive-paths.js";
 import { createStageWorkspacesMatcher } from "../permissions/stage-workspace-binding.js";
 import { matcherMemo, withLocalityDecision } from "../shared/local-path-io.js";
+import { markHostRefusal } from "./host-refusal.js";
 import { validateSandboxPath } from "../sandbox/path-validator.js";
 import type { ToolExecutionContext, ToolExecutionResult } from "./types.js";
 
@@ -68,7 +69,7 @@ export function ensureFileAccess(
   return withLocalityDecision(() => {
     const sensitive = admissionDeniedFilePattern(path, effect);
     if (sensitive) {
-      return { output: `Sensitive path: ${path} matches ${sensitive}`, isError: true };
+      return markHostRefusal({ output: `Sensitive path: ${path} matches ${sensitive}`, isError: true });
     }
     if (effect === "read" && isConfiguredSessionReadPath(canonicalizePathForMatch(path))) return null;
     if (!pathEffectIsConfined(effect, context.blockReadsOutsideWorkingDirectories === true)) {
@@ -76,7 +77,7 @@ export function ensureFileAccess(
     }
     const check = validateSandboxPath(path, context.cwd, [...context.extraAllowedDirectories]);
     if (!check.allowed) {
-      return { output: `Sandbox: ${check.reason}`, isError: true };
+      return markHostRefusal({ output: `Sandbox: ${check.reason}`, isError: true });
     }
     return null;
   });

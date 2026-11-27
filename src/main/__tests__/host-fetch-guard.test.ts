@@ -1,5 +1,6 @@
 // Stub DNS to exercise private-address rejection even for allow-listed names.
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { DEFAULT_TAILNET_OBSERVER_PORT } from "../../shared/tailnet-observer-config.js";
 import { REDIRECT_STATUSES, type HostFetchTransport } from "../host-fetch-guard.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { CredentialLeaseRegistry } from "../../plugins/secret-access/credential-lease-registry.js";
@@ -232,11 +233,11 @@ describe("evaluateHostFetch — allowPrivateNetworks governance opt-in", () => {
 
 describe("evaluateHostFetch — declared loopback endpoint (local inference server)", () => {
   it("refuses the live Tailnet destination even when the plugin declared loopback", async () => {
-    const release = reserveTailnetListenerPort(46173);
+    const release = reserveTailnetListenerPort(DEFAULT_TAILNET_OBSERVER_PORT);
     try {
       const request = { pluginId: "p", allowedDomains: ["127.0.0.1"] };
       await expect(evaluateHostFetch({ ...request, rawUrl: "http://127.0.0.1:46174/control" })).resolves.toMatchObject({ ok: true });
-      await expect(evaluateHostFetch({ ...request, rawUrl: "http://127.0.0.1:46173/review" }))
+      await expect(evaluateHostFetch({ ...request, rawUrl: `http://127.0.0.1:${DEFAULT_TAILNET_OBSERVER_PORT}/review` }))
         .resolves.toMatchObject({ ok: false, reason: "tailnet-loopback-destination" });
     } finally {
       release();
@@ -537,13 +538,13 @@ describe("runHostFetchHops — hop deadline", () => {
 describe("runHostFetchHops — redirect policy", () => {
   it("rechecks the live port after awaiting hop authorization", async () => {
     lookupMock.mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
-    const first = await firstAllow("https://api.example.com:46173/a");
+    const first = await firstAllow(`https://api.example.com:${DEFAULT_TAILNET_OBSERVER_PORT}/a`);
     const { transport, calls } = scriptedTransport([new Response("control"), new Response("refused")]);
     const { options, denials } = hopOptions(first, {}, transport);
     expect(await (await runHostFetchHops(options)).text()).toBe("control");
     let release: (() => void) | undefined;
     try {
-      await expect(runHostFetchHops({ ...options, authorizeHop: async () => { release = reserveTailnetListenerPort(46173); } }))
+      await expect(runHostFetchHops({ ...options, authorizeHop: async () => { release = reserveTailnetListenerPort(DEFAULT_TAILNET_OBSERVER_PORT); } }))
         .rejects.toThrow("tailnet-loopback-destination");
       expect(calls).toHaveLength(1);
       expect(denials).toContainEqual(expect.objectContaining({ reason: "tailnet-loopback-destination" }));

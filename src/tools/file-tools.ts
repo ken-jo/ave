@@ -1,3 +1,4 @@
+import { markHostRefusal } from "./host-refusal.js";
 import { rethrowLocalityFailure, withLocalityDecision } from "../shared/local-path-io.js";
 import { noteOwnedWrite, terminalFileEvidence, writtenFileIdentity, type WrittenFileIdentity } from "../main/terminal/changed-file-evidence.js";
 import { checkpointFileMutation, markCodeCheckpointUnavailable, type RecordCheckpointEffect } from "../memory/code-checkpoints.js";
@@ -167,12 +168,12 @@ export async function isFileCopyCheckpointSupported(sourcePath: string, cwd: str
 function projectWriteFailure(path: string): ToolErrorResult | null {
   const roots = projectWriteRoots.getStore();
   if (roots === undefined || isPathAllowed(caseFoldForMatch(canonicalizePathForMatch(path)), { directories: roots })) return null;
-  return { output: `Automatic file write escaped project roots: ${path}`, isError: true };
+  return markHostRefusal(toolError(`Automatic file write escaped project roots: ${path}`));
 }
 
 function assertProjectWritePath(path: string): void {
   const blocked = projectWriteFailure(path);
-  if (blocked) throw new Error(blocked.output);
+  if (blocked) throw markHostRefusal(new Error(blocked.output));
 }
 
 // Pass the invocation's host-owned deadline to every broker request so transport defaults cannot shorten it.
@@ -807,7 +808,7 @@ export class ViewImageTool extends FileTool<typeof ViewImageInputSchema> {
 
 function documentPolicyFailure(denial: ToolExecutionResult): ToolExecutionResult {
   const error = denial.output.startsWith("Sensitive path:") ? "sensitive-path" : "path-not-allowed";
-  return documentToolFailure(error, "Document read denied by file policy");
+  return markHostRefusal(documentToolFailure(error, "Document read denied by file policy"));
 }
 
 function documentRouteFailure(failure: ToolExecutionResult): ToolExecutionResult {
@@ -925,7 +926,7 @@ export class OpenDocumentTool extends FileTool<typeof OpenDocumentInputSchema> {
 
   override async execute(rawInput: unknown, ctx: ToolExecutionContext): Promise<ToolExecutionResult> {
     const parsed = this.inputSchema.safeParse(rawInput);
-    return parsed.success ? this.executeTyped(parsed.data, ctx) : documentToolFailure("invalid-arguments", "A document path is required");
+    return parsed.success ? this.executeTyped(parsed.data, ctx) : markHostRefusal(documentToolFailure("invalid-arguments", "A document path is required"));
   }
 
   protected async executeTyped(input: z.infer<typeof OpenDocumentInputSchema>, ctx: ToolExecutionContext): Promise<ToolExecutionResult> {

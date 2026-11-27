@@ -31,6 +31,7 @@ export const TOOL_TIMEOUT_POLICY = {
   browserDownloadHelperStallMs: 30_000,
   // A fresh local identity probe bounds synchronous remote authority checks.
   tailnetIdentityProbeMs: 5_000,
+  tailnetPortHintMs: 2_000,
   // The path-kind helper answers drive and Documents queries from the OS in milliseconds; this bound only ends a stalled start.
   windowsPathKindQueryMs: 15_000,
   windowsDriveLocalityMs: 5_000,
@@ -46,8 +47,24 @@ export const TOOL_TIMEOUT_POLICY = {
   mxcRequestTransportMs: 15_000,
   // The canary uses a short native request deadline before the shell watchdog.
   mxcMacShellProbeMs: 5_000,
+  // The canary's raw-IP measurement: three seconds per target inside this whole-probe budget, added to the canary's deadline.
+  mxcRawIpProbeMs: 12_000,
   mxcMacShellStopMs: 12_000,
   mxcMacShellOutputDrainMs: 1_000,
+  // A macOS holder must write its ready byte from inside the sandbox within this bound, or it is stopped and refused.
+  mxcMacHolderStartMs: 10_000,
+  // SIGTERM to a macOS holder's group, then SIGKILL after this grace.
+  mxcMacHolderTermGraceMs: 2_000,
+  // One label sweep of a macOS holder (two clean passes, at most 50), and the watcher's exit at quit.
+  mxcMacHolderSweepMs: 2_000,
+  // At a macOS holder's stop, the tail of its output may drain this long before Ave lets go of its streams.
+  mxcMacHolderOutputDrainMs: 1_000,
+  mxcLinuxShellProbeMs: 5_000,
+  mxcLinuxShellProbeConnectionMs: 750,
+  mxcLinuxShellStopMs: 2_000,
+  // The boot canary's raw-IP probe: each target's deadline, and the bound on the whole prober inside the container.
+  mxcLinuxRawIpTargetMs: 3_000,
+  mxcLinuxRawIpProbeMs: 12_000,
   // A holder's own start must report its ready-frame evidence inside this bound, from supervisor start, or it is refused.
   mxcExtensionReadinessMs: 30_000,
   // Share the exact workload-identity handshake budget with the protocol.
@@ -84,10 +101,16 @@ export const TOOL_TIMEOUT_POLICY = {
   windowsSrtPluginSetupBudgetMs: 30_000,
   // A sandboxed Windows plugin child starts and announces its listener.
   windowsPluginChildConnectMs: 30_000,
-  // The child listener outlasts the host's announce and connect deadline.
+  // Spacing between independent container confirmations that ambiguous shell completions trigger; it doubles up to the maximum while no loss is confirmed.
+  windowsContainerConfirmationMinIntervalMs: 60_000,
+  windowsContainerConfirmationMaxIntervalMs: 900_000,
   windowsInferenceChildConnectMs: 30_000,
+  // The child listener outlasts the host's announce and connect deadline.
   windowsInferenceChildAcceptMs: 60_000,
   windowsInferenceChildHandshakeMs: 10_000,
+  windowsInferenceTargetExitMs: 5_000,
+  windowsInferenceRelayStopMs: 10_000,
+  windowsMemoryBuildCancelMs: 10_000,
   pluginStartupDefaultMs: 10_000,
   pluginStartupMaxMs: 60_000,
   // Allow retiring generations to drain existing calls before shutdown aborts their scope.
@@ -120,6 +143,7 @@ export const TOOL_TIMEOUT_POLICY = {
   modelStreamIdleCeilingMs: 300_000,
   // Permission-rationale model work is separate from normal tool execution and interactive user waits.
   rationaleGenerationMs: 15_000,
+  skillMemoryReviewMs: 60_000,
   rationaleScopeReviewMs: 15_000,
   approvalGateUserWaitMs: 5 * 60 * 1000,
   // On shutdown-cleanup expiry, kill tracked children and exit; AVE_SHUTDOWN_CLEANUP_TIMEOUT_MS may override.
@@ -143,10 +167,24 @@ export const TOOL_TIMEOUT_POLICY = {
   processGroupRetentionWarningMs: 5 * 60 * 1000,
 } as const;
 
+/** A container holder's start deadline on the platform it runs on: the Windows ACL host, or a macOS holder's ready byte. */
+export function containerHolderStartMs(platform: NodeJS.Platform = process.platform): number {
+  return platform === "darwin" ? TOOL_TIMEOUT_POLICY.mxcMacHolderStartMs : TOOL_TIMEOUT_POLICY.windowsAclHostStartupMs;
+}
+
+/** Disposing a container holder: Windows' process-tree kill, or a macOS holder's group stop with its grace, the group
+ * confirmation, the output drain and the label sweep (`seatbelt-holder-launch.ts`). */
+export function containerHolderStopMs(platform: NodeJS.Platform = process.platform): number {
+  return platform === "darwin"
+    ? TOOL_TIMEOUT_POLICY.mxcMacHolderTermGraceMs + TOOL_TIMEOUT_POLICY.mxcMacHolderOutputDrainMs
+      + TOOL_TIMEOUT_POLICY.processTreeKillMs + TOOL_TIMEOUT_POLICY.mxcMacHolderSweepMs
+    : TOOL_TIMEOUT_POLICY.windowsProcessTreeKillMs;
+}
+
 /** Stopping a native plugin child: optional stop hook, stdin EOF grace, then owned process disposal. */
 export function nativePluginChildStopBudgetMs(): number {
   return TOOL_TIMEOUT_POLICY.pluginStartupDefaultMs + TOOL_TIMEOUT_POLICY.pluginShutdownKillGraceMs
-    + TOOL_TIMEOUT_POLICY.windowsProcessTreeKillMs;
+    + containerHolderStopMs();
 }
 
 /** An srt-win plugin child's factory: host-side setup, then the channel connect and the construct request, each under its own deadline. */
@@ -159,8 +197,8 @@ export function windowsSrtPluginChildFactoryBudgetMs(): number {
  * refused bring-up, the disposal deadline, so a termination verified in time never becomes a factory timeout.
  * Row-2 admission also runs inside this budget: the egress lease and the holder's own start with its `mxcExtensionReadinessMs` (30 s) deadline. */
 export function nativePluginChildFactoryBudgetMs(): number {
-  return TOOL_TIMEOUT_POLICY.windowsAclHostStartupMs + TOOL_TIMEOUT_POLICY.pluginImportMs
-    + TOOL_TIMEOUT_POLICY.pluginFactoryMs + TOOL_TIMEOUT_POLICY.windowsProcessTreeKillMs;
+  return containerHolderStartMs() + TOOL_TIMEOUT_POLICY.pluginImportMs
+    + TOOL_TIMEOUT_POLICY.pluginFactoryMs + containerHolderStopMs();
 }
 
 /** Broker wall clock adds handshake, terminal receipt, and post-effect host work to semantic effect time. */

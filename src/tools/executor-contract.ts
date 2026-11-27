@@ -55,6 +55,8 @@ export interface ToolResult {
   tool_use_id: string;
   content: string;
   is_error?: boolean;
+  /** Host refusal evidence for workflow verdicts. Tool output cannot set this field. */
+  hostRefused?: true;
   uiPayload?: McpUiPayload;
   /** Host-internal raw tool result for non-LLM plugin invocation surfaces. */
   rawResult?: unknown;
@@ -179,6 +181,8 @@ export interface ExecuteOptions {
   replayRootBinding?: ReplayRootBinding;
   /** Host-only pre-dispatch check for a separately approved exact payload. Grants no tool authority. */
   approvedInvocation?: (tool: import("./base.js").Tool, input: Record<string, unknown>) => boolean;
+  /** Refresh the answering surface's live authority before the synchronous dispatch check. */
+  refreshApprovedInvocation?: () => Promise<boolean>;
   /** Host-only lifecycle for an exact governed auth Tool; never plugin data. */
   pluginAuthLifecycle?: HostPluginAuthLifecycle;
 }

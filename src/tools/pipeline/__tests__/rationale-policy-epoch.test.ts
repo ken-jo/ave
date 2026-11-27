@@ -37,6 +37,19 @@ afterEach(() => {
 });
 
 describe("rationale policy epoch", () => {
+  it.each([true, false])("tracks a Settings hold only for a rationale reviewer that follows chat (%s)", (followsChat) => {
+    const permissionManager = new PermissionManager("unused-permissions.json");
+    setReviewerForTest(permissionManager, {
+      classifier: { classify: vi.fn() } as never,
+      cache: {} as never,
+      followsChat,
+    });
+    const hookRunner = new HookRunner();
+    const before = epoch({ permissionManager, hookRunner });
+    permissionManager.beginChatRuntimeReviewerReconfiguration(true);
+    expect(epoch({ permissionManager, hookRunner }) !== before).toBe(followsChat);
+  });
+
   it("tracks PermissionManager mode, reviewer and rule mutations but not stable setters", () => {
     const permissionManager = new PermissionManager("unused-permissions.json");
     const common = {

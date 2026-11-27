@@ -111,6 +111,7 @@ function makeDeps(): never {
       generateText: vi.fn(async () => ""),
       getActiveStreamTurn: () => null,
     },
+    memoryManager: { sessions: {} },
     sideChatConversationLoop: undefined,
     approvalGate: undefined,
     settingsService: {
@@ -170,6 +171,7 @@ async function invoke(channel: string, event: IpcMainInvokeEvent, args: unknown[
 }
 
 /** `[domain, channel, args]` — args are only what a handler needs to reach its guard. */
+const WINDOWS_BUILD_VIEW: readonly [string, string, unknown[]] = ["chat", CHANNELS.memoryMap.buildView, [{ invalid: true }]];
 const HOST_ONLY_CHANNELS: ReadonlyArray<readonly [string, string, unknown[]]> = [
   // Full chat authority: sending turns, reading transcripts, editing memory.
   ["chat", CHANNELS.chat.send, [{ input: "x" }]],
@@ -182,7 +184,12 @@ const HOST_ONLY_CHANNELS: ReadonlyArray<readonly [string, string, unknown[]]> = 
   ["chat", CHANNELS.chat.controlShellTask, ["main", "11111111-1111-4111-8111-111111111111", "background"]],
   ["chat", CHANNELS.memory.detailGet, ["11111111-1111-4111-8111-111111111111", {}]],
   ["chat", CHANNELS.memory.summariesGet, [{}]],
+  ["chat", CHANNELS.skillMemory.list, []],
+  ["chat", CHANNELS.skillMemory.decide, [{
+    action: "delete", scopeId: "a".repeat(64), lessonId: "11111111-1111-4111-8111-111111111111", digest: "b".repeat(64),
+  }]],
   ["chat", CHANNELS.memoryMap.get, [{ invalid: true }]],
+  ...(process.platform === 'win32' ? [WINDOWS_BUILD_VIEW] : []),
   ["chat", CHANNELS.memoryMap.build, [{ invalid: true }]],
   ["chat", CHANNELS.memoryMap.cancel, [{ invalid: true }]],
   ["chat", CHANNELS.memoryMap.facets, [{ invalid: true }]],

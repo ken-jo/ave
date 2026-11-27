@@ -231,6 +231,8 @@ function SideChatSession({
     turnSummaryByTurnStart,
     isStreaming,
     sessionId,
+    getSessionIdentity,
+    beginPaneReset,
     send,
     newSession,
     loadSession,
@@ -263,6 +265,8 @@ function SideChatSession({
       await newSession();
       return;
     }
+    const finishPaneReset = beginPaneReset();
+    if (!finishPaneReset) return;
     try {
       const res = await sideChat.endPaneChat(paneTabId, "new");
       if (!res.ok) {
@@ -273,9 +277,11 @@ function SideChatSession({
       clear();
     } catch (err) {
       setPaneError(errorMessage(err));
+    } finally {
+      finishPaneReset();
     }
     void onSessionsChanged?.();
-  }, [sideChat, paneTabId, newSession, clear, onSessionsChanged]);
+  }, [sideChat, paneTabId, newSession, beginPaneReset, clear, onSessionsChanged]);
   const tileHidden = chatContext?.hidden === true;
   // Late session-mutation replies cannot restore a claim after teardown.
   useLayoutEffect(() => {
@@ -403,6 +409,7 @@ function SideChatSession({
   // Named on every turn: a pane chat's tools act on its pane's tab.
   const boundKind = boundSurface?.kind;
   const boundTabId = boundSurface?.tabId;
+  const browserSlotEmpty = boundSurface?.browserSlotEmpty;
   const handleAsk = useCallback(
     (
       text: string,
@@ -415,7 +422,11 @@ function SideChatSession({
       }
       const origin = {
         ...(originSessionId ? { originSessionId } : {}),
-        ...(boundKind !== undefined && boundTabId !== undefined ? { surface: { kind: boundKind, tabId: boundTabId } } : {}),
+        ...(boundKind !== undefined && boundTabId !== undefined ? { surface: {
+          kind: boundKind,
+          tabId: boundTabId,
+          ...(browserSlotEmpty !== undefined ? { browserSlotEmpty } : {}),
+        } } : {}),
       };
       const settle = (turn: Promise<void>) => turn.finally(() => void onSessionsChanged?.());
       if (opts?.inputOrigin === "queue-auto") {
@@ -441,7 +452,7 @@ function SideChatSession({
         ...origin,
       }));
     },
-    [send, attachments, originSessionId, boundKind, boundTabId, onSessionsChanged],
+    [send, attachments, originSessionId, boundKind, boundTabId, browserSlotEmpty, onSessionsChanged],
   );
 
   const {
@@ -530,17 +541,18 @@ function SideChatSession({
   }, [openRequest, loadSession]);
   const shownRef = useRef(shown && composerVisible);
   shownRef.current = shown && composerVisible;
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (chatGroupId === undefined) return undefined;
     return registerComposerTarget({
       groupId: chatGroupId,
       kind: "side-chat",
       attach: (text) => attachPastedTextRef.current(text),
-      attachImage: (base64) => attachImageRef.current(base64),
+      attachImage: (base64, canCommit) => attachImageRef.current(base64, canCommit),
+      getSessionIdentity,
       available: () => shownRef.current,
       element: () => dockRef.current,
     });
-  }, [chatGroupId]);
+  }, [chatGroupId, getSessionIdentity]);
 
   return (
     <div className="relative flex h-full min-h-0 flex-col" data-testid="side-chat-view" data-approval-scope {...composerDropZone}>

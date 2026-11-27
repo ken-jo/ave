@@ -229,7 +229,8 @@ export function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>;
 export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker> {
   // A selected container backend carries the worker itself; its holder asserts the native entry. The legacy guard
   // refuses that plan, and the legacy gate reads off under it, so neither is consulted on this route.
-  const contained = process.platform === "win32" && isMxcExtensionBackendSelected();
+  // Windows and macOS: the selection already names the platforms whose extensions run in containers.
+  const contained = isMxcExtensionBackendSelected();
   // An unconfined worker is a plain spawn below with no later crossing, so this one spends the consent.
   if (!contained) {
     // Everything the host was handed to run this worker from is its identity: a consent for another spec does not start this one.

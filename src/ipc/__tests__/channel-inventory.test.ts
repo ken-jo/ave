@@ -284,7 +284,10 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
   });
 
   it("locks the sorted unique channel list", () => {
-    const sorted = [...new Set(channels)].sort();
+    const buildView = CHANNELS.memoryMap.buildView;
+    expect(channels.filter(channel => channel === buildView)).toEqual(process.platform === 'win32' ? [buildView] : []);
+    expect(isPublicChannel(buildView)).toBe(false);
+    const sorted = [...new Set(channels)].filter(channel => channel !== buildView).sort();
     expect(sorted).toMatchInlineSnapshot(`
       [
         "ave:a2a-remote:action",
@@ -620,6 +623,8 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:sidechat:new",
         "ave:sidechat:pane-history",
         "ave:sidechat:send",
+        "ave:skill-memory:decide",
+        "ave:skill-memory:list",
         "ave:skills:list",
         "ave:starred:add",
         "ave:starred:list",

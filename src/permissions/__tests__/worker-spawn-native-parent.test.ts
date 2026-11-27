@@ -28,7 +28,7 @@ vi.mock("../asrt-sandbox.js", async (original) => {
 });
 vi.mock("../sandbox-capability.js", async (original) => ({
   ...await original<typeof import("../sandbox-capability.js")>(),
-  getWindowsExtensionBackendPlan: () => state.plan,
+  getExtensionBackendPlan: () => state.plan,
 }));
 vi.mock("../workspace-authorized-roots.js", () => ({ listAuthorizedWorkspaceRoots: () => [] }));
 vi.mock("../egress-host-listener.js", () => ({

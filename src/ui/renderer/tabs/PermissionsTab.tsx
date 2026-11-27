@@ -42,7 +42,9 @@ import {
   egressProtocolCoverageFor,
   type EgressProtocolCoverage,
   type SandboxCapabilityInfo,
-  type SandboxMacContainerShellUnavailableReason,
+  type ContainerRawIpProbeVerdict,
+  type MacRawIpUnknownReason,
+  type SandboxContainerShellUnavailableReason,
   type SandboxMxcUnavailableReason,
   type SandboxWindowsExtensionReason,
   type SandboxWindowsStatusInfo,
@@ -205,7 +207,74 @@ const MAC_CONTAINER_REASON_KEY = {
   "runtime-root-unproved": "permissionsTab.osSandboxMacContainerReasonRuntimeRootUnproved",
   "request-rejected": "permissionsTab.osSandboxMacContainerReasonRequestRejected",
   "shell-start-failed": "permissionsTab.osSandboxMacContainerReasonShellStartFailed",
-} as const satisfies Record<SandboxMacContainerShellUnavailableReason, string>;
+  "tools-missing": "permissionsTab.osSandboxMacContainerReasonShellStartFailed",
+  "namespaces-unavailable": "permissionsTab.osSandboxMacContainerReasonShellStartFailed",
+} as const satisfies Record<SandboxContainerShellUnavailableReason, string>;
+
+const LINUX_CONTAINER_REASON_KEY = {
+  "unsupported-arch": "permissionsTab.osSandboxLinuxContainerReasonUnsupportedArch",
+  "binary-missing": "permissionsTab.osSandboxLinuxContainerReasonBinaryMissing",
+  "launcher-mismatch": "permissionsTab.osSandboxLinuxContainerReasonLauncherMismatch",
+  "runtime-root-unproved": "permissionsTab.osSandboxLinuxContainerReasonRuntimeRootUnproved",
+  "request-rejected": "permissionsTab.osSandboxLinuxContainerReasonRequestRejected",
+  "shell-start-failed": "permissionsTab.osSandboxLinuxContainerReasonShellStartFailed",
+  "tools-missing": "permissionsTab.osSandboxLinuxContainerReasonToolsMissing",
+  "namespaces-unavailable": "permissionsTab.osSandboxLinuxContainerReasonNamespacesUnavailable",
+} as const satisfies Record<SandboxContainerShellUnavailableReason, string>;
+
+const LINUX_TOOL_PACKAGES = new Map([
+  ["bwrap", "bubblewrap"], ["slirp4netns", "slirp4netns"], ["ip", "iproute2"],
+  ["unshare", "util-linux"], ["nsenter", "util-linux"], ["iptables", "iptables"],
+  ["iptables-restore", "iptables"], ["ip6tables", "iptables"], ["ip6tables-restore", "iptables"],
+]);
+
+function LinuxContainerStatus({ status }: { status: NonNullable<SandboxCapabilityInfo["containerShell"]> }) {
+  const { t } = useTranslation();
+  const packages = status.state === "unavailable" && status.reason === "tools-missing"
+    ? [...new Set(status.detail?.flatMap(tool => LINUX_TOOL_PACKAGES.get(tool) ?? []) ?? [])] : [];
+  const names = (overrides: Readonly<Record<string, string>> = {}) => packages.map(name => overrides[name] ?? name).join(" ");
+  const commands = packages.length === 0 ? [] : [
+    [t("permissionsTab.osSandboxLinuxContainerDebian"), `sudo apt install ${names()}`],
+    [t("permissionsTab.osSandboxLinuxContainerFedora"), `sudo dnf install ${names({ iptables: "iptables-nft", iproute2: "iproute" })}`],
+    [t("permissionsTab.osSandboxLinuxContainerSuse"), `sudo zypper install ${names()}`],
+    [t("permissionsTab.osSandboxLinuxContainerArch"), `sudo pacman -S ${names({ iptables: "iptables-nft" })}`],
+  ];
+  return (
+    <div data-testid="os-sandbox-linux-container" data-state={status.state}
+      className="space-y-1 rounded-md border bg-muted/(--opacity-light) px-3 py-2 text-dense text-muted-foreground">
+      <p>{status.state === "available" ? t("permissionsTab.osSandboxLinuxContainerAvailable")
+        : t("permissionsTab.osSandboxLinuxContainerUnavailable", { reason: t(LINUX_CONTAINER_REASON_KEY[status.reason]) })}</p>
+      {commands.length > 0 ? (
+        <dl className="space-y-1">
+          {commands.map(([distribution, command]) => (
+            <div key={command}>
+              <dt className="font-medium">{distribution}</dt>
+              <dd><code className="break-all">{command}</code></dd>
+            </div>
+          ))}
+        </dl>
+      ) : null}
+    </div>
+  );
+}
+
+const MAC_RAW_IP_REASON_KEY = {
+  "raw-ip-reachable": "permissionsTab.osSandboxMacContainerRawIpReasonReachable",
+  "ipv6-unmeasured": "permissionsTab.osSandboxMacContainerRawIpReasonIpv6Unmeasured",
+  "no-route": "permissionsTab.osSandboxMacContainerRawIpReasonNoRoute",
+  timeout: "permissionsTab.osSandboxMacContainerRawIpReasonTimeout",
+  unclassified: "permissionsTab.osSandboxMacContainerRawIpReasonUnclassified",
+  "no-evidence": "permissionsTab.osSandboxMacContainerRawIpReasonNoEvidence",
+  "control-failed": "permissionsTab.osSandboxMacContainerRawIpReasonControlFailed",
+  "udp-unmeasured": "permissionsTab.osSandboxMacContainerRawIpReasonUdpUnmeasured",
+} as const satisfies Record<MacRawIpUnknownReason, string>;
+
+/** The measured raw-IP sentence for an available macOS container; an unmeasured one reads as not confirmed. */
+function macRawIpSentence(rawIp: ContainerRawIpProbeVerdict | undefined): string {
+  const verdict = rawIp ?? { rawIp: "unknown", reason: "no-evidence" } as const;
+  return verdict.rawIp === "blocked" ? t("permissionsTab.osSandboxMacContainerRawIpBlocked")
+    : t("permissionsTab.osSandboxMacContainerRawIpUnknown", { reason: t(MAC_RAW_IP_REASON_KEY[verdict.reason]) });
+}
 
 /** Every reason the shared extension plan can carry, so no reason renders as a raw key. */
 const WINDOWS_EXTENSION_REASON_KEY = {
@@ -1220,6 +1289,7 @@ export function PermissionsTab({
   // Windows: which substrate carries shells and extensions this session. Shown whenever boot recorded one, so an unavailable MXC is never silent.
   const windowsSubstrate = sandboxCapability?.windowsSubstrate ?? null;
   const macContainer = sandboxCapability?.platform === "darwin" ? sandboxCapability.containerShell : undefined;
+  const linuxContainer = sandboxCapability?.platform === "linux" ? sandboxCapability.containerShell : undefined;
 
   // The OS sandbox disclosure reads its own host snapshot and never waits on the panel reads; only the two rows that state stored settings do.
   const settingsNotice = panelLoadNotice("os-sandbox-settings", ["settings"]);
@@ -1375,10 +1445,12 @@ export function PermissionsTab({
               data-state={macContainer.state}
               className="rounded-md border bg-muted/(--opacity-light) px-3 py-2 text-dense text-muted-foreground"
             >
-              {macContainer.state === "available" ? t("permissionsTab.osSandboxMacContainerAvailable")
+              {macContainer.state === "available"
+                ? `${t("permissionsTab.osSandboxMacContainerAvailable")} ${macRawIpSentence(macContainer.rawIpProbe)}`
                 : t("permissionsTab.osSandboxMacContainerUnavailable", { reason: t(MAC_CONTAINER_REASON_KEY[macContainer.reason]) })}
             </p>
           ) : null}
+          {linuxContainer ? <LinuxContainerStatus status={linuxContainer} /> : null}
           {windowsSubstrate ? (
             <div
               data-testid="os-sandbox-windows-substrate"

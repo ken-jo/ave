@@ -309,6 +309,7 @@ export async function authorizeToolInvocation(
       tool_use_id: toolUse.id,
       content: message,
       is_error: true,
+      hostRefused: true,
       authorizationRequired: issueAuthorizationRequiredControl({
         kind: hostExecution ? "host-execution" : "tool",
         toolName: toolUse.name,
@@ -771,6 +772,7 @@ export async function authorizeToolInvocation(
         tool_use_id: toolUse.id,
         content: msg,
         is_error: true,
+        hostRefused: true,
         durationMs,
       });
     }
@@ -817,6 +819,7 @@ export async function authorizeToolInvocation(
             tool_use_id: toolUse.id,
             content: msg,
             is_error: true,
+            hostRefused: true,
             durationMs,
           });
         }
@@ -885,6 +888,7 @@ export async function authorizeToolInvocation(
             tool_use_id: toolUse.id,
             content: msg,
             is_error: true,
+            hostRefused: true,
             durationMs,
           });
         }
@@ -1159,6 +1163,7 @@ export async function authorizeToolInvocation(
             tool_use_id: toolUse.id,
             content: msg,
             is_error: true,
+            hostRefused: true,
             durationMs,
           });
         }
@@ -1233,6 +1238,7 @@ export async function authorizeToolInvocation(
             tool_use_id: toolUse.id,
             content: msg,
             is_error: true,
+            hostRefused: true,
             durationMs,
           });
         }
@@ -1293,6 +1299,7 @@ export async function authorizeToolInvocation(
             tool_use_id: toolUse.id,
             content: msg,
             is_error: true,
+            hostRefused: true,
             durationMs,
           });
         }
@@ -1372,6 +1379,7 @@ export async function authorizeToolInvocation(
             tool_use_id: toolUse.id,
             content: msg,
             is_error: true,
+            ...(!cancelled && { hostRefused: true as const }),
             durationMs,
           });
         }
@@ -1430,6 +1438,7 @@ export async function authorizeToolInvocation(
           tool_use_id: toolUse.id,
           content: msg,
           is_error: true,
+          hostRefused: true,
           durationMs,
         });
       }

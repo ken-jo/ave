@@ -2,12 +2,16 @@ import '../../../../../test/renderer/setup.js';
 import assert from 'node:assert/strict';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
+import { deferred } from '../../../../__tests__/support/deferred.js';
 import { createMemoryMapApi } from '../../../../__tests__/support/memory-map-api.js';
+import { requiredFixture } from '../../../../__tests__/support/required-fixture.js';
+import { ko } from '../../../../i18n/messages/ko.js';
 import { makeMockAveApi } from '../../../../../test/renderer/mock-ave-api.js';
-import type { GraphSnapshot } from '../../../../shared/memory-map.js';
+import type { GraphSnapshot, MemoryBuildStatus, MemoryBuildView, MemoryMapApi } from '../../../../shared/memory-map.js';
 import type { AveApi } from '../../types.js';
 import type { MemoryGraphRenderer } from '../memory-graph-renderer.js';
 import { MemoryView } from '../MemoryView.js';
+import { MemoryViewWin32 } from '../MemoryViewWin32.js';
 
 const renderer = vi.hoisted(() => ({ update: vi.fn<MemoryGraphRenderer['update']>(), zoom: vi.fn(), fit: vi.fn(), destroy: vi.fn(), callbacks: null as null | { onSelect: (id: string) => void; onError: () => void } }));
 vi.mock('../memory-graph-renderer.js', () => ({
@@ -38,6 +42,191 @@ function setup() {
 }
 function selectTab(name: string) { fireEvent.mouseDown(screen.getByRole('tab', { name }), { button: 0, ctrlKey: false }); }
 async function ready() { await screen.findByText('메모리 3 · 연결 2'); }
+
+const FIRST_BUILD = '11111111-1111-4111-8111-111111111111';
+const SECOND_BUILD = '22222222-2222-4222-8222-222222222222';
+const REFUSAL = { ok: false, error: 'build-exit-unconfirmed' } as const;
+const CANCELLED = { ok: true, value: null } as const;
+const buildRow = (id: string, phase: MemoryBuildStatus['phase']): MemoryBuildStatus => ({ id, phase });
+const cancelButton = () => screen.findByRole('button', { name: ko['memoryMap.cancelBuild'] });
+const retryButton = () => screen.findByRole('button', { name: ko['memoryMap.retryCancel'] });
+
+function setupWindows(snapshot: GraphSnapshot | null = SNAPSHOT, builds: MemoryBuildStatus[] = []) {
+  const f = setup();
+  let view: MemoryBuildView = { instance: 'host', revision: 1, snapshot, builds };
+  const buildView = vi.fn<NonNullable<MemoryMapApi['buildView']>>(async () => ({ ok: true, value: view }));
+  Object.assign(f.map, { buildView });
+  const publish = (nextSnapshot: GraphSnapshot | null, ...nextBuilds: MemoryBuildStatus[]) => {
+    view = { ...view, revision: view.revision + 1, snapshot: nextSnapshot, builds: nextBuilds };
+  };
+  const save = () => {
+    const callback = vi.mocked(f.api.onMemorySaveResult).mock.calls.at(-1)?.[0];
+    assert.ok(callback);
+    act(() => callback({} as Parameters<typeof callback>[0]));
+  };
+  return { ...f, buildView, publish, save };
+}
+
+describe('Windows memory map build view', () => {
+  it('links to the switch and keeps local rebuild disabled without duplicating the off notice', async () => {
+    const { map, props } = setupWindows();
+    map.modelStatus.mockResolvedValue({ ok: false, error: 'local-inference-disabled' });
+    render(<MemoryViewWin32 {...props} />);
+    expect(await screen.findByRole('button', { name: ko['memoryMap.openSettings'] })).toBeEnabled();
+    expect(screen.queryByText(ko['memoryMap.error.local-inference-disabled'])).toBeNull();
+    expect(screen.getByRole('button', { name: ko['memoryMap.rebuild'] })).toBeDisabled();
+    expect(map.build).not.toHaveBeenCalled();
+  });
+
+  it('keeps a pre-takeover build cancellable through refresh and observes settlement', async () => {
+    vi.useFakeTimers();
+    const { map, props, publish, save } = setupWindows();
+    const build = deferred<Awaited<ReturnType<typeof map.build>>>();
+    map.build.mockImplementation((_scope, id) => {
+      assert.ok(id);
+      publish(SNAPSHOT, buildRow(id, 'admitting'));
+      return build.promise;
+    });
+    const ui = render(<MemoryViewWin32 {...props} />);
+    try {
+      await act(async () => {});
+      fireEvent.click(screen.getByRole('button', { name: ko['memoryMap.rebuild'] }));
+      await act(async () => {});
+      save();
+      await act(async () => {});
+      expect(screen.getByRole('button', { name: ko['memoryMap.cancelBuild'] })).toBeEnabled();
+      const id = map.build.mock.calls[0][1];
+      assert.ok(id);
+      publish({ ...SNAPSHOT, status: 'building', snapshotId: id }, buildRow(id, 'running'));
+      await act(async () => vi.advanceTimersByTimeAsync(1500));
+      const progress = map.onProgress.mock.calls.at(-1)?.[0];
+      assert.ok(progress);
+      act(() => progress({ jobId: id, phase: 'embedding', completed: 1, total: 3 }));
+      publish(SNAPSHOT, { ...buildRow(id, 'stopped'), outcome: { kind: 'ready' } });
+      await act(async () => vi.advanceTimersByTimeAsync(1500));
+      expect(screen.queryByRole('button', { name: ko['memoryMap.cancelBuild'] })).toBeNull();
+      selectTab(ko['memoryMap.cards']);
+      expect(screen.getByText('Alpha memory')).toBeVisible();
+      expect(map.get).not.toHaveBeenCalled();
+    } finally {
+      ui.unmount();
+      build.resolve({ ok: true, value: SNAPSHOT });
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps a newer ready graph visible when Retry for an older exit refuses', async () => {
+    const { map, props, publish, save } = setupWindows({ ...SNAPSHOT, status: 'building', snapshotId: FIRST_BUILD }, [buildRow(FIRST_BUILD, 'running')]);
+    const pending = deferred<Awaited<ReturnType<typeof map.cancel>>>();
+    map.cancel.mockReturnValueOnce(pending.promise).mockResolvedValueOnce(REFUSAL);
+    const view = render(<MemoryViewWin32 {...props} />);
+    fireEvent.click(await cancelButton());
+    publish(SNAPSHOT, buildRow(SECOND_BUILD, 'stopped'), buildRow(FIRST_BUILD, 'stopping'));
+    save();
+    selectTab(ko['memoryMap.cards']);
+    await screen.findByText('Alpha memory');
+    publish(SNAPSHOT, buildRow(SECOND_BUILD, 'stopped'), buildRow(FIRST_BUILD, 'exit-unconfirmed'));
+    await act(async () => pending.resolve(REFUSAL));
+    fireEvent.click(await retryButton());
+    await waitFor(() => expect(map.cancel.mock.calls).toEqual([[FIRST_BUILD], [FIRST_BUILD]]));
+    await waitFor(() => expect(screen.getByRole('button', { name: ko['memoryMap.retryCancel'] })).toBeEnabled());
+    expect(screen.getByText('Alpha memory')).toBeVisible();
+    view.unmount();
+    render(<MemoryViewWin32 {...props} />);
+    expect(await retryButton()).toBeEnabled();
+  });
+
+  it.each(['container', 'unconfined', 'account', 'projection'] as const)('shows the Windows %s Cancel refusal after a memory-save refresh', async () => {
+    const { map, props, publish, save } = setupWindows({ ...SNAPSHOT, status: 'building', snapshotId: FIRST_BUILD }, [buildRow(FIRST_BUILD, 'running')]);
+    const cancel = deferred<Awaited<ReturnType<typeof map.cancel>>>();
+    map.cancel.mockReturnValueOnce(cancel.promise);
+    render(<MemoryViewWin32 {...props} />);
+    fireEvent.click(await cancelButton());
+    publish(SNAPSHOT, buildRow(FIRST_BUILD, 'stopping'));
+    save();
+    await ready();
+    publish(SNAPSHOT, buildRow(FIRST_BUILD, 'exit-unconfirmed'));
+    await act(async () => cancel.resolve(REFUSAL));
+    expect(await screen.findByRole('alert')).toHaveTextContent(ko['memoryMap.error.build-exit-unconfirmed']);
+  });
+
+  it.each(['started', 'resumed'] as const)('retries Cancel for the %s Windows build after the view sees a newer build', async source => {
+    const firstSnapshot = { ...SNAPSHOT, status: 'building' as const, snapshotId: FIRST_BUILD };
+    const { map, props, publish, save } = source === 'started' ? setupWindows() : setupWindows(firstSnapshot, [buildRow(FIRST_BUILD, 'running')]);
+    const pendingBuild = deferred<Awaited<ReturnType<typeof map.build>>>();
+    const firstCancel = deferred<Awaited<ReturnType<typeof map.cancel>>>();
+    let firstId = FIRST_BUILD;
+    if (source === 'started') map.build.mockImplementationOnce((_scope, id) => {
+      assert.ok(id);
+      firstId = id;
+      publish({ ...firstSnapshot, snapshotId: id }, buildRow(id, 'running'));
+      return pendingBuild.promise;
+    });
+    map.cancel.mockReturnValueOnce(firstCancel.promise).mockResolvedValueOnce(REFUSAL).mockImplementationOnce(async () => {
+      publish(SNAPSHOT, buildRow(SECOND_BUILD, 'stopped'), buildRow(firstId, 'exit-unconfirmed'));
+      return CANCELLED;
+    }).mockImplementationOnce(async () => {
+      publish(SNAPSHOT, buildRow(SECOND_BUILD, 'stopped'));
+      return CANCELLED;
+    });
+    render(<MemoryViewWin32 {...props} />);
+    if (source === 'started') {
+      await ready();
+      fireEvent.click(screen.getByRole('button', { name: ko['memoryMap.rebuild'] }));
+    }
+    fireEvent.click(await cancelButton());
+    publish({ ...firstSnapshot, snapshotId: SECOND_BUILD }, buildRow(SECOND_BUILD, 'running'), buildRow(firstId, 'exit-unconfirmed'));
+    save();
+    await act(async () => firstCancel.resolve(REFUSAL));
+    fireEvent.click(await retryButton());
+    await waitFor(() => expect(map.cancel.mock.calls).toEqual([[firstId], [firstId]]));
+    expect(map.build).toHaveBeenCalledTimes(source === 'started' ? 1 : 0);
+    const progress = map.onProgress.mock.calls.at(-1)?.[0];
+    assert.ok(progress);
+    act(() => {
+      progress({ jobId: SECOND_BUILD, phase: 'embedding', completed: 2, total: 3 });
+      progress({ jobId: firstId, phase: 'embedding', completed: 1, total: 2 });
+    });
+    expect(screen.getByText('임베딩 2 / 3')).toBeTruthy();
+    await act(async () => pendingBuild.resolve({ ok: false, error: 'request-stale' }));
+    fireEvent.click(await cancelButton());
+    await ready();
+    expect(screen.getByRole('alert')).toHaveTextContent(ko['memoryMap.error.build-exit-unconfirmed']);
+    map.build.mockImplementationOnce(async (_scope, id) => {
+      assert.ok(id);
+      publish(SNAPSHOT, { ...buildRow(id, 'stopped'), outcome: { kind: 'failed', code: 'graph-build-failed' } }, buildRow(firstId, 'exit-unconfirmed'));
+      return { ok: false, error: 'graph-build-failed' };
+    });
+    fireEvent.click(screen.getByRole('button', { name: ko['memoryMap.rebuild'] }));
+    save();
+    await ready();
+    fireEvent.click(await retryButton());
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+    expect(map.cancel.mock.calls).toEqual([[firstId], [firstId], [SECOND_BUILD], [firstId]]);
+  });
+
+  it('keeps both Windows refusals bound to their own Retry controls', async () => {
+    const { map, props, publish } = setupWindows(SNAPSHOT, [buildRow(SECOND_BUILD, 'exit-unconfirmed'), buildRow(FIRST_BUILD, 'exit-unconfirmed')]);
+    const second = deferred<Awaited<ReturnType<typeof map.cancel>>>();
+    map.cancel.mockReturnValueOnce(second.promise).mockImplementationOnce(async () => {
+      publish(SNAPSHOT, buildRow(SECOND_BUILD, 'exit-unconfirmed'));
+      return CANCELLED;
+    });
+    render(<MemoryViewWin32 {...props} />);
+    await ready();
+    const [retrySecond, retryFirst] = screen.getAllByRole('button', { name: ko['memoryMap.retryCancel'] });
+    fireEvent.click(retrySecond);
+    expect(retrySecond).toBeDisabled();
+    expect(retryFirst).toBeEnabled();
+    fireEvent.click(retryFirst);
+    await waitFor(() => expect(screen.getAllByRole('alert')).toHaveLength(1));
+    publish(SNAPSHOT);
+    await act(async () => second.resolve(CANCELLED));
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+    expect(map.cancel.mock.calls).toEqual([[SECOND_BUILD], [FIRST_BUILD]]);
+    expect(map.build).not.toHaveBeenCalled();
+  });
+});
 
 describe('memory map view', () => {
   it.each([null, SNAPSHOT])('disables local build on first open with an unsupported local runtime and snapshot %#', async snapshot => {
@@ -162,6 +351,26 @@ describe('memory map view', () => {
     expect(screen.getByText('메모리 지도 불러오는 중…')).toBeTruthy();
     expect(await screen.findByText('메모리가 변경되었습니다. 지도를 다시 만드세요.')).toBeTruthy();
   });
+  it.each(['Macintosh', 'Linux'])('keeps resumed-build polling while Cancel is pending on %s', async platform => {
+    const userAgent = vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue(platform);
+    vi.useFakeTimers();
+    try {
+      const { map, props } = setup();
+      const cancel = deferred<Awaited<ReturnType<typeof map.cancel>>>();
+      map.cancel.mockReturnValue(cancel.promise);
+      map.get.mockResolvedValue({ ok: true, value: { ...SNAPSHOT, status: 'building' } });
+      render(<MemoryView {...props} />);
+      await act(async () => {});
+      fireEvent.click(screen.getByRole('button', { name: '지도 생성 취소' }));
+      await act(async () => vi.advanceTimersByTimeAsync(1_500));
+      expect(map.get).toHaveBeenCalledTimes(2);
+      await act(async () => cancel.resolve({ ok: true, value: null }));
+      expect(map.get).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+      userAgent.mockRestore();
+    }
+  });
   it('asks within current filters, highlights matches, opens host-numbered citations and clears on filter change', async () => {
     const { map, props } = setup();
     map.retrieve.mockImplementation(async request => ({ ok: true, value: {
@@ -250,5 +459,124 @@ describe('memory map view', () => {
       await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
       expect(map.get).toHaveBeenCalledTimes(count);
     } finally { view?.unmount(); vi.useRealTimers(); }
+  });
+});
+
+import { getLocale, setLocale } from "../../../../i18n/runtime.js";
+import type { SkillMemoryDecision, SkillMemoryGroup, SkillMemoryLesson } from "../../../../shared/skill-memory-types.js";
+
+describe("skill memory control room", () => {
+  it.each([
+    { locale: "en", tab: "Skills", deleteLesson: "Delete lesson", deleted: "Deleted", undo: "Undo" },
+    { locale: "ko", tab: "스킬", deleteLesson: "교훈 삭제", deleted: "삭제됨", undo: "되돌리기" },
+  ] as const)("deletes in one click and restores the lesson from the group notice in $locale", async labels => {
+    const previous = getLocale();
+    setLocale(labels.locale);
+    try {
+      const { props } = setup();
+      const active: SkillMemoryLesson = {
+        id: "active", digest: "active-digest", description: "Active example", body: "Check the report.",
+        fingerprint: "source", origin: { sessionId: "session", messageId: "message", completionId: "completion", runKind: "attended" },
+      };
+      const group: SkillMemoryGroup = {
+        scope: { id: "scope", skill: "review", projectRoot: "/project" },
+        staged: [], active: [active], retired: [], history: [], undo: {},
+      };
+      const decide = vi.fn(async (decision: SkillMemoryDecision) => {
+        if (decision.action === "delete") {
+          group.active = [];
+          group.history = [{ id: "deleted-change", action: "delete", actor: "owner", prevDigest: null,
+            digest: "change-digest", before: active, after: null, at: "2026-11-27T00:00:00Z" }];
+          group.undo = { [active.digest]: "deleted-change" };
+        } else if (decision.action === "undo") {
+          group.active = [active];
+          group.undo = {};
+        }
+        return { ok: true };
+      });
+      props.api.skillMemory = { list: async () => ({ ok: true, groups: [group], review: "off" }), decide };
+      render(<MemoryView {...props} />);
+      selectTab(labels.tab);
+      fireEvent.click(await screen.findByRole("button", { name: labels.deleteLesson }));
+      expect(screen.queryByRole("dialog")).toBeNull();
+      expect(decide).toHaveBeenCalledExactlyOnceWith({ action: "delete", scopeId: "scope", lessonId: active.id, digest: active.digest });
+      const deleted = await screen.findByText(labels.deleted, { selector: "[role=status]" });
+      const notice = requiredFixture(deleted.parentElement);
+      expect(notice.closest("section")?.querySelector("h2")?.textContent).toBe(group.scope.skill);
+      expect(screen.queryByRole("button", { name: labels.deleteLesson })).toBeNull();
+      fireEvent.click(within(notice).getByRole("button", { name: labels.undo }));
+      expect(decide).toHaveBeenLastCalledWith({ action: "undo", scopeId: "scope", changeId: "deleted-change", digest: active.digest });
+      const restored = await screen.findByRole("button", { name: labels.deleteLesson });
+      expect(within(requiredFixture(restored.closest("article"))).getByRole("heading", { name: active.description })).toBeVisible();
+      expect(screen.queryByText(labels.deleted, { selector: "[role=status]" })).toBeNull();
+    } finally {
+      setLocale(previous);
+    }
+  });
+
+  it.each([
+    { locale: "en", tab: "Skills", needsReview: "Needs review", apply: "Apply", reject: "Reject", history: "History", undo: "Undo",
+      review: "unavailable", banner: "Automatic review is unavailable. You can still manage saved lessons." },
+    { locale: "ko", tab: "스킬", needsReview: "검토 대기", apply: "적용", reject: "거절", history: "이력", undo: "되돌리기",
+      review: "off", banner: "자동 검토가 꺼져 있습니다. 적용 중인 교훈은 계속 사용합니다." },
+    { locale: "ko", tab: "스킬", needsReview: "검토 대기", apply: "적용", reject: "거절", history: "이력", undo: "되돌리기",
+      review: "capacity", banner: "스킬 교훈 저장 한도에 도달하여 마지막 자동 검토의 제안을 저장하지 않았습니다." },
+  ] as const)("reviews full lesson text and sends exact decisions in $locale during $review", async labels => {
+    const previous = getLocale();
+    setLocale(labels.locale);
+    try {
+      const { props } = setup();
+      const lesson: SkillMemoryLesson = {
+        id: "candidate", digest: "shown-digest", description: "Build order", body: "First validate the project.\nThen record the build output.",
+        fingerprint: "source", origin: { sessionId: "session", messageId: "message", completionId: "completion", runKind: "scheduled" },
+      };
+      const active = { ...lesson, id: "active", digest: "active-digest", body: "Check the type report.", origin: { ...lesson.origin, runKind: "attended" as const } };
+      const groups: SkillMemoryGroup[] = [{
+        scope: { id: "scope", skill: "review", projectRoot: "/project" },
+        staged: [lesson], active: [active], retired: [],
+        history: [{ id: "change", action: "activate", actor: "host", prevDigest: null, digest: "change-digest", before: null, after: active, at: "2026-11-27T00:00:00Z" }],
+        undo: { [active.digest]: "change" },
+      }];
+      const decide = vi.fn(async () => ({ ok: true }));
+      props.api.skillMemory = { list: async () => ({ ok: true, groups, review: labels.review }), decide };
+      render(<MemoryView {...props} />);
+      selectTab(labels.tab);
+      expect(await screen.findByRole("heading", { name: labels.needsReview })).toBeTruthy();
+      expect(screen.getByRole("status").textContent).toBe(labels.banner);
+      expect(screen.getByText("First validate the project. Then record the build output.")).toBeTruthy();
+      const click = async (name: string) => {
+        await act(async () => { fireEvent.click(screen.getByRole("button", { name })); });
+      };
+      await click(labels.apply);
+      expect(decide).toHaveBeenLastCalledWith({ scopeId: "scope", action: "apply", lessonId: lesson.id, digest: lesson.digest });
+      await click(labels.reject);
+      expect(decide).toHaveBeenLastCalledWith({ scopeId: "scope", action: "reject", lessonId: lesson.id, digest: lesson.digest });
+      await click(labels.undo);
+      expect(decide).toHaveBeenLastCalledWith({ scopeId: "scope", action: "undo", changeId: "change", digest: active.digest });
+      fireEvent.click(screen.getByText(labels.history));
+      expect(screen.getByText(new Intl.DateTimeFormat(labels.locale, { dateStyle: "medium", timeStyle: "short" })
+        .format(new Date("2026-11-27T00:00:00Z")))).toBeTruthy();
+    } finally {
+      setLocale(previous);
+    }
+  });
+
+  it("shows that recall is paused when the store becomes unavailable", async () => {
+    const { props } = setup();
+    let readable = true;
+    props.api.skillMemory = {
+      list: async () => readable ? { ok: true, groups: [], review: "unavailable" } : { ok: false },
+      decide: async () => ({ ok: false }),
+    };
+    render(<MemoryView {...props} />);
+    selectTab("스킬");
+    expect(await screen.findByText("저장된 스킬 교훈이 없습니다.")).toBeTruthy();
+    readable = false;
+    fireEvent.click(screen.getByRole("button", { name: "다시 시도" }));
+    expect((await screen.findByRole("alert")).textContent).toBe(
+      "스킬 교훈 저장소를 사용할 수 없습니다. 저장소가 복구될 때까지 저장된 교훈을 사용하지 않습니다.",
+    );
+    expect(screen.queryByText("저장된 스킬 교훈이 없습니다.")).toBeNull();
+    expect(screen.queryByText("자동 검토를 사용할 수 없습니다. 저장된 교훈은 계속 관리할 수 있습니다.")).toBeNull();
   });
 });

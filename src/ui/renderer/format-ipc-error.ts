@@ -95,6 +95,7 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "allow-selection-failed": "formatIpcError.allowSelectionFailed",
 
   // ── Permission manager / audit state ──
+  "approval-already-resolved": "reasonCodes.approval-already-resolved",
   "no-permission-manager": "formatIpcError.noPermissionManager",
   "permission-audit-not-ready": "formatIpcError.permissionAuditNotReady",
   "permission-audit-write-failed": "formatIpcError.permissionAuditWriteFailed",

@@ -112,8 +112,11 @@ it("classifies a run in one place, which every consumer reads through the store"
   expect(callsOf("classified")).toEqual([`${STORE}#WorkBoardStore>deleteIntentsOnDisk`, `${STORE}#WorkBoardStore>runClasses`]);
   expect(callsOf("runClasses")).toEqual([`${RUN_STATE}#boardRunState>adoption`, `${RUN_STATE}#boardRunState>classes`]);
   expect(callsOf("deleteIntentsOnDisk")).toEqual([`${STORE}#WorkBoardStore>deletedRuns`, `${RUN_STATE}#boardRunState>deleted`]);
-  // No consumer reads where a row stands to decide a run's end.
-  expect(callsOf("runRowsOnDisk")).toEqual([]);
+  // Only output execution checks whether it can record its outcome after a board write.
+  expect(callsOf("runRowsOnDisk")).toEqual([`${STORE}#WorkBoardStore>runRowStillNamed`]);
+  expect(callsOf("runRowStillNamed")).toEqual([`${ENGINE}#createStageRunEngine>rowStillNamed`]);
+  const outputExecution = "work-board/workflow/requested-output-retry.ts#createRecordedOutputEffects>execute";
+  expect(callsOf("rowStillNamed")).toEqual([outputExecution, outputExecution]);
   expect(sources.has(ENGINE) && sources.has(RUN_STATE)).toBe(true);
   expect(find(file => file === ENGINE || file === RUN_STATE, node => ts.isStringLiteral(node) && ["gone", "moved", "unnamed"].includes(node.text))).toEqual([]);
 });

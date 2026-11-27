@@ -1,3 +1,7 @@
+vi.mock("../../../shared/windows-path-facts.js", async original => (await import("../../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
+vi.mock("../../../shared/windows-configuration-handles.js", async original => (await import("../../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
+vi.mock("node:fs", async original => (await import("../../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
+
 import { requiredFixture } from "../../../__tests__/support/required-fixture.js";
 import { useConfigurationOwner } from "../../../__tests__/support/configuration-owner.js";
 
@@ -15,12 +19,54 @@ import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { CHANNELS } from "../../../contract/app-contract.js";
 import { PERMISSIONS } from "../../../shared/ipc-channels.js";
 import { SECURITY_FEATURE_KEYS } from "../../../shared/security-settings.js";
+import * as backgroundFeatures from "../../../permissions/windows-background-features.js";
 import { securitySettingsGestures } from "../../security-settings-gesture.js";
-import { __resetWindowsSandboxSubstrateForTest } from "../../../permissions/sandbox-capability.js";
+import { __resetSandboxHomesUnavailableForTest, __resetWindowsSandboxSubstrateForTest, getSandboxHomesUnavailable } from "../../../permissions/sandbox-capability.js";
 
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
 vi.mock("electron", () => ({
   ipcMain: { handle: vi.fn((channel: string, handler: (...args: unknown[]) => unknown) => handlers.set(channel, handler)) },
+}));
+
+const NO_ACCOUNT = { errors: [] as string[], warnings: [] as string[], accountBackendAbsent: true as const };
+const NO_CONTAINER = { state: "unavailable", reason: "container-unavailable", windowsBuild: null, detail: "", baseContainerApiPresent: false, containerBackendAbsent: true };
+const backgroundState = vi.hoisted(() => ({
+  release: false, noBackend: false, homeLost: false,
+  accountInventory: vi.fn(async (): Promise<object> => ({})),
+  containerInventory: vi.fn(async (): Promise<object> => ({})),
+  substrate: { shells: "none", srtWinReady: false, accountBackendAbsent: true,
+    mxc: { state: "unavailable", reason: "container-unavailable", containerBackendAbsent: true } },
+  plan: { selectedBackend: "none", readiness: "unavailable", reason: "container-unavailable" },
+}));
+// The backend inventories are native queries; this file answers them itself.
+vi.mock("../../../permissions/asrt-sandbox.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../../permissions/asrt-sandbox.js")>(),
+  checkAsrtDependencies: backgroundState.accountInventory,
+  isWindowsAccountConfinementOperational: async () => false,
+}));
+vi.mock("../../../permissions/mxc-windows.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../../permissions/mxc-windows.js")>(),
+  detectHostMxcPrerequisites: backgroundState.containerInventory,
+}));
+vi.mock("../../../permissions/mxc-runtime-root.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../../permissions/mxc-runtime-root.js")>(),
+  mxcSandboxHomesParent: () => {
+    if (backgroundState.homeLost) throw new Error("HOME parent changed identity");
+    return "C:/example/ave-runtime/homes";
+  },
+}));
+vi.mock("../../../permissions/mxc-extension-admission.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../../permissions/mxc-extension-admission.js")>(),
+  hasMxcReleaseGateEvidence: () => backgroundState.release,
+}));
+vi.mock("../../../permissions/sandbox-capability.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../../permissions/sandbox-capability.js")>(),
+  getWindowsSandboxSubstrate: () => backgroundState.noBackend ? backgroundState.substrate : null,
+  getExtensionBackendPlan: () => backgroundState.noBackend ? backgroundState.plan : undefined,
+}));
+vi.mock("../../../shared/ave-home.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../../shared/ave-home.js")>(),
+  isAveHomePrivacyVerifiedAtBoot: () => true,
 }));
 
 let userDataPath: string;
@@ -28,6 +74,8 @@ let stopSettingsListener: (() => void) | undefined;
 const USER_INTENT = { inputOrigin: "user-keyboard", userActivation: true };
 
 async function setup() {
+  backgroundState.accountInventory.mockReset().mockResolvedValue(NO_ACCOUNT);
+  backgroundState.containerInventory.mockReset().mockResolvedValue(NO_CONTAINER);
   userDataPath = mkdtempSync(join(tmpdir(), "shell-sandbox-scope-ipc-"));
   const settingsService = new SettingsService({ userDataPath, encryption: unavailableSecretEncryption });
   const frame = { url: "file:///application/dist/index.html" };
@@ -65,7 +113,116 @@ afterEach(async () => {
   stopSettingsListener?.();
   stopSettingsListener = undefined;
   __resetWindowsSandboxSubstrateForTest();
+  __resetSandboxHomesUnavailableForTest();
   await cleanupTmpDir(userDataPath);
+});
+
+describe("session search indexing settings", () => {
+  it("does not refresh Windows admission for a POSIX snapshot or a crafted switch patch", async () => {
+    const original = Object.getOwnPropertyDescriptor(process, "platform");
+    const f = await setup();
+    const refresh = vi.spyOn(backgroundFeatures, "refreshWindowsBackgroundAdmission");
+    try {
+      Object.defineProperty(process, "platform", { configurable: true, value: "linux" });
+      await expect(f.invoke(CHANNELS.settings.get, undefined)).resolves.not.toHaveProperty("features.sessionIndexingWithoutContainment");
+      const result = await f.invoke(CHANNELS.settings.update, {
+        features: { sessionIndexingWithoutContainment: false, idlePreferenceRefresh: true },
+      });
+      expect.soft(result).toHaveProperty("features.idlePreferenceRefresh", true);
+      expect.soft(result).not.toHaveProperty("features.sessionIndexingWithoutContainment");
+      expect.soft(f.settingsService.get("features")?.idlePreferenceRefresh).toBe(true);
+      expect(refresh).not.toHaveBeenCalled();
+    } finally {
+      refresh.mockRestore();
+      if (original) Object.defineProperty(process, "platform", original);
+    }
+  });
+
+  it.each(["projection", "write"] as const)("rechecks HOME identity before the first settings %s after loss", async (operation) => {
+    const original = Object.getOwnPropertyDescriptor(process, "platform");
+    const f = await setup();
+    Object.defineProperty(process, "platform", { configurable: true, value: "win32" });
+    backgroundState.noBackend = backgroundState.release = true;
+    try {
+      await expect(f.invoke(CHANNELS.settings.get, undefined)).resolves.toHaveProperty("features.sessionIndexingWithoutContainment", true);
+      await f.settingsService.patch({ features: { sessionIndexingWithoutContainment: true } });
+      backgroundState.homeLost = true;
+      expect(getSandboxHomesUnavailable()).toBe(false);
+      if (operation === "projection") {
+        await expect(f.invoke(CHANNELS.settings.get, undefined)).resolves.not.toHaveProperty("features.sessionIndexingWithoutContainment");
+      } else {
+        await expect(f.invoke(CHANNELS.settings.update, { features: { sessionIndexingWithoutContainment: false } }))
+          .resolves.toEqual({ ok: false, error: "invalid-input" });
+        expect(f.settingsService.get("features")?.sessionIndexingWithoutContainment).toBe(true);
+      }
+    } finally {
+      if (original) Object.defineProperty(process, "platform", original);
+      backgroundState.release = backgroundState.noBackend = backgroundState.homeLost = false;
+    }
+  });
+
+  it.each([
+    ["projection", "present account", () => backgroundState.accountInventory.mockResolvedValue({ errors: [], warnings: [] })],
+    ["write", "present account", () => backgroundState.accountInventory.mockResolvedValue({ errors: [], warnings: [] })],
+    ["projection", "degraded account", () => backgroundState.accountInventory.mockResolvedValue({ ...NO_ACCOUNT, warnings: ["inventory incomplete"] })],
+    ["write", "degraded account", () => backgroundState.accountInventory.mockResolvedValue({ ...NO_ACCOUNT, warnings: ["inventory incomplete"] })],
+    ["projection", "unreadable account", () => backgroundState.accountInventory.mockRejectedValue(new Error("inventory failed"))],
+    ["write", "unreadable account", () => backgroundState.accountInventory.mockRejectedValue(new Error("inventory failed"))],
+    ["projection", "present container", () => backgroundState.containerInventory.mockResolvedValue({ state: "available", windowsBuild: null })],
+    ["write", "present container", () => backgroundState.containerInventory.mockResolvedValue({ state: "available", windowsBuild: null })],
+    ["projection", "degraded container", () => backgroundState.containerInventory.mockResolvedValue({ ...NO_CONTAINER, baseContainerApiPresent: true })],
+    ["write", "degraded container", () => backgroundState.containerInventory.mockResolvedValue({ ...NO_CONTAINER, baseContainerApiPresent: true })],
+    ["projection", "unreadable container", () => backgroundState.containerInventory.mockRejectedValue(new Error("probe failed"))],
+    ["write", "unreadable container", () => backgroundState.containerInventory.mockRejectedValue(new Error("probe failed"))],
+  ] as const)("rechecks backend absence before the first settings %s after a %s backend replaces published absence", async (operation, _backend, change) => {
+    const original = Object.getOwnPropertyDescriptor(process, "platform");
+    const f = await setup();
+    Object.defineProperty(process, "platform", { configurable: true, value: "win32" });
+    backgroundState.noBackend = backgroundState.release = true;
+    try {
+      await expect(f.invoke(CHANNELS.settings.get, undefined)).resolves.toHaveProperty("features.sessionIndexingWithoutContainment", true);
+      await f.settingsService.patch({ features: { sessionIndexingWithoutContainment: true } });
+      change();
+      if (operation === "projection") {
+        await expect(f.invoke(CHANNELS.settings.get, undefined)).resolves.not.toHaveProperty("features.sessionIndexingWithoutContainment");
+      } else {
+        await expect(f.invoke(CHANNELS.settings.update, { features: { sessionIndexingWithoutContainment: false } }))
+          .resolves.toEqual({ ok: false, error: "invalid-input" });
+        expect(f.settingsService.get("features")?.sessionIndexingWithoutContainment).toBe(true);
+      }
+      expect(getSandboxHomesUnavailable()).toBe(false);
+    } finally {
+      if (original) Object.defineProperty(process, "platform", original);
+      backgroundState.release = backgroundState.noBackend = false;
+    }
+  });
+
+  it("publishes and accepts the independent switch only on a released PC without containment", async () => {
+    const original = Object.getOwnPropertyDescriptor(process, "platform");
+    const f = await setup();
+    Object.defineProperty(process, "platform", { configurable: true, value: "win32" });
+    const read = () => f.invoke(CHANNELS.settings.get, undefined);
+    const write = (value: unknown) => f.invoke(CHANNELS.settings.update, {
+      features: { sessionIndexingWithoutContainment: value },
+    });
+    try {
+      backgroundState.noBackend = true;
+      expect(await read()).not.toHaveProperty("features.sessionIndexingWithoutContainment");
+      expect(await write(false)).toEqual({ ok: false, error: "invalid-input" });
+      backgroundState.release = true;
+      expect(await read()).toHaveProperty("features.sessionIndexingWithoutContainment", true);
+      expect(await write("false")).toEqual({ ok: false, error: "invalid-input" });
+      expect(await write(false)).toHaveProperty("features.sessionIndexingWithoutContainment", false);
+      expect(await read()).toHaveProperty("features.sessionIndexingWithoutContainment", false);
+      expect(f.settingsService.get("memoryEmbedding")).toBeUndefined();
+      backgroundState.noBackend = false;
+      expect(await read()).not.toHaveProperty("features.sessionIndexingWithoutContainment");
+      expect(await write(true)).toEqual({ ok: false, error: "invalid-input" });
+    } finally {
+      if (original) Object.defineProperty(process, "platform", original);
+      backgroundState.release = backgroundState.noBackend = false;
+    }
+  });
 });
 
 describe("shell sandbox checkbox write", () => {

@@ -5,6 +5,7 @@ import { closeSync, openSync, readdirSync, readSync, realpathSync } from "node:f
 import { resolve, join, relative, isAbsolute, dirname, basename, sep } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { createLogger } from "../lib/logger.js";
+import { sha256Hex } from "../lib/hex-digest-equal.js";
 import { aveHome } from "../shared/ave-home.js";
 import { readAveHomeEntrySync } from "../shared/ave-home-trust.js";
 import { AGENT_PLUGIN_SKILL_SELECTOR_PATTERN, parseAgentPluginSkillSelector, PLUGIN_SKILL_SELECTOR_PATTERN } from "../shared/plugin-skill-selector.js";
@@ -184,12 +185,26 @@ export interface LoadedSkill extends SkillComponentFields {
   description: string;
   body: string;
   filePath: string;
+  /** The exact filesystem document read by the local loader. */
+  sourceDigest?: string;
   // Exact cache/approval identity for plugin-owned materialized bytes.
   approvalKey?: string;
   pluginOwner?: PluginSkillOwner;
   agentPluginOwner?: { packageName: string; version: string; digest: string };
   // Bundled files shipped next to SKILL.md (stage-3). Metadata only — contents load on demand through `skill_read`. Always present; empty for flat skills.
   resources: readonly SkillResourceRef[];
+}
+
+// Bind approval to body plus bundled names and sizes shown in the fence; resource bytes require separate reads.
+// Keep flat-body and bundled-digest encodings in separate key spaces while preserving existing flat approvals.
+export function skillApprovalMaterial(skill: Pick<LoadedSkill, "body" | "resources" | "mcpOwner">): string {
+  if (skill.mcpOwner) return `${skill.mcpOwner.fingerprint}|${sha256Hex(skill.body)}`;
+  if (skill.resources.length === 0) return skill.body;
+  const manifest = skill.resources
+    .map((resource) => `${resource.path}:${resource.bytes}`)
+    .sort()
+    .join("\n");
+  return `${sha256Hex(skill.body)}|${sha256Hex(manifest)}`;
 }
 
 // Catalog rows carry bounded selection hints for the skill’s lifetime; other fields stay available on the loaded skill.
@@ -907,6 +922,7 @@ export class SkillStore {
       ...skillComponentFields(fm),
       body: trimmedBody,
       filePath: canonicalFile,
+      sourceDigest: sha256Hex(raw),
       resources,
     };
   }

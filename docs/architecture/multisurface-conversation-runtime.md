@@ -49,7 +49,7 @@ AVE_TAILNET_OBSERVER=1
 AVE_TAILNET_OBSERVER_AUTHORIZATION=tailnet-identity
 # ...or the advanced boundary:
 # AVE_TAILNET_OBSERVER_AUTHORIZATION=app-capability:<owned-domain>/cap/ave-conversation
-AVE_TAILNET_OBSERVER_PORT=46173   # optional; fixed nonzero port
+# AVE_TAILNET_OBSERVER_PORT=<listener-port>  # optional; fixed nonzero port
 AVE_TAILNET_CONTROLLER=1          # optional; default OFF; requires paired sharing
 AVE_TAILNET_PAIRED_SHARING=1      # required for owner pairing/share and Web
 AVE_TAILNET_WEB=1                 # optional same-origin browser adapter
@@ -180,8 +180,34 @@ and the binding for the decision POST. The client sends the snapshot scope and
 a submission UUID with that binding. The host rechecks the binding and the
 controller's authority before committing. Template confirmation, Create and run,
 and schedule attachment are dismissed on the client. Plan, stage, join and
-requested-output reviews support server-recorded rejection. An approved output
-remains pending for continuation in a local app window.
+requested-output reviews support server-recorded rejection. A phone page must
+review the current output hash before approving an output-bearing gate. The
+host acknowledges the committed gate and its output reservations before any
+execution card receives an answer. A push review shows the bound remote, URL,
+ref and commit. The approved push still checks its binding and the run and
+controller authority at launch.
+
+Plugin and server outputs use the ordinary one-time execution approval on the
+eligible desktop and every current paired owner controller that has opened
+Work reviews. This applies regardless of which surface approved the gate. The
+card shows the resolved owner, known destination facts and the full prepared
+arguments. If any required value cannot be displayed losslessly, both surfaces
+refuse the output. An execution card cannot answer native-only secondary asks.
+
+The host verifies private Serve, pairing and controller authority before
+offering cards. An answer handle belongs to the exact pending request and the
+page's cookie and CSRF binding. The first valid answer consumes the request.
+Other surfaces close their copy and show the answering surface, which is also
+audited. A new request or a fresh page cannot reuse another page's handle.
+The winning surface, the originating authority for a remote gate, and the run
+must still be current when the exact invocation reaches the handler.
+
+The phone can explicitly retry an output when its recorded outcome proves the
+handler was never entered. Each retry reserves the original arguments and uses
+a new execution card. If an external effect could have succeeded before a tool
+returned an error, the host refuses the retry until it can establish the outcome.
+A failed push still needs a new request and gate approval. The host does not
+replay pending execution after restart.
 
 The document requires an authorized observer identity plus an active P2 observe
 share. Without that share it serves the invitation-code page rather than raw
@@ -287,8 +313,20 @@ A Tailnet deployment owner may configure a matching, non-Funnel Serve target,
 for example:
 
 ~~~text
-tailscale serve --accept-app-caps=<owned-domain>/cap/ave-conversation http://127.0.0.1:46173
+tailscale serve --accept-app-caps=<owned-domain>/cap/ave-conversation http://127.0.0.1:<listener-port>
 ~~~
+
+When the observer is enabled, the listener uses `AVE_TAILNET_OBSERVER_PORT`
+when set, then the saved port, then 46173. Boot reads the observer
+configuration and binds the resolved port. Settings and guided setup save
+an explicit port. With no saved port, the draft is 46173 if the saved file
+has `enabled: true` or `AVE_TAILNET_OBSERVER=1` is set. Otherwise, the draft
+is 28173. A portless file with `enabled: true` still drafts 46173 when
+`AVE_TAILNET_OBSERVER=0` keeps the listener off.
+
+For a supervised deployment, pin `AVE_TAILNET_OBSERVER_PORT` to the same port
+as the supervisor's route. On Windows, if 46173 is excluded, set
+`AVE_TAILNET_OBSERVER_PORT` to an available port and point Serve at that port.
 
 This command is intentionally not executed by Ave. Do not leave a persistent
 Serve target pointing at the fixed port after the app exits: another local

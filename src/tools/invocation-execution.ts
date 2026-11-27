@@ -1,3 +1,4 @@
+import { isHostRefusal, markHostRefusal } from "./host-refusal.js";
 import { unattendedApprovalDenial } from "../shared/turn-extension-policy.js";
 import { appendToolInvocationAudit, trackDetachedToolInvocation } from "./invocation-ledger.js";
 import { isHostExitAbort } from "../shared/host-exit-abort.js";
@@ -210,6 +211,7 @@ export interface ExecutionStageContext {
   permissionRecheckResult?: PermissionCheckResult;
   replayRootBinding?: ReplayRootBinding;
   approvedInvocation?: ExecuteOptions["approvedInvocation"];
+  refreshApprovedInvocation?: ExecuteOptions["refreshApprovedInvocation"];
   /** The file targets and project anchors the authorization judged; verified at handler admission. */
   fileTargetSeal?: TargetSeal;
   imageTargetPath?: string;
@@ -518,6 +520,7 @@ export async function executeAuthorizedToolInvocation(
   }
   let content: string;
   let isError = false;
+  let handlerRefused = false;
   let uiPayload: import("../mcp/types.js").McpUiPayload | undefined;
   let rawResult: unknown;
   let image: ToolResultImage | undefined;
@@ -813,7 +816,7 @@ export async function executeAuthorizedToolInvocation(
     ...(isCanonicalBrowserTool(tool) ? {
       authorizeBrowserSite: async (url: string, lifecycleSignal?: AbortSignal): Promise<void> => {
         const unattended = unattendedApprovalDenial();
-        if (unattended) throw new Error(unattended);
+        if (unattended) throw markHostRefusal(new Error(unattended));
         const siteSignal = AbortSignal.any([...(abortSignal ? [abortSignal] : []), ...(lifecycleSignal ? [lifecycleSignal] : [])]);
         const manager = services.permissionManager;
         const gate = services.approvalGate;
@@ -934,6 +937,8 @@ export async function executeAuthorizedToolInvocation(
     ...(preparedShellInvocation ? { preparedShellInvocation } : {}),
     ...(verifiedShellCommand ? { verifiedShellCommand } : {}),
     ...(hostShellExecutionPermit ? { hostShellExecutionPermit } : {}),
+    ...(process.platform === "win32" && hostShellExecutionPlan?.substrate === "mxc"
+      ? { windowsContainerShellCwd: hostShellExecutionPermitBinding?.cwdIdentity ?? null } : {}),
     metadata: {
       // Absent when the invocation has no conversation behind it. Tools that
       // need one refuse without it; a placeholder string here would make every
@@ -1338,7 +1343,7 @@ export async function executeAuthorizedToolInvocation(
       abortSignal: signal,
     };
     if (!await refreshRemoteControllerBoundToSession(invocationPermissionContext.remoteControllerAuthority, sessionId)) throw new Error("remote-controller-revoked");
-    if (context.approvedInvocation && !context.approvedInvocation(tool, finalInput)) throw new Error("The approved output changed");
+    if (context.refreshApprovedInvocation && !await context.refreshApprovedInvocation()) throw new Error("Approval authority expired");
     let execution: ReturnType<Tool["execute"]>;
     try {
       execution = runWithToolExecutionCwd(executionCwd, () =>
@@ -1361,11 +1366,12 @@ export async function executeAuthorizedToolInvocation(
                 const replayRoot = checkReplayRootBinding(context.replayRootBinding);
                 if (!replayRoot.valid) throw new Error(replayRoot.reason);
               }
-              handlerAdmissionBlocked = false;
               return runWithAgentObservationInvocation({ sessionId, toolUseId: toolUse.id },
                 () => {
                   const denial = services.skillAdmissionCheck?.(sessionId, toolUse.name, finalInput);
                   if (denial) throw new Error(denial);
+                  if (context.approvedInvocation && !context.approvedInvocation(tool, finalInput)) throw new Error("The approved output changed");
+                  handlerAdmissionBlocked = false;
                   return tool.execute(finalInput, ctx);
                 },
                 preparedShellInvocation ? preparedShellCommand(preparedShellInvocation).homePath : undefined, signal);
@@ -1516,6 +1522,7 @@ export async function executeAuthorizedToolInvocation(
       context.onHostTerminalWriteRefused?.(terminalReapproval.generation, terminalReapproval.policyEpoch);
     }
     sandboxBlock = sandboxBlockForResult(result);
+    handlerRefused = isHostRefusal(result);
     content = result.output;
     isError = result.isError;
     if (authorizationRequiredStateOf(result.authorizationRequired)) {
@@ -1538,6 +1545,7 @@ export async function executeAuthorizedToolInvocation(
     if (browserPreview) meta.browserPreview = browserPreview;
     if (isError) terminationReason = "error";
   } else {
+    handlerRefused = outcome.reason === "error" && isHostRefusal(outcome.error);
     if (
       outcome.reason === "ceiling" ||
       outcome.reason === "user-abort"
@@ -1982,6 +1990,8 @@ export async function executeAuthorizedToolInvocation(
     tool_use_id: toolUse.id,
     content,
     ...(isError && { is_error: true }),
+    ...(isError && (handlerRefused || sandboxBlock !== undefined || auditedPermissionResult?.decision === "deny")
+      && { hostRefused: true }),
     ...(uiPayload && { uiPayload }),
     ...(rawResult !== undefined && { rawResult }),
     ...(image && { image }),

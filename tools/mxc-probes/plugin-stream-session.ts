@@ -32,7 +32,7 @@ export async function probePluginStreams(owned: OwnedMxcExtensionProcess, direct
     tools: ["subscribe", "read", "forge", "overflow"].map((name) => ({ name, description: name, inputSchema: { type: "object", properties: {} } })) };
   const child = attachMxcPluginChild(owned, {
     signal: controller.signal, release() { releases++; },
-  }, manifest.id);
+  }, manifest.id, "windows-mxc");
 
   const context = { pluginId: manifest.id, pluginRoot: directory, pluginDataDir: directory,
     pluginSocketDir: directory, hostRoot: directory, userHome: directory, aveHome: directory, config: {},

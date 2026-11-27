@@ -2009,7 +2009,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     ave.permission.sandboxCapability.mockResolvedValue({
       platform: "darwin", enabled: true, available: true, kind: "full", reason: "",
       runtime: { available: true, kind: "full", reason: "" },
-      containerShell: { state, reason, egressProtocolCoverage: { dns: "blocked", rawIp: "blocked" } },
+      containerShell: { state, reason, egressProtocolCoverage: { dns: "unknown", rawIp: "unknown" } },
       confines: { filesystem: true, process: true, network: true },
     } as never);
     await act(async () => { render(<PermissionsTab />); });
@@ -2019,6 +2019,24 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     if (reason !== undefined) expect(row).toHaveTextContent("셸 명령은 실행 전에 승인을 요청합니다.");
   });
 
+  it.each([
+    [{ rawIp: "blocked", reason: "blocked", evidenceKind: "measured", reachableTargets: [], udpArrival: "absent" }, "IP 주소로 직접 연결하는 것은 차단됩니다. Ave 시작 시 측정했습니다."],
+    [{ rawIp: "unknown", reason: "ipv6-unmeasured", reachableTargets: [], udpArrival: "absent" }, "IP 주소로 직접 연결하는 것이 차단되는지 확인하지 못했습니다: IPv6 를 측정하지 못했습니다."],
+    [{ rawIp: "unknown", reason: "udp-unmeasured", reachableTargets: [], udpArrival: "unmeasured" }, "IP 주소로 직접 연결하는 것이 차단되는지 확인하지 못했습니다: UDP 시험을 측정하지 못했습니다."],
+    [undefined, "IP 주소로 직접 연결하는 것이 차단되는지 확인하지 못했습니다: 시험이 실행되지 않았거나 결과를 보내지 않았습니다."],
+  ] as const)("states the macOS container's measured raw-IP verdict %j", async (rawIpProbe, copy) => {
+    const { ave } = installApiWithWindows();
+    ave.permission.sandboxCapability.mockResolvedValue({
+      platform: "darwin", enabled: true, available: true, kind: "full", reason: "",
+      runtime: { available: true, kind: "full", reason: "" },
+      containerShell: { state: "available", ...(rawIpProbe === undefined ? {} : { rawIpProbe }),
+        egressProtocolCoverage: { dns: "unknown", rawIp: rawIpProbe?.rawIp === "blocked" ? "blocked" : "unknown" } },
+      confines: { filesystem: true, process: true, network: true },
+    } as never);
+    await act(async () => { render(<PermissionsTab />); });
+    expect(screen.getByTestId("os-sandbox-mac-container")).toHaveTextContent(copy);
+  });
+
   it("does not claim a timeout or an unverified install proves isolation or an unchanged machine", async () => {
     for (const outcome of ["timed-out", "installed-unverified"]) {
       const { outcome: view } = await clickInstall(async () => ({ outcome, ready: false }));
@@ -2026,6 +2044,25 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
       expect(view.textContent).not.toContain("꺼진 상태로 유지됩니다");
       cleanup();
     }
+  });
+
+  it("lists install commands for the specific missing Linux packages", async () => {
+    const { ave } = installApiWithWindows();
+    ave.permission.sandboxCapability.mockResolvedValue({
+      platform: "linux", enabled: true, available: true, kind: "full", reason: "",
+      runtime: { available: true, kind: "full", reason: "" },
+      containerShell: { state: "unavailable", reason: "tools-missing", detail: ["bwrap", "iptables", "iptables-restore"],
+        egressProtocolCoverage: { dns: "unknown", rawIp: "unknown" } },
+      confines: { filesystem: true, process: true, network: true },
+    } as never);
+    await act(async () => { render(<PermissionsTab />); });
+    const row = screen.getByTestId("os-sandbox-linux-container");
+    expect(row).toHaveAttribute("data-state", "unavailable");
+    expect(row).toHaveTextContent("sudo apt install bubblewrap iptables");
+    expect(row).toHaveTextContent("sudo dnf install bubblewrap iptables-nft");
+    expect(row).toHaveTextContent("sudo zypper install bubblewrap iptables");
+    expect(row).toHaveTextContent("sudo pacman -S bubblewrap iptables-nft");
+    expect(row).not.toHaveTextContent("slirp4netns");
   });
 
   it("keeps opt-in enabled and shows a localized error, not main's raw detail, on an ok:false shape", async () => {

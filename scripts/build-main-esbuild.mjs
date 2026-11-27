@@ -28,6 +28,8 @@ import { mxcVerificationBuild, mxcVerificationEntries } from "./lib/mxc-verifica
 import { buildSkillScripts } from "./build-skill-scripts.mjs";
 import { buildWindowsPathKind } from "./build-windows-path-kind.mjs";
 import { WINDOWS_PATH_KIND_BUNDLE_PIN, windowsPathKindBundlePinDeclaration } from "./lib/windows-path-kind-package.mjs";
+import { buildMacosHolderSweep } from "./build-macos-holder-sweep.mjs";
+import { MACOS_HOLDER_SWEEP_BUNDLE_PIN, macosHolderSweepBundlePinDeclaration } from "./lib/macos-holder-sweep-package.mjs";
 import { assertBundledDocumentInputs, assertPackagedDocumentInputs } from "./lib/document-consumer-guard.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -44,6 +46,8 @@ if (process.platform === "win32") {
   pathKindSha256 = buildWindowsPathKind({ root: repoRoot }).imageSha256;
   execFileSync(process.execPath, [resolve(repoRoot, "scripts/build-srt-win.mjs")], { stdio: "inherit" });
 }
+// The macOS holder label sweep helper: its signing-stable image digest is compiled in, as the Windows path helper's is.
+const holderSweepSha256 = process.platform === "darwin" ? buildMacosHolderSweep({ root: repoRoot, ifStale: true }).imageSha256 : null;
 await buildSkillScripts();
 if (!mxcVerificationBuild()) rmSync(resolve(outdir, "mxc-packaged-probe.js"), { force: true });
 
@@ -67,7 +71,10 @@ const buildOptions = {
   preserveSymlinks: true,
   platform: "node",
   target: ["node22"],
-  define: { __AVE_WINDOWS_PATH_KIND_SHA256__: pathKindSha256 === null ? "null" : WINDOWS_PATH_KIND_BUNDLE_PIN },
+  define: {
+    __AVE_WINDOWS_PATH_KIND_SHA256__: pathKindSha256 === null ? "null" : WINDOWS_PATH_KIND_BUNDLE_PIN,
+    __AVE_MACOS_HOLDER_SWEEP_SHA256__: holderSweepSha256 === null ? "null" : MACOS_HOLDER_SWEEP_BUNDLE_PIN,
+  },
   legalComments: "none",
   // Keep function/class names stable for runtime diagnostics while allowing
   // esbuild to shorten private local bindings as well as fold equivalent
@@ -91,6 +98,7 @@ const buildOptions = {
   banner: {
     js:
       (pathKindSha256 === null ? "" : `${windowsPathKindBundlePinDeclaration(pathKindSha256)}\n`) +
+      (holderSweepSha256 === null ? "" : `${macosHolderSweepBundlePinDeclaration(holderSweepSha256)}\n`) +
       `import { createRequire as __aveCreateRequire } from "node:module";\n` +
       `const require = __aveCreateRequire(import.meta.url);\n`,
   },

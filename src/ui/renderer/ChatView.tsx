@@ -63,6 +63,7 @@ import { useChatScroll, type ChatMessageRevealRequest } from "./hooks/use-chat-s
 import { useCheckpointView } from "./hooks/use-checkpoint-view.js";
 import type { ComposerSendOptions } from "./hooks/use-send-message.js";
 import { useMessageQueue } from "./hooks/use-message-queue.js";
+import { isApprovalSentenceInput } from "./hooks/use-approval-sentence.js";
 import { useAttachmentPicker } from "./hooks/use-attachment-picker.js";
 import { TranscriptRenderer, type TurnSummary } from "./components/TranscriptRenderer.js";
 import { ChatTranscript } from "./components/ChatTranscript.js";
@@ -665,6 +666,9 @@ export function ChatView({ api, appDraftSuggestion, onAsk, onRunMcpPrompt, onRun
     [onGuide, onGuideError],
   );
   // /allow proposes a choice to the app-owned approval dock instead of sending to the model.
+  const chatSubmitBlocked = pendingApprovals.length > 0;
+  const canSubmitApprovalSentence = approvalSentenceInterceptSubmit !== undefined
+    && appSource === undefined && isApprovalSentenceInput(question);
   const {
     messageQueueStore,
     handleComposerSend,
@@ -686,6 +690,7 @@ export function ChatView({ api, appDraftSuggestion, onAsk, onRunMcpPrompt, onRun
     guide: messageQueueGuide,
     onAbort,
     interceptSubmit: approvalSentenceInterceptSubmit,
+    chatSubmitBlocked,
   });
 
   // Clear queued messages only after the host confirms a conversation rewind.
@@ -974,6 +979,7 @@ export function ChatView({ api, appDraftSuggestion, onAsk, onRunMcpPrompt, onRun
         setAttachments={setAttachments}
         attachmentNCounter={attachmentNCounter}
         onComposerSend={handleComposerSend}
+        composerSubmitBlocked={chatSubmitBlocked && !canSubmitApprovalSentence}
         suggestedReplies={suggestedReplies}
         commandActions={commandActions}
         plugins={plugins}

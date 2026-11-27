@@ -13,6 +13,8 @@ import type { IdleSchedulerService } from "../main/idle-scheduler.js";
 import type { BashAstValidator } from "../main/bash-ast-validator.js";
 import type { PluginRuntime } from "../plugins/runtime.js";
 import { SystemPromptBuilder } from "../prompts/system-prompt-builder.js";
+import { browserTabRegistry } from "../main/browser/browser-tab-registry.js";
+import { t } from "../i18n/index.js";
 import { PermissionManager } from "../permissions/permission-manager.js";
 import { readPermissionSettings } from "../permissions/permission-settings-store.js";
 import { recoverInterruptedPermissionModeChange } from "../permissions/permission-mode-apply.js";
@@ -53,12 +55,13 @@ export function createSystemPromptBuilder(opts: {
   getActivatablePluginIds?: () => ReadonlySet<string>;
   /** Main-chat card context only; omitted by routine and side-chat builders. */
   getAppModelContext?: (sessionId: string) => string;
+  getBrowserPaneGuidance?: (sessionId: string) => string;
   /** Discovery instructions are inert, untrusted context; only main chat wires them. */
   mcpServerGuidanceProvider?: () => Array<{ serverId: string; instructions: string }>;
   /** Only builders on the user's memory store (main, routine) record injected memories; side chat has its own store. */
   memoryUsageLog?: MemoryUsageRecorder;
 }): SystemPromptBuilder {
-  const { memoryManager, toolRegistry, pluginRuntime, getAvailableSkills, getActivatablePluginIds, getAppModelContext, mcpServerGuidanceProvider,
+  const { memoryManager, toolRegistry, pluginRuntime, getAvailableSkills, getActivatablePluginIds, getAppModelContext, getBrowserPaneGuidance, mcpServerGuidanceProvider,
     memoryUsageLog,
   } = opts;
   return new SystemPromptBuilder({
@@ -71,6 +74,7 @@ export function createSystemPromptBuilder(opts: {
     getActivatablePluginIds,
     getAvailableSkills,
     getAppModelContext,
+    getBrowserPaneGuidance,
     mcpServerGuidanceProvider,
   });
 }
@@ -187,7 +191,8 @@ export interface ConversationDeps {
   /** Broadcast session-directory grants to all permission views, including grants made outside slash dispatch. */
   broadcastPermissionConfigChanged?: () => void;
   /** Per-conversation read-skill registry, cleared on newConversation(). */
-  skillOverlay?: { clear(sessionId: string): void };
+  skillOverlay?: { clear(sessionId: string): void; list?(sessionId: string): readonly { name: string; filePath: string }[] };
+  skillMemory?: import("../memory/skill-memory-service.js").SkillMemoryService;
   /** Whether `/<name>` names an indexed skill (routes a typed skill slash to the model). */
   isSkillName?: (name: string) => boolean;
   notificationService?: NotificationService;
@@ -210,6 +215,7 @@ export type RoutineConversationLoopDeps = Pick<
   | "memoryManager"
   | "memoryReviewer"
   | "permissionManager"
+  | "skillMemory"
   | "approvalGate"
   | "hookRunner"
   | "scriptHookManager"
@@ -299,6 +305,7 @@ export function createRoutineConversationLoop(
     ...(deps.sessionHeldElsewhere ? { sessionHeldElsewhere: deps.sessionHeldElsewhere } : {}),
     headless: true,
     // Routine loops omit interactive hooks; normal session persistence still applies.
+    skillMemory: deps.skillMemory,
   });
 }
 
@@ -329,6 +336,7 @@ export type SideChatConversationLoopDeps = Pick<
 > & {
   /** Isolated MemoryManager rooted at `~/.ave/side-chat/`. */
   sideChatMemoryManager: MemoryManager;
+  paneWindowId?: number;
   /** Shared settings service — reads `additionalDirectories` at each turn. */
   getAdditionalDirectories?: () => readonly string[];
   isDefaultProjectRoot?: (projectRoot: string) => boolean;
@@ -344,11 +352,15 @@ export type SideChatConversationLoopDeps = Pick<
 export function createSideChatConversationLoop(
   deps: SideChatConversationLoopDeps,
 ): ConversationLoop {
+  const { paneWindowId } = deps;
   // Bind side-chat prompt memory to its own namespace and keep routine mode disabled.
   const sideChatSystemPromptBuilder = createSystemPromptBuilder({
     memoryManager: deps.sideChatMemoryManager,
     toolRegistry: deps.toolRegistry,
     pluginRuntime: deps.pluginRuntime,
+    ...(paneWindowId === undefined ? {} : {
+      getBrowserPaneGuidance: (sessionId) => browserPaneGuidance(paneWindowId, sessionId),
+    }),
   });
   // Persist side-chat turns separately; side chat does not drive idle refresh.
   const { postTurnHookChain } = createPostTurnHookChain({
@@ -395,6 +407,17 @@ export function createSideChatConversationLoop(
   });
 }
 
+function browserPaneGuidance(windowId: number, sessionId: string): string {
+  const target = browserTabRegistry.browserPaneTarget(windowId, sessionId);
+  if (!target) return "";
+  if (target.kind === "empty") return t("be_browserTools.paneEmptyGuidance");
+  if (target.kind === "blocked") return t("be_browserTools.paneBlockedGuidance");
+  if (target.kind === "paused") return t("be_browserTools.panePausedGuidance");
+  if (target.kind !== "live") return t("be_browserTools.paneUnavailableGuidance");
+
+  return t("be_browserTools.paneBoundGuidance", { handle: target.handle });
+}
+
 export function createConversationLoop(deps: ConversationDeps,
 ): ConversationLoop {
   const loop = new ConversationLoop({
@@ -432,6 +455,7 @@ export function createConversationLoop(deps: ConversationDeps,
     pluginOperationGrants: deps.pluginOperationGrants,
     pluginOperationIdentityProvider: deps.pluginOperationIdentityProvider,
     skillOverlay: deps.skillOverlay,
+    skillMemory: deps.skillMemory,
     isSkillName: deps.isSkillName,
     notificationService: deps.notificationService,
     auditLogger: deps.auditLogger,
