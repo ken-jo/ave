@@ -2011,7 +2011,11 @@ export class SubscriptionRuntimeService {
     }
     if (evidence.kind === "retired") {
       // Disposing an idle auxiliary proof leaves established primary authority intact.
-      if (!auxiliary || state.target) this.latchConnection(provider, state, "unknown");
+      if (!auxiliary || state.target) {
+        const missing = state.source === evidence.source && state.artifact === null && state.status.runtime === "not-configured";
+        const connection = missing && state.status.connection === "signed-out" ? "signed-out" : "unknown";
+        this.latchConnection(provider, state, connection, state.status.version, missing ? "not-configured" : undefined);
+      }
       return undefined;
     }
     const signedOut = evidence.kind !== "transport-lost";

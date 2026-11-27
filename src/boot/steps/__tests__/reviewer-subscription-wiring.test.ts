@@ -26,6 +26,7 @@ import { createPrivateDirectory } from "../../../main/codex-executable-location.
 import { CodexConversationRuntime } from "../../../main/codex-conversation-runtime.js";
 import { CODEX_RPC_REQUEST_TIMEOUT_MS } from "../../../main/codex-conversation-runtime.js";
 import type { OAuthLoginOptions } from "../../../main/oauth-login.js";
+import { CodexUserRuntimeError } from "../../../main/codex-user-runtime.js";
 import { CodexAppServerClient } from "../../../main/codex-app-server-client.js";
 import { ClaudeCodeConversationRuntime } from "../../../main/claude-code-conversation-runtime.js";
 import { ClaudeCodeSubscriptionClient } from "../../../main/claude-code-subscription-client.js";
@@ -213,7 +214,7 @@ const confirmationCases = new Map<string, {
 
 it.each([
   ...confirmationCases.keys(),
-  "direct plan logout", "managed ACP logout", "ACP executable removal",
+  "direct plan logout", "managed ACP logout", "ACP executable removal", "initialized runtime withdrawal",
   "sign-out batched with initialization", "prompt pipe loss", "account replacement during isolation proof", "live disconnect", "model discovery account probe failure", "sign-out during catalog", "process exit during catalog",
   "logout during failed login", "cancel detects sign-out during failed login",
   "account notification confirmation", "account notification overtaken by logout", "account notification retries after rejection",
@@ -256,6 +257,8 @@ it.each([
   const cancelReply = deferred<void>();
   const promptPipeLoss = scenario === "prompt pipe loss";
   const directPlan = scenario === "direct plan logout";
+  const withdrawsRuntime = scenario === "initialized runtime withdrawal";
+  let runtimeMissing = false;
   const managedAcp = scenario === "managed ACP logout";
   const removesExecutable = scenario === "ACP executable removal";
   const acpProvider = removesExecutable ? "kimi-code" : "grok-build";
@@ -303,13 +306,16 @@ it.each([
   let child: RuntimeProcessFixture | undefined;
   let accountConnected = true;
   let runtimeHome = tempDir;
-  if (startupSignOut || replacementDuringProof || holdsCatalog || usesAccountNotification || realCancelRace || promptPipeLoss) {
+  if (withdrawsRuntime || startupSignOut || replacementDuringProof || holdsCatalog || usesAccountNotification || realCancelRace || promptPipeLoss) {
     if (process.platform !== "win32") normalizeFixtureAncestorPermissions(tempDir);
     runtimeHome = join(tempDir, "runtime");
     await createPrivateDirectory(runtimeHome);
   }
-  const artifact = startupSignOut || replacementDuringProof || holdsCatalog || usesAccountNotification ? await codexExecutableArtifactFixture(runtimeHome) : undefined;
-  const resolveRuntime = artifact && vi.fn(async () => ({ ...artifact, version: "0.153.4" }));
+  const artifact = withdrawsRuntime || startupSignOut || replacementDuringProof || holdsCatalog || usesAccountNotification ? await codexExecutableArtifactFixture(runtimeHome) : undefined;
+  const resolveRuntime = artifact && vi.fn(async () => {
+    if (runtimeMissing) throw new CodexUserRuntimeError("codex-runtime-not-installed");
+    return { ...artifact, version: "0.153.4" };
+  });
   const cliArtifact = realCancelRace || promptPipeLoss ? await codexExecutableArtifactFixture(runtimeHome) : undefined;
   const realCli = cliArtifact && new ClaudeCodeSubscriptionClient({
     runtimeHome, workspaceDir: runtimeHome, runtimeTempDir: runtimeHome,
@@ -519,6 +525,14 @@ it.each([
         result: { decision: "deny" },
       });
       expect((await afterLogout).result.decision).toBe("deny");
+    } else if (withdrawsRuntime) {
+      const initialized = requiredFixture(child);
+      runtimeMissing = true;
+      await expect(runtime.getStatus(provider)).resolves.toMatchObject({
+        runtime: "not-configured", connection: "unknown", capabilities: { chat: false },
+      });
+      expect(initialized.killed).toBe(true);
+      runtimeMissing = false;
     } else if (confirmationCase) {
       const { hint, cause } = confirmationCase;
       const server = requiredFixture(child);
