@@ -6,6 +6,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { configureHostResources } from "../../main/host-resources.js";
 import { windowsPathKindHelperUnavailable } from "../../main/windows-path-kind-launcher.js";
 import { setWindowsDriveQueryForTest } from "../../shared/windows-drive-locality.js";
+import * as windowsPathFacts from "../../shared/windows-path-facts.js";
 import { inspectShellExecution } from "../../shared/shell-execution.js";
 import {
   admitObligations, consumeObligations, isIssuedObligation, ObligationRefusedError, requireEnforceable,
@@ -122,10 +123,23 @@ describe.runIf(process.platform === "win32")("admitObligations", () => {
     expect(set.admitted[0]?.target).toBe(join(root, "secrets"));
   });
 
-  it("propagates a failed drive query out of the judgment", () => {
+  it("refuses an unavailable drive query before pinning", () => {
     const failure = windowsPathKindHelperUnavailable("the Windows folder classifier did not answer");
-    setWindowsDriveQueryForTest(() => { throw failure; });
-    expect(() => admitObligations({ purpose: "sandbox-config", principal: "srt-sandbox", rows: [deny(String.raw`Q:\alice`)] })).toThrow(failure);
+    const query = vi.fn((_drive: string) => { throw failure; });
+    const pin = vi.spyOn(windowsPathFacts, "pinWindowsPaths");
+    setWindowsDriveQueryForTest(query);
+    try {
+      expect(() => admitObligations({ purpose: "sandbox-config", principal: "srt-sandbox", rows: [deny(String.raw`Q:\alice`)] }))
+        .toThrow(expect.objectContaining({
+          code: "ENETWORKSHAREPATH",
+          path: String.raw`\\?\GLOBALROOT\??\Q:`,
+          cause: expect.toSatisfy((cause: unknown) => cause === failure),
+        }));
+      expect(query.mock.calls).toEqual([["Q:"]]);
+      expect(pin).not.toHaveBeenCalled();
+    } finally {
+      pin.mockRestore();
+    }
     setWindowsDriveQueryForTest(() => { throw new TypeError("drive query contract"); });
     expect(() => admitObligations({ purpose: "sandbox-config", principal: "srt-sandbox", rows: [deny(String.raw`Q:\alice`)] })).toThrow("drive query contract");
   });
