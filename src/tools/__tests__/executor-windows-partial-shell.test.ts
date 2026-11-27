@@ -742,7 +742,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     const terminal = capture.events.find((entry) => entry.event === "permission_decision" && entry.decision === "allow");
     for (const surface of [ask, terminal]) {
       expect(surface).toBeDefined();
-      expect(surface?.toolUseId).toBe("partial-shell-allow");
+      expect(surface?.correlationId).toBe(permissionLogCorrelationId("partial-shell-allow"));
       expect(surface?.sandboxRoute).toBe("host");
     }
     const approvalAuditText = JSON.stringify(capture.events);
@@ -795,7 +795,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     expect(deniedResultPlanJson).not.toContain("hostShellExecutionPermit");
     for (const surface of [ask, terminal]) {
       expect(surface).toBeDefined();
-      expect(surface?.toolUseId).toBe("partial-shell-audit-deny");
+      expect(surface?.correlationId).toBe(permissionLogCorrelationId("partial-shell-audit-deny"));
       expect(surface?.sandboxRoute).toBe("host");
     }
     const approvalAuditText = JSON.stringify(capture.events);
