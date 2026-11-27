@@ -327,8 +327,9 @@ describe("prepareMxcShellLaunch", () => {
       launch.activate();
       expect(starts).toHaveLength(3);
       const ends = [...starts.slice(1), { pins: pin.mock.calls.length, queries: query.mock.calls.length }];
-      expect(starts.map(({ pins }, index) => ends[index]!.pins - pins)).toEqual([1, 1, 1]);
-      expect(starts.map(({ queries }, index) => query.mock.calls.slice(queries, ends[index]!.queries)
+      const endAt = (index: number) => { const end = ends[index]; if (!end) throw new Error("missing observation end"); return end; };
+      expect(starts.map(({ pins }, index) => endAt(index).pins - pins)).toEqual([1, 1, 1]);
+      expect(starts.map(({ queries }, index) => query.mock.calls.slice(queries, endAt(index).queries)
         .filter(([drive]) => drive === "C:").length)).toEqual([1, 1, 1]);
     } finally {
       h.observe = undefined;
