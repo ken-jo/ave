@@ -1552,20 +1552,30 @@ cancels the run and interrupts its live stage children.
 
 A stage with pinned output declarations can use `stage_request_output` to
 record a request for its human gate. The host matches the tool and its owner
-exactly, records canonical arguments, and hashes any listed workspace files.
+exactly, records canonical arguments, and hashes the workspace files identified
+by the tool's verified operands.
 The desktop gate shows the full request and binds it to a native keyboard
-receipt and two digests. The output digest is computed from the stored result
-and requests. It is never written to disk. Approval is recorded before the host
+receipt, the stage result digest and the output digest. The host computes the
+output digest from the stored stage result and requests and keeps the digest
+in memory. Approval is recorded before the host
 invokes the declared tool through ordinary tool governance. An interrupted
 execution is never replayed at startup. A user can retry a failed tool output
-under the same approval binding. The host rechecks listed file hashes and
-refuses upload requests and recognized file operands because the current
-external tool adapters cannot open files bound to the approval.
+under the same approval binding. A plugin call requires a signed operation
+policy with a complete file operand list, including an explicit empty list
+for an inline operation. At registration the host compares the discovered
+policy with the signed manifest.
+It checks the worker read boundary at intake and again before dispatch,
+including the user's configured read denies. The host copies only bytes
+that match the approved file hashes. It keeps the copy private until the
+governed handler may run, then makes it available in the owning plugin's
+confined temporary directory. File-backed calls are refused on platforms
+without a plugin-private temporary directory.
 
 A push request binds a configured remote's one resolved, sanitized push URL
-and the run ref's commit. For a local bare repository, it also binds its
-canonical path and filesystem identity and checks both again at launch.
-The host guards against configuration rewrites and suppresses inherited push
+and the run ref's commit. The host accepts HTTPS and SSH destinations and
+refuses local transports at intake and launch. The resolved URL and locked
+run ref must still match the approved URL and commit. The host checks configuration
+rewrites and effective URL-scoped HTTP settings, and suppresses inherited push
 options. It holds the run ref during transport and cancels transport if the
 lock process exits early. The push uses the approved commit as its source
 and the same-named run branch as its sole destination, without force or

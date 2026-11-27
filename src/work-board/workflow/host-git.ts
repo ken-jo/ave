@@ -43,18 +43,20 @@ const INHERITED_ENV = new Set([
   "HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "XDG_CONFIG_HOME", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM",
   "TEMP", "TMP", "TMPDIR", "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "LC_MESSAGES", "TZ",
 ]);
-const HTTPS_PUSH_CONFIG = {
+const HTTPS_PUSH_BOOLEAN_CONFIG = {
   "http.followredirects": "false",
+  "http.savecookies": "false",
+};
+const HTTPS_PUSH_CONFIG = {
   "http.extraheader": "",
   "http.cookiefile": "",
-  "http.savecookies": "false",
   "http.curloptresolve": "",
   "http.useragent": "",
 };
 const WORKFLOW_PUSH_CONFIG = [
   "core.askPass=", "credential.interactive=never", "push.followTags=false", "push.recurseSubmodules=no", "push.gpgSign=false",
   "push.pushOption=", "push.negotiate=false", "push.useForceIfIncludes=false", "submodule.recurse=false",
-  ...Object.entries(HTTPS_PUSH_CONFIG).map(([key, value]) => `${key}=${value}`),
+  ...Object.entries({ ...HTTPS_PUSH_CONFIG, ...HTTPS_PUSH_BOOLEAN_CONFIG }).map(([key, value]) => `${key}=${value}`),
   "gc.auto=0", "maintenance.auto=false", "protocol.ext.allow=never",
 ] as const;
 const WORKFLOW_PUSH = Symbol("workflow-push");
@@ -452,7 +454,8 @@ function withoutUrlSecrets(url: string): string {
 }
 
 function validatePushUrl(raw: string): { url: string } | { code: PushRemoteCode } {
-  if (/^file:/iu.test(raw) || /^(?:[a-z]:|[/\\])/iu.test(raw) || !/^[^:/\\]+:/u.test(raw)) {
+  if (/^file:/iu.test(raw) || (process.platform === "win32" && /^[a-z]:/iu.test(raw))
+    || /^[/\\]/u.test(raw) || !/^[^:/\\]+:/u.test(raw)) {
     return { code: "output-remote-local-unsupported" };
   }
   const url = withoutUrlSecrets(raw);
@@ -503,6 +506,11 @@ async function pushConfigMatches(git: HostGit, cwd: string, url: string, call: H
       return boundary !== -1 && REWRITE_KEY.test(record.slice(0, boundary)) && !url.startsWith(record.slice(boundary + 1));
     })) return false;
     if (!/^https:/iu.test(url)) return true;
+    for (const [key, value] of Object.entries(HTTPS_PUSH_BOOLEAN_CONFIG)) {
+      const effective = configRecords(await git.run(cwd,
+        ["config", "--includes", "--null", "--type=bool", "--get-urlmatch", key, url], call));
+      if (effective?.length !== 1 || effective[0] !== value) return false;
+    }
     const effective = configRecords(await git.run(cwd, ["config", "--includes", "--null", "--get-urlmatch", "http", url], call));
     const hardened = new Map(Object.entries(HTTPS_PUSH_CONFIG));
     if (!effective) return false;

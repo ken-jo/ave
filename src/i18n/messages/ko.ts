@@ -6846,6 +6846,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "reasonCodes.output-remote-local-unsupported": "요청된 푸시에는 HTTPS 또는 SSH 원격이 필요합니다.",
   "reasonCodes.output-operands-unverified": "이 도구는 요청된 출력에 필요한 검증된 파일 인자 정보를 제공하지 않습니다.",
   "reasonCodes.output-file-unbound": "이 도구는 워크플로에서 승인한 파일을 열 수 없습니다.",
+  "reasonCodes.output-file-read-denied": "읽기 정책에 따라 요청한 파일에 접근할 수 없습니다.",
   "reasonCodes.push-ref-changed": "푸시 실패: 실행 브랜치가 변경됨",
   "reasonCodes.push-url-unverified": "푸시 실패: 푸시 URL을 확인할 수 없음",
   "reasonCodes.push-url-changed": "푸시 실패: 원격 URL이 변경됨",

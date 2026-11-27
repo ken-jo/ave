@@ -4,6 +4,10 @@ import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { WebContents } from "electron";
+import { replaceStagedFile } from "../../lib/atomic-file.js";
+import {
+  appOwnedSandboxTempRoot, ensureSandboxPrivateRoot, ensureSandboxTempPrincipalDir, getUserReadDenies, protectedReadDenyMatcher,
+} from "../../permissions/asrt-sandbox.js";
 import { hasNonWhitespaceControlChars, hasInvisibleOrReorderingChars } from "../../shared/display-safe-text.js";
 import { maskSensitiveData } from "../../shared/dlp.js";
 import { hasOnlyKeys, isPlainRecord } from "../../shared/is-record.js";
@@ -18,7 +22,7 @@ import { copySeedFiles, hashSeedFile } from "./workspace-seed.js";
 
 export type OutputRefusal = "output-not-declared" | "remote-not-configured" | "too-many" | "args-too-large"
   | "file-outside-workspace" | "file-unreadable" | "needs-human-gate"
-  | "output-remote-local-unsupported" | "output-operands-unverified" | "output-file-unbound";
+  | "output-remote-local-unsupported" | "output-operands-unverified" | "output-file-unbound" | "output-file-read-denied";
 const MAX_REQUESTED_OUTPUTS = 10;
 const MAX_ARGS_BYTES = 32 * 1024;
 const MAX_OUTPUT_FILES = 5_000;
@@ -146,14 +150,14 @@ export function stageOutputIntake(hooks: RequestedOutputHooks, scope: Omit<Outpu
 }
 
 export type OutputOperands = { input: Record<string, unknown>; paths: readonly string[] }
-  | "output-operands-unverified" | "file-outside-workspace";
+  | "output-operands-unverified" | "file-outside-workspace" | "output-file-unbound" | "output-file-read-denied";
 
 export interface GovernedOutputAdapter {
   operands(decl: RequestedOutputDecl, args: Record<string, unknown>, workspace: string): OutputOperands;
   invoke(input: {
     output: RequestedOutput; args: Record<string, unknown>; root: string; workspace: string; surface: WebContents;
     recheck: () => Promise<boolean>;
-  }): Promise<OutputExecution["status"] | "output-operands-unverified">;
+  }): Promise<OutputExecution["status"] | Extract<OutputOperands, string>>;
 }
 
 export function createRequestedOutputHooks(git: HostGit, adapter: GovernedOutputAdapter): RequestedOutputHooks {
@@ -166,31 +170,61 @@ export function createRequestedOutputHooks(git: HostGit, adapter: GovernedOutput
       if (!canExecute()) return { id, status: "failed", detail: "output-execution-interrupted" };
       if (isWorkflowPush(decl)) return { id, ...await executeWorkflowPush(git, workspace.repository, run.runId, args, canExecute) };
       if (!approvalSurface || approvalSurface.isDestroyed()) return { id, status: "denied", detail: "user-keyboard-required" };
-      const root = await realpath(await mkdtemp(join(tmpdir(), "ave-output-")));
+      const paths = files?.map(file => file.path) ?? [];
+      const verifySources = () => {
+        const operands = adapter.operands(decl, args, workspace.root);
+        if (typeof operands === "string") return operands;
+        const bound = new Set(operands.paths);
+        if (bound.size !== paths.length || paths.some(path => !bound.has(path))) return "output-operands-unverified";
+      };
+      const refusal = verifySources();
+      if (refusal !== undefined) return { id, status: "failed", detail: refusal };
+      const parent = paths.length && decl.owner === "plugin"
+        ? ensureSandboxTempPrincipalDir({ kind: "plugin", id: decl.ownerId }).dir : tmpdir();
+      const root = await realpath(await mkdtemp(join(parent, "ave-output-")));
+      let staged: string | undefined;
       try {
-        const currentFilesMatch = async (directory: string) => {
-          if (!files?.length) return true;
-          try { return canonicalWorkflowJson(await outputFiles(directory, files.map(file => file.path))) === canonicalWorkflowJson(files); }
-          catch { return false; }
-        };
+        const target = holdDir(root);
         if (files?.length) {
           try {
+            staged = await realpath(await mkdtemp(join(ensureSandboxPrivateRoot(appOwnedSandboxTempRoot()), "ave-output-")));
             const source = holdDir(await realpath(workspace.root));
-            const copied = await copySeedFiles(source, holdDir(root), files.map(file => file.path),
+            const readRefusal = verifySources();
+            if (readRefusal !== undefined) return { id, status: "failed", detail: readRefusal };
+            const copied = await copySeedFiles(source, holdDir(staged), paths,
               new Map(files.map(file => [file.path, file.sha256])), false, MAX_OUTPUT_FILE_BYTES);
             if (canonicalWorkflowJson(copied) !== canonicalWorkflowJson(files)) return { id, status: "failed", detail: "output-file-changed" };
           } catch { return { id, status: "failed", detail: "output-file-changed" }; }
         }
-        let filesChanged = false;
+        let dispatchRefusal: Extract<OutputOperands, string> | "output-file-changed" | undefined;
         const recheck = async () => {
-          filesChanged = !await currentFilesMatch(root);
-          return !filesChanged && canExecute() && !approvalSurface.isDestroyed();
+          dispatchRefusal = verifySources();
+          if (dispatchRefusal !== undefined || !canExecute() || approvalSurface.isDestroyed()) return false;
+          if (staged !== undefined) {
+            const denied = protectedReadDenyMatcher(getUserReadDenies());
+            if (paths.some(path => denied(join(root, path)) !== undefined)) {
+              dispatchRefusal = "output-file-read-denied";
+              return false;
+            }
+            try {
+              // The staged bytes stay on the sandbox read floor until the executor allows this call.
+              replaceStagedFile(staged, root, undefined, () => target.check());
+              staged = undefined;
+            } catch {
+              dispatchRefusal = "output-file-changed";
+              return false;
+            }
+          }
+          return true;
         };
         const status = await adapter.invoke({ output, args, root, workspace: workspace.root, surface: approvalSurface, recheck });
-        if (filesChanged) return { id, status: "failed", detail: "output-file-changed" };
-        if (status === "output-operands-unverified") return { id, status: "failed", detail: status };
+        if (dispatchRefusal !== undefined) return { id, status: "failed", detail: dispatchRefusal };
+        if (status !== "done" && status !== "denied" && status !== "failed" && status !== "pending") {
+          return { id, status: "failed", detail: status };
+        }
         return { id, status, ...(status === "failed" ? { detail: "output-execution-failed" } : {}) };
       } finally {
+        if (staged !== undefined) await rm(staged, { recursive: true, force: true }).catch(() => undefined);
         await rm(root, { recursive: true, force: true }).catch(() => undefined);
       }
     },

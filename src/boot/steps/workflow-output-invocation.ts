@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { isAbsolute, join, relative, sep } from "node:path";
+import { verifiedPluginOperationOperands } from "../../mcp/plugin-mcp-host.js";
 import { updateApprovalSurface } from "../../permissions/approval-surface-registry.js";
+import {
+  getDefaultSensitiveReadDenyPaths, getUserReadDenies, protectedReadDenyMatcher,
+} from "../../permissions/asrt-sandbox.js";
 import { PATCH_ENVELOPE_PATH_FIELD_SUFFIX } from "../../shared/dotted-field-value.js";
 import { isPlainRecord } from "../../shared/is-record.js";
 import { canonicalWorkflowJson } from "../../shared/workflow-template-output.js";
@@ -12,10 +16,12 @@ import type { ToolRegistry } from "../../tools/registry.js";
 import { type GovernedOutputAdapter, type OutputOperands, relativeOutputFile } from "../../work-board/workflow/requested-outputs.js";
 
 function bindOperands(tool: Tool | undefined, args: Record<string, unknown>, workspace: string, snapshot?: string): OutputOperands {
-  if (!tool || tool.pathFields === undefined) return "output-operands-unverified";
+  if (!tool) return "output-operands-unverified";
+  const verified = tool.source === "builtin" ? tool.pathFields : verifiedPluginOperationOperands(tool, args.operation);
+  if (verified === undefined) return "output-operands-unverified";
   const input = withPathFieldDefaults(tool, structuredClone(args));
   const paths = new Set<string>();
-  const fields = new Set([...tool.pathFields, ...Object.keys(tool.pathFieldDefaults ?? {})]);
+  const fields = new Set([...verified, ...Object.keys(tool.pathFieldDefaults ?? {})]);
   for (const field of fields) {
     if (field.endsWith(PATCH_ENVELOPE_PATH_FIELD_SUFFIX)) return "output-operands-unverified";
     const segments = field.split(".");
@@ -42,6 +48,12 @@ function bindOperands(tool: Tool | undefined, args: Record<string, unknown>, wor
     }
     if (snapshot !== undefined) parent[key] = Array.isArray(value) ? mapped : mapped[0];
   }
+  if (paths.size > 0) {
+    // Use the worker wrap's floor with live user denies. This invocation has no read grant for a stage workspace.
+    const denied = protectedReadDenyMatcher([...getDefaultSensitiveReadDenyPaths(), ...getUserReadDenies()]);
+    if ([...paths].some(path => denied(join(workspace, path)) !== undefined)) return "output-file-read-denied";
+    if (process.platform === "win32") return "output-file-unbound";
+  }
   return { input, paths: [...paths] };
 }
 
@@ -60,7 +72,7 @@ export function governedWorkflowOutput(registry: ToolRegistry, executor: ToolExe
       const tool = resolveTool(decl);
       if (!tool) return "output-operands-unverified";
       const operands = bindOperands(tool, args, workspace, root);
-      if (typeof operands === "string") return "output-operands-unverified";
+      if (typeof operands === "string") return operands;
       const boundPaths = new Set(output.files?.map(file => file.path));
       if (boundPaths.size !== operands.paths.length || operands.paths.some(path => !boundPaths.has(path))) {
         return "output-operands-unverified";
@@ -76,8 +88,9 @@ export function governedWorkflowOutput(registry: ToolRegistry, executor: ToolExe
           sessionId,
           permissionContext: { trustOrigin: "agent-message", otherPrincipal: true },
           approvedInvocation: async (candidate, input) => {
-            if (dispatched || candidate !== tool || !await recheck()
-              || resolveTool(decl) !== tool || canonicalWorkflowJson(input) !== expectedInput) {
+            if (dispatched || candidate !== tool || resolveTool(decl) !== tool
+              || canonicalWorkflowJson(input) !== expectedInput || !await recheck()
+              || resolveTool(decl) !== tool) {
               bindingChanged = true;
               return false;
             }

@@ -120,6 +120,34 @@ it("allows an HTTP header scoped to another host or repository at intake and dis
   expect(push).toHaveBeenCalledOnce();
 });
 
+it("treats a single-letter remote alias as SSH on POSIX and as local on Windows", async () => {
+  const x = setup();
+  const url = "g:team/repo.git";
+  x.git("remote", "set-url", "origin", url);
+  if (process.platform === "win32") {
+    await expect(configuredWorkflowPush(x.real, x.repo, RUN_ID, { remote: "origin" }))
+      .resolves.toEqual({ code: "output-remote-local-unsupported" });
+  } else {
+    await expect(x.bind()).resolves.toMatchObject({ url });
+  }
+});
+
+it("uses the effective typed value of URL-scoped push booleans", async () => {
+  const x = setup();
+  const url = "https://example.test/team/repo.git";
+  x.git("remote", "set-url", "origin", url);
+  x.git("config", "http.https://example.test/.followRedirects", "no");
+  x.git("config", "http.https://example.test/.saveCookies", "0");
+  const push = vi.fn(async () => ({ code: 0, stdout: "", stderr: "" }));
+  const runner = wrap(x, (command, next) => command[0] === "push" ? push() : next());
+  const binding = await x.capture();
+  await expect(x.push(binding, runner)).resolves.toMatchObject({ status: "done" });
+  x.git("config", "http.https://example.test/.followRedirects", "yes");
+  await expect(x.bind()).resolves.toBeUndefined();
+  await expect(x.push(binding, runner)).resolves.toEqual({ status: "failed", detail: "push-url-unverified" });
+  expect(push).toHaveBeenCalledOnce();
+});
+
 it("refuses an HTTP header configured for the approved URL before starting the transport", async () => {
   const x = setup();
   const url = "https://example.test/repo";

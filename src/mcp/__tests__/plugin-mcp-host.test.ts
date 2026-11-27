@@ -1,6 +1,7 @@
 /** Verify natural-name plugin tool registration and delegated calls through the production loopback host. */
 import { afterEach, describe, it, expect, vi } from "vitest";
 import { LoopbackTransport } from "../loopback-transport.js";
+import { PluginMcpHost } from "../plugin-mcp-host.js";
 import { META_CLIENT_INFO, META_CLIENT_CAPABILITIES } from "../protocol-constants.js";
 import { getAveAppVersion } from "../../shared/app-version.js";
 import { ToolRegistry } from "../../tools/registry.js";
@@ -118,6 +119,20 @@ describe("PluginMcpHost — first-party loopback registration + round-trip", () 
 
     await expect(host.prepareTools()).rejects.toThrow(/differs from its signed manifest/);
     expect(registry.findByName("notes_read")).toBeUndefined();
+  });
+
+  it("fails preparation when the discovered operand list differs from the signed operation", async () => {
+    const [read, ...otherTools] = MANIFEST.tools;
+    const withOperands = (pathFields: string[]): PluginManifest => ({
+      ...MANIFEST,
+      tools: [{ ...read, _meta: { ...read._meta, "ai.agent-connector.ave/operationPolicy": {
+        discriminant: "operation", operations: { read: { kind: "read", minimumRisk: "read", pathFields } },
+      } } }, ...otherTools],
+    });
+    const host = PluginMcpHost.loopback(withOperands([]), async () => ({ content: [] }), undefined,
+      "signed-generation", withOperands(["path"]));
+
+    await expect(host.prepareTools()).rejects.toThrow(/differs from its signed manifest/);
   });
 
   it("accepts and registers an unchanged signed operation policy from the loopback wire", async () => {

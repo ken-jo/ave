@@ -203,6 +203,13 @@ export type GovernedRiskFloor = "read" | "write" | "network" | "shell";
 export interface PluginToolOperationRule {
   kind: "read" | "write";
   minimumRisk: GovernedRiskFloor;
+  /**
+   * Complete list of explicit file operands for this operation. Use an empty
+   * list for an inline-only operation. Operations with implicit file operands
+   * must omit this field and cannot be used as requested workflow outputs.
+   * @optional
+   */
+  pathFields?: string[];
   /** Permit this operation from an app only when the parent Tool is app-visible. @optional */
   appVisible?: boolean;
   /**

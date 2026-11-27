@@ -23,6 +23,7 @@ import {
   isCommittedPluginGenerationPublicationError,
 } from "./committed-generation-publication-error.js";
 import { readInstallReceiptText } from "./plugin-install-receipt.js";
+import { flattenAgentPluginsManifest } from "./public-contract.js";
 import {
   materializePluginContributions,
   materializePluginGenerationRoot,
@@ -671,7 +672,7 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
     const predecessorBeforePreparation = this.coordinator.getActive(pluginId);
     const activeBeforePreparation =
       predecessorBeforePreparation?.generationId === generationId;
-    const payloadRoot = await materializePluginGenerationRoot(
+    const { payloadRoot, receipt } = await materializePluginGenerationRoot(
       pluginRoot,
       this.deps.receiptCacheRoot,
       pluginId,
@@ -679,6 +680,7 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
       receiptRaw,
       runtime.installId ?? pluginId,
     );
+    const manifestSha256 = sha256Hex(manifestRaw);
     // Revoke preparation-written approvals if the candidate never publishes.
     const provisional: Array<() => void> = [];
     const revokeProvisional = (cleanupErrors: unknown[]) => {
@@ -700,7 +702,8 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
       try {
         const contributions =
           await materializePluginContributions(payloadRoot, manifest);
-        const digests = extensionComponentDigests(JSON.parse(manifestRaw) as unknown, await readPayloadFiles(payloadRoot));
+        const manifestDocument: unknown = JSON.parse(manifestRaw);
+        const digests = extensionComponentDigests(manifestDocument, await readPayloadFiles(payloadRoot));
         const digestsOf = (kind: "hook" | "mcpServer") =>
           new Map(digests.filter((item) => item.kind === kind).map((item) => [item.localId, item.approvalDigest]));
         const identity = {
@@ -708,8 +711,7 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
           pluginVersion: manifest.version,
           artifactGenerationId,
           generationId,
-          manifestSha256:
-            sha256Hex(manifestRaw),
+          manifestSha256,
           receiptSha256:
             sha256Hex(receiptRaw),
           contributions,
@@ -769,6 +771,9 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
             candidate.state.runtime.manifest,
             candidate.generationId,
             predecessorMcpServerIds,
+            receipt.installSource === "marketplace"
+              && receipt.files.some(file => file.path === "plugin.json" && file.sha256 === manifestSha256)
+              ? flattenAgentPluginsManifest(manifestDocument) : undefined,
           );
         // Recheck live runtime ownership under reservation before durable commit.
         const preparedRuntime =

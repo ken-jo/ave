@@ -21,6 +21,11 @@ import { awaitMcpTask, MCP_TASKS_EXTENSION } from "./task-protocol.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 
 const log = createLogger("plugin-mcp-host");
+const verifiedOperationOperands = new WeakMap<Tool, ReadonlyMap<string, readonly string[]>>();
+
+export function verifiedPluginOperationOperands(tool: Tool, operation: unknown): readonly string[] | undefined {
+  if (typeof operation === "string") return verifiedOperationOperands.get(tool)?.get(operation);
+}
 
 import {
   MCP_PROTOCOL_VERSION,
@@ -73,6 +78,7 @@ export class PluginMcpHost {
     private readonly transport: McpTransport,
     private readonly signedOperationPolicies: Record<string, PluginToolOperationPolicy> = {},
     private readonly generationId: string,
+    private readonly manifestSigned = false,
   ) {
     if (typeof generationId !== "string" || generationId.trim().length === 0) {
       throw new Error(`[plugin-mcp-host] immutable generation id is required for '${pluginId}'`);
@@ -84,18 +90,20 @@ export class PluginMcpHost {
     delegate: PluginToolDelegate,
     uiResources: PluginUiResourceProvider | undefined,
     generationId: string,
+    signedManifest?: PluginManifest,
   ): PluginMcpHost {
     const server = new PluginMcpServer(manifest, delegate, uiResources);
     return new PluginMcpHost(
       manifest.id,
       new LoopbackTransport(server),
       Object.fromEntries(
-        manifest.tools.flatMap((tool) => {
+        (signedManifest ?? manifest).tools.flatMap((tool) => {
           const policy = tool._meta?.["ai.agent-connector.ave/operationPolicy"];
-          return policy ? [[tool.name, policy] as const] : [];
+          return policy ? [[tool.name, structuredClone(policy)] as const] : [];
         }),
       ),
       generationId,
+      signedManifest !== undefined,
     );
   }
 
@@ -129,7 +137,8 @@ export class PluginMcpHost {
       const list = (await this.request("tools/list", {})) as { tools?: DiscoveredMcpTool[] };
       const tools: Tool[] = [];
       for (const tool of list.tools ?? []) {
-        const signedPolicy = this.signedOperationPolicies[tool.name];
+        const signedPolicy = Object.hasOwn(this.signedOperationPolicies, tool.name)
+          ? this.signedOperationPolicies[tool.name] : undefined;
         const wirePolicy = tool._meta?.["ai.agent-connector.ave/operationPolicy"];
         if (
           canonicalStringify(wirePolicy ?? null) !==
@@ -147,6 +156,11 @@ export class PluginMcpHost {
           signedPolicy,
           this.generationId,
         );
+        if (this.manifestSigned && signedPolicy) {
+          verifiedOperationOperands.set(registryTool, new Map(Object.entries(signedPolicy.operations)
+            .flatMap(([operation, { pathFields }]) =>
+              pathFields === undefined ? [] : [[operation, Object.freeze([...pathFields])] as const])));
+        }
 
         // Drop individually invalid provider schemas so one tool cannot break every turn.
         const violations = lintToolInputSchema(tool.inputSchema);

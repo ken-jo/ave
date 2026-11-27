@@ -6844,6 +6844,7 @@ export const en = {
   "reasonCodes.output-remote-local-unsupported": "Requested pushes require an HTTPS or SSH remote.",
   "reasonCodes.output-operands-unverified": "This tool does not provide verified file operand metadata for requested outputs.",
   "reasonCodes.output-file-unbound": "This tool cannot open the approved file through the workflow.",
+  "reasonCodes.output-file-read-denied": "The read policy blocks a requested file.",
   "reasonCodes.push-ref-changed": "push failed: run branch changed",
   "reasonCodes.push-url-unverified": "push failed: push URL could not be verified",
   "reasonCodes.push-url-changed": "push failed: remote URL changed",

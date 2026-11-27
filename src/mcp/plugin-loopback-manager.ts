@@ -48,6 +48,7 @@ export class PluginLoopbackManager {
     manifest: PluginManifest,
     generationId: string,
     predecessorMcpServerIds: readonly string[] = [],
+    signedManifest?: PluginManifest,
   ): Promise<PreparedPluginLoopbackGeneration> {
     const uiResources = this.buildUiResourceProvider(manifest, generationId);
     const declaredUiUris = new Set(uiResources?.list().map((resource) => resource.uri) ?? []);
@@ -56,6 +57,7 @@ export class PluginLoopbackManager {
       pluginRuntimeToolDelegate(this.runtime, manifest.id, declaredUiUris, generationId),
       uiResources,
       generationId,
+      signedManifest,
     );
     try {
       const tools = await host.prepareTools();

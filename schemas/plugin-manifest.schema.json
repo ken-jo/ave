@@ -1388,6 +1388,18 @@
         }
       }
     },
+    "toolPathFields": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*$",
+        "not": {
+          "pattern": "[\\r\\n]"
+        }
+      }
+    },
     "pluginToolOperationPolicy": {
       "type": "object",
       "additionalProperties": false,
@@ -1432,6 +1444,9 @@
         },
         "appVisible": {
           "type": "boolean"
+        },
+        "pathFields": {
+          "$ref": "#/definitions/toolPathFields"
         },
         "successfulResultStatuses": {
           "type": "array",
@@ -1594,16 +1609,7 @@
               }
             },
             "ai.agent-connector.ave/pathFields": {
-              "type": "array",
-              "uniqueItems": true,
-              "items": {
-                "type": "string",
-                "minLength": 1,
-                "pattern": "^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*$",
-                "not": {
-                  "pattern": "[\\r\\n]"
-                }
-              }
+              "$ref": "#/definitions/toolPathFields"
             },
             "ai.agent-connector.ave/operationPolicy": {
               "$ref": "#/definitions/pluginToolOperationPolicy"
