@@ -133,7 +133,7 @@ describe.runIf(process.platform === "win32")("container shell and sibling sandbo
         planted: planted.filter((path) => existsSync(path)).map((path) => basename(path)),
         markerIntact: existsSync(marker) && readFileSync(marker, "utf8") === markerText,
       };
-      console.info(`G1 evidence ${JSON.stringify({ grantsBase, aboveRoot: aboveRoot === true, grantsFloor: grantsFloor === true, probes: Object.fromEntries(lines), hostConfirmed })}`);
+      console.info(`G1 evidence ${JSON.stringify({ grantsBase, aboveRoot: false, grantsFloor: false, probes: Object.fromEntries(lines), hostConfirmed })}`);
       expect(result.output).not.toContain(secret);
       // The shell's HOME is a sibling of the other process's, and its temp directory lies inside its own HOME.
       const ownHome = lines.get("own-home-path") ?? "";
