@@ -1,4 +1,5 @@
 import { beforeAll, describe, expect, it, vi } from "vitest";
+import type { ChildProcess } from "node:child_process";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -18,8 +19,14 @@ import { UnavailableRationaleScopeReviewer } from "../../../permissions/reviewer
 import { UnavailableApprovalSentenceSelector } from "../../../permissions/reviewer/approval-sentence-selector.js";
 import type { WireReviewerResult } from "../reviewer-wiring.js";
 import { claimFakeRuntimeDirectories, createSubscriptionRuntimeNamespace } from "../../../__tests__/support/subscription-runtime-namespace.js";
+import { RuntimeProcessFixture } from "../../../main/__tests__/support/runtime-process.js";
+import { codexExecutableArtifactFixture, normalizeFixtureAncestorPermissions } from "../../../__tests__/support/native-executable.js";
+import { createPrivateDirectory } from "../../../main/codex-executable-location.js";
 import { CodexAppServerClient } from "../../../main/codex-app-server-client.js";
 import { claudeCodeSubscriptionStatus } from "../../../shared/claude-code-subscription.js";
+
+vi.mock("node:child_process", async (importOriginal) =>
+  (await import("../../../__tests__/support/native-executable.js")).fakeFixtureAcl(await importOriginal()));
 
 beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 
@@ -182,7 +189,7 @@ describe("wireReviewerAndPermissions subscription runtime", () => {
   });
 });
 
-it.each(["live disconnect", "model discovery account probe failure"] as const)("invalidates a cached windowless reviewer verdict on %s and restores the saved route", async (scenario) => {
+it.each(["live disconnect", "model discovery account probe failure", "sign-out during catalog", "process exit during catalog"] as const)("invalidates a cached windowless reviewer verdict on %s and restores the saved route", async (scenario) => {
   const tempDir = mkdtempSync(join(tmpdir(), "windowless-reviewer-"));
   vi.resetModules();
   const resources = await import("../../../main/host-resources.js");
@@ -214,11 +221,42 @@ it.each(["live disconnect", "model discovery account probe failure"] as const)("
     getStatus: getAccountStatus, listModels: CodexAppServerClient.prototype.listModels,
     request, stop: vi.fn(),
   };
+  const holdsCatalog = scenario === "sign-out during catalog" || scenario === "process exit during catalog";
+  const catalogStarted = deferred<number>();
+  let child: RuntimeProcessFixture | undefined;
+  let accountConnected = true;
+  let runtimeHome = tempDir;
+  if (holdsCatalog) {
+    if (process.platform !== "win32") normalizeFixtureAncestorPermissions(tempDir);
+    runtimeHome = join(tempDir, "runtime");
+    await createPrivateDirectory(runtimeHome);
+  }
+  const artifact = holdsCatalog ? await codexExecutableArtifactFixture(runtimeHome) : undefined;
   const runtime = await SubscriptionRuntimeService.create(async () => {}, {
     namespace: createSubscriptionRuntimeNamespace(),
     claimRuntimeDirectories: claimFakeRuntimeDirectories,
     claudeCodeClient: { getStatus: async () => status, stop: vi.fn() } as never,
-    codexClient: accountClient as never,
+    ...(artifact ? {
+      createCodexAppServerClient: (options) => new CodexAppServerClient({
+        ...options, runtimeHome, sqliteHome: runtimeHome, workspaceDir: runtimeHome, runtimeTempDir: runtimeHome,
+        resolveRuntime: async () => ({ ...artifact, version: "0.153.4" }),
+        spawn: () => {
+          const server = new RuntimeProcessFixture();
+          child = server;
+          server.stdin.on("data", (chunk) => {
+            for (const line of String(chunk).trim().split("\n")) {
+              const { method, id } = JSON.parse(line);
+              if (method === "model/list") catalogStarted.resolve(id);
+              else if (id !== undefined) server.stdout.write(`${JSON.stringify({
+                id, result: method === "account/read" && accountConnected
+                  ? { account: { type: "chatgpt", planType: "plus" } } : {},
+              })}\n`);
+            }
+          });
+          return server as unknown as ChildProcess;
+        },
+      }),
+    } : { codexClient: accountClient as never }),
     createCodexConversationRuntime: () => ({ verifyIsolation: async () => {}, stop: vi.fn() }) as never,
     acpRegistry: { stopAll: vi.fn() } as never,
   });
@@ -269,6 +307,26 @@ it.each(["live disconnect", "model discovery account probe failure"] as const)("
     });
     if (provider === "codex") {
       await runtime.verify(provider);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    const wiringsBeforeDisconnect = subscriptionProviderFactory.mock.calls.length;
+    if (holdsCatalog) {
+      const session = runtime.openTextSession(selection);
+      const outcome = session.then(async (opened) => { await opened.stop(); return "opened"; }, () => "rejected");
+      const requestId = await catalogStarted.promise;
+      const server = requiredFixture(child);
+      accountConnected = false;
+      if (scenario === "sign-out during catalog") {
+        server.stdout.write(`${JSON.stringify({ method: "account/updated", params: { authMode: null } })}\n`);
+        server.stdout.write(`${JSON.stringify({ id: requestId, result: { data: [{ id: "fixture-model" }] } })}\n`);
+      } else {
+        server.emit("exit", 1, null);
+      }
+      const invalidatedWhileHeld = immediate !== undefined;
+      const sessionOutcome = await outcome;
+      expect(invalidatedWhileHeld).toBe(true);
+      expect(sessionOutcome).toBe("rejected");
+    } else if (provider === "codex") {
       const catalogError = new Error("Catalog unavailable");
       request.mockRejectedValueOnce(catalogError);
       await expect(runtime.openTextSession(selection)).rejects.toThrow();
@@ -288,10 +346,11 @@ it.each(["live disconnect", "model discovery account probe failure"] as const)("
     expect(streamTurn).toHaveBeenCalledOnce();
 
     status = connected;
+    accountConnected = true;
     await runtime.getStatus(selection.provider);
     await vi.waitFor(() => expect(wired.at(-1)?.runtimeMode).toBe("llm"));
     expect((await dispatch(true)).result.decision).toBe("allow");
-    expect(subscriptionProviderFactory.mock.calls).toEqual([[selection], [selection]]);
+    expect(subscriptionProviderFactory.mock.calls.slice(wiringsBeforeDisconnect)).toEqual([[selection]]);
     expect(context.settingsService.getSecret).not.toHaveBeenCalled();
   } finally {
     dispose?.();
@@ -305,7 +364,10 @@ it.each(["live disconnect", "model discovery account probe failure"] as const)("
   }
 });
 
-it.each([true, false])("projects the winning focus observation for held settings and reviewer reads (connected=%s)", async (connected) => {
+it.each(["reconnect", "disconnect", "verification", "logout during verification"] as const)(
+  "projects the accepted observation for held settings and reviewer reads during %s", async (scenario) => {
+  const connected = scenario === "reconnect" || scenario === "verification";
+  const verifying = scenario === "verification" || scenario === "logout during verification";
   const tempDir = mkdtempSync(join(tmpdir(), "reviewer-focus-"));
   vi.resetModules();
   const resources = await import("../../../main/host-resources.js");
@@ -316,14 +378,19 @@ it.each([true, false])("projects the winning focus observation for held settings
   vi.doMock("../reviewer-wiring.js", async importOriginal => ({
     ...await importOriginal<typeof import("../reviewer-wiring.js")>(), wireReviewerAgent,
   }));
-  const { SubscriptionRuntimeService } = await import("../../../main/subscription-runtime-service.js");
+  const { SubscriptionRuntimeService, onSubscriptionRuntimeStatusChanged } = await import("../../../main/subscription-runtime-service.js");
   const ready = claudeCodeSubscriptionStatus("ready", "connected", "fixture");
   const signedOut = claudeCodeSubscriptionStatus("unverified", "signed-out", "fixture");
   const getStatus = vi.fn(async () => ready);
+  const isolationStarted = deferred<void>();
+  const isolation = deferred<typeof ready>();
   const runtime = await SubscriptionRuntimeService.create(async () => {}, {
     namespace: createSubscriptionRuntimeNamespace(),
     claimRuntimeDirectories: claimFakeRuntimeDirectories,
-    claudeCodeClient: { getStatus, stop: vi.fn() } as never,
+    claudeCodeClient: {
+      getStatus, stop: vi.fn(), logout: async () => signedOut,
+      verify: () => { isolationStarted.resolve(); return isolation.promise; },
+    } as never,
     codexClient: { stop: vi.fn() } as never,
     acpRegistry: { stopAll: vi.fn() } as never,
   });
@@ -334,6 +401,9 @@ it.each([true, false])("projects the winning focus observation for held settings
   const clock = vi.spyOn(Date, "now");
   let dispose: (() => void) | undefined;
   const held = deferred<typeof ready>();
+  const changed = vi.fn();
+  const stopListening = onSubscriptionRuntimeStatusChanged(changed);
+  let verification: ReturnType<typeof runtime.verify> | undefined;
   try {
     const { createSubscriptionChatLoopBindings } = await import("../conversation-wiring.js");
     const { rendererSettingsSnapshot } = await import("../../../ipc/domains/settings.js");
@@ -376,7 +446,16 @@ it.each([true, false])("projects the winning focus observation for held settings
     await projectionStarted.promise;
     const rewire = requiredFixture(context.rewireReviewerAgent)();
     await reviewerStarted.promise;
-    await runtime.getStatus(selection.provider);
+    verification = verifying ? runtime.verify(selection.provider) : undefined;
+    const superseded = scenario === "logout during verification"
+      ? expect(verification).rejects.toMatchObject({ code: "subscription-status-superseded" })
+      : undefined;
+    if (verification) {
+      await isolationStarted.promise;
+      if (superseded) await runtime.logout(selection.provider);
+    } else {
+      await runtime.getStatus(selection.provider);
+    }
     held.resolve(ready);
     await rewire;
     const expectedModel = connected ? selection : { kind: "none", reason: "no-connected-provider" };
@@ -384,8 +463,17 @@ it.each([true, false])("projects the winning focus observation for held settings
       model: (await snapshot).activeChatModel,
       reviewerAvailable: reviewerProvider() === provider,
     }).toEqual({ model: expectedModel, reviewerAvailable: connected });
+    isolation.resolve(ready);
+    if (superseded) await superseded;
+    else if (verification) {
+      await expect(verification).resolves.toMatchObject({ capabilities: { chat: true } });
+      expect(changed).toHaveBeenCalledWith(selection.provider, true);
+    }
   } finally {
+    stopListening();
+    isolation.resolve(ready);
     held.resolve(ready);
+    await verification?.catch(() => undefined);
     dispose?.();
     clock.mockRestore();
     await reviewer.cache.flush();

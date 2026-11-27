@@ -467,7 +467,6 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
   ): Promise<void> => {
     const active = settingsService.get("llm").activeChatRuntime;
     if (active?.kind !== "subscription" || active.provider !== provider) return;
-    if (observedSubscriptionConnection?.provider === provider && observedSubscriptionConnection.connected === connected) return;
     const observation = { provider, connected };
     observedSubscriptionConnection = observation;
     await broadcastSettingsSnapshot({ ...deps, isSubscriptionConnected: (candidate) => candidate === provider

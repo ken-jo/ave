@@ -119,7 +119,7 @@ describe("SubscriptionRuntimeService settings read cache", () => {
     }
   });
 
-  it("rejects a held ready read that began before logout and ended after it", async () => {
+  it("returns signed out for a held ready read that completes after logout", async () => {
     const { client, setStatus } = claudeClient();
     const logoutGate = deferred<void>();
     const readGate = deferred<void>();
@@ -141,7 +141,7 @@ describe("SubscriptionRuntimeService settings read cache", () => {
       logoutGate.resolve();
       await logout;
       readGate.resolve();
-      await expect(read).rejects.toMatchObject({ code: "subscription-status-superseded" });
+      await expect(read).resolves.toMatchObject({ connection: "signed-out", capabilities: { chat: false } });
       expect((await runtime.getStatus("claude-code", { allowCached: true })).connection).toBe("signed-out");
     } finally {
       await runtime.stop();
@@ -155,6 +155,7 @@ describe("SubscriptionRuntimeService settings read cache", () => {
     const unsubscribe = onSubscriptionRuntimeStatusChanged(changed);
     try {
       await runtime.verify("claude-code");
+      changed.mockClear();
       const disconnected = deferred<ClaudeCodeSubscriptionStatus>();
       const reconnected = deferred<ClaudeCodeSubscriptionStatus>();
       client.getStatus.mockImplementationOnce(() => disconnected.promise).mockImplementationOnce(() => reconnected.promise);
@@ -166,7 +167,7 @@ describe("SubscriptionRuntimeService settings read cache", () => {
         reconnected.resolve(signedIn);
         await expect(later).resolves.toMatchObject({ connection: "connected" });
         disconnected.resolve(signedOut);
-        await expect(earlier).rejects.toMatchObject({ code: "subscription-status-superseded" });
+        await expect(earlier).resolves.toMatchObject({ connection: "connected", version: "2.2.0" });
         expect(changed).not.toHaveBeenCalled();
       } else {
         disconnected.resolve(signedOut);
@@ -184,7 +185,7 @@ describe("SubscriptionRuntimeService settings read cache", () => {
     }
   });
 
-  it("rejects an earlier ready sample after a later disconnect reaches admission", async () => {
+  it("returns the winning disconnect for an earlier ready sample", async () => {
     const { client, setStatus } = claudeClient();
     const runtime = await service({ claude: client });
     try {
@@ -195,7 +196,7 @@ describe("SubscriptionRuntimeService settings read cache", () => {
       setStatus(claudeCodeSubscriptionStatus("unverified", "signed-out", "2.1.0"));
       await expect(runtime.getStatus("claude-code")).resolves.toMatchObject({ connection: "signed-out" });
       held.resolve(claudeCodeSubscriptionStatus("ready", "connected", "2.1.0"));
-      await expect(earlier).rejects.toMatchObject({ code: "subscription-status-superseded" });
+      await expect(earlier).resolves.toMatchObject({ connection: "signed-out", capabilities: { chat: false } });
     } finally {
       await runtime.stop();
     }
@@ -208,6 +209,7 @@ describe("SubscriptionRuntimeService settings read cache", () => {
     const unsubscribe = onSubscriptionRuntimeStatusChanged(changed);
     try {
       await runtime.verify("claude-code");
+      changed.mockClear();
       client.getStatus.mockRejectedValueOnce(new Error("Probe failed"));
       await expect(runtime.getStatus("claude-code")).rejects.toMatchObject({ code: "subscription-operation-failed" });
       expect(changed.mock.calls).toEqual([["claude-code", false]]);
@@ -231,6 +233,7 @@ describe("SubscriptionRuntimeService settings read cache", () => {
     const unsubscribe = onSubscriptionRuntimeStatusChanged(changed);
     try {
       await runtime.verify("claude-code");
+      changed.mockClear();
       const held = deferred<void>();
       client.getStatus.mockImplementationOnce(async () => {
         await held.promise;
@@ -239,7 +242,7 @@ describe("SubscriptionRuntimeService settings read cache", () => {
       const earlier = runtime.getStatus("claude-code");
       await expect(runtime.getStatus("claude-code")).resolves.toMatchObject({ capabilities: { chat: true } });
       held.resolve();
-      await expect(earlier).rejects.toMatchObject({ code: "subscription-status-superseded" });
+      await expect(earlier).resolves.toMatchObject({ connection: "connected", capabilities: { chat: true } });
       expect(changed).not.toHaveBeenCalled();
       await expect(runtime.getStatus("claude-code", { allowCached: true })).resolves.toMatchObject({
         capabilities: { chat: true },
@@ -320,7 +323,7 @@ describe("SubscriptionRuntimeService settings read cache", () => {
       const stale = runtime.getStatus("claude-code", { allowCached: true });
       await runtime.verify("claude-code");
       pending.resolve(claudeCodeSubscriptionStatus("ready", "connected", "2.0.0"));
-      await expect(stale).rejects.toMatchObject({ code: "subscription-status-superseded" });
+      await expect(stale).resolves.toMatchObject({ version: "2.1.0", capabilities: { chat: true } });
       expect((await runtime.getStatus("claude-code", { allowCached: true })).version).toBe("2.1.0");
     } finally {
       await runtime.stop();

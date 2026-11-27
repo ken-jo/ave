@@ -138,6 +138,7 @@ function runtimeResolutionError(error: unknown): CodexAppServerError {
 // Main-process adapter for the stable App Server account APIs. The server owns browser callbacks, credential persistence, and token refresh. This client
 // intentionally never reads Codex auth files or token values.
 export class CodexAppServerClient {
+  onAccountChanged?: (status: CodexSubscriptionStatus, revision: number) => void;
   private readonly onPlanUsage: CodexAppServerClientOptions["onPlanUsage"];
   private readonly openAuthorizationUrl: OpenOAuthLogin;
   private readonly resolveRuntime: () => Promise<CodexResolvedRuntime>;
@@ -153,7 +154,7 @@ export class CodexAppServerClient {
   private readonly pendingRequests = new JsonRpcPendingRequests();
   private transportReader: JsonLineReader | null = null;
   private accountStatus: CodexSubscriptionStatus = blankStatus("ready");
-  private accountRevision = 0;
+  private accountRevisionValue = 0;
   private planUsageGeneration = 0;
   private planUsageRead: { readonly generation: number; readonly promise: Promise<void> } | null = null;
   private pendingLogin: PendingLogin | null = null;
@@ -174,6 +175,10 @@ export class CodexAppServerClient {
     this.runtimeTempDir = options.runtimeTempDir ?? options.runtimeHome;
   }
 
+  get accountRevision(): number {
+    return this.accountRevisionValue;
+  }
+
   async getStatus(refreshPlanUsage = true): Promise<CodexSubscriptionStatus> {
     try {
       await this.ensureStarted();
@@ -184,9 +189,9 @@ export class CodexAppServerClient {
       }
       throw error;
     }
-    const accountRevision = this.accountRevision;
+    const accountRevision = this.accountRevisionValue;
     const result = await this.request("account/read", { refreshToken: false });
-    if (accountRevision !== this.accountRevision) throw new CodexAppServerError("codex-operation-failed");
+    if (accountRevision !== this.accountRevisionValue) throw new CodexAppServerError("codex-operation-failed");
     this.accountStatus = this.projectAccountStatus(result);
     if (this.accountStatus.connection === "connected") {
       this.pendingLogin?.window.finish();
@@ -293,6 +298,7 @@ export class CodexAppServerClient {
       this.completedLoginError = null;
       await this.request("account/logout");
       this.accountStatus = blankStatus("ready");
+      this.publishAccountChange();
       return this.currentStatus();
     });
   }
@@ -592,7 +598,6 @@ export class CodexAppServerClient {
       return;
     }
     if (method === "account/updated" && payload) {
-      this.accountRevision += 1;
       this.invalidatePlanUsage();
       if (payload.authMode === "chatgpt") {
         this.pendingLogin?.window.finish();
@@ -611,6 +616,7 @@ export class CodexAppServerClient {
         this.pendingLogin = null;
         this.accountStatus = blankStatus("ready");
       }
+      this.publishAccountChange();
       return;
     }
     if (method === "account/login/completed" && payload) {
@@ -660,6 +666,11 @@ export class CodexAppServerClient {
     this.publishPlanUsage(null);
   }
 
+  private publishAccountChange(): void {
+    this.accountRevisionValue += 1;
+    this.onAccountChanged?.(this.currentStatus(), this.accountRevisionValue);
+  }
+
   private abortTransport(
     error: CodexAppServerError,
     expectedChild?: ChildProcess,
@@ -681,6 +692,7 @@ export class CodexAppServerClient {
     expectedChild?: ChildProcess | null,
   ): void {
     if (expectedChild && this.child !== expectedChild) return;
+    const hadTransport = this.child !== null;
     this.invalidatePlanUsage();
     this.child = null;
     this.transportReader?.close();
@@ -690,6 +702,7 @@ export class CodexAppServerClient {
     this.pendingLogin = null;
     this.accountStatus = blankStatus("ready");
     this.completedLoginError = null;
+    if (hadTransport) this.publishAccountChange();
     this.pendingRequests.rejectAll(error);
   }
 

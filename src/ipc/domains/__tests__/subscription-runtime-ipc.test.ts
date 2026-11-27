@@ -495,6 +495,8 @@ describe("common subscription runtime IPC", () => {
       const initial = await invoke("ave:settings:get");
       const selected = { kind: "subscription", provider: selection.provider, model: selection.model };
       expect(initial).toMatchObject({ activeChatModel: selected });
+      await vi.waitFor(() => expect(send).toHaveBeenCalledWith(SETTINGS.updated, expect.objectContaining({ activeChatModel: selected })));
+      send.mockClear();
       const held = deferred<CodexSubscriptionStatus>();
       getStatus.mockImplementationOnce(() => held.promise);
       const earlierSampleCount = getStatus.mock.calls.length;
@@ -506,7 +508,7 @@ describe("common subscription runtime IPC", () => {
         activeChatModel: { kind: "none", reason: "no-connected-provider" },
       })));
       held.resolve(connected);
-      await expect(older).resolves.toEqual({ ok: false, error: "subscription-status-superseded" });
+      await expect(older).resolves.toMatchObject({ ok: true, status: { connection: "signed-out", capabilities: { chat: false } } });
       expect(await isSubscriptionConnected()).toBe(false);
 
       status = connected;

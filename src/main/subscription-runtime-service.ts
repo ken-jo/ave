@@ -1080,7 +1080,14 @@ type SubscriptionRuntimeCatalog = {
 };
 
 type CachedRead<T> = { readonly value: T; readonly expiresAt: number };
-type VerificationSample = { proven: boolean; project: (current: boolean) => SubscriptionRuntimeStatus };
+type ConnectionOrder = { readonly accountRevision: number; readonly serviceRevision: number };
+type ConnectionObservation = {
+  readonly order: ConnectionOrder;
+  readonly status: SubscriptionRuntimeStatus;
+  readonly probeFailed: boolean;
+};
+
+type VerificationSample = { proven: boolean; project: () => SubscriptionRuntimeStatus };
 
 function isSettledStatus(status: SubscriptionRuntimeStatus): boolean {
   return status.connection !== "pending" && status.pendingLogin === null;
@@ -1098,13 +1105,7 @@ export class SubscriptionRuntimeService {
   private readonly readGenerationByProvider = new Map<SubscriptionRuntimeId, number>();
   private readonly authChangeRevisionByProvider = new Map<SubscriptionRuntimeId, number>();
   private readonly mutationsInFlight = new Map<SubscriptionRuntimeId, number>();
-  private readonly observedConnections = new Map<SubscriptionRuntimeId, {
-    connected: boolean;
-    revision: number;
-    probeFailed: boolean;
-    version: string | null | undefined;
-    accountIdentity: string | undefined;
-  }>();
+  private readonly observedConnections = new Map<SubscriptionRuntimeId, ConnectionObservation>();
   private readonly accountIdentities = new WeakMap<object, string>();
   private statusReadRevision = 0;
   // Terminal per-instance guard for callers that retained a service reference during shutdown.
@@ -1125,7 +1126,9 @@ export class SubscriptionRuntimeService {
     ) => ClaudeCodeConversationRuntime,
     private readonly audit?: SubscriptionRuntimeAuditSink,
     private readonly chatGptPlan: ChatGptPlanRuntime | null = null,
-  ) {}
+  ) {
+    this.codexClient.onAccountChanged = (status, revision) => this.recordAccountChange(status, revision);
+  }
 
   static async create(
     openAuthorizationUrl: SubscriptionOpenAuthorizationUrl,
@@ -1238,7 +1241,7 @@ export class SubscriptionRuntimeService {
       if (runtimeId === "codex") {
         const refreshPlanUsage = options.allowCached !== true || !this.planUsage.get("codex");
         const status = await this.codexClient.getStatus(refreshPlanUsage);
-        return () => this.projectCodexRead(status);
+        return () => this.projectCodexStatus(status);
       }
       if (runtimeId === "chatgpt-plan") {
         const status = await this.chatGptPlanStatus();
@@ -1250,20 +1253,11 @@ export class SubscriptionRuntimeService {
       }
       const status = await this.acpRegistry.getStatus(runtimeId);
       return () => this.projectAcpStatus(status);
-    }, (status) => status, true));
+    }, (status) => status, (_, status) => status, true, () => this.latestStatus(runtimeId)));
   }
 
   async isConnected(runtimeId: SubscriptionRuntimeId): Promise<boolean> {
-    try {
-      return (await this.getStatus(runtimeId, { allowCached: true })).connection === "connected";
-    } catch (error) {
-      if (!(error instanceof SubscriptionRuntimeServiceError) || error.code !== "subscription-status-superseded") throw error;
-      this.assertRunning();
-      const latest = this.observedConnections.get(runtimeId);
-      return !this.mutationsInFlight.has(runtimeId)
-        && latest?.connected === true
-        && latest.revision >= (this.authChangeRevisionByProvider.get(runtimeId) ?? 0);
-    }
+    return (await this.getStatus(runtimeId, { allowCached: true })).connection === "connected";
   }
 
   /** Drop settled reads kept for settings surfaces, e.g. after a settings change for this provider. */
@@ -1282,11 +1276,14 @@ export class SubscriptionRuntimeService {
     if (runtimeId === "chatgpt-plan" && !probeFailed) return this.chatGptPlanStatus();
     if (isClaudeCodeSubscriptionProviderId(runtimeId)) {
       // A projection only: an error response must not also revoke a proof.
-      status = this.claudeCodeStatusProjection(this.claudeCodeClient.getCachedStatus());
+      status = this.projectClaudeCodeStatus(this.claudeCodeClient.getCachedStatus());
     } else if (runtimeId === "codex") {
-      status = this.projectCodexStatus(this.codexClient.getCachedStatus(), false);
+      status = this.projectCodexStatus(this.codexClient.getCachedStatus());
     }
-    if (!probeFailed) return status;
+    return probeFailed ? this.failedProbeStatus(runtimeId, status?.version) : status;
+  }
+
+  private failedProbeStatus(runtimeId: SubscriptionRuntimeId, version?: string | null): SubscriptionRuntimeStatus {
     return {
       provider: runtimeId,
       runtime: "unavailable",
@@ -1295,7 +1292,7 @@ export class SubscriptionRuntimeService {
       pendingLogin: null,
       pendingDeviceCode: null,
       canOpenVerificationUrl: false,
-      version: status?.version ?? null,
+      version: version ?? null,
       capabilities: DEFAULT_SUBSCRIPTION_RUNTIME_CAPABILITIES,
     };
   }
@@ -1324,9 +1321,9 @@ export class SubscriptionRuntimeService {
   // Authenticate, then prove the provider's isolated governed transport is safe to use.
   async verify(runtimeId: SubscriptionRuntimeId): Promise<SubscriptionRuntimeStatus> {
     this.assertRunning();
-    const revision = ++this.statusReadRevision;
-    this.assertCurrentObservation(runtimeId, revision);
-    this.authChangeRevisionByProvider.set(runtimeId, revision);
+    const order = this.nextConnectionOrder(runtimeId);
+    if (this.mutationsInFlight.has(runtimeId)) throw new SubscriptionRuntimeServiceError("subscription-status-superseded");
+    this.authChangeRevisionByProvider.set(runtimeId, order.serviceRevision);
     const verificationEpoch = this.invalidateSafety(runtimeId);
     const assertCurrent = () => {
       this.assertRunning();
@@ -1338,32 +1335,18 @@ export class SubscriptionRuntimeService {
     assertCurrent();
     const sample = await this.verifyRuntime(runtimeId, assertCurrent).catch((error) => {
       assertCurrent();
-      this.assertCurrentObservation(runtimeId, revision);
-      this.recordFailedProbe(runtimeId, revision);
+      if (!this.acceptObservation(runtimeId, order, () => this.failedProbeStatus(runtimeId), { probeFailed: true })) {
+        throw new SubscriptionRuntimeServiceError("subscription-status-superseded");
+      }
       throw error;
     });
     assertCurrent();
-    const latest = this.observedConnections.get(runtimeId);
-    const superseded = latest !== undefined && latest.revision > revision;
-    if (superseded) {
-      const candidate = sample.project(false);
-      if (!sample.proven || !latest.connected || candidate.version !== latest.version
-        || this.accountIdentities.get(candidate) !== latest.accountIdentity) {
-        throw new SubscriptionRuntimeServiceError("subscription-status-superseded");
-      }
+    const accepted = this.acceptObservation(runtimeId, order, () => sample.project(), { verification: sample });
+    if (!accepted) throw new SubscriptionRuntimeServiceError("subscription-status-superseded");
+    if (runtimeId !== "chatgpt-plan" && isSettledStatus(accepted.status)) {
+      this.cachedStatuses.set(runtimeId, this.cachedRead(accepted.status));
     }
-    if (sample.proven) this.safelyVerified.add(runtimeId);
-    const status = sample.project(!superseded);
-    this.invalidateCachedReads(runtimeId);
-    // The isolation proof can survive a newer observation of the same account.
-    if (superseded) return status;
-    if (runtimeId !== "chatgpt-plan" && isSettledStatus(status)) {
-      this.cachedStatuses.set(runtimeId, this.cachedRead(status));
-    }
-    if (this.rememberConnection(status, revision)) {
-      notifyStatusChanged(runtimeId, status.connection === "connected");
-    }
-    return status;
+    return accepted.status;
   }
 
   private async verifyRuntime(
@@ -1374,7 +1357,7 @@ export class SubscriptionRuntimeService {
       if (runtimeId === "codex") {
         const status = await this.codexClient.getStatus();
         assertCurrent();
-        const project = (current: boolean) => this.projectCodexStatus(status, current);
+        const project = () => this.projectCodexStatus(status);
         if (!isConnectedAndReady(status)) return { proven: false, project };
         const runtime = this.createCodexConversationRuntime(this.codexTextRuntimePaths);
         try {
@@ -1391,10 +1374,10 @@ export class SubscriptionRuntimeService {
       }
       if (isClaudeCodeSubscriptionProviderId(runtimeId)) {
         const status = await this.claudeCodeClient.verify();
-        return { proven: isConnectedAndReady(status), project: (current) => this.projectClaudeCodeStatus(status, current) };
+        return { proven: isConnectedAndReady(status), project: () => this.projectClaudeCodeStatus(status) };
       }
       const status = await this.acpRegistry.verify(runtimeId);
-      return { proven: isConnectedAndReady(status), project: (current) => this.projectAcpStatus(status, current) };
+      return { proven: isConnectedAndReady(status), project: () => this.projectAcpStatus(status) };
     });
   }
 
@@ -1495,20 +1478,20 @@ export class SubscriptionRuntimeService {
         return this.readThrough(this.cachedCatalogs, runtimeId, options, async () => {
           const result = await this.requireChatGptPlan().listModels();
           return () => result;
-        }, (catalog) => catalog.status);
+        }, (catalog) => catalog.status, (catalog, status) => ({ ...catalog, status }));
       }
       if (runtimeId !== "codex") return { status: await this.getStatus(runtimeId, options), models: [] };
       return this.readThrough(this.cachedCatalogs, runtimeId, options, async (markProbeFailed) => {
         const result = await this.codexClient.listModels(markProbeFailed);
         return () => ({
-          status: this.projectCodexRead(result.status),
+          status: this.projectCodexStatus(result.status),
           models: result.models.map((model) => ({
             id: model.id,
             displayName: model.displayName,
             isDefault: model.isDefault,
           })),
         });
-      }, (catalog) => catalog.status);
+      }, (catalog) => catalog.status, (catalog, status) => ({ ...catalog, status }));
     });
   }
 
@@ -1545,7 +1528,6 @@ export class SubscriptionRuntimeService {
       status = await this.verify(safeSelection.provider);
       this.assertRunning();
       safetyEpoch = this.safetyEpoch(safeSelection.provider);
-      if (status.capabilities.chat) notifyStatusChanged(safeSelection.provider);
     }
     if (!status.capabilities.chat) throw new SubscriptionRuntimeServiceError("subscription-chat-unavailable");
 
@@ -1656,6 +1638,7 @@ export class SubscriptionRuntimeService {
       this.cachedStatuses.clear();
       this.cachedCatalogs.clear();
       this.chatGptPlan?.stop();
+      this.codexClient.onAccountChanged = undefined;
       this.codexClient.stop();
       await Promise.all([
         this.acpRegistry.stopAll(),
@@ -1683,34 +1666,18 @@ export class SubscriptionRuntimeService {
     return this.chatGptPlan ? this.chatGptPlan.getStatus() : Promise.resolve(notConfiguredChatGptPlanStatus());
   }
 
-  private projectCodexRead(status: CodexSubscriptionStatus): SubscriptionRuntimeStatus {
-    const previous = this.observedConnections.get("codex");
-    if (previous?.connected && status.connection === "connected"
-      && (previous.accountIdentity !== codexAccountIdentity(status) || previous.version !== status.version)) {
-      this.invalidateSafety("codex");
-    }
-    return this.projectCodexStatus(status);
-  }
-
-  private projectCodexStatus(status: CodexSubscriptionStatus, current = true): SubscriptionRuntimeStatus {
-    if (current) this.reconcileSafety("codex", status);
-    const projection = this.withPlanUsage(codexStatus(status, this.safelyVerified.has("codex")), current);
+  private projectCodexStatus(status: CodexSubscriptionStatus): SubscriptionRuntimeStatus {
+    const projection = this.withPlanUsage(codexStatus(status, this.safelyVerified.has("codex")));
     const identity = codexAccountIdentity(status);
     if (identity !== undefined) this.accountIdentities.set(projection, identity);
     return projection;
   }
 
-  private projectAcpStatus(status: AcpSubscriptionStatus, current = true): SubscriptionRuntimeStatus {
-    if (current) this.reconcileSafety(status.provider, status);
-    return this.withPlanUsage(acpStatus(status, this.safelyVerified.has(status.provider)), current);
+  private projectAcpStatus(status: AcpSubscriptionStatus): SubscriptionRuntimeStatus {
+    return this.withPlanUsage(acpStatus(status, this.safelyVerified.has(status.provider)));
   }
 
-  private projectClaudeCodeStatus(status: ClaudeCodeSubscriptionStatus, current = true): SubscriptionRuntimeStatus {
-    if (current) this.reconcileSafety(status.provider, status);
-    return this.claudeCodeStatusProjection(status, current);
-  }
-
-  private claudeCodeStatusProjection(status: ClaudeCodeSubscriptionStatus, current = false): SubscriptionRuntimeStatus {
+  private projectClaudeCodeStatus(status: ClaudeCodeSubscriptionStatus): SubscriptionRuntimeStatus {
     return this.withPlanUsage({
       provider: status.provider,
       runtime: status.runtime,
@@ -1724,7 +1691,7 @@ export class SubscriptionRuntimeService {
         status.provider,
         this.safelyVerified.has(status.provider) && isConnectedAndReady(status),
       ),
-    }, current);
+    });
   }
 
   private recordPlanUsage(provider: SubscriptionRuntimeId, windows: readonly SubscriptionPlanUsageUpdate[]): void {
@@ -1733,11 +1700,8 @@ export class SubscriptionRuntimeService {
     notifyStatusChanged(provider);
   }
 
-  private withPlanUsage(status: SubscriptionRuntimeStatus, current: boolean): SubscriptionRuntimeStatus {
-    if (!isConnectedAndReady(status)) {
-      if (current) this.planUsage.clear(status.provider);
-      return status;
-    }
+  private withPlanUsage(status: SubscriptionRuntimeStatus): SubscriptionRuntimeStatus {
+    if (!isConnectedAndReady(status)) return status;
     const planUsage = this.planUsage.get(status.provider);
     return planUsage ? { ...status, planUsage } : status;
   }
@@ -1754,22 +1718,22 @@ export class SubscriptionRuntimeService {
   }
 
   private async mutating(provider: SubscriptionRuntimeId, mutation: () => Promise<SubscriptionRuntimeStatus>): Promise<SubscriptionRuntimeStatus> {
-    this.authChangeRevisionByProvider.set(provider, ++this.statusReadRevision);
+    const order = this.nextConnectionOrder(provider);
+    this.authChangeRevisionByProvider.set(provider, order.serviceRevision);
     this.mutationsInFlight.set(provider, (this.mutationsInFlight.get(provider) ?? 0) + 1);
     this.invalidateSafety(provider);
-    let connectionChange: boolean | undefined;
+    let status: SubscriptionRuntimeStatus;
     try {
       await this.stopSessionsFor(provider);
-      const status = await mutation();
-      if (this.rememberConnection(status, ++this.statusReadRevision)) connectionChange = status.connection === "connected";
-      return status;
+      status = await mutation();
     } finally {
       const remaining = (this.mutationsInFlight.get(provider) ?? 1) - 1;
       if (remaining === 0) this.mutationsInFlight.delete(provider);
       else this.mutationsInFlight.set(provider, remaining);
       this.invalidateCachedReads(provider);
-      if (connectionChange !== undefined) notifyStatusChanged(provider, connectionChange);
     }
+    const accepted = this.acceptObservation(provider, order, () => status);
+    return accepted?.status ?? this.latestStatus(provider);
   }
 
   private async readThrough<T>(
@@ -1778,65 +1742,129 @@ export class SubscriptionRuntimeService {
     options: SubscriptionReadOptions,
     read: (markProbeFailed: () => void) => Promise<() => T>,
     statusOf: (value: T) => SubscriptionRuntimeStatus,
+    withStatus: (value: T, status: SubscriptionRuntimeStatus) => T,
     probeFailedOnError = false,
+    superseded: () => T = () => { throw new SubscriptionRuntimeServiceError("subscription-status-superseded"); },
   ): Promise<T> {
     const cacheEnabled = runtimeId !== "chatgpt-plan";
     if (cacheEnabled && options.allowCached === true) {
       const cached = cache.get(runtimeId);
       if (cached && cached.expiresAt > Date.now()) return cached.value;
     }
+    if (this.mutationsInFlight.has(runtimeId)) return superseded();
     const generation = this.readGeneration(runtimeId);
-    const revision = ++this.statusReadRevision;
-    this.assertCurrentObservation(runtimeId, revision);
+    const order = this.nextConnectionOrder(runtimeId);
     let probeFailed = probeFailedOnError;
-    const project = await read(() => { probeFailed = true; }).catch((error) => {
-      this.assertCurrentObservation(runtimeId, revision);
-      if (probeFailed) this.recordFailedProbe(runtimeId, revision);
+    let project: () => T;
+    try {
+      project = await read(() => { probeFailed = true; });
+    } catch (error) {
+      const previous = this.observedConnections.get(runtimeId);
+      if (!this.isCurrentOrder(runtimeId, order)) return superseded();
+      if (probeFailed) {
+        this.acceptObservation(runtimeId, order, () => this.failedProbeStatus(runtimeId, previous?.status.version), { probeFailed });
+      }
       throw error;
-    });
-    this.assertCurrentObservation(runtimeId, revision);
+    }
+    let value: T | undefined;
     const cacheable = cacheEnabled && this.readGeneration(runtimeId) === generation;
-    const value = project();
-
-    const status = statusOf(value);
-    const changed = this.rememberConnection(status, revision);
-    if (changed) this.invalidateCachedReads(runtimeId);
-    if ((cacheable || (cacheEnabled && changed)) && isSettledStatus(status)) {
-      cache.set(runtimeId, this.cachedRead(value));
-      if (changed) this.cachedStatuses.set(runtimeId, this.cachedRead(status));
-    }
-    if (changed) notifyStatusChanged(runtimeId, status.connection === "connected");
-    return value;
-  }
-
-  private assertCurrentObservation(provider: SubscriptionRuntimeId, revision: number): void {
-    this.assertRunning();
-    if (this.mutationsInFlight.has(provider)
-      || revision < (this.authChangeRevisionByProvider.get(provider) ?? 0)
-      || revision <= (this.observedConnections.get(provider)?.revision ?? 0)) {
-      throw new SubscriptionRuntimeServiceError("subscription-status-superseded");
-    }
-  }
-
-  private recordFailedProbe(provider: SubscriptionRuntimeId, revision: number): void {
-    this.invalidateSafety(provider);
-    if (this.rememberConnection({ provider, runtime: "unavailable", connection: "unknown" }, revision, true)) {
-      notifyStatusChanged(provider, false);
-    }
-  }
-
-  private rememberConnection(
-    status: Pick<SubscriptionRuntimeStatus, "provider" | "runtime" | "connection"> & { version?: string | null },
-    revision: number,
-    probeFailed = false,
-  ): boolean {
-    const connected = status.connection === "connected";
-    const previous = this.observedConnections.get(status.provider);
-    this.observedConnections.set(status.provider, {
-      connected, revision, probeFailed, version: status.version,
-      accountIdentity: this.accountIdentities.get(status),
+    const accepted = this.acceptObservation(runtimeId, order, () => {
+      value = project();
+      return statusOf(value);
     });
-    return previous === undefined ? status.runtime === "unavailable" : previous.connected !== connected;
+    if (!accepted || value === undefined) return superseded();
+    const result = withStatus(value, accepted.status);
+    if ((cacheable || (cacheEnabled && accepted.published)) && isSettledStatus(accepted.status)) {
+      cache.set(runtimeId, this.cachedRead(result));
+      if (accepted.published) this.cachedStatuses.set(runtimeId, this.cachedRead(accepted.status));
+    }
+    return result;
+  }
+
+  private accountRevision(provider: SubscriptionRuntimeId): number {
+    return provider === "codex" ? this.codexClient.accountRevision ?? 0 : 0;
+  }
+
+  private nextConnectionOrder(provider: SubscriptionRuntimeId): ConnectionOrder {
+    return { accountRevision: this.accountRevision(provider), serviceRevision: ++this.statusReadRevision };
+  }
+
+  private isCurrentOrder(provider: SubscriptionRuntimeId, order: ConnectionOrder, accountChange = false): boolean {
+    this.assertRunning();
+    const previous = this.observedConnections.get(provider)?.order;
+    return order.accountRevision === this.accountRevision(provider)
+      && (accountChange || !this.mutationsInFlight.has(provider))
+      && order.serviceRevision >= (this.authChangeRevisionByProvider.get(provider) ?? 0)
+      && (previous === undefined || order.accountRevision > previous.accountRevision
+        || order.serviceRevision > previous.serviceRevision);
+  }
+
+  private latestStatus(provider: SubscriptionRuntimeId): SubscriptionRuntimeStatus {
+    this.assertRunning();
+    const observation = this.observedConnections.get(provider);
+    if (!this.mutationsInFlight.has(provider) && observation?.order.accountRevision === this.accountRevision(provider)) {
+      const { status } = observation;
+      if (provider === "chatgpt-plan" || !status.capabilities.chat || this.safelyVerified.has(provider)) return status;
+      return { ...status, capabilities: DEFAULT_SUBSCRIPTION_RUNTIME_CAPABILITIES };
+    }
+    throw new SubscriptionRuntimeServiceError("subscription-status-superseded");
+  }
+
+  private recordAccountChange(status: CodexSubscriptionStatus, accountRevision: number): void {
+    if (this.stopped) return;
+    // A notification carries no account identity that can authorize the new generation.
+    const connection = status.connection === "connected" ? "unknown" : status.connection;
+    this.acceptObservation("codex", { accountRevision, serviceRevision: ++this.statusReadRevision },
+      () => ({ ...this.projectCodexStatus(status), connection, planType: null }), { accountChange: true });
+  }
+
+  private acceptObservation(
+    provider: SubscriptionRuntimeId,
+    order: ConnectionOrder,
+    project: () => SubscriptionRuntimeStatus,
+    { accountChange = false, probeFailed = false, verification }: {
+      accountChange?: boolean; probeFailed?: boolean; verification?: VerificationSample;
+    } = {},
+  ): (ConnectionObservation & { published: boolean }) | undefined {
+    const previous = this.observedConnections.get(provider);
+    const current = this.isCurrentOrder(provider, order, accountChange);
+    if (!current && (!verification?.proven || !previous || order.accountRevision !== previous.order.accountRevision
+      || order.accountRevision !== this.accountRevision(provider))) return undefined;
+
+    let status = project();
+    const identity = this.accountIdentities.get(status);
+    const previousStatus = previous?.status;
+    const connected = status.connection === "connected";
+    const sameAccount = previousStatus?.connection === "connected" && connected
+      && previousStatus.version === status.version && this.accountIdentities.get(previousStatus) === identity;
+    if (!current) {
+      // A later read of the same account can supply the status while the verifier supplies its proof.
+      if (!sameAccount || !previous) return undefined;
+      order = previous.order;
+    }
+    if (accountChange || probeFailed || (provider === "codex" && previousStatus?.connection === "connected" && connected && !sameAccount)) {
+      this.invalidateSafety(provider);
+      // The incoming projection may have used the old account's proof.
+      status = { ...status, capabilities: DEFAULT_SUBSCRIPTION_RUNTIME_CAPABILITIES };
+    } else if (verification?.proven) {
+      this.safelyVerified.add(provider);
+      const verified = verification.project();
+      status = !current && previousStatus ? { ...previousStatus, capabilities: verified.capabilities } : verified;
+    } else if (provider !== "chatgpt-plan") {
+      this.reconcileSafety(provider, status);
+      if (!isConnectedAndReady(status)) this.planUsage.clear(provider);
+    }
+    if (identity !== undefined) this.accountIdentities.set(status, identity);
+    const accepted = { order, status, probeFailed };
+    this.observedConnections.set(provider, accepted);
+    const publish = accountChange || verification?.proven === true || (previousStatus === undefined
+      ? status.runtime === "unavailable"
+      : (previousStatus.connection === "connected") !== connected);
+    if (publish) {
+      this.invalidateCachedReads(provider);
+      notifyStatusChanged(provider, connected);
+    }
+    return { ...accepted, published: publish };
   }
 
   private cachedRead<T>(value: T): CachedRead<T> {
