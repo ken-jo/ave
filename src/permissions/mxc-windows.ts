@@ -529,8 +529,8 @@ export async function probeMxcPowerShellStart(
   });
   const wxcExec = wxcExecPathFor(deps.resourcePath, deps.arch);
   if (wxcExec === undefined) return unavailable("unsupported-arch", isWindows ? "unsupported-arch" : `arch ${deps.arch}`);
-  const launch = async (script: string, proxyUrl: string, timeoutMs: number) => {
-    const request = buildMxcShellRequest({
+  const buildRequest = (script: string, proxyUrl: string, timeoutMs: number) =>
+    buildMxcShellRequest({
       commandLine: powerShellMxcCommandLine(deps.systemRoot, script, deps.probeDirectory),
       cwd: deps.probeDirectory,
       grants: { readwrite: [deps.probeDirectory], readonly: [], denied: [] },
@@ -544,6 +544,10 @@ export async function probeMxcPowerShellStart(
       proxyUrl,
       timeoutMs,
     });
+  const buildPlainRequest = (timeoutMs: number) => buildRequest("exit 0", "http://127.0.0.1:9", timeoutMs);
+  // Off Windows, request construction errors propagate to the caller.
+  const nonWindowsRequest = isWindows ? undefined : buildPlainRequest(MXC_START_PROBE_TIMEOUT_MS);
+  const launch = async (request: MxcContainerRequest, timeoutMs: number) => {
     const started = await deps.run(wxcExec, mxcRequestArgs(request, wxcExec), timeoutMs + MXC_START_LAUNCHER_GRACE_MS);
     return { request, started };
   };
@@ -595,7 +599,7 @@ export async function probeMxcPowerShellStart(
           void cleanup();
           const startBudget = deadline - Date.now();
           if (expired()) return unavailable("powershell-start-failed", "startup-deadline");
-          result = await launch("exit 0", "http://127.0.0.1:9", startBudget);
+          result = await launch(buildPlainRequest(startBudget), startBudget);
         } else {
           const lookupBudget = Math.min(MXC_LAN_TARGET_LOOKUP_TIMEOUT_MS, measurementDeadline - Date.now());
           const lan = lookupBudget > 0 ? await raceWithAbort(findMxcLanProbeTarget(deps, lookupBudget), signal) : undefined;
@@ -616,7 +620,7 @@ export async function probeMxcPowerShellStart(
           const startBudget = deadline - Date.now();
           const script = buildMxcRawIpProbeScript(probeId, listener.port, controlHost, lan, udp, measurementDeadline);
           try {
-            result = await launch(script, listener.url, startBudget);
+            result = await launch(buildRequest(script, listener.url, startBudget), startBudget);
           } finally {
             const started = result?.started;
             const evidence = started?.code === 0 && !expired()
@@ -637,7 +641,7 @@ export async function probeMxcPowerShellStart(
         }
       }
     } else {
-      result = await launch("exit 0", "http://127.0.0.1:9", MXC_START_PROBE_TIMEOUT_MS);
+      result = await launch(nonWindowsRequest ?? buildPlainRequest(MXC_START_PROBE_TIMEOUT_MS), MXC_START_PROBE_TIMEOUT_MS);
     }
     const { request, started } = result;
     if (!isWindows && started.code !== 0) {
@@ -1666,8 +1670,10 @@ export async function probeHostMxcPowerShellStart(): Promise<MxcStartSupport> {
     requireMxcContainerStartRoot();
   } catch (error) {
     if (!(error instanceof MxcRuntimeRootError)) throw error;
-    return { state: "unavailable", reason: "runtime-root-unproved", windowsBuild: null, detail: "runtime-root-unproved" };
+    const detail = process.platform === "win32" ? "runtime-root-unproved" : `runtime root proof failed: ${error.message}`;
+    return { state: "unavailable", reason: "runtime-root-unproved", windowsBuild: null, detail };
   }
+  if (process.platform !== "win32") return await withHostMxcDeps(probeMxcPowerShellStart);
   const { openInvocationProxyListener } = await import("./egress-invocation-listener.js");
   return await withHostMxcDeps(deps => probeMxcPowerShellStart(deps, openInvocationProxyListener));
 }

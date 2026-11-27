@@ -253,6 +253,20 @@ describe("probeMxcPowerShellStart off Windows", () => {
       detail,
     });
   });
+
+  it("propagates a plain start request construction failure", async () => {
+    const d = deps({ platform: "darwin", systemRoot: "" });
+    await expect(probeMxcPowerShellStart(d)).rejects.toThrow("Windows system root is missing or is not an absolute local path");
+    expect(d.calls).toEqual([]);
+  });
+});
+
+it("reports an allowlisted detail for a plain start request construction failure on Windows", async () => {
+  const d = deps({ platform: "win32", systemRoot: "" });
+  await expect(probeMxcPowerShellStart(d)).resolves.toEqual({
+    state: "unavailable", windowsBuild: d.windowsBuild, reason: "powershell-start-failed", detail: "launch-rejected",
+  });
+  expect(d.calls).toEqual([]);
 });
 
 describe("classifyMxcStartProbe", () => {
