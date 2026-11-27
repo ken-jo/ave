@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { registerBuiltinTools } from "../../../boot/tools.js";
 import { unusedNetworkFetch } from "../../../__tests__/support/network-fetch-stubs.js";
+import { unknownToolEffects } from "../../../__tests__/support/tool-effect-resolver.js";
 import { mintHostDecisionProof } from "../../../main/workflow-template-decision.js";
 import { RoutinesStore } from "../../../main/routines-store.js";
 import { futureIso } from "../../../main/__tests__/routines-fixture.js";
@@ -19,7 +20,7 @@ import { validateHostRendererSender } from "../../gated.js";
 import { ChangeSignal } from "../../../lib/change-signal.js";
 import { runWithEffectGateContext } from "../../../permissions/effect-enforcement.js";
 import type { IpcDeps } from "../../types.js";
-import type { TemplateScope } from "../../../shared/workflow-template-types.js";
+import type { TemplateScope, TemplateVersion } from "../../../shared/workflow-template-types.js";
 type Handler = (...args: unknown[]) => Promise<unknown>;
 const h = vi.hoisted(() => new Map<string, Handler>());
 function handler(channel: string): Handler {
@@ -38,7 +39,7 @@ const confirmTemplateWithGesture = async (event: ReturnType<typeof setup>["event
 function setup(extra: Partial<IpcDeps> = {}) {
   const sender = workBoardTestSender(); const window = { isDestroyed: () => false, webContents: sender };
   const changed = new ChangeSignal(() => {});
-  const store = { list: vi.fn(async () => []), get: vi.fn(async (id: string) => ({ template: { id, scope: { kind: "all" }, currentVersion: 1 } })), draft: vi.fn(async () => { changed.emit(); return {}; }), confirmDraft: vi.fn(async () => { changed.emit(); return {}; }), archive: vi.fn(async () => { changed.emit(); }), attachSchedule: vi.fn(async () => { changed.emit(); return {}; }), detachSchedule: vi.fn(async () => true), getAttachment: vi.fn(async () => ({ templateId: "t", scheduleId: "daily" })), changed };
+  const store = { list: vi.fn(async () => []), get: vi.fn(async (id: string) => ({ template: { id, scope: { kind: "all" }, currentVersion: 1 } })), draft: vi.fn(async () => { changed.emit(); return {}; }), confirmDraft: vi.fn(async () => { changed.emit(); return { version: { templateId: "t", version: 1 }, unattended: { ok: true } }; }), archive: vi.fn(async () => { changed.emit(); }), attachSchedule: vi.fn(async () => { changed.emit(); return {}; }), detachSchedule: vi.fn(async () => true), getAttachment: vi.fn(async () => ({ templateId: "t", scheduleId: "daily" })), changed };
   const auditLog = vi.fn();
   const remove = vi.fn(async () => true);
   const routinesStore = {
@@ -46,7 +47,7 @@ function setup(extra: Partial<IpcDeps> = {}) {
     writeTemplateAttachment: vi.fn(async (_id: string, _scope: TemplateScope, write: () => Promise<unknown>) => write()),
     withTemplateSchedule: vi.fn(async (_id: string, action: (remove: () => Promise<boolean>) => Promise<unknown>) => action(remove)),
   };
-  const deps = { workflowTemplateStore: store, routinesStore, auditLogger: { log: auditLog }, getMainWindow: () => window, getAppWindows: () => [window], ...extra } as unknown as IpcDeps;
+  const deps = { workflowTemplateStore: store, toolRegistry: new ToolRegistry(), routinesStore, auditLogger: { log: auditLog }, getMainWindow: () => window, getAppWindows: () => [window], ...extra } as unknown as IpcDeps;
   registerWorkBoardHandlers(deps);
   registerRoutineHandlers(deps);
   return { store, auditLog, remove, event: { sender, senderFrame: sender.mainFrame } };
@@ -100,8 +101,9 @@ async function withTemplateProposal<T>(body: (fixture: {
   const path = join(directory, "templates.json");
   const store = new WorkflowTemplateStore(path);
   try {
-    const { event, auditLog } = setup({ workflowTemplateStore: store });
-    const tool = proposalRegistry(store).getVisibleTools().find(entry => entry.name === proposalToolName);
+    const registry = proposalRegistry(store);
+    const { event, auditLog } = setup({ workflowTemplateStore: store, toolRegistry: registry });
+    const tool = registry.getVisibleTools().find(entry => entry.name === proposalToolName);
     if (!tool) throw new Error("Workflow template proposal tool is missing from host registration");
     return await body({ store, path, event, auditLog, propose: (draft, { headless = false, sessionId = reportSessionId } = {}) =>
       tool.execute(draft, { cwd: directory, extraAllowedDirectories: [], metadata: { sessionId }, headless }) });
@@ -155,6 +157,20 @@ it("saves a new version only through a matching user confirmation", async () => 
       event: "template_confirmed", proposalId, templateId: template.id, version: 1, graphHash, origin: "local-desktop",
     });
     expect(await handler(WORK_BOARD.templateProposalGet)(event, proposalId)).toEqual({ ok: false, error: "no-draft" });
+  });
+});
+
+it("passes the live registry to confirmation and returns its mark beside the version", async () => {
+  await withTemplateProposal(async ({ event, propose }) => {
+    const draft = { ...reportWithEnvelope, stages: [reportWithEnvelope.stages[0], {
+      ...reportWithEnvelope.stages[1], envelope: { ...reportEnvelope, mcpReadOnlyTools: ["example_read"] },
+    }] };
+    const { proposalId, graphHash } = JSON.parse((await propose(draft)).output);
+    expect(await confirmTemplateWithGesture(event, proposalId, { expectedGraphHash: graphHash, expectedDraftRevision: proposalId }))
+      .toMatchObject({ ok: true, value: {
+        version: { graphHash, version: 1 },
+        unattended: { ok: false, code: "tool-effect-unknown", tool: { stageId: "review", collection: "mcpReadOnlyTools", name: "example_read" } },
+      } });
   });
 });
 
@@ -262,7 +278,7 @@ it("keeps an open proposal confirmable when another session exceeds its cap", as
     }
     expect(await confirmTemplateWithGesture(event, proposalId, {
       expectedGraphHash: graphHash, expectedDraftRevision: proposalId,
-    })).toMatchObject({ ok: true, value: { version: 1, graphHash } });
+    })).toMatchObject({ ok: true, value: { version: { version: 1, graphHash } } });
   });
 });
 
@@ -299,8 +315,10 @@ it("requires a fresh local owner gesture for confirmation and accepts a pointer"
   expect(await handler(WORK_BOARD.templateConfirm)({ ...event, senderFrame: {} }, "t", request, gesture)).toEqual({ ok: false, error: "unauthorized-frame" });
   expect(await handler(WORK_BOARD.templateConfirm)(event, "t", request, gesture)).toEqual({ ok: false, error: "user-gesture-required" });
   expect(store.confirmDraft).not.toHaveBeenCalled();
-  expect(await confirmTemplateWithGesture(event, "t", request)).toEqual({ ok: true, value: {} });
-  expect(store.confirmDraft).toHaveBeenCalledWith("t", request, { who: "user", origin: "local-desktop" });
+  expect(await confirmTemplateWithGesture(event, "t", request)).toEqual({
+    ok: true, value: { version: { templateId: "t", version: 1 }, unattended: { ok: true } },
+  });
+  expect(store.confirmDraft).toHaveBeenCalledWith("t", request, { who: "user", origin: "local-desktop" }, { effectOf: expect.any(Function) });
 });
 it("broadcasts changed for successful draft, confirmation and archive writes", async () => {
   const { event } = setup();
@@ -455,7 +473,7 @@ async function withScheduleApproval(body: (f: {
   templates: WorkflowTemplateStore;
   templatesPath: string;
   routines: RoutinesStore;
-  confirm: (id?: string, toolScope?: "all" | "read", scope?: TemplateScope) => ReturnType<WorkflowTemplateStore["confirmDraft"]>;
+  confirm: (id?: string, toolScope?: "all" | "read", scope?: TemplateScope) => Promise<TemplateVersion>;
 }) => Promise<void>) {
   const dir = await mkdtemp(join(tmpdir(), "template-approval-"));
   try {
@@ -467,7 +485,8 @@ async function withScheduleApproval(body: (f: {
     const confirm = async (id?: string, toolScope: "all" | "read" = "read", scope: TemplateScope = allScope) => {
       const { template, draft } = await templates.draft(id ?? null, { ...graph, scope, stages: [{ ...graph.stages[0], toolScope, gate: { type: "human" } }] });
       if (!draft) throw new Error("Draft was not saved");
-      return templates.confirmDraft(template.id, { expectedGraphHash: draft.graphHash, expectedDraftRevision: draft.revision }, { who: "user", origin: "local-desktop" });
+      const { version } = await templates.confirmDraft(template.id, { expectedGraphHash: draft.graphHash, expectedDraftRevision: draft.revision }, { who: "user", origin: "local-desktop" }, unknownToolEffects);
+      return version;
     };
     await body({ event, templates, templatesPath, routines, confirm });
   } finally {

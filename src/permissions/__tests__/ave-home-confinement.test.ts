@@ -21,8 +21,9 @@ vi.mock("node:fs", async original => (await import("../../__tests__/support/simu
 vi.mock("node:module", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedDriveModule(await original()));
 vi.mock("../mxc-runtime-root.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedRuntimeRoot(await original()));
 vi.mock("../windows-stamp-targets.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedStampTargets(await original()));
-vi.mock("@anthropic-ai/sandbox-runtime", () => ({
-  SandboxManager: {
+vi.mock("@anthropic-ai/sandbox-runtime", async () => {
+  const { withSandboxManagerConfig } = await import("../../__tests__/support/linux-wrapper-programs.js");
+  return { SandboxManager: withSandboxManagerConfig({
     initialize: runtime.initialize,
     wrapWithSandboxArgv: runtime.wrap,
     reset: vi.fn(),
@@ -33,8 +34,8 @@ vi.mock("@anthropic-ai/sandbox-runtime", () => ({
     setParentProxyRouter: vi.fn(),
     getProxyPort: () => undefined,
     getSocksProxyPort: () => undefined,
-  },
-}));
+  }) };
+});
 
 const ORIGINAL_PLATFORM = process.platform;
 const OWNER_SID = "S-1-5-21-100-200-300-1001";

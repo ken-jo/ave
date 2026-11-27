@@ -70,15 +70,16 @@ export function mcpToolToPluginTool(
     );
   }
   // Ignore wire category; effective risk is derived by the host for each invocation.
-  if (tool.annotations !== undefined && (tool.annotations === null || typeof tool.annotations !== "object"
-      || Array.isArray(tool.annotations) || Object.keys(tool.annotations).some((key) => key !== "readOnlyHint"))) {
+  const annotations = tool.annotations;
+  if (annotations !== undefined && (annotations === null || typeof annotations !== "object"
+      || Array.isArray(annotations) || Object.keys(annotations).some((key) => key !== "readOnlyHint"))) {
     throw new Error(`Plugin tool '${tool.name}' has unsupported annotations; only readOnlyHint is allowed`);
   }
-  if (tool.annotations !== undefined && Object.hasOwn(tool.annotations, "readOnlyHint")
-      && typeof tool.annotations.readOnlyHint !== "boolean") {
+  const readOnlyHint = annotations?.readOnlyHint;
+  if (annotations !== undefined && Object.hasOwn(annotations, "readOnlyHint") && typeof readOnlyHint !== "boolean") {
     throw new Error(`Plugin tool '${tool.name}' has invalid readOnlyHint; expected a boolean`);
   }
-  const readOnly = tool.annotations?.readOnlyHint === true
+  const readOnly = readOnlyHint === true
     && Object.values(operationPolicy?.operations ?? {}).every(
       (rule) => rule.kind === "read" && rule.minimumRisk === "read",
     );
@@ -97,6 +98,8 @@ export function mcpToolToPluginTool(
     modelVisible: readToolSurfaces(tool.name, meta).includes("model"),
     jsonSchema: tool.inputSchema,
     mcpReadOnlyHint: readOnly,
+    effectAnnotations: readOnlyHint === undefined ? undefined : Object.freeze({ readOnlyHint }),
+    unattendedEffect: readOnly ? "safe" : "unknown",
     isReadOnly: () => readOnly,
     execute: async (rawInput, ctx) => {
       let parsed: unknown = rawInput ?? {};

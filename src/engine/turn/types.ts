@@ -172,6 +172,7 @@ export interface RunTurnOptions {
   sessionIdOverride?: string;
   // Spawn depth must reach execution so nested agent_spawn calls are refused.
   spawnDepth?: number;
+  stageSubAgents?: true;
   approvalReasonPrefix?: string;
   // Remote-controller authority is host-owned and never parsed from input.
   remoteControllerAuthority?: RemoteControllerAuthority;

@@ -12,6 +12,7 @@ import { makeSubagentLoopDeps, patchLoopProvider } from "../../../engine/__tests
 import { exactToolScope, SubAgentRunner, type SubAgentSpawnResult } from "../../../engine/subagent-runner.js";
 import { MemoryManager } from "../../../memory/memory-manager.js";
 import { PermissionManager } from "../../../permissions/permission-manager.js";
+import { registerUnattendedStage, unattendedLaneHooks } from "../../../permissions/unattended-lane-registry.js";
 import { createDynamicTool } from "../../../tools/base.js";
 import { ToolRegistry } from "../../../tools/registry.js";
 import { checkStageBudget, MAX_LANE_DENIALS_PER_STAGE, type StageUsage } from "../run-budget.js";
@@ -487,6 +488,30 @@ it("a grandchild's rounds and denials count against its stage", async () => {
   }
 });
 
+it("accounts for denials emitted by the unattended permission pipeline", async () => {
+  const h = await stageRunHarness({ workflow: { lane: { ...unattendedLaneHooks, admit: async () => ({ ok: true }) } } });
+  await h.runThenEnd(async () => {
+    const manager = new PermissionManager(join(h.dir, "permissions.json"));
+    manager.setUnattendedToolEffectResolver({ effectOf: () => "safe" });
+    const started = await startScheduled(h);
+    const [child] = await h.untilLive(1);
+    const { unattendedStage, projectRoot } = child.input;
+    if (!unattendedStage || !projectRoot) throw new Error("Expected an unattended stage workspace");
+    registerUnattendedStage(child.sessionId, {
+      ...unattendedStage, envelope: ENVELOPE, workspaceRoot: projectRoot, isolation: { proven: true },
+    });
+    for (const toolName of ["read_file", "grep_files", "list_files"]) {
+      expect(manager.checkDetailed(toolName, "builtin", "read", undefined, {
+        sessionId: child.sessionId, unattendedCallInput: { text: "not stored" },
+      })).toMatchObject({ decision: "deny", reasonCode: "outside-envelope" });
+    }
+    await expect(started.result).resolves.toMatchObject({ reasonCode: "parked-on-denials" });
+    expect((await h.stageRun(started.itemId, "report")).deniedCalls).toEqual(
+      ["read_file", "grep_files", "list_files"].map(toolName => ({ toolName, code: "outside-envelope" })),
+    );
+  });
+});
+
 it("interrupts the child when its unattended deadline expires", async () => {
   const h = await stageRunHarness();
   await h.runThenEnd(async () => {
@@ -945,7 +970,8 @@ it("holds a deadline behind the earlier covered write that discovers the board l
 
 it("bounds every launch admission await before runner spawn", () => {
   const engine = readFileSync(new URL("../stage-run-engine.ts", import.meta.url), "utf8");
-  const admission = engine.split("state.starting.add(stageId);")[1]?.split(/const result = await (?:raceWithAbort\()?runner\.spawn\(/u)[0] ?? "";
+  const admission = engine.split("state.starting.add(stageId);")[1]?.split("const result = await running;")[0] ?? "";
+  expect(admission).toContain("return runner.spawn(");
   const awaits = admission.match(/\bawait\b/gu) ?? [];
   expect(awaits.length).toBeGreaterThan(5);
   expect(admission.match(/\bawait\s+(?:beforeDeadline|authorise)\(/gu)).toHaveLength(awaits.length);
@@ -1052,7 +1078,10 @@ it("replays a held deadline while the earlier gate seal is in flight", async () 
   });
 });
 
-it.each(["success", "failure"] as const)("settles Stop after the last child exits and records a pending sibling seal's %s", async outcome => {
+it.each([
+  { outcome: "success", outage: false }, { outcome: "failure", outage: false },
+  { outcome: "success", outage: true }, { outcome: "failure", outage: true },
+] as const)("settles Stop and records a sibling seal ($outcome, board outage: $outage)", async ({ outcome, outage }) => {
   const sealing = deferred<void>();
   const release = deferred<void>();
   const sealCommit = "a".repeat(40);
@@ -1067,6 +1096,7 @@ it.each(["success", "failure"] as const)("settles Stop after the last child exit
   });
   await h.runThenEnd(async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    let board: Buffer | undefined;
     try {
       const run = await startScheduled(h, [autoStageOf("first", { envelope: ENVELOPE }), autoStageOf("short", { envelope: halfMinuteEnvelope })]);
       await h.untilLive(2);
@@ -1079,12 +1109,73 @@ it.each(["success", "failure"] as const)("settles Stop after the last child exit
       await expect(within(run.result, "Stop to settle during sealing", beforeUnblock)).resolves.toMatchObject({ status: "cancelled" });
       expect(await h.stageRun(run.itemId, "short")).toMatchObject({ status: "cancelled" });
       expect((await h.item(run.itemId)).record?.settled?.status).toBe("cancelled");
+      if (outage) {
+        board = readFileSync(h.boardPath);
+        writeFileSync(h.boardPath, "{");
+      }
       release.resolve();
       await h.drainRunWork();
+      if (board) {
+        writeFileSync(h.boardPath, board);
+        await h.engine.adoptParkedTemplateRuns();
+        await h.drainRunWork();
+      }
+      expect((await h.item(run.itemId)).record?.settled?.status).toBe("cancelled");
       expect(await h.stageRun(run.itemId, "first")).toMatchObject(outcome === "success"
         ? { status: "passed", workspace: { sealCommit } }
         : { status: "failed", failure: "error" });
     } finally {
+      if (board) writeFileSync(h.boardPath, board);
+      release.resolve();
+      vi.useRealTimers();
+    }
+  });
+});
+
+it("keeps a successful seal receipt behind an earlier held deadline", async () => {
+  const sealing = deferred<void>();
+  const release = deferred<void>();
+  const sealCommit = "a".repeat(40);
+  const h = await stageRunHarness({
+    observeRunWork: true,
+    interruptChild: vi.fn(),
+    workspace: { seal: async () => {
+      sealing.resolve();
+      await release.promise;
+      return { ok: true, sealCommit };
+    } },
+  });
+  await h.runThenEnd(async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    let board: Buffer | undefined;
+    try {
+      const run = await startScheduled(h, [autoStageOf("first", { envelope: ENVELOPE }), autoStageOf("short", { envelope: halfMinuteEnvelope })]);
+      await h.untilLive(2);
+      await h.drainRunWork({ includeLaunches: false });
+      const { runId } = await h.item(run.itemId);
+      if (!runId) throw new Error("Expected a run ID");
+      const ref = { itemId: run.itemId, runId };
+      childOf(h, "first").finish();
+      await sealing.promise;
+      board = readFileSync(h.boardPath);
+      writeFileSync(h.boardPath, "{");
+      await vi.advanceTimersByTimeAsync(30_000);
+      await h.untilRunFile(async () => {
+        expect((await h.board.runs.heldEvents(ref)).map(event => event.kind)).toEqual(["stage_ended"]);
+      });
+      writeFileSync(h.boardPath, board);
+      release.resolve();
+      await h.drainRunWork({ includeLaunches: false });
+      const pending = await h.runOf(runId);
+      expect(pending?.stageRuns.find(stage => stage.stageId === "short")?.status).toBe("running");
+      expect(pending?.stageRuns.find(stage => stage.stageId === "first")?.workspace?.sealCommit).toBeUndefined();
+      await h.engine.adoptParkedTemplateRuns();
+      await h.drainRunWork({ includeLaunches: false });
+      const replayed = await h.runOf(runId);
+      expect(replayed?.stageRuns.find(stage => stage.stageId === "short")).toMatchObject({ status: "failed", failure: "budget" });
+      expect(replayed?.stageRuns.find(stage => stage.stageId === "first")?.workspace?.sealCommit).toBe(sealCommit);
+    } finally {
+      if (board) writeFileSync(h.boardPath, board);
       release.resolve();
       vi.useRealTimers();
     }

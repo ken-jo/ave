@@ -1,3 +1,4 @@
+import { unknownToolEffects } from "../../__tests__/support/tool-effect-resolver.js";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -19,7 +20,7 @@ beforeEach(async () => { dir = await mkdtemp(join(tmpdir(), "template-integrity-
 afterEach(async () => { vi.restoreAllMocks(); await rm(dir, { recursive: true, force: true }); });
 it.each(["version", "attachment"])("refuses handwritten remote %s authority even with a recomputed graph hash", async kind => {
   const file = join(dir, "templates.json"); const store = new WorkflowTemplateStore(file);
-  const draft = await store.draft(null, graph()); const version = await store.confirmDraft(draft.template.id, shown(draft), actor);
+  const draft = await store.draft(null, graph()); const { version } = await store.confirmDraft(draft.template.id, shown(draft), actor, unknownToolEffects);
   const raw = JSON.parse(await readFile(file, "utf8")); const record = raw.templates[0];
   if (kind === "version") {
     const forged = graph(); forged.stages[0].goal = "Forged";
@@ -29,7 +30,7 @@ it.each(["version", "attachment"])("refuses handwritten remote %s authority even
     await writeFile(file, JSON.stringify(raw));
     await expect(store.resolveVersion({ templateId: draft.template.id, version: 2, graphHash: hash })).rejects.toMatchObject({ code: "invalid-template-file" });
   } else {
-    record.scheduleAttachments = [{ id: "attachment", scheduleId: "daily", templateId: draft.template.id, version: 1, graphHash: version.graphHash, who: "user", at: version.confirmedAt, origin: "tailnet-surface" }];
+    record.scheduleAttachments = [{ id: "attachment", scheduleId: "daily", templateId: draft.template.id, version: 1, graphHash: version.graphHash, who: "user", at: version.confirmedAt, origin: "tailnet-surface", approvedScope: { kind: "all" } }];
     await writeFile(file, JSON.stringify(raw));
     await expect(store.getAttachment("attachment")).rejects.toMatchObject({ code: "invalid-template-file" });
   }
@@ -45,8 +46,8 @@ it.each(["name", "scope", "description", "identical"])("invalidates the shown re
   expect(second.draft).toHaveProperty("revision", expect.any(String));
   expect(Reflect.get(second.draft ?? {}, "revision")).not.toBe(Reflect.get(first.draft ?? {}, "revision"));
   const restarted = new WorkflowTemplateStore(file);
-  await expect(restarted.confirmDraft(first.template.id, shown(first), actor)).rejects.toMatchObject({ code: "stale-draft" });
-  expect(await restarted.confirmDraft(first.template.id, shown(second), actor)).toMatchObject({ version: 1 });
+  await expect(restarted.confirmDraft(first.template.id, shown(first), actor, unknownToolEffects)).rejects.toMatchObject({ code: "stale-draft" });
+  expect(await restarted.confirmDraft(first.template.id, shown(second), actor, unknownToolEffects).then(({ version }) => version)).toMatchObject({ version: 1 });
 });
 it("pins the legacy golden hash and omits empty optional graph collections", () => {
   const base = graph(); const empty = graph(); empty.setupCommands = [];
@@ -64,7 +65,7 @@ it("validates the stage result hash independently of requested-output approvals"
 it("provides nullable template readers while retaining pinned history", async () => {
   const store = new WorkflowTemplateStore(join(dir, "templates.json"));
   expect(await store.getTemplate("missing")).toBeNull(); expect(await store.getVersion("missing", 1)).toBeNull();
-  const draft = await store.draft(null, graph()); const version = await store.confirmDraft(draft.template.id, shown(draft), actor);
+  const draft = await store.draft(null, graph()); const { version } = await store.confirmDraft(draft.template.id, shown(draft), actor, unknownToolEffects);
   expect(await store.getVersion(draft.template.id, 2)).toBeNull();
   expect(await store.getTemplate(draft.template.id)).toMatchObject({ currentVersion: 1 });
   await store.archive(draft.template.id);
@@ -75,7 +76,7 @@ it.each(["generate", "fetch"] as const)("accepts declared %s tools with an expli
   const store = new WorkflowTemplateStore(join(dir, "templates.json")); const input = graph(); input.stages[0].toolScope = "all";
   input.stages[0].envelope = { tools: [], writePaths: [], readRoots: [], network: [], commands: [], mcpReadOnlyTools: [], mcpGenerationTools: [{ name: "media.render", effect, dataSent: true }], pluginGenerationTools: [{ name: "sources.lookup", effect, dataSent: false }], outputs: [], budget: { rounds: 1, minutes: 1, costUsd: 0 } };
   const draft = await store.draft(null, input);
-  expect(await store.confirmDraft(draft.template.id, shown(draft), actor)).toMatchObject({ stages: [{ envelope: input.stages[0].envelope }] });
+  expect(await store.confirmDraft(draft.template.id, shown(draft), actor, unknownToolEffects).then(({ version }) => version)).toMatchObject({ stages: [{ envelope: input.stages[0].envelope }] });
 });
 
 it("persists the stage result hash in the run record", async () => {

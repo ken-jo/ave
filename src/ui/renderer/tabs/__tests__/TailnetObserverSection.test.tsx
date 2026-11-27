@@ -1,7 +1,7 @@
 import "../../../../../test/renderer/setup.js";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { getLocale, setLocale } from "../../../../i18n/runtime.js";
+import { getLocale, setLocale, t } from "../../../../i18n/runtime.js";
 import type {
   TailnetObserverConfigView,
   TailnetObserverSnapshot,
@@ -9,7 +9,24 @@ import type {
   TailscaleEnvironmentView,
 } from "../../../../shared/tailnet-observer-config.js";
 import type { AveApi } from "../../types.js";
-import { TailnetObserverSection } from "../TailnetObserverSection.js";
+import { TailnetObserverSection, tailnetObserverErrorText } from "../TailnetObserverSection.js";
+
+it("maps a confined-worker port refusal to its localized settings message", () => {
+  expect(tailnetObserverErrorText("tailnet-observer-port-confined-worker-range", key => key))
+    .toBe("tailnetObserver.errorPortConfinedWorkerRange");
+});
+
+it.each(["en", "ko"] as const)("localizes the unverified installed permit refusal in %s", locale => {
+  const previous = getLocale();
+  try {
+    setLocale(locale);
+    const key = "tailnetObserver.errorConfinedRangeUnverified";
+    expect(tailnetObserverErrorText("tailnet-observer-confined-range-unverified", name => name)).toBe(key);
+    expect(t(key)).not.toBe(key);
+  } finally {
+    setLocale(previous);
+  }
+});
 
 const CAPABILITY = "ave.example.com/cap/conversation-observer";
 

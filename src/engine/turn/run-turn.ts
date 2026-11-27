@@ -666,6 +666,7 @@ async function runTurnInSpan(
           thinkingOverride: options?.thinkingOverride,
           sessionIdOverride: options?.sessionIdOverride,
           spawnDepth: options?.spawnDepth,
+          stageSubAgents: options?.stageSubAgents,
           approvalReasonPrefix: options?.approvalReasonPrefix,
           remoteControllerAuthority: options?.remoteControllerAuthority,
           unattendedAuthority: options?.unattendedAuthority,

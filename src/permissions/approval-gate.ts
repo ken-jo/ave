@@ -1720,6 +1720,7 @@ export class ApprovalGate {
     // this card's session allow is: a shell card's session rule, any other card's remembered exact allow. A scope that only ever lives
     // for its own session (a browser or terminal target) and a schedule-started run offer none.
     const runMember = runSessionOf(req.sessionId);
+    const requestingAgentTitle = runMember?.agentTitle ?? childProvenance?.childTitle;
     const sessionOnlyMemory = req.approvalMemory?.kind === "key" && isSessionOnlyApprovalMemoryScope(req.approvalMemory.scope);
     const runStage = runMember === undefined ? undefined : Object.freeze({
       stageId: runMember.stageId,
@@ -1731,7 +1732,7 @@ export class ApprovalGate {
       ...request,
       ...(runStage === undefined ? {} : { runStage }),
       ...(readjudication === undefined ? {} : { args: JSON.parse(exactCanonicalStringify(req.args)) }),
-      ...(childProvenance === undefined ? {} : { requestingAgentTitle: maskSensitiveData(childProvenance.childTitle).masked.slice(0, 240) }),
+      ...(requestingAgentTitle === undefined ? {} : { requestingAgentTitle: maskSensitiveData(requestingAgentTitle).masked.slice(0, 240) }),
       ...(hostTerminal?.afterExternalContent === true ? { hostTerminalAfterExternalContent: true as const } : {}),
       ...(isAveHomeConfigurationRefused(aveHome()) ? { homeFolderRefused: true as const } : {}),
       ...(userOwnedSurface === undefined ? {} : { userOwnedSurface }),

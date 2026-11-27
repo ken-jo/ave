@@ -577,7 +577,7 @@ export class RoutinesStore {
       throw new Error(`RoutinesStore.add: execution must be 'llm-session' or 'notification-only': ${String(input.execution)}`);
     }
     if (input.execution === "template-run") {
-      assertHostDecisionProof(proof);
+      assertHostDecisionProof(proof, { allowTailnet: true });
       if (input.trigger !== "schedule" || !isRoutineScheduleShape(input.schedule) || (!input.schedule.at && input.schedule.repeat?.kind !== "cron") || input.createdBy !== "user"
         || input.prePrompt !== undefined || input.notificationTitle !== undefined || input.notificationBody !== undefined
         || input.scope !== undefined || input.source !== undefined) throw new Error("Invalid template routine");

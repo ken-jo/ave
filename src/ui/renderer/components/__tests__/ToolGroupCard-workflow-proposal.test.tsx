@@ -57,7 +57,9 @@ const reportEnvelope = {
 
 it("reviews the host graph and only confirms after the user clicks save", async () => {
   const getWorkflowTemplateProposal = vi.fn(async () => ({ ok: true, value: proposal }));
-  const confirmWorkflowTemplate = vi.fn(async () => ({ ok: true }));
+  const confirmWorkflowTemplate = vi.fn(async () => ({ ok: true, value: { unattended: {
+    ok: false, code: "outward-effect-tool", tool: { stageId: "collect", collection: "tools", name: "example_tool" },
+  } } }));
   vi.stubGlobal("aveApi", { getWorkflowTemplateProposal, confirmWorkflowTemplate });
   showToolResult(tool);
 
@@ -72,6 +74,9 @@ it("reviews the host graph and only confirms after the user clicks save", async 
 
   fireEvent.click(screen.getByRole("button", { name: t("workflowTemplates.confirmSave") }));
   expect(await screen.findByText(t("workflowTemplates.saved"))).toBeTruthy();
+  expect(screen.getByText(t("workflowTemplates.unattendedMark", {
+    tool: "example_tool", reason: t("reasonCodes.outward-effect-tool"),
+  }))).toBeVisible();
   expect(confirmWorkflowTemplate).toHaveBeenCalledExactlyOnceWith(proposal.id, {
     expectedGraphHash: proposal.graphHash, expectedDraftRevision: proposal.id,
   });
@@ -88,7 +93,7 @@ it("edits a host proposal as a new draft and confirms only the edited hash", asy
     ok: true,
     value: { template: { id: "edited", currentVersion: 0 }, versions: [], draft: { ...input, graphHash: editedHash, revision: "new-draft" } },
   }));
-  const confirmWorkflowTemplate = vi.fn(async () => ({ ok: true }));
+  const confirmWorkflowTemplate = vi.fn(async () => ({ ok: true, value: { unattended: { ok: true } } }));
   vi.stubGlobal("aveApi", {
     getWorkflowTemplateProposal: async () => ({ ok: true, value: proposal }),
     listAgentProfiles: async () => ({ agents: [] }),

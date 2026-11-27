@@ -123,6 +123,7 @@ export async function queryLoop(
       thinkingOverride?: RunTurnOptions["thinkingOverride"];
       sessionIdOverride?: string;
       spawnDepth?: number;
+      stageSubAgents?: true;
       approvalReasonPrefix?: string;
       remoteControllerAuthority?: import("../../shared/chat-origin.js").RemoteControllerAuthority;
       unattendedAuthority?: UnattendedTurnAuthority;
@@ -1666,6 +1667,7 @@ export async function queryLoop(
           overlayTriggerOrigin: stagedOrigin ?? null,
           // Carry spawn depth so execution refuses recursive agent_spawn calls.
           spawnDepth: bounds?.spawnDepth,
+          stageSubAgents: bounds?.stageSubAgents,
           memoryIncludeUnscoped: self.getSessionMemoryProjectContext?.()?.includeUnscoped === true,
           // memory_write records the row that opened the turn as where a memory was learned.
           ...(bounds.turnMessageId !== undefined ? { turnMessageId: bounds.turnMessageId } : {}),

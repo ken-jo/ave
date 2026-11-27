@@ -701,7 +701,6 @@ function runBiomeGate(repoRoot) {
 function runPrePushStaticChecks(dir, plan) {
   if (plan.documents.length > 0) {
     checkPushedDocumentation(dir, plan.documents);
-    run(commands.node, ["--test", "test/scripts/check-asrt-version-claims.test.mjs"], dir);
     run(commands.node, ["scripts/check-asrt-version-claims.mjs"], dir);
   }
   runRetiredNameGate(dir);

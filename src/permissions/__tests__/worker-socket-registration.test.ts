@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { SandboxManager } from "@anthropic-ai/sandbox-runtime";
 import { EventEmitter } from "node:events";
 import { useVerifiedAveHomePrivacy } from "../../__tests__/support/ave-home-privacy.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { registerLinuxWrapperProgramFixtures } from "../../__tests__/support/linux-wrapper-programs.js";
+import { reserveTailnetListenerPort, TAILNET_LOOPBACK_DESTINATION } from "../../shared/tailnet-listener-port.js";
 import {
   initializeAsrtSandbox,
   registerWorkerUnixSocketDir,
@@ -14,24 +16,24 @@ useVerifiedAveHomePrivacy();
 
 // Config ownership only: the probe gets a valid wrapper and a successful child lifecycle. Runtime confinement and probe failures have separate coverage.
 const manager = vi.hoisted(() => ({
-  config: undefined as { network: { allowUnixSockets?: string[] } } | undefined,
   update: vi.fn(),
   openListener: vi.fn(),
   closeListener: vi.fn(),
 }));
-vi.mock("@anthropic-ai/sandbox-runtime", () => ({ SandboxManager: {
-  setParentProxyRouter: () => undefined,
-  initialize: async (config: typeof manager.config) => { manager.config = config; },
-  updateConfig: (config: typeof manager.config) => { manager.update(config); manager.config = config; },
-  reset: async () => { manager.config = undefined; },
-  wrapWithSandboxArgv: async () => ({
-    argv: ["/bin/bash", "-c", "/configured/bwrap --new-session --die-with-parent --unshare-pid --ro-bind / / -- /bin/bash -c true"],
-    env: process.env,
-  }),
-  cleanupAfterCommand: () => undefined,
-  openInvocationListener: manager.openListener,
-  closeInvocationListener: manager.closeListener,
-} }));
+vi.mock("@anthropic-ai/sandbox-runtime", async () => {
+  const { withSandboxManagerConfig } = await import("../../__tests__/support/linux-wrapper-programs.js");
+  return { SandboxManager: withSandboxManagerConfig({
+    setParentProxyRouter: () => undefined,
+    updateConfig: manager.update,
+    wrapWithSandboxArgv: async () => ({
+      argv: ["/bin/bash", "-c", "/configured/bwrap --new-session --die-with-parent --unshare-pid --ro-bind / / -- /bin/bash -c true"],
+      env: process.env,
+    }),
+    cleanupAfterCommand: () => undefined,
+    openInvocationListener: manager.openListener,
+    closeInvocationListener: manager.closeListener,
+  }) };
+});
 vi.mock("node:child_process", () => ({
   spawn: () => {
     const child = Object.assign(new EventEmitter(), { kill: vi.fn() });
@@ -45,7 +47,7 @@ describe("worker socket directory ownership", () => {
   registerLinuxWrapperProgramFixtures();
   const originalPlatform = process.platform;
   const dir = "/run/plugin/sockets";
-  const allowed = () => manager.config?.network.allowUnixSockets ?? [];
+  const allowed = () => SandboxManager.getConfig()?.network.allowUnixSockets ?? [];
   beforeEach(async () => {
     setProcessPlatform("linux");
     manager.update.mockReset();
@@ -119,6 +121,33 @@ describe("worker socket directory ownership", () => {
     expect(allowed()).not.toContain(dir);
     await Promise.all([first, second]);
     expect(allowedAtResolution).toContain(dir);
+  });
+
+  it("refreshes the Tailnet port deny without replacing the admitted sandbox config", async () => {
+    const holder = {};
+    await registerWorkerUnixSocketDir(dir, holder);
+    const admitted = SandboxManager.getConfig();
+    if (!admitted) throw new Error("Sandbox config is unavailable");
+    const before = structuredClone(admitted);
+    expect(before.network.allowUnixSockets).toContain(dir);
+
+    const port = 43217;
+    const deny = `*:${port}`;
+    const release = reserveTailnetListenerPort(port);
+    try {
+      expect(manager.update).toHaveBeenLastCalledWith({
+        ...before,
+        network: {
+          ...before.network,
+          deniedDomains: [...before.network.deniedDomains, deny],
+          deniedDomainReasons: { ...before.network.deniedDomainReasons, [deny]: TAILNET_LOOPBACK_DESTINATION },
+        },
+      });
+    } finally {
+      release();
+    }
+    expect(manager.update).toHaveBeenLastCalledWith(before);
+    await unregisterWorkerUnixSocketDir(dir, holder);
   });
 
 });

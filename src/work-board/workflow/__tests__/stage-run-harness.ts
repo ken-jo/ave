@@ -1,3 +1,4 @@
+import { unknownToolEffects } from "../../../__tests__/support/tool-effect-resolver.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -24,6 +25,7 @@ import type { JoinConflict } from "../shipped-shapes.js";
 
 export interface FakeChild {
   input: SubAgentSpawnInput;
+  callbacks?: Parameters<SubAgentRunner["spawn"]>[1];
   sessionId: string;
   ended: boolean;
   steers: string[];
@@ -95,6 +97,7 @@ export async function stageRunHarness(opts: {
   /** Track detached work for each engine. */
   observeRunWork?: boolean;
   onRunWorkScheduled?: () => void;
+  onSpawn?: (input: SubAgentSpawnInput) => void;
   onProgress?: import("../../../core/work-board-engine.js").WorkBoardEngineDeps["emitProgress"];
 } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "ave-stage-run-"));
@@ -209,13 +212,14 @@ export async function stageRunHarness(opts: {
   let generation = 0;
   const ofCurrentEngine = (list: FakeChild[]) => list.filter(child => !strays.has(child));
   async function spawnChild(by: number, input: SubAgentSpawnInput, hooks?: Parameters<SubAgentRunner["spawn"]>[1]): Promise<SubAgentSpawnResult> {
+    opts.onSpawn?.(input);
     await Promise.resolve();
     const sessionId = `child-${children.length + 1}`;
     const launch = launches.getStore();
     let end: (result: SubAgentSpawnResult) => void = () => undefined;
     const done = new Promise<SubAgentSpawnResult>(resolve => { end = resolve; });
     const child: FakeChild = {
-      input, sessionId, ended: false, steers: [],
+      input, callbacks: hooks, sessionId, ended: false, steers: [],
       reportActivity: (update) => {
         activities.set(sessionId, update);
         hooks?.onActivity?.(update);
@@ -433,7 +437,7 @@ export async function stageRunHarness(opts: {
     const edges = stages.flatMap(stage => stage.inputs.map(from => ({ from, to: stage.id })));
     const record = await templates.draft(over.id ?? null, { name: "Template", scope: over.scope ?? { kind: "all" }, stages, edges, ...(over.setupCommands ? { setupCommands: over.setupCommands } : {}) });
     if (!record.draft) throw new Error("no draft");
-    return templates.confirmDraft(record.template.id, { expectedGraphHash: record.draft.graphHash, expectedDraftRevision: record.draft.revision }, actor);
+    return templates.confirmDraft(record.template.id, { expectedGraphHash: record.draft.graphHash, expectedDraftRevision: record.draft.revision }, actor, unknownToolEffects).then(({ version }) => version);
   }
   const pinOf = (version: TemplateVersion): TemplateVersionPin => ({ templateId: version.templateId, version: version.version, graphHash: version.graphHash });
   async function addItem(version: TemplateVersion, projectRoot?: string): Promise<number> {

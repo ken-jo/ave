@@ -316,7 +316,10 @@ superseded attempt is dropped before any new preparation.
   The chain advances after each covered write. Workspace effects run
   separately and reserve each stage they touch. A join waits for its input
   seals. Winding settles after the last observed child exit, and pending
-  seals can record attempt-bound results after settlement.
+  seals can record attempt-bound results after settlement. If the board
+  temporarily refuses a seal result, the host retains it in the original
+  run's queue through settlement and replays it on a permitted read. The
+  replay checks the run and attempt and preserves the terminal run status.
 - Stop: a Stop takes effect when it is given: the engine marks the run
   stopping at once, and a Stop whose event is held interrupts the run's live
   children then. So a later Stop wins over an earlier completion still held:

@@ -2,11 +2,16 @@ import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it, vi } from "vitest";
+import { workflowEngineExtensions } from "../../boot/steps/workflow-engine-extensions.js";
+import { createToolEffectResolver } from "../../permissions/tool-effect-evidence.js";
 import type { TemplateScope, TemplateVersion } from "../../shared/workflow-template-types.js";
+import { createDynamicTool } from "../../tools/base.js";
+import { ToolRegistry } from "../../tools/registry.js";
 import { createRoutineScheduleTool } from "../../tools/routine-schedule.js";
 import { createStageWorkspaceProvider } from "../../work-board/workflow/stage-workspaces.js";
+import { deferred } from "../../__tests__/support/deferred.js";
 import { untilAsserted } from "../../__tests__/support/signal-wait.js";
-import { autoStageOf, stageOf } from "../../work-board/workflow/__tests__/stage-fixtures.js";
+import { autoStageOf, runScopePermissions, stageOf } from "../../work-board/workflow/__tests__/stage-fixtures.js";
 import { stageRunHarness } from "../../work-board/workflow/__tests__/stage-run-harness.js";
 import { mayFire } from "../../work-board/workflow/schedule-breaker.js";
 import { RoutinesScheduler } from "../routines-scheduler.js";
@@ -67,7 +72,7 @@ it("the store refuses the kind without the attach proof", async () => {
     store.bindTemplateAttachments(h.templates);
     await expect(store.add(input())).rejects.toMatchObject({ code: "invalid-input" });
     await expect(store.add(input(), { origin: "local-desktop" } as never)).rejects.toMatchObject({ code: "invalid-input" });
-    await expect(store.add(input(), mintHostDecisionProof("tailnet-surface"))).rejects.toMatchObject({ code: "invalid-input" });
+    await expect(store.add(input(), { origin: "tailnet-surface" } as never)).rejects.toMatchObject({ code: "invalid-input" });
     const routine = await store.add(input(), proof());
     await expect(store.edit(routine.id, { title: "Changed" })).rejects.toMatchObject({ code: "invalid-input" });
     expect(store.list()).toEqual([expect.objectContaining({ title: "Report" })]);
@@ -632,6 +637,46 @@ it("preserves the breaker streak across a human gate and clears it on approval a
   }, { workflow: { unattendedAllowed: () => available ? { ok: true } : { ok: false, code: "tool-effect-unknown", tool } } });
 });
 
+it("pauses a schedule after registry qualification refuses two fires", async () => {
+  const registry = new ToolRegistry();
+  const tool = { stageId: "first", collection: "tools", name: "read_file" } as const;
+  const effects = createToolEffectResolver(registry);
+  await fixture(async f => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const routine = await f.add();
+      const version = await f.h.confirm([autoStageOf("first", { envelope: {
+        tools: [tool.name], writePaths: [], readRoots: [], network: [], commands: [], mcpReadOnlyTools: [],
+        mcpGenerationTools: [], pluginGenerationTools: [], outputs: [], budget: { rounds: 2, minutes: 1, costUsd: 0 },
+      } })]);
+      const attached = await f.attach(routine.id, version);
+      await (await f.dispatch(routine.id)).result;
+      expect(f.store.list()[0].lastTemplateSkip).toEqual({ code: "tool-effect-unknown", tool });
+      expect(f.store.list()[0].pausedAt).toBeUndefined();
+
+      registry.register(createDynamicTool({
+        name: tool.name, description: "Read a fixture", source: "builtin", category: "read",
+        unattendedEffect: "outward", jsonSchema: { type: "object" },
+        execute: async () => ({ output: "", isError: false }),
+      }));
+      vi.setSystemTime(Date.now() + 1_000);
+      await (await f.dispatch(routine.id)).result;
+      expect(f.store.list()[0]).toMatchObject({
+        lastTemplateSkip: { code: "outward-effect-tool", tool }, pausedBy: "schedule-breaker",
+      });
+      expect(await f.h.templates.getAttachment(attached.id)).toEqual(attached);
+      expect(await f.rows()).toEqual([]);
+      expect(f.h.children).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  }, {
+    wiring: (store, { templates, workspace }) => ({
+      ...workflowEngineExtensions(store, templates, runScopePermissions(), effects), workspace,
+    }),
+  });
+});
+
 it("counts a stage that fails after a human gate against the same routine", async () => {
   const tool = { stageId: "first", collection: "mcpReadOnlyTools", name: "lookup" } as const;
   let available = false;
@@ -654,10 +699,12 @@ it("counts a stage that fails after a human gate against the same routine", asyn
   }, { workflow: { unattendedAllowed: () => available ? { ok: true } : { ok: false, code: "tool-effect-unknown", tool } } });
 });
 
-it("defers a timed-out failure during Stop when a later dispatch scans the run", async () => {
+it.each(["before classification", "after classification"])("does not count a timed-out failure when Stop settles %s", async settlement => {
   let available = false;
   await fixture(async f => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const scanEntered = deferred<void>();
+    const scanRelease = deferred<void>();
     try {
       const routine = await f.add();
       const envelope = {
@@ -680,13 +727,31 @@ it("defers a timed-out failure during Stop when a later dispatch scans the run",
       expect(f.h.engine.cancelRun(row.id)).toEqual({ ok: true });
       await f.h.drainRunWork();
       expect(later.ended).toBe(false);
-      await (await f.dispatch(routine.id)).result;
+      if (settlement === "before classification") {
+        const readOutcome = f.h.engine.readScheduledOutcome;
+        vi.spyOn(f.h.engine, "readScheduledOutcome").mockImplementationOnce(async snapshot => {
+          expect(snapshot.settled).toBeUndefined();
+          scanEntered.resolve();
+          await scanRelease.promise;
+          return readOutcome(snapshot);
+        });
+      }
+      const scan = await f.dispatch(routine.id);
+      if (settlement === "before classification") {
+        await scanEntered.promise;
+        later.finish({ ok: false, stopReason: "interrupted" });
+        await f.h.drainRunWork();
+        expect((await f.h.item(row.id)).record?.settled?.status).toBe("cancelled");
+        scanRelease.resolve();
+      }
+      await scan.result;
       expect(f.store.list()[0]).toMatchObject({ lastTemplateSkip: { code: "run-unsettled" } });
       expect(f.store.list()[0].pausedBy).toBeUndefined();
-      later.finish({ ok: false, stopReason: "interrupted" });
+      if (!later.ended) later.finish({ ok: false, stopReason: "interrupted" });
       await f.h.drainRunWork();
       expect((await f.h.item(row.id)).record?.settled?.status).toBe("cancelled");
     } finally {
+      scanRelease.resolve();
       vi.useRealTimers();
     }
   }, {

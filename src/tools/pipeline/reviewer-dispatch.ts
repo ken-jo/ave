@@ -52,12 +52,18 @@ async function dispatchReview(args: ReviewArguments, headless: boolean): Promise
   }, { allowedPluginIds: context.allowedPluginIds ? [...context.allowedPluginIds] : undefined,
     additionalDirectories: context.additionalDirectories ?? [] }, { lane: headless ? "headless" : "foreground-auto", abortSignal });
   if (abortSignal?.aborted) {
+    if (initial.pipelineRequest?.unattended) {
+      manager.resolveReviewedPermission(initial, {
+        verdict: { level: "high", reason: "Permission review cancelled." },
+        outcome: "error", cacheReason: "miss-not-found", judge: { judged: false, skip: "rule-decided" },
+      });
+    }
     emitPermissionReview(callbacks, { status: "failed", toolName, toolCategory: category, source, ...meta,
       reason: "Permission review cancelled.", ...(approvalPurpose ? { approvalPurpose } : {}) });
     abortSignal.throwIfAborted();
   }
   const decision = manager.resolveReviewedPermission(initial, review);
-  emitPermissionReview(callbacks, { status: decision.decision === "allow" ? "auto_approved" : "needs_approval",
+  emitPermissionReview(callbacks, { status: decision.decision === "allow" ? "auto_approved" : initial.pipelineRequest?.unattended ? "failed" : "needs_approval",
     toolName, toolCategory: category, source, ...meta, verdictLevel: review.verdict.level, reason: decision.reason,
     ...(approvalPurpose ? { approvalPurpose } : {}) });
   return decision;

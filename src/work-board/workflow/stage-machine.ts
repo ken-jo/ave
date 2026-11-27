@@ -33,6 +33,7 @@ export type RunEvent =
   | { type: "retry_requested"; stageId: string } | { type: "continue_requested" } | { type: "stop_requested" }
   | { type: "join_integrated"; joinId: string } | { type: "join_conflict"; joinId: string; conflict: JoinConflict }
   | { type: "join_decided"; joinId: string; decision: "retry_merge" | "reject" }
+  | { type: "seal_saved"; stageId: string; attempt: number; sealCommit: string }
   // Host outcomes of an effect: the run's source is no longer authorised, a passed stage could not be sealed, the pin or wiring failed.
   | { type: "spawn_requested"; stageId: string; attempt: number } | { type: "spawn_refused"; stageId: string; attempt: number } | { type: "seal_failed"; stageId: string } | { type: "fault" };
 

@@ -32,6 +32,7 @@ import { createWorkBoardReporter, type WorkBoardReporter,
 } from "../../work-board/work-report.js";
 import { appendMemory } from "../../work-board/work-memory.js";
 import { workflowEngineExtensions } from "./workflow-engine-extensions.js";
+import { createToolEffectResolver } from "../../permissions/tool-effect-evidence.js";
 import { isAuthorizedWorkspaceProjectRoot, resolveAuthorizedWorkspaceProject } from "../../main/project-root-authorization.js";
 import { WORK_APPROVALS, WORK_BOARD } from "../../shared/ipc-channels.js";
 import type { WorkItemChangedEventPayload } from "../../shared/work-board-types.js";
@@ -615,6 +616,8 @@ export async function wireConversation(
   // Skill bodies are tool results; skill_load records authorization for later skill_read calls.
 
   // Create the Work Board engine after its runner dependency exists.
+  const unattendedEffects = createToolEffectResolver(ctx.toolRegistry);
+  permissionManager.setUnattendedToolEffectResolver(unattendedEffects);
   const workBoardEngine: WorkBoardEngine = createWorkBoardEngine({
     store: workBoardStore,
     getRunner: () => subAgentRunnerRef.fn,
@@ -637,7 +640,7 @@ export async function wireConversation(
     // Persist each run’s conversations so context survives restart and accumulates across reruns.
     transcriptStorage: workBoardStorage,
     workflow: {
-      ...workflowEngineExtensions(workBoardStore, ctx.workflowTemplateStore, permissionManager),
+      ...workflowEngineExtensions(workBoardStore, ctx.workflowTemplateStore, permissionManager, unattendedEffects),
       resolveProjectRoot: (projectRoot) => {
         const resolved = resolveAuthorizedWorkspaceProject(projectRoot);
         return resolved.authorized && resolved.project ? resolved.project.projectRoot : null;

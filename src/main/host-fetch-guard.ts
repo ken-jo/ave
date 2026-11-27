@@ -10,6 +10,7 @@ import {
 } from "../core/network-guard.js";
 import { methodEffect, type Effect } from "../permissions/effect-kind.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
+import { isTailnetListenerPort, TAILNET_LOOPBACK_DESTINATION } from "../shared/tailnet-listener-port.js";
 
 // Reason buckets used for egress-denial telemetry + audit detail.
 export type HostFetchDenyReason =
@@ -17,7 +18,8 @@ export type HostFetchDenyReason =
   | "non-https"
   | "malformed-allowlist"
   | "not-allowlisted"
-  | "ssrf-blocked";
+  | "ssrf-blocked"
+  | typeof TAILNET_LOOPBACK_DESTINATION;
 
 // A denied request — the caller emits audit/telemetry then throws `message`.
 export interface HostFetchDeny {
@@ -71,6 +73,12 @@ function deny(
   return { ok: false, reason, detail, message: `[plugin:${pluginId}] ${message}` };
 }
 
+function tailnetDestinationDenial(pluginId: string, url: URL): HostFetchDeny | undefined {
+  const port = Number(url.port || (url.protocol === "https:" ? 443 : 80));
+  if (!isTailnetListenerPort(port)) return undefined;
+  return deny(pluginId, TAILNET_LOOPBACK_DESTINATION, TAILNET_LOOPBACK_DESTINATION, `hostFetch denied: ${TAILNET_LOOPBACK_DESTINATION}`);
+}
+
 // Evaluate per-call egress without audit side effects; DNS resolution is the only impure step, and callers own reporting.
 export async function evaluateHostFetch(
   input: HostFetchGuardInput,
@@ -97,6 +105,8 @@ export async function evaluateHostFetch(
     const reason = err instanceof NetworkGuardError ? err.message : "invalid URL";
     return deny(pluginId, "invalid-url", `invalid URL: ${reason}`, `hostFetch rejected: ${reason}`);
   }
+  const tailnetDenial = tailnetDestinationDenial(pluginId, url);
+  if (tailnetDenial) return tailnetDenial;
 
   // Local reach requires both a loopback literal and its user-approved manifest declaration; DNS resolution alone cannot grant it.
   const allowListed = urlHostMatchesAllowList(url.hostname, allowedDomains);
@@ -307,13 +317,21 @@ export async function runHostFetchHops(options: HostFetchHopOptions): Promise<Re
         // The transport ignores this by contract; pinned so a call site reads true and a future fetch-shaped transport fails toward NOT following.
         redirect: "manual",
       };
+      const assertHopAllowed = (): void => {
+        assertSendAllowed?.();
+        const refusal = tailnetDestinationDenial(pluginId, url);
+        if (refusal) {
+          auditDeny?.(refusal.reason, refusal.detail);
+          throw new Error(refusal.message);
+        }
+      };
       // A transport with a deferred body must recheck at the first write/end. Plain fetch-shaped test transports hand off at their synchronous call.
       const beforeSend = (): void => {
-        assertSendAllowed?.();
+        assertHopAllowed();
         credentialUse?.assertLive("before-send");
         handedOff = true;
       };
-      assertSendAllowed?.();
+      assertHopAllowed();
       response = handoffTransport
         ? await handoffTransport.sendWithHandoff(url.toString(), transportInit, beforeSend)
         : await transport(url.toString(), transportInit);
