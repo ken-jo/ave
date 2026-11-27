@@ -66,7 +66,8 @@ interface RequestedOutputHooks {
 
 export interface StageRunEngineDeps {
   /** The board: the row of a run carries its id, its shown status and its final output. Nothing a run is decided from is read here. */
-  store: Pick<WorkBoardStore, "get" | "create" | "remove" | "setRunStatus" | "setRunResult" | "boardChanged" | "rowDeleted" | "clearMissingRun" | "hasActiveProvisionalStart" | "acceptProvisionalTemplateStart" | "rollbackProvisionalTemplateStart">;
+  store: Pick<WorkBoardStore, "get" | "create" | "remove" | "setRunStatus" | "setRunResult" | "boardChanged" | "rowDeleted" | "clearMissingRun"
+    | "hasActiveProvisionalStart" | "acceptProvisionalTemplateStart" | "rollbackProvisionalTemplateStart" | "finishProvisionalWorkspaceRecovery">;
   /** Every run-authority field: the pin, the source, the stage runs, the joins, the gates and how the run ended. */
   runs: WorkflowRunState;
   /** The authorised registry root of a project path, or null when the registry does not hold it. */
@@ -1427,6 +1428,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     const authority = start?.authority;
     const reservedId = source.kind === "tailnet-create-and-run" ? start?.remoteProvisional?.workspace?.runId : undefined;
     const ref = scheduledRef ?? newRunRef(itemId, projectRoot, reservedId);
+    if (reservedId !== undefined) ref.provisional = true;
     const pin = source.pin;
     const refused = refusedStart;
     const { runId } = ref;
@@ -1781,15 +1783,23 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       const root = await runProjectOf(run.runStartedBy).catch(() => undefined);
       if (root !== undefined) projects.set(run.runId, root);
     }
-    for (const { marker, run } of retractable) {
+    const recovery = new Map(found.provisionalWorkspaces);
+    for (const { item, marker, run } of retractable) {
       if (run) releaseWorkspace(run.runId);
       const reserved = marker.workspace;
-      if (reserved) projects.set(reserved.runId, reserved.projectRoot);
+      if (reserved) recovery.set(reserved.runId, { itemId: item.id, projectRoot: reserved.projectRoot });
     }
     await records.pruneSettled();
-    if (only === undefined && found.keepWorkspaces !== undefined) await workspace.sweep([...new Set(active)], projects).catch((error: unknown) => log.warn("stage workspace sweep failed: %s", errorMessage(error)));
-    // Keep the original project available to the sweep until it has checked the workspace. A restart during the sweep repeats it.
-    for (const { item, marker, run } of retractable) await store.rollbackProvisionalTemplateStart(item.id, marker, run?.runId);
+    const verified = new Set<string>();
+    if (only === undefined && found.keepWorkspaces !== undefined) {
+      await workspace.sweep([...new Set(active)], projects, { projects: recovery, onVerified: runId => verified.add(runId) })
+        .catch((error: unknown) => log.warn("stage workspace sweep failed: %s", errorMessage(error)));
+    }
+    for (const { item, marker, run } of retractable) {
+      await store.rollbackProvisionalTemplateStart(item.id, marker, run?.runId, marker.workspace !== undefined && verified.has(marker.workspace.runId));
+    }
+    const retired = [...verified].filter(runId => found.provisionalWorkspaces.has(runId));
+    if (retired.length > 0) await store.finishProvisionalWorkspaceRecovery(retired);
     const still = new Set(found.kept.filter(run => !provisionalItems.has(run.itemId)).map(run => run.runId));
     kept = only === undefined ? still : new Set([...kept].filter(runId => still.has(runId)));
     return { ok: true };

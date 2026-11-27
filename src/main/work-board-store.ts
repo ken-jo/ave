@@ -36,6 +36,7 @@ import {
 } from "./workflow-run-store.js";
 import { type BoardFacts, classifyRun, type MarkerBoard, type MarkerOp, markerOutcome, type RunClass, type RunFileFacts, type RunRowStanding } from "./run-classification.js";
 import { stripBoardRunFields } from "../work-board/template-run-fields.js";
+import type { RemovedRunProject } from "../work-board/workflow/stage-workspace.js";
 import { readAveHomeInput } from "../shared/ave-home-trust.js";
 import { isCommittedAtomicWriteError, isMissingPathError } from "../lib/atomic-file.js";
 import { copyLegacyPluginBoard } from "../boot/steps/work-board-migration.js";
@@ -314,6 +315,31 @@ function cacheOf({ version, nextId, unknownBelow, items, unreadable, extra }: Bo
 }
 
 const BOARD_KEYS = new Set(["version", "nextId", "unknownBelow", "items"]);
+const PROVISIONAL_WORKSPACES_KEY = "provisionalWorkspaces";
+
+function provisionalWorkspaces(board: BoardFile): Map<string, RemovedRunProject> {
+  const stored = board.extra?.[PROVISIONAL_WORKSPACES_KEY];
+  if (stored === undefined) return new Map();
+  if (typeof stored !== "object" || stored === null || Array.isArray(stored)) throw new Error("Invalid provisional workspace recovery");
+  const projects = new Map<string, RemovedRunProject>();
+  for (const [runId, entry] of Object.entries(stored)) {
+    if (!UUID_PATTERN.test(runId) || !hasTemplateKeys(entry, ["itemId", "projectRoot"])
+      || typeof entry.itemId !== "number" || !Number.isSafeInteger(entry.itemId) || entry.itemId < 1
+      || typeof entry.projectRoot !== "string" || !isAbsolute(entry.projectRoot)) {
+      throw new Error("Invalid provisional workspace recovery");
+    }
+    projects.set(runId, { itemId: entry.itemId, projectRoot: entry.projectRoot });
+  }
+  return projects;
+}
+
+function setProvisionalWorkspaces(board: BoardFile, projects: ReadonlyMap<string, RemovedRunProject>): void {
+  if (projects.size === 0) {
+    if (board.extra) delete board.extra[PROVISIONAL_WORKSPACES_KEY];
+    return;
+  }
+  board.extra = { ...board.extra, [PROVISIONAL_WORKSPACES_KEY]: Object.fromEntries(projects) };
+}
 
 /** A board as a write read it. `unread`: the file was absent, awaited review, did not parse or had no items list, so the board started
  * empty and shows none of the rows the file may have held. `unmoved`: it did not parse or had no items list and could not be moved
@@ -1043,12 +1069,25 @@ export class WorkBoardStore {
   }
 
   /** One current board read shared by adoption's rows and classification, after resolving delete markers. */
-  async runBoardSnapshot(): Promise<BoardOnDisk | undefined> {
+  async runBoardSnapshot(): Promise<(BoardOnDisk & { provisionalWorkspaces: ReadonlyMap<string, RemovedRunProject> }) | undefined> {
     await this.ensureLoaded();
     await this.resolveUnknownDeletes();
     const snapshot = await readBoardOnDisk(this.filePath);
-    if (snapshot) this.cache = snapshot.board;
-    return snapshot;
+    if (!snapshot) return undefined;
+    this.cache = snapshot.board;
+    return { ...snapshot, provisionalWorkspaces: provisionalWorkspaces(snapshot.board) };
+  }
+
+  async finishProvisionalWorkspaceRecovery(runIds: readonly string[]): Promise<void> {
+    await withInProcessFileQueue(this.filePath, async () => {
+      const board = await this.readBoard();
+      const projects = provisionalWorkspaces(board);
+      const count = projects.size;
+      for (const runId of runIds) projects.delete(runId);
+      if (projects.size === count) return;
+      setProvisionalWorkspaces(board, projects);
+      await this.commit(board);
+    });
   }
 
   /** Work Approvals reads the current rows without loading, quarantining or repairing the board. */
@@ -1807,7 +1846,7 @@ export class WorkBoardStore {
   }
 
   /** Retract only the run allocated for this remote create. Any independent edit keeps the row. */
-  async rollbackProvisionalTemplateStart(itemId: number, created: RemoteProvisionalStart, runId?: string): Promise<void> {
+  async rollbackProvisionalTemplateStart(itemId: number, created: RemoteProvisionalStart, runId?: string, workspaceCleaned = false): Promise<void> {
     this.activeProvisionalStarts.delete(itemId);
     await this.ensureLoaded();
     await withInProcessFileQueue(this.filePath, async () => {
@@ -1840,6 +1879,13 @@ export class WorkBoardStore {
         delete retained.output;
       }
 
+      // Hand off unresolved cleanup in the same board write that retracts the start.
+      const workspace = current.remoteProvisional.workspace;
+      if (workspace && !workspaceCleaned) {
+        const projects = provisionalWorkspaces(board);
+        projects.set(workspace.runId, { itemId, projectRoot: workspace.projectRoot });
+        setProvisionalWorkspaces(board, projects);
+      }
       // Compare the item fields after removing the provisional run's own changes.
       if (mutationRevision(retained) === created.mutationRevision) {
         const removed = await this.removeFromBoard(board, current);

@@ -1,5 +1,6 @@
 import { realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { UUID_PATTERN } from "../../shared/uuid.js";
 import { isStageId } from "../template-graph.js";
 import { type FolderId, isFolderId, type NodeId, realDirId } from "./owned-fs.js";
 import { ADMIN_MARK, JOIN_DIR, RUN_MARK, runBranch, runRootOf, stageDirName } from "./workspace-layout.js";
@@ -52,8 +53,8 @@ export interface WorkspaceRecord {
   ignoreRules?: boolean;
   branch?: string;
   baseCommit?: string;
-  /** The refs this run created, each with the commit it was created at. */
-  refs: { name: string; oid: string }[];
+  /** A pending creation receipt, or a ref Git confirmed at the recorded commit. */
+  refs: ({ name: string; creation: string; oid?: never } | { name: string; oid: string; creation?: never })[];
   /** By `_join` or stage id. */
   registrations: Record<string, Registration>;
   joinDir?: NodeId;
@@ -97,7 +98,9 @@ export function isWorkspaceRecord(value: unknown): value is WorkspaceRecord {
     if ([value.project, value.repo, value.branch, value.baseCommit].includes(undefined) || given(value.outDir, value.ignoreRules) || value.refs.length > 1) return false;
   } else if (given(value.repo, value.branch, value.baseCommit, value.merging, value.joinDir) || value.refs.length > 0 || Object.keys(value.registrations).length > 0) return false;
   if (!Object.keys(value.out).every(isRecordFilePath)) return false;
-  if (!value.refs.every(ref => isObject(ref) && text(ref.name) && text(ref.oid))) return false;
+  if (!value.refs.every(ref => isObject(ref) && text(ref.name) && (ref.oid === undefined
+    ? typeof ref.creation === "string" && UUID_PATTERN.test(ref.creation)
+    : commit(ref.oid) && ref.creation === undefined))) return false;
   if (!Object.entries(value.registrations).every(([key, entry]) => (key === JOIN_DIR || isStageId(key)) && isObject(entry) && absolute(entry.admin) && isFolderId(entry.id, ADMIN_MARK) && absolute(entry.gitdir))) return false;
   return Object.entries(value.stages).every(([id, entry]) => isStageId(id) && isObject(entry) && typeof entry.ready === "boolean" && Number.isInteger(entry.attempt)
     && optional(entry.dir, isNodeId) && (entry.ready !== true || entry.dir !== undefined) && optional(entry.base, commit) && optional(entry.sealCommit, commit)
@@ -181,7 +184,7 @@ export function recordFits(home: string, run: { path: string; id: NodeId; self: 
   if (!samePath(run.path, runRootOf(home, root === undefined ? undefined : process.platform === "win32" ? root.toLowerCase() : root, file.itemId, file.runId))) return false;
   if (file.kind === "git") {
     if (file.branch !== runBranch(file.runId) || !OBJECT_ID.test(file.baseCommit ?? "")) return false;
-    if (!file.refs.every(ref => ref.name === `refs/heads/${file.branch}` && ref.oid === file.baseCommit)) return false;
+    if (!file.refs.every(ref => ref.name === `refs/heads/${file.branch}` && (ref.oid === undefined || ref.oid === file.baseCommit))) return false;
   }
   return Object.entries(file.registrations).every(([key, entry]) => runFolderOf(run, key, entry.gitdir) !== undefined);
 }

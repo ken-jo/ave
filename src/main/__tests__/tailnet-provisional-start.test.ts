@@ -334,7 +334,7 @@ it.each([
       return { workspace: {
         ...workspace,
         async open(ref, root) { runId = ref.runId; return provider.open(ref, root); },
-        async sweep(active, projects) { await workspace.sweep(active, projects); await provider.sweep(active, projects); },
+        async sweep(active, projects, recovery) { await workspace.sweep(active, projects); await provider.sweep(active, projects, recovery); },
       } };
     } });
     await h.runThenEnd(async () => {
