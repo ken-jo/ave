@@ -1,7 +1,9 @@
 import { spawn } from "node:child_process";
 import { windowsPowerShellEnv, windowsPowerShellPath } from "../../scripts/lib/windows-powershell-env.mjs";
 
-const TIMEOUT_MS = 5000;
+const STARTUP_TIMEOUT_MS = 5_000;
+const ENUMERATION_TIMEOUT_MS = 5_000;
+const QUERY_TIMEOUT_MS = STARTUP_TIMEOUT_MS + ENUMERATION_TIMEOUT_MS;
 const OUTPUT_LIMIT = 64 * 1024;
 const RESULT_LIMIT = 20;
 const SCAN_LIMIT = 128;
@@ -587,6 +589,7 @@ $script:processFailure = $null
 $script:processMatchLimited = $false
 $script:processByteLimited = $false
 $script:processInspected = 0
+$null = WriteEvidence @{ kind = 'processScanStarted' } ${OUTPUT_LIMIT - STATUS_RESERVE}
 $processWatch = [Diagnostics.Stopwatch]::StartNew()
 try {
   FindJobProcesses | ForEach-Object {
@@ -648,10 +651,10 @@ function formatProcess({ kind, pid, unresolvedParentPid, image, created, path, a
   return `${base} match=${reason} ${started}`;
 }
 
-function collectQuery(script, timeout, maxBuffer, readRecord, invalidRecord, run) {
+function collectQuery(script, maxBuffer, readRecord, invalidRecord, run) {
   const args = ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(QUERY_COMMAND, "utf16le").toString("base64")];
   const options = {
-    encoding: "utf8", windowsHide: true, timeout, maxBuffer,
+    encoding: "utf8", windowsHide: true, timeout: QUERY_TIMEOUT_MS, maxBuffer,
     env: { ...windowsPowerShellEnv(), [QUERY_VARIABLE]: script },
   };
   return new Promise(resolve => {
@@ -660,9 +663,14 @@ function collectQuery(script, timeout, maxBuffer, readRecord, invalidRecord, run
     let failure;
     let pending = "";
     let inputBytes = 0;
+    const startedAt = performance.now();
+    const overallDeadline = startedAt + QUERY_TIMEOUT_MS;
+    let phaseDeadline = startedAt + STARTUP_TIMEOUT_MS;
+    let enumerating = false;
+    let deadline;
 
     function consume(chunk) {
-      if (settled) return;
+      if (settled || deadlineReached()) return;
       const size = Buffer.byteLength(chunk);
       if (inputBytes + size > maxBuffer) {
         failure = `Cleanup query output exceeded ${maxBuffer} bytes`;
@@ -673,8 +681,16 @@ function collectQuery(script, timeout, maxBuffer, readRecord, invalidRecord, run
       const lines = (pending + chunk).split("\n");
       pending = lines.pop();
       for (const line of lines) {
-        try { readRecord(JSON.parse(line)); }
-        catch (error) {
+        if (deadlineReached()) return;
+        try {
+          const now = performance.now();
+          if (readRecord(JSON.parse(line), Math.round(now - startedAt))) {
+            enumerating = true;
+            phaseDeadline = Math.min(now + ENUMERATION_TIMEOUT_MS, overallDeadline);
+            clearTimeout(deadline);
+            deadline = setTimeout(expire, Math.ceil(phaseDeadline - now));
+          }
+        } catch (error) {
           failure ??= error instanceof SyntaxError ? "Invalid cleanup JSON record" : error.message;
           invalidRecord();
         }
@@ -688,19 +704,30 @@ function collectQuery(script, timeout, maxBuffer, readRecord, invalidRecord, run
       resolve(reason ?? failure ?? (pending ? "Cleanup query ended with a partial record" : undefined));
     }
 
-    const deadline = setTimeout(() => {
-      finish(`Cleanup query reached its ${timeout} ms deadline`);
+    function expire() {
+      finish(enumerating
+        ? `Cleanup process enumeration reached its ${ENUMERATION_TIMEOUT_MS} ms deadline`
+        : `Cleanup query startup reached its ${STARTUP_TIMEOUT_MS} ms deadline`);
       // The query starts no processes; its console host exits with it.
       child?.kill?.();
       child?.stdin?.destroy();
       child?.stdout?.destroy();
       child?.stderr?.destroy();
       child?.unref?.();
-    }, timeout);
+    }
+
+    function deadlineReached() {
+      if (performance.now() < phaseDeadline) return false;
+      expire();
+      return true;
+    }
+
+    deadline = setTimeout(expire, STARTUP_TIMEOUT_MS);
     try {
       child = run("powershell.exe", args, options, (error, stdout) => {
+        if (settled || deadlineReached()) return;
         if (!child?.stdout && stdout) consume(stdout);
-        finish(error ? queryError(error) : undefined);
+        if (!settled && !deadlineReached()) finish(error ? queryError(error) : undefined);
       });
       child?.stdout?.on("data", consume);
     } catch (error) { finish(queryError(error)); }
@@ -745,6 +772,7 @@ async function inspectJobRoot(root, diagnostic, run = runJobRootQuery, preflight
   // The precondition query streams only process records.
   let filesComplete = preflight;
   let holdersComplete = preflight;
+  let processScanStarted = false;
   let processesComplete = false;
   let processScanIncomplete = false;
   let fileCount = 0;
@@ -759,7 +787,7 @@ async function inspectJobRoot(root, diagnostic, run = runJobRootQuery, preflight
   }
 
   const script = queryScript(root, preflight);
-  const queryFailure = await collectQuery(script, TIMEOUT_MS, OUTPUT_LIMIT, row => {
+  const queryFailure = await collectQuery(script, OUTPUT_LIMIT, (row, elapsedMs) => {
     if (!filesComplete && row.kind === "candidate") {
       if (fileCount++ < RESULT_LIMIT) emit(formatCandidate(row), FILE_OUTPUT_LIMIT);
     } else if (!filesComplete && row.kind === "files") {
@@ -794,6 +822,14 @@ async function inspectJobRoot(root, diagnostic, run = runJobRootQuery, preflight
         throw new Error("Unexpected holder record");
       }
     } else if (holdersComplete && !processesComplete) {
+      if (row.kind === "processScanStarted" && !processScanStarted) {
+        processScanStarted = true;
+        emit(`Cleanup process scan started after ${elapsedMs} ms`, OUTPUT_LIMIT - STATUS_RESERVE - PROCESS_MATCH_RESERVE);
+        return true;
+      }
+      if (!processScanStarted && ["processes", "process", "processUnreadable"].includes(row.kind)) {
+        throw new Error("Cleanup process scan did not report its start");
+      }
       if (row.kind === "processes") {
         processesComplete = true;
         if (row.limited) emit("Cleanup process scan reached its inspection or reporting limit");

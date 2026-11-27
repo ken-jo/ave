@@ -125,6 +125,7 @@ function queryRecords({
       ...holders,
       { kind: "holders", limited: false, failed: false },
     ]),
+    { kind: "processScanStarted" },
     ...processes,
     { kind: "processes", failed: processScanFailed, limited: processLimited },
   ];
@@ -286,11 +287,69 @@ describe("Windows job root writer precondition", () => {
     job.assertPreserved();
   });
 
+  it("allows a completed writer scan beyond the old combined deadline", async t => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    let now = 0;
+    t.mock.method(performance, "now", () => now);
+    const job = fixture(t);
+    const stdout = new PassThrough({ encoding: "utf8" });
+    let close;
+    const diagnostic = mock.fn();
+    const result = cleanupJobRoot(root, { ...job.options, diagnostic, run: (_command, _args, _options, done) => {
+      close = done;
+      return { stdout };
+    } });
+    now = 3_000;
+    t.mock.timers.tick(3_000);
+    stdout.write('{"kind":"processScanStarted"}\n');
+    stdout.write('{"kind":"processUnreadable","pid":42,"reason":"metadata unavailable"}\n');
+    now = 5_100;
+    t.mock.timers.tick(2_100);
+    job.assertPreserved();
+    stdout.end('{"kind":"processes","failed":false,"limited":false,"inspected":1,"elapsedMs":2100}\n');
+    close(null);
+    await result;
+    assert.match(output({ diagnostic }), /scan started after 3000 ms/);
+    assert.match(output({ diagnostic }), /inspected 1 process rows in 2100 ms/);
+    assert.deepEqual(readdirSync(job.parent), ["shared"]);
+  });
+
+  for (const [outcome, expected] of [
+    ["missing completion", /did not report completion/],
+    ["writer match", /live processes can still access the job root/],
+    ["expired enumeration", /process enumeration reached its 5000 ms deadline/],
+  ]) {
+    it("preserves the root after a late writer scan with " + outcome, async t => {
+      t.mock.timers.enable({ apis: ["setTimeout"] });
+      let now = 0;
+      t.mock.method(performance, "now", () => now);
+      const job = fixture(t);
+      const stdout = new PassThrough({ encoding: "utf8" });
+      const kill = mock.fn();
+      let close;
+      const result = cleanupJobRoot(root, { ...job.options, run: (_command, _args, _options, done) => {
+        close = done;
+        return { stdout, kill };
+      } });
+      const refusal = assert.rejects(result, expected);
+      now = 4_000;
+      t.mock.timers.tick(now);
+      stdout.write('{"kind":"processScanStarted"}\n');
+      now = outcome === "expired enumeration" ? 10_000 : 5_100;
+      if (outcome === "writer match") stdout.write(JSON.stringify(PROCESS_DETAILS) + "\n");
+      if (outcome !== "missing completion") stdout.write('{"kind":"processes","failed":false,"limited":false}\n');
+      close(null);
+      await refusal;
+      job.assertPreserved();
+      assert.equal(kill.mock.callCount(), outcome === "expired enumeration" ? 1 : 0);
+    });
+  }
+
   it("reports the writer query deadline and the unfinished process scan", async t => {
     t.mock.timers.enable({ apis: ["setTimeout"] });
     const result = assertNoJobRootWriters(root, () => {});
     t.mock.timers.tick(5_000);
-    await assert.rejects(result, /5000 ms deadline\nCleanup process scan did not report completion/);
+    await assert.rejects(result, /startup reached its 5000 ms deadline\nCleanup process scan did not report completion/);
   });
 
   it("terminates a query at its deadline and leaves no descendants", { skip: process.platform !== "win32" }, async () => {
@@ -301,7 +360,7 @@ describe("Windows job root writer precondition", () => {
       child = stalled(...args);
       exited = once(child, "exit");
       return child;
-    }), /5000 ms deadline/);
+    }), /process enumeration reached its 5000 ms deadline/);
     assert.deepEqual(await exited, [null, "SIGTERM"]);
     assert.equal(runFixturePowerShell(`@(Get-CimInstance Win32_Process -Filter 'ParentProcessId = ${child.pid}').Count`), "0");
   });
@@ -312,7 +371,7 @@ describe("Windows job root writer precondition", () => {
   });
 
   it("refuses a writer query with a malformed process status", async () => {
-    const run = (_command, _args, _options, done) => done(null, `${JSON.stringify({ kind: "processes", limited: false })}\n`);
+    const run = (_command, _args, _options, done) => done(null, '{"kind":"processScanStarted"}\n{"kind":"processes","limited":false}\n');
     await assert.rejects(assertNoJobRootWriters(root, run), /Invalid cleanup processes status field: failed/);
   });
 
@@ -1089,7 +1148,7 @@ describe("Windows job root cleanup diagnostics", () => {
     assert.ok(Buffer.from(args.at(-1), "base64").toString("utf16le").includes(QUERY_VARIABLE));
     const { [QUERY_VARIABLE]: script, ...env } = options.env;
     assert.ok(script.includes(root));
-    assert.equal(options.timeout, 5000);
+    assert.equal(options.timeout, 10_000);
     assert.deepEqual({ ...options, timeout: undefined, env }, {
       encoding: "utf8", windowsHide: true, timeout: undefined, maxBuffer: 64 * 1024, env: windowsPowerShellEnv(),
     });
@@ -1569,7 +1628,7 @@ describe("Windows job root query", () => {
       limited: true, processLimited: true,
     });
     await diagnoseJobRoot("C:\\fixture's", diagnostic, run);
-    assert.equal(diagnostic.mock.callCount(), 42);
+    assert.equal(diagnostic.mock.callCount(), 43);
     assert.match(output({ diagnostic }), /process pid=4000 unresolved-parent-pid=2000 image=.*holder\.exe/);
     assert.match(output({ diagnostic }), /candidate path=.*entry-19.*Delete.*\(\+2 more\).*parent-deny=\[\].*ReadOnly, Hidden.*handle="not determined"/);
     assert.match(output({ diagnostic }), /Cleanup path scan reached its inspection or reporting limit/);
