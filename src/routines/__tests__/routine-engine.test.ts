@@ -340,9 +340,11 @@ describe("RoutineEngine workspace lifecycle", () => {
     }));
     const engine = new RoutineEngine({} as never);
     const activeLoops = (engine as unknown as {
-      activeLoops: Set<{ planWorkspaceRootRevocation: () => () => unknown }>;
+      activeLoops: Set<{ revokeWorkspaceRoot: () => unknown; planWorkspaceRootRevocation: () => () => unknown }>;
     }).activeLoops;
-    for (const revoke of [first, failing, last]) activeLoops.add({ planWorkspaceRootRevocation: () => () => revoke() });
+    for (const revoke of [first, failing, last]) {
+      activeLoops.add({ revokeWorkspaceRoot: revoke, planWorkspaceRootRevocation: () => revoke });
+    }
 
     let thrown: unknown;
     try {
