@@ -778,7 +778,9 @@ describe("browser tools", () => {
     tab.guest.title = "Private page title";
     const tabId = `renderer-${tab.guest.id}`;
     h.tabs.bindConversationSurface(HOST_SESSION, { windowId: 1, surface: { kind: "browser", tabId } });
-    const lease = h.tabs.acquireControl(h.tabs.liveTab(tab.handle)!, { sessionId: state === "foreign lease" ? CHILD_SESSION : HOST_SESSION });
+    const live = h.tabs.liveTab(tab.handle);
+    if (!live) throw new Error("Expected the pane tab to be live");
+    const lease = h.tabs.acquireControl(live, { sessionId: state === "foreign lease" ? CHILD_SESSION : HOST_SESSION });
     expect(lease.lifetime).toBe("borrowed");
     if (state === "paused") expect(h.tabs.pause(1, tabId)).toBe(true);
 
@@ -1570,7 +1572,9 @@ describe("browser tools", () => {
     const tab = h.userTab("https://a.example/form");
     const tabId = `renderer-${tab.guest.id}`;
     h.tabs.bindConversationSurface(HOST_SESSION, { windowId: 1, surface: { kind: "browser", tabId } });
-    h.tabs.acquireControl(h.tabs.liveTab(tab.handle)!, { sessionId: HOST_SESSION });
+    const live = h.tabs.liveTab(tab.handle);
+    if (!live) throw new Error("Expected the pane tab to be live");
+    h.tabs.acquireControl(live, { sessionId: HOST_SESSION });
     expect(h.tabs.pause(1, tabId)).toBe(true);
 
     const read = await h.run(BROWSER_TOOL.readText, {});

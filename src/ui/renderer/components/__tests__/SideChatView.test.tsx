@@ -172,8 +172,11 @@ describe("SideChatView — New button gating during streaming", () => {
     const tabId = "browser:capture";
     const groupId = "pane:capture";
     const onSessionIdChange = vi.fn();
-    api.sideChat!.paneHistory = vi.fn(async () => ({ ok: true as const, sessionId: "side-1", messages: [] }));
-    api.sideChat!.endPaneChat = vi.fn(async () => ({ ok: true as const }));
+    const sideChat = api.sideChat;
+    if (!sideChat) throw new Error("Expected the pane chat API");
+    sideChat.paneHistory = vi.fn(async () => ({ ok: true as const, sessionId: "side-1", messages: [] }));
+    const endPaneChat = vi.fn(async () => ({ ok: true as const, sessionId: null }));
+    sideChat.endPaneChat = endPaneChat;
     const image = { ok: true as const, path: "/work/capture.png", dataUrl: "data:image/png;base64,aW1hZ2U=", mimeType: "image/png", width: 200, height: 100, bytes: 5 };
     const captureResult = { ok: true as const, value: { ...image, tabId, documentGeneration: 2, truncated: false } };
     const pendingCapture = deferred<typeof captureResult>();
@@ -186,11 +189,10 @@ describe("SideChatView — New button gating during streaming", () => {
     const { ns } = makeMockAveNamespace();
     vi.stubGlobal("ave", { ...ns, attach: { saveClipboardImage, readImage, release } });
 
-    renderView(api, undefined, {
+    renderView(api, { hasApiKey: true, settingsLoaded: true }, {
       chatGroupId: groupId,
       boundSurface: { kind: "browser", tabId, name: "Browser", detail: null, detailTitle: null },
       onSessionIdChange,
-      runtime: { hasApiKey: true, settingsLoaded: true },
     }, <BrowserCaptureControls api={browser} tabId={tabId} paneChatGroupId={groupId} />);
     await waitFor(() => expect(onSessionIdChange).toHaveBeenCalledWith("side-1"));
     const dock = screen.getByTestId("side-chat-composer-dock");
@@ -203,7 +205,7 @@ describe("SideChatView — New button gating during streaming", () => {
     if (pendingStep === "image save") expect(saveClipboardImage).toHaveBeenCalledOnce();
 
     await act(async () => { fireEvent.click(screen.getByTestId("side-chat-new")); });
-    expect(api.sideChat!.endPaneChat).toHaveBeenCalledExactlyOnceWith(tabId, "new");
+    expect(endPaneChat).toHaveBeenCalledExactlyOnceWith(tabId, "new");
     expect(screen.getByTestId("side-chat-composer-dock")).toBe(dock);
     expect(screen.getByTestId("browser-capture-menu")).toBe(toolbar);
     await act(async () => {
