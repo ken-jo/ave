@@ -1736,32 +1736,82 @@ export class WorkBoardStore {
         this.cache = cacheOf(board);
         return item ? { status: "invalid" as const, itemId: id, reason: "work-item-changed" } : { status: "not_found" as const, itemId: id };
       }
-      const { runId } = item;
-      const intent = runId === undefined ? undefined : { itemId: id, runId };
-      const sha = intent === undefined ? undefined : storedSha(board, listedEntry(board, id));
-      const operation: MarkerOp = { op: "row", ownIntent: true, ...(sha === undefined ? {} : { entrySha: sha }) };
-      const marked = intent === undefined ? "none" : await this.publishIntent(intent, operation, heldOn(board));
-      if (marked === "pending-review" || marked === "too-large") {
-        this.cache = cacheOf(board);
-        return { status: "invalid" as const, itemId: id, reason: marked === "pending-review" ? "template-runs-pending-review" : "template-runs-too-large" };
-      }
-      board.items = board.items.filter((i) => i !== item);
-      try {
-        await this.commit(board, intent === undefined ? { drops: true } : { drops: true, deleted: intent });
-      } catch (error) {
-        if (intent !== undefined && marked === "marked") await this.settleFailedDelete(intent, error, (onDisk) => listsRow(onDisk, intent), operation);
-        throw error;
-      }
-      if (item.templateId !== undefined) await this.pruneAfterWrite(this.retention(boardStanding(board)));
-      this.itemRemoved();
-      await appendActivity(this.activity, {
-        kind: "deleted",
-        itemId: id,
-        title: item.title,
-        ts: new Date(this.now()).toISOString(),
-      });
-      return { status: "deleted" as const, itemId: id, ...(runId === undefined ? {} : { runId }) };
+      return this.removeFromBoard(board, item);
     });
+  }
+
+  /** Retract only the run allocated for this remote create. Any independent edit keeps the row. */
+  async rollbackProvisionalTemplateStart(created: WorkItemResolved, runId: string | undefined): Promise<void> {
+    await this.ensureLoaded();
+    await withInProcessFileQueue(this.filePath, async () => {
+      const board = await this.readBoard();
+      const index = board.items.findIndex(item => item.id === created.id);
+      const current = board.items[index];
+      if (!current || current.created_at !== created.created_at
+        || (current.runId !== undefined && current.runId !== runId)
+        || current.runHistory?.some(entry => entry.runId !== runId)) {
+        this.cache = cacheOf(board);
+        return;
+      }
+
+      const retained = { ...current };
+      if (current.runId !== undefined) {
+        const run = await this.runs.get(current.runId);
+        if (run.status !== "found" || run.run.itemId !== current.id
+          || run.run.runStartedBy.kind !== "tailnet-create-and-run" || run.run.settled === undefined) {
+          throw new Error("run-state-unavailable");
+        }
+        delete retained.runId;
+        delete retained.runStatus;
+        delete retained.runUpdatedAt;
+        delete retained.runHistory;
+        delete retained.runSessionId;
+        delete retained.plan;
+        delete retained.planApproval;
+        delete retained.output;
+      }
+
+      // Compare the item fields after removing the provisional run's own changes.
+      if (mutationRevision(retained) === created.mutationRevision) {
+        const removed = await this.removeFromBoard(board, current);
+        if (removed.status === "invalid") throw new Error(removed.reason);
+      } else if (current.runId !== undefined) {
+        board.items[index] = retained;
+        await this.commit(board, { drops: true });
+        await this.pruneAfterWrite(this.retention(boardStanding(board)));
+      } else {
+        this.cache = cacheOf(board);
+      }
+    });
+  }
+
+  private async removeFromBoard(board: BoardRead, item: WorkItem): Promise<WorkItemDeleteResult> {
+    const id = item.id;
+    const { runId } = item;
+    const intent = runId === undefined ? undefined : { itemId: id, runId };
+    const sha = intent === undefined ? undefined : storedSha(board, listedEntry(board, id));
+    const operation: MarkerOp = { op: "row", ownIntent: true, ...(sha === undefined ? {} : { entrySha: sha }) };
+    const marked = intent === undefined ? "none" : await this.publishIntent(intent, operation, heldOn(board));
+    if (marked === "pending-review" || marked === "too-large") {
+      this.cache = cacheOf(board);
+      return { status: "invalid" as const, itemId: id, reason: marked === "pending-review" ? "template-runs-pending-review" : "template-runs-too-large" };
+    }
+    board.items = board.items.filter((i) => i !== item);
+    try {
+      await this.commit(board, intent === undefined ? { drops: true } : { drops: true, deleted: intent });
+    } catch (error) {
+      if (intent !== undefined && marked === "marked") await this.settleFailedDelete(intent, error, (onDisk) => listsRow(onDisk, intent), operation);
+      throw error;
+    }
+    if (item.templateId !== undefined) await this.pruneAfterWrite(this.retention(boardStanding(board)));
+    this.itemRemoved();
+    await appendActivity(this.activity, {
+      kind: "deleted",
+      itemId: id,
+      title: item.title,
+      ts: new Date(this.now()).toISOString(),
+    });
+    return { status: "deleted" as const, itemId: id, ...(runId === undefined ? {} : { runId }) };
   }
 
   // A delete's first step: its intent stored in the run file (see WorkflowRunStore.markDeleted), afresh over the markers `held` leaves

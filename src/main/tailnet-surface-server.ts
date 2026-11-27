@@ -22,6 +22,7 @@ import type { TailnetWorkDecisions } from "./tailnet-work-decisions.js";
 import {
   isTailnetAppCapabilityKey,
   parseTailnetAuthorization,
+  TAILNET_PORT_CONFINED_WORKER_RANGE,
   type TailnetAuthorization,
 } from "../shared/tailnet-observer-config.js";
 import type { ConversationSurfaceRuntime } from "../engine/conversation-surface-runtime.js";
@@ -44,7 +45,7 @@ import {
 } from "./tailnet-pairing-share-store.js";
 import { TAILNET_WORK_DECISION_PATH } from "../shared/tailnet-work-decisions.js";
 import type { AuditLogger } from "../audit/audit-logger.js";
-import { assertTailnetListenerPortAllowed } from "../permissions/tailnet-listener-policy.js";
+import { assertTailnetListenerPortAllowed, readTailnetListenerPortPolicy } from "../permissions/tailnet-listener-policy.js";
 
 export const DEFAULT_TAILNET_OBSERVER_PORT = 46_173;
 
@@ -327,7 +328,7 @@ export async function writeTailnetObserverConfigFile(
   const parsed = parseTailnetObserverConfigFile(file);
   const { config } = resolveFromLayers(fileLayer(parsed), {});
   const port = config?.port ?? parsed.port;
-  if (port !== undefined) assertTailnetListenerPortAllowed(port);
+  if (port !== undefined) await assertTailnetListenerPortAllowed(port);
   await namespace.writeJson(TAILNET_OBSERVER_CONFIG_FILE, file);
 }
 
@@ -400,17 +401,22 @@ function probeLoopbackBind(port: number): Promise<number | null> {
 // Persist the selected port so restart cannot move the serve target.
 // Probe-to-bind races remain explicit start failures, never silent fallback to a different port.
 export async function chooseObserverPort(preferred: number | null): Promise<number | null> {
-  const candidates = preferred === null || preferred === DEFAULT_TAILNET_OBSERVER_PORT
-    ? [DEFAULT_TAILNET_OBSERVER_PORT]
-    : [preferred, DEFAULT_TAILNET_OBSERVER_PORT];
-  for (const candidate of candidates) {
-    assertTailnetListenerPortAllowed(candidate);
-    const bound = await probeLoopbackBind(candidate);
-    if (bound !== null) return bound;
+  const isAllowed = await readTailnetListenerPortPolicy();
+  if (preferred !== null) {
+    if (!isAllowed(preferred)) throw new Error(TAILNET_PORT_CONFINED_WORKER_RANGE);
+    if (await probeLoopbackBind(preferred) !== null) return preferred;
   }
+  if (preferred !== DEFAULT_TAILNET_OBSERVER_PORT && isAllowed(DEFAULT_TAILNET_OBSERVER_PORT)) {
+    if (await probeLoopbackBind(DEFAULT_TAILNET_OBSERVER_PORT) !== null) return DEFAULT_TAILNET_OBSERVER_PORT;
+  }
+
   const bound = await probeLoopbackBind(0);
-  if (bound !== null) assertTailnetListenerPortAllowed(bound);
-  return bound;
+  if (bound === null || isAllowed(bound)) return bound;
+  // The ephemeral range may itself be covered by the permit. Try eligible unprivileged ports explicitly.
+  for (let candidate = 1024; candidate <= 65_535; candidate++) {
+    if (isAllowed(candidate) && await probeLoopbackBind(candidate) !== null) return candidate;
+  }
+  return null;
 }
 
 function dependencies(
@@ -605,7 +611,7 @@ async function startForBoot(
     readConfigFile: resolved.readConfigFile,
   });
   if (!config) return null;
-  assertTailnetListenerPortAllowed(config.port);
+  await assertTailnetListenerPortAllowed(config.port);
   if (config.controllerEnabled && options.conversationCommandPort === undefined) {
     throw new Error("tailnet-controller-command-port-unavailable");
   }

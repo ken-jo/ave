@@ -158,6 +158,29 @@ it.each(["archived pin", "last failure"] as const)("includes the desktop schedul
   });
 });
 
+it("withholds the prior schedule pin after its current template scope leaves the authorized projects", async () => {
+  const { h, decide, routines, runtime } = await fixture();
+  await h.runThenEnd(async () => {
+    const prior = h.pinOf(await h.confirm([stageOf("prior")]));
+    const next = h.pinOf(await h.confirm([stageOf("next")]));
+    const attached = await decide({ ...base, kind: "schedule-attachment", input: {
+      ...prior, expectedScope: { kind: "all" }, schedule: { repeat: { kind: "cron", expression: "0 9 * * *" } },
+    } });
+    if (!attached.ok || attached.kind !== "schedule-attachment") throw new Error("Schedule not attached");
+    await h.confirm([stageOf("prior")], {
+      id: prior.templateId, scope: { kind: "project", projectRoot: h.dir },
+    });
+    const [desktop] = (await routines.listScheduleDisplay()).routines;
+    expect(desktop.templateAttention).toBe("scope-changed");
+    const reviews = await runtime.list(evidence);
+    expect(reviews.some(review => review.kind === "create-and-run" && review.binding.input.templateId === prior.templateId)).toBe(false);
+    const offered = reviews.find(review =>
+      review.kind === "schedule-attachment" && review.binding.input.templateId === next.templateId);
+    if (offered?.kind !== "schedule-attachment") throw new Error("Missing reattachment review");
+    expect(offered.review).not.toHaveProperty("existingPin");
+  });
+});
+
 it("dispatches requested outputs only while their owner is registered", async () => {
   const { h, decide, runtime, log } = await fixture();
   await h.runThenEnd(async () => {

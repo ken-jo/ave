@@ -4,6 +4,10 @@ import { unavailableSecretEncryption } from "../../__tests__/support/host-runtim
 import { createServer } from "node:net";
 import { occupyLoopbackPort as occupy } from "../../__tests__/test-helpers.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import * as windowsRuntime from "@anthropic-ai/sandbox-runtime";
+import * as windowsIntegrity from "../../permissions/srt-win-integrity.js";
+import * as sandboxCapability from "../../permissions/sandbox-capability.js";
+import * as aveHome from "../../shared/ave-home.js";
 import * as sandbox from "../../permissions/asrt-sandbox.js";
 import type { ConversationSurfaceRuntime } from "../../engine/conversation-surface-runtime.js";
 import type { TailnetPairedSharingRuntime } from "../tailnet-paired-sharing-runtime.js";
@@ -35,6 +39,15 @@ import {
   type TailscaleCommandResult,
   type TailscaleCommandRunner,
 } from "../tailnet-surface-server.js";
+
+vi.mock(import("@anthropic-ai/sandbox-runtime"), async importOriginal => {
+  const runtime = await importOriginal();
+  return {
+    ...runtime,
+    resolveSrtWin: vi.fn(runtime.resolveSrtWin),
+    checkWindowsSandboxStatusAsync: vi.fn(runtime.checkWindowsSandboxStatusAsync),
+  };
+});
 
 const CAPABILITY = "ave.example.com/cap/conversation-observer";
 const CAPABILITY_ENV = "app-capability:" + CAPABILITY;
@@ -119,6 +132,49 @@ describe("Tailnet observer lifecycle", () => {
     } finally {
       range.mockRestore();
       platform.mockRestore();
+    }
+  });
+
+  it.each(["extended", "unreadable", "stock"] as const)("checks the %s installed Windows permit at listener startup", async installed => {
+    const port = DEFAULT_TAILNET_OBSERVER_PORT;
+    const platform = vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+    const requested = vi.spyOn(sandboxCapability, "isPluginWorkerConfinementRequestedAtBoot").mockReturnValue(true);
+    // The dependency check passed, but background Windows isolation has not selected the worker yet.
+    const substrate = vi.spyOn(sandboxCapability, "getWindowsSandboxSubstrate").mockReturnValue({
+      mxc: { state: "available" }, windowsBuild: "26100", shells: "mxc", extensions: "none",
+      srtWinReady: true, shellEgressIdentity: "kernel-channel", extensionEgressIdentity: "shared",
+    });
+    const stock = [...sandbox.DEFAULT_WINDOWS_PROXY_PORT_RANGE] as [number, number];
+    const configured = vi.spyOn(sandbox, "getWindowsProxyPortRange").mockReturnValue(stock);
+    const privacy = vi.spyOn(aveHome, "getAveHomePrivacyFailure").mockReturnValue(undefined);
+    const prepare = vi.spyOn(windowsIntegrity, "prepareSrtWinExecutable").mockReturnValue("srt-win.exe");
+    vi.mocked(windowsRuntime.resolveSrtWin).mockReturnValue({ exe: "srt-win.exe", prependArgs: [] });
+    const status = vi.mocked(windowsRuntime.checkWindowsSandboxStatusAsync).mockResolvedValue({
+      user: { provisioned: false, groupExists: false, inBuiltinUsers: false, inSandboxGroup: false, hiddenFromLogon: false, credPresent: false, realUserSid: "S-1-5-21-1" },
+      wfp: installed === "unreadable" ? { state: "cannot-read", filters: 0 } : {
+        state: "installed", filters: 2, portRange: installed === "stock" ? stock : [port, stock[1]],
+      },
+    });
+    try {
+      const f = options({
+        AVE_TAILNET_OBSERVER: "1",
+        AVE_TAILNET_OBSERVER_AUTHORIZATION: CAPABILITY_ENV,
+        AVE_TAILNET_OBSERVER_PORT: String(port),
+      });
+      const starting = maybeStartTailnetObserverServer(f.input);
+      if (installed === "stock") {
+        await expect(starting).resolves.toEqual({ port });
+      } else {
+        const reason = installed === "extended" ? "tailnet-observer-port-confined-worker-range"
+          : "tailnet-observer-confined-range-unverified";
+        await expect(starting).rejects.toThrow(reason);
+        expect(getTailnetObserverRuntimeState().lastStartError).toBe(reason);
+        expect(f.startServer).not.toHaveBeenCalled();
+      }
+      expect(status).toHaveBeenCalledOnce();
+    } finally {
+      status.mockClear();
+      for (const spy of [prepare, privacy, configured, substrate, requested, platform]) spy.mockRestore();
     }
   });
 
@@ -839,7 +895,6 @@ describe("choosing a loopback port for the observer", () => {
     const range = vi.spyOn(sandbox, "getWindowsProxyPortRange").mockReturnValue([port, port + 1]);
     try {
       await expect(chooseObserverPort(port)).rejects.toThrow("tailnet-observer-port-confined-worker-range");
-      await expect(chooseObserverPort(null)).rejects.toThrow("tailnet-observer-port-confined-worker-range");
     } finally {
       range.mockRestore();
       platform.mockRestore();
@@ -875,6 +930,27 @@ describe("choosing a loopback port for the observer", () => {
       expect(chosen).not.toBeNull();
       expect(chosen).not.toBe(DEFAULT_TAILNET_OBSERVER_PORT);
     } finally {
+      await release();
+    }
+  });
+
+  it("skips an excluded automatic default after an eligible preferred port is occupied", async () => {
+    const preferred = await freePort();
+    const release = await occupy(preferred);
+    const excluded = DEFAULT_TAILNET_OBSERVER_PORT;
+    const platform = vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+    const range = vi.spyOn(sandbox, "getWindowsProxyPortRange").mockReturnValue([excluded, excluded]);
+    try {
+      const chosen = await chooseObserverPort(preferred);
+      expect(chosen).not.toBeNull();
+      expect(chosen).not.toBe(excluded);
+      expect(chosen).not.toBe(preferred);
+      if (chosen === null) throw new Error("No eligible free port");
+      const releaseChosen = await occupy(chosen);
+      await releaseChosen();
+    } finally {
+      range.mockRestore();
+      platform.mockRestore();
       await release();
     }
   });

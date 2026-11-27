@@ -117,6 +117,8 @@ export type ScheduledTemplateStart =
 interface StageRunStart {
   source: RunAuthoritySource;
   authority?: WorkDecisionAuthority;
+  /** Identifies the provisional run before writes so its caller can retract only that run. */
+  onRunAllocated?: (runId: string) => void;
   /** With live authority, reports acceptance when the first child is handed to the runner. */
   onStarted?: (runId: string) => void;
 }
@@ -336,6 +338,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   function closeState(state: RunState): void {
     if (runs.get(state.itemId) !== state) return;
     if (state.held.length > 0) log.info("held stage run events went with their run's end (id=%d): %s", state.itemId, state.held.map(held => held.kind).join(", "));
+    state.pendingStart = undefined;
     runs.delete(state.itemId);
     deps.releaseItem(state.itemId);
     updateApprovalSurface({ kind: "release", sessionId: workBoardOriginSessionId(state.itemId) });
@@ -1383,6 +1386,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     const pin = source.pin;
     const refused = refusedStart;
     const { runId } = ref;
+    start?.onRunAllocated?.(runId);
     const opened = await workspace.open(ref, projectRoot);
     if (!opened.ok) {
       if (authority && !await authority.refreshCurrent()) return refused(WORK_DECISION_AUTHORITY_REVOKED);
@@ -1449,10 +1453,22 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   }
 
   async function firstResult(state: RunState): Promise<WorkItemRunResult> {
-    await idle(state);
-    const result = await resultOf(state);
-    state.scheduledStart = undefined;
-    return result;
+    try {
+      await idle(state);
+      return await resultOf(state);
+    } finally {
+      state.scheduledStart = undefined;
+      if (state.pendingStart) {
+        // No child accepted the start. Retire the POST authority and close any retryable run before returning.
+        state.stopping = true;
+        state.pendingStart = undefined;
+        await enqueue(state, async () => {
+          if (runs.get(state.itemId) === state) {
+            await unwind(state, { type: "stop_requested" }, "pre-launch-start-refused");
+          }
+        });
+      }
+    }
   }
 
   /** A start that failed after its workspace was opened: the workspace goes, and a run that was already stored ends `error`. A stored run
@@ -1518,7 +1534,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
 
   const decidable = (itemId: number): boolean => {
     const state = runs.get(itemId);
-    return state !== undefined && !state.stopping && state.refused === null && state.faulted === null;
+    return state !== undefined && state.pendingStart === undefined && !state.stopping && state.refused === null && state.faulted === null;
   };
 
   async function decideGate(itemId: number, i: StageGateDecideInput, authority?: WorkDecisionAuthority): Promise<StageGateDecideResult> {

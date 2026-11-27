@@ -5926,6 +5926,7 @@ export const en = {
   "tailnetObserver.sourceEnvOverride": "set by environment",
   "tailnetObserver.errorAuthorization": "Choose who may reach this listener, and enter the app capability when you require one.",
   "tailnetObserver.errorPort": "Enter a port between 1 and 65535.",
+  "tailnetObserver.errorConfinedRangeUnverified": "The Tailnet listener requires a verified Windows sandbox loopback permit range.",
   "tailnetObserver.errorPortConfinedWorkerRange": "This port is in the sandbox loopback range. Choose a port outside the range.",
   "tailnetObserver.errorControllerNeedsPairing": "Remote commands need paired sharing turned on.",
   "tailnetObserver.errorWebNeedsPairing": "The web surface needs paired sharing turned on.",

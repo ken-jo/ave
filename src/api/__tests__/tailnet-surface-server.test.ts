@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { Agent as HttpAgent, request as httpRequest } from "node:http";
 import { createServer as createNetServer } from "node:net";
 import { createHash } from "node:crypto";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -2274,49 +2274,71 @@ it("posts a real plan binding from the paired snapshot and withholds reviews aft
   });
 });
 
-it("refuses Create and run when the paired share is revoked during first-stage preparation", async () => {
-  const entered = deferred<string>();
-  const release = deferred<void>();
-  const spawn = vi.fn();
-  const h: Awaited<ReturnType<typeof stageRunHarness>> = await stageRunHarness({
-    observeRunWork: true,
-    onSpawn: spawn,
-    workspace: {
-      async prepare(ref, stage) {
-        entered.resolve(ref.runId);
-        await release.promise;
-        return { ok: true, workspace: { kind: "folder", root: join(h.dir, "runs", ref.runId, stage.id) } };
+it.each(["revocation", "prepare failure", "prepare failure with a desktop edit"] as const)(
+  "rolls back Create and run after pre-launch %s", async failure => {
+    const entered = deferred<{ itemId: number; runId: string }>();
+    const release = deferred<void>();
+    const spawn = vi.fn();
+    const h: Awaited<ReturnType<typeof stageRunHarness>> = await stageRunHarness({
+      observeRunWork: true,
+      onSpawn: spawn,
+      workspace: {
+        async prepare(ref, stage) {
+          entered.resolve(ref);
+          await release.promise;
+          if (failure !== "revocation") return { ok: false, code: "workspace-unavailable" };
+          return { ok: true, workspace: { kind: "folder", root: join(h.dir, "runs", ref.runId, stage.id) } };
+        },
       },
-    },
-  });
-  await h.runThenEnd(async () => {
-    await h.confirm([stageOf("a")]);
-    const { sharing, log, readReviews, postDecision } = await pairedWorkFixture(h);
-    const { scope, workReviews } = await readReviews();
-    const offered = workReviews?.find(review => review.kind === "create-and-run");
-    if (!offered) throw new Error("Missing start review");
+    });
+    await h.runThenEnd(async () => {
+      await h.confirm([stageOf("a")]);
+      const { sharing, log, readReviews, postDecision } = await pairedWorkFixture(h);
+      const { scope, workReviews } = await readReviews();
+      const offered = workReviews?.find(review => review.kind === "create-and-run");
+      if (!offered) throw new Error("Missing start review");
 
-    const pending = postDecision({ id: crypto.randomUUID(), scope, kind: offered.kind, ...offered.binding });
-    try {
-      const runId = await Promise.race([entered.promise, pending.then(response => {
-        if (!response.ok) throw new Error(`Start refused before preparation: ${response.status}`);
-        return entered.promise;
-      })]);
-      expect((await h.runOf(runId))?.stageRuns).toMatchObject([{ stageId: "a", status: "running", attempt: 1 }]);
-      sharing.revoke();
-    } finally {
-      release.resolve();
-    }
+      const pending = postDecision({ id: crypto.randomUUID(), scope, kind: offered.kind, ...offered.binding });
+      let allocated: { itemId: number; runId: string };
+      try {
+        allocated = await Promise.race([entered.promise, pending.then(response => {
+          if (!response.ok) throw new Error(`Start refused before preparation: ${response.status}`);
+          return entered.promise;
+        })]);
+        expect((await h.runOf(allocated.runId))?.stageRuns).toMatchObject([{ stageId: "a", status: "running", attempt: 1 }]);
+        if (failure === "revocation") sharing.revoke();
+        if (failure === "prepare failure with a desktop edit") {
+          expect(await h.board.update(allocated.itemId, { title: "Desktop edit", priority: "high" })).toMatchObject({ status: "updated" });
+        }
+      } finally {
+        release.resolve();
+      }
 
-    const response = await pending;
-    const result = await response.json();
-    if (result.ok) (await h.untilSpawned(1))[0].finish();
-    expect.soft(response.status).toBe(403);
-    expect.soft(result).toEqual({ ok: false, error: "remote-controller-authority-revoked" });
-    expect.soft(log).not.toHaveBeenCalled();
-    expect(spawn).not.toHaveBeenCalled();
-  });
-});
+      const response = await pending;
+      const result = await response.json();
+      if (result.ok) (await h.untilSpawned(1))[0].finish();
+      if (failure === "revocation") {
+        expect.soft(response.status).toBe(403);
+        expect.soft(result).toEqual({ ok: false, error: "remote-controller-authority-revoked" });
+      } else {
+        expect.soft(response.ok).toBe(false);
+        expect.soft(result).toMatchObject({ ok: false });
+      }
+      const { items } = JSON.parse(readFileSync(h.boardPath, "utf8"));
+      if (failure === "prepare failure with a desktop edit") {
+        expect.soft(items).toEqual([expect.objectContaining({ id: allocated.itemId, title: "Desktop edit", priority: "high" })]);
+        expect.soft(items[0]).not.toHaveProperty("runId");
+        expect.soft(items[0]).not.toHaveProperty("runHistory");
+      } else {
+        expect.soft(items).toEqual([]);
+      }
+      expect.soft(await h.runOf(allocated.runId)).toBeNull();
+      await expect(h.engine.retryStage(allocated.itemId, { runId: allocated.runId, stageId: "a", attempt: 1 })).resolves.toMatchObject({ ok: false });
+      expect.soft(log).not.toHaveBeenCalled();
+      expect(spawn).not.toHaveBeenCalled();
+    });
+  },
+);
 
 it("drops review payload when the paired share is revoked while projection is pending", async () => {
   const entered = deferred<void>();

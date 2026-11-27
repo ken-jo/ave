@@ -327,7 +327,7 @@ export async function startTailnetSurfaceServer(
   if (!Number.isSafeInteger(options.port) || options.port < 1 || options.port > 65_535) {
     return Promise.reject(new Error("tailnet surface server port must be a nonzero TCP port"));
   }
-  assertTailnetListenerPortAllowed(options.port);
+  await assertTailnetListenerPortAllowed(options.port);
   if (typeof options.probeOwnerIdentity !== "function" || typeof options.ownerIdentityError !== "function" || (options.pairedSharing !== undefined && typeof options.pairedSharing.ownerIdentityError !== "function")) {
     return Promise.reject(new Error("tailnet-owner-identity-policy-unavailable"));
   }

@@ -353,6 +353,11 @@ export async function readAsrtWindowsStatus(): Promise<SandboxWindowsStatusInfo>
   const { user, wfp } = await mod.checkWindowsSandboxStatusAsync({ srtWin });
   const userState = normalizeAsrtWindowsUserState(user);
   const wfpState = normalizeAsrtWindowsWfpState(wfp);
+  const range = wfp.portRange;
+  const wfpPortRange = wfpState === "installed" && Array.isArray(range) && range.length === 2
+    && Number.isInteger(range[0]) && Number.isInteger(range[1]) && range[0] >= 1
+    && range[1] <= 65_535 && range[0] <= range[1]
+    ? [range[0], range[1]] as const : undefined;
   const ready = await resolveAsrtWindowsReady(
     userState,
     wfpState,
@@ -364,6 +369,7 @@ export async function readAsrtWindowsStatus(): Promise<SandboxWindowsStatusInfo>
     applicable: true,
     userState,
     wfpState,
+    ...(wfpPortRange === undefined ? {} : { wfpPortRange }),
     ready,
     instructions: mod.windowsInstallInstructions(undefined),
     profileReadDenyWarnings,

@@ -154,8 +154,9 @@ export function createTailnetWorkDecisions(services: Partial<TailnetWorkDecision
         review: { name, scope, graph: { stages, edges, setupCommands }, projects: choices },
       });
       for (const { routine, schedule, lastFailure } of scheduleReviews) {
-        const active = attachments?.get(routine.id)?.attachment;
-        const prior = active?.id === routine.attachmentId ? active : undefined;
+        const active = attachments?.get(routine.id);
+        const prior = active && active.attachment.id === routine.attachmentId && scopeAuthorised(active.template.scope)
+          ? active.attachment : undefined;
         review.push({
           kind: "schedule-attachment", deny: "dismiss",
           binding: { input: { ...pin, expectedScope: scope, scheduleId: routine.id } },
@@ -193,15 +194,23 @@ export function createTailnetWorkDecisions(services: Partial<TailnetWorkDecision
     if (created.status !== "created") return refused(created.reason === WORK_DECISION_AUTHORITY_REVOKED ? created.reason : "work-item-create-refused");
 
     const { itemId } = created;
-    const result = await new Promise<TailnetWorkDecisionResponse>((resolve, reject) => {
-      void engine.runItem(itemId, {
-        templateSource: { kind: "tailnet-create-and-run", pin, ...(root === undefined ? {} : { projectRoot: root }) },
-        authority,
-        onTemplateStarted: runId => resolve({ ok: true, kind: "create-and-run", itemId, runId }),
-      }).then(outcome => resolve(refused(outcome.reasonCode ?? outcome.status)), reject);
-    });
-    if (!result.ok) await board.remove(itemId, created.item.mutationRevision);
-    return result;
+    let provisionalRunId: string | undefined;
+    let launched = false;
+    try {
+      return await new Promise<TailnetWorkDecisionResponse>((resolve, reject) => {
+        void engine.runItem(itemId, {
+          templateSource: { kind: "tailnet-create-and-run", pin, ...(root === undefined ? {} : { projectRoot: root }) },
+          authority,
+          onTemplateRunAllocated: runId => { provisionalRunId = runId; },
+          onTemplateStarted: runId => {
+            launched = true;
+            resolve({ ok: true, kind: "create-and-run", itemId, runId });
+          },
+        }).then(outcome => resolve(refused(outcome.reasonCode ?? outcome.status)), reject);
+      });
+    } finally {
+      if (!launched) await board.rollbackProvisionalTemplateStart(created.item, provisionalRunId);
+    }
   }
 
   async function applyDecision(

@@ -135,6 +135,7 @@ import type { WorkDecisionAuthority } from "../work-board/work-decision-authorit
 
 interface RunItemOptions {
   authority?: WorkDecisionAuthority;
+  onTemplateRunAllocated?: (runId: string) => void;
   onTemplateStarted?: (runId: string) => void;
   agentName?: string;
   /** Set by the host entrypoint, never copied from a renderer payload. */
@@ -575,7 +576,7 @@ export function createWorkBoardEngine(
         inFlight.delete(itemId);
         return { status: "error", reason: "template-run-unavailable", reasonCode: "template-run-unavailable" };
       }
-      return stageRuns.start(itemId, { source: opts.templateSource, authority: opts.authority, onStarted: opts.onTemplateStarted });
+      return stageRuns.start(itemId, { source: opts.templateSource, authority: opts.authority, onRunAllocated: opts.onTemplateRunAllocated, onStarted: opts.onTemplateStarted });
     }
     return guarded(itemId, opts.approvalSurface, () => runItemGuarded(itemId, item, opts));
   }
