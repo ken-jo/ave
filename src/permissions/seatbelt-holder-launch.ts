@@ -32,7 +32,7 @@ const HOLDER_PROXY_KEYS = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy
 const HOLDER_READ_BASE = "/";
 
 export class SeatbeltHolderLaunchError extends Error {
-  constructor(readonly code: "cwd-ungranted" | "proxy-invalid" | "read-base-supplied" | "command-invalid", message: string) {
+  constructor(readonly code: "cwd-ungranted" | "proxy-invalid" | "read-base-supplied" | "command-invalid" | "write-root-withheld", message: string) {
     super(message);
     this.name = "SeatbeltHolderLaunchError";
   }
@@ -83,6 +83,12 @@ export async function captureSeatbeltHolderFloors(input: Pick<SeatbeltHolderLaun
   const sensitive = getDefaultSensitiveWriteDenyEntries();
   const mandatory = await runWithSandboxWritePreflight(signal, () => buildSeatbeltSandboxWritePolicy(
     [...input.writeRoots], undefined, sensitive.map(entry => typeof entry === "string" ? entry : entry.path)));
+  // A shell reports a withheld root beside its result; a holder has no result, and running it without a root it was
+  // admitted to write would fail later and opaquely, so the start is refused by name.
+  if (mandatory.narrowedWriteRoots.length > 0) {
+    throw new SeatbeltHolderLaunchError("write-root-withheld", `Container holder write roots could not be protected: ${
+      mandatory.narrowedWriteRoots.map(({ root, reason }) => `${root} (${reason})`).join(", ")}`);
+  }
   const home = getPolicyHome();
   const lookups = posixPolicyLookups(home, false);
   const foldsCase = [home, input.cwd, ...mandatory.allowWrite].every(path => posixPathFoldsCase(lookups.canonical(path)));

@@ -1,4 +1,6 @@
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("../asrt-sandbox.js", () => ({
@@ -7,11 +9,17 @@ vi.mock("../asrt-sandbox.js", () => ({
   runWithSandboxWritePreflight: (_signal: unknown, run: () => unknown) => run(),
 }));
 
+const writePolicy = vi.hoisted(() => ({ narrowed: [] as { root: string; reason: string }[] }));
+vi.mock("../sandbox-write-policy.js", async (actual) => ({
+  ...await actual<typeof import("../sandbox-write-policy.js")>(),
+  buildSeatbeltSandboxWritePolicy: (roots: readonly string[]) => ({ allowWrite: [...roots], narrowedWriteRoots: writePolicy.narrowed, literalRows: [], patternRows: [] }),
+}));
+
 import { rankPosixContainerRows, type PosixPolicyLookups } from "../mxc-posix.js";
 import { buildPolicyModel, policyFloorRow, policyGrantRow, type PolicyFloorRow } from "../policy-model.js";
 import { buildSeatbeltShellProfile, splitSeatbeltPolicyRows } from "../seatbelt-profile.js";
 import {
-  composeSeatbeltHolderLaunch, HOLDER_READY_SHIM, HOLDER_SHELL, seatbeltHolderLaunchDigest, type SeatbeltHolderFloors, type SeatbeltHolderLaunchInput,
+  captureSeatbeltHolderFloors, composeSeatbeltHolderLaunch, HOLDER_READY_SHIM, HOLDER_SHELL, seatbeltHolderLaunchDigest, type SeatbeltHolderFloors, type SeatbeltHolderLaunchInput,
 } from "../seatbelt-holder-launch.js";
 
 const TREE: Record<string, readonly string[]> = { "/": ["users", "workspace", "tmp"], "/users": ["example"], "/users/example": [".ssh", ".ave", "notes"] };
@@ -112,5 +120,18 @@ describe("macOS holder launch", () => {
     const source = readFileSync(new URL("../seatbelt-holder-launch.ts", import.meta.url), "utf8");
     expect(source.match(/composeSeatbeltHolderLaunch\(/gu)).toHaveLength(2);
     expect(source).toContain("composeSeatbeltHolderLaunch(input, await captureSeatbeltHolderFloors(input, signal))");
+  });
+  it("refuses a start whose write root the write policy withheld, naming the root, instead of running without it", async () => {
+    const root = realpathSync.native(mkdtempSync(join(tmpdir(), "sbh-withheld-")));
+    try {
+      writePolicy.narrowed = [{ root: join(root, "cache"), reason: "entry-budget" }];
+      await expect(captureSeatbeltHolderFloors({ cwd: root, writeRoots: [root, join(root, "cache")] }))
+        .rejects.toMatchObject({ code: "write-root-withheld", message: expect.stringContaining(`${join(root, "cache")} (entry-budget)`) });
+      writePolicy.narrowed = [];
+      await expect(captureSeatbeltHolderFloors({ cwd: root, writeRoots: [root] })).resolves.toMatchObject({ allowWrite: [root] });
+    } finally {
+      writePolicy.narrowed = [];
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
