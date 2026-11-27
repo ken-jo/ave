@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { createMemoryMapApi } from '../../../../__tests__/support/memory-map-api.js';
+import { requiredFixture } from '../../../../__tests__/support/required-fixture.js';
 import { makeMockAveApi } from '../../../../../test/renderer/mock-ave-api.js';
 import type { GraphSnapshot } from '../../../../shared/memory-map.js';
 import type { AveApi } from '../../types.js';
@@ -257,6 +258,56 @@ import { getLocale, setLocale } from "../../../../i18n/runtime.js";
 import type { SkillMemoryGroup, SkillMemoryLesson } from "../../../../shared/skill-memory-types.js";
 
 describe("skill memory control room", () => {
+  it.each([
+    { locale: "en", tab: "Skills", deleteLesson: "Delete lesson", cancel: "Cancel", history: "History", undo: "Undo" },
+    { locale: "ko", tab: "스킬", deleteLesson: "교훈 삭제", cancel: "취소", history: "이력", undo: "되돌리기" },
+  ] as const)("confirms active and retired deletion and offers deletion undo in $locale", async labels => {
+    const previous = getLocale();
+    setLocale(labels.locale);
+    try {
+      const { props } = setup();
+      const active: SkillMemoryLesson = {
+        id: "active", digest: "active-digest", description: "Active example", body: "Check the report.",
+        fingerprint: "source", origin: { sessionId: "session", messageId: "message", completionId: "completion", runKind: "attended" },
+      };
+      const retired = { ...active, id: "retired", digest: "retired-digest", description: "Retired example" };
+      const deleted = { ...active, id: "deleted", digest: "deleted-digest", description: "Deleted example" };
+      const groups: SkillMemoryGroup[] = [{
+        scope: { id: "scope", skill: "review", projectRoot: "/project" },
+        staged: [], active: [active], retired: [retired],
+        history: [{ id: "deleted-change", action: "delete", actor: "owner", prevDigest: null,
+          digest: "change-digest", before: deleted, after: null, at: "2026-11-27T00:00:00Z" }],
+        undo: { [deleted.digest]: "deleted-change" },
+      }];
+      const decide = vi.fn(async () => ({ ok: true }));
+      props.api.skillMemory = { list: async () => ({ ok: true, groups, review: "off" }), decide };
+      render(<MemoryView {...props} />);
+      selectTab(labels.tab);
+      const cardButton = async (lesson: SkillMemoryLesson) => {
+        const heading = await screen.findByRole("heading", { name: lesson.description });
+        return within(requiredFixture(heading.closest("article"))).getByRole("button", { name: labels.deleteLesson });
+      };
+      fireEvent.click(await cardButton(active));
+      let dialog = within(await screen.findByRole("dialog", { name: labels.deleteLesson }));
+      expect(dialog.getByText(new RegExp(active.description))).toBeTruthy();
+      expect(decide).not.toHaveBeenCalled();
+      fireEvent.click(dialog.getByRole("button", { name: labels.cancel }));
+      expect(decide).not.toHaveBeenCalled();
+      for (const lesson of [active, retired]) {
+        if (lesson === retired) requiredFixture(screen.getByText(retired.description).closest("details")).open = true;
+        fireEvent.click(await cardButton(lesson));
+        dialog = within(await screen.findByRole("dialog", { name: labels.deleteLesson }));
+        await act(async () => { fireEvent.click(dialog.getByRole("button", { name: labels.deleteLesson })); });
+        expect(decide).toHaveBeenLastCalledWith({ action: "delete", scopeId: "scope", lessonId: lesson.id, digest: lesson.digest });
+      }
+      requiredFixture(screen.getByText(labels.history).closest("details")).open = true;
+      await act(async () => { fireEvent.click(screen.getByRole("button", { name: labels.undo })); });
+      expect(decide).toHaveBeenLastCalledWith({ action: "undo", scopeId: "scope", changeId: "deleted-change", digest: deleted.digest });
+    } finally {
+      setLocale(previous);
+    }
+  });
+
   it.each([
     { locale: "en", tab: "Skills", needsReview: "Needs review", apply: "Apply", reject: "Reject", history: "History", undo: "Undo",
       review: "unavailable", banner: "Automatic review is unavailable. You can still manage saved lessons." },

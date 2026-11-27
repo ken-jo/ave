@@ -96,6 +96,69 @@ describe("managed skill memory", () => {
     expect(recall(scope).map(lesson => lesson.body)).toEqual(["Check the type report before packaging."]);
   });
 
+  it("deletes the restored lesson after compaction discarded its original activation", async () => {
+    const { group, scope, reject, fill } = await seedCapacityFixture();
+    group.retired = Array.from({ length: 20 }, () => group.active).flat();
+    fill(AVE_HOME_INPUT_MAX_BYTES);
+    expect(await store.decide(reject, allow)).toBe(true);
+    const compacted = requiredFixture(store.list()[0]);
+    const current = requiredFixture(compacted.active[0]);
+    expect(compacted.history.some(row => row.before === null && row.after?.id === current.id)).toBe(false);
+    expect(await store.decide(undo(current, compacted), allow)).toBe(true);
+    const restored = requiredFixture(recall(scope)[0]);
+    expect(restored.body).toBe("Check the type report before packaging.");
+    const deletion = { action: "delete", scopeId: scope.id, lessonId: restored.id, digest: restored.digest } as const;
+    expect(await store.decide({ ...deletion, digest: current.digest }, allow)).toBe(false);
+    expect(await store.decide(deletion, allow)).toBe(true);
+    expect(recall(scope).map(lesson => lesson.id)).not.toContain(restored.id);
+  });
+
+  it("retains deletion undo through hard-cap compaction and restores the exact version once", async () => {
+    const { scope, reject, path } = await seedCapacityFixture();
+    const current = requiredFixture(recall(scope)[0]);
+    const deletion = { action: "delete", scopeId: scope.id, lessonId: current.id, digest: current.digest } as const;
+    expect(await store.decide(deletion, allow)).toBe(true);
+    const document = JSON.parse(readFileSync(path, "utf8"));
+    const group = requiredFixture(document.groups[0]);
+    group.retired = Array.from({ length: 20 }, () => group.active).flat();
+    group.scope.filePath += "x".repeat(AVE_HOME_INPUT_MAX_BYTES - Buffer.byteLength(JSON.stringify(document)));
+    writeFileSync(path, JSON.stringify(document));
+    expect(await store.decide(reject, allow)).toBe(true);
+    const compacted = requiredFixture(new SkillMemoryStore().list()[0]);
+    expect(compacted.history).toContainEqual(expect.objectContaining({ action: "delete", before: current, after: null }));
+    expect(recall(scope)).not.toContainEqual(current);
+    const restore = undo(current, compacted);
+    expect(await store.decide(restore, allow)).toBe(true);
+    expect(recall(scope)).toContainEqual(current);
+    expect(await store.decide(restore, allow)).toBe(false);
+  });
+
+  it("removes a stored retired record even when the write compacts history", async () => {
+    const { group, scope, fill } = await seedCapacityFixture();
+    const retired = requiredFixture(group.history[0]?.after);
+    group.retired = Array.from({ length: 30 }, () => [retired]).flat();
+    fill(AVE_HOME_INPUT_MAX_BYTES);
+    expect(await store.decide({ action: "delete", scopeId: scope.id, lessonId: retired.id, digest: retired.digest }, allow)).toBe(true);
+    const saved = requiredFixture(new SkillMemoryStore().list()[0]);
+    expect(saved.retired).toEqual([]);
+    expect(saved.undo[retired.digest]).toBeUndefined();
+    expect(saved.history.at(-1)).toMatchObject({ action: "delete", before: retired, after: null });
+    expect(recall(scope)).toHaveLength(2);
+  });
+
+  it("restores a deleted active record to its original binding when it was displayed as retired", async () => {
+    const scope = binding();
+    await store.record([record(scope)], allow, "activate");
+    const listed = requiredFixture((await store.listCurrent(async () => false))[0]);
+    const retired = requiredFixture(listed.retired[0]);
+    expect(await store.decide({ action: "delete", scopeId: scope.id, lessonId: retired.id, digest: retired.digest }, allow)).toBe(true);
+    expect(recall(scope)).toEqual([]);
+    const deleted = requiredFixture(store.list()[0]);
+    expect(await store.decide(undo(retired, deleted), allow)).toBe(true);
+    expect(recall({ ...scope, fingerprint: sha256Hex("changed source") })).toEqual([]);
+    expect(recall(scope)).toEqual([retired]);
+  });
+
   it("refuses owner decisions, listing and recall together when compaction cannot leave decision headroom", async () => {
     const { scope, reject, path, fill } = await seedCapacityFixture();
     const before = requiredFixture(store.list()[0]);

@@ -183,7 +183,9 @@ const HOST_ONLY_CHANNELS: ReadonlyArray<readonly [string, string, unknown[]]> = 
   ["chat", CHANNELS.memory.detailGet, ["11111111-1111-4111-8111-111111111111", {}]],
   ["chat", CHANNELS.memory.summariesGet, [{}]],
   ["chat", CHANNELS.skillMemory.list, []],
-  ["chat", CHANNELS.skillMemory.decide, [{ invalid: true }]],
+  ["chat", CHANNELS.skillMemory.decide, [{
+    action: "delete", scopeId: "a".repeat(64), lessonId: "11111111-1111-4111-8111-111111111111", digest: "b".repeat(64),
+  }]],
   ["chat", CHANNELS.memoryMap.get, [{ invalid: true }]],
   ["chat", CHANNELS.memoryMap.build, [{ invalid: true }]],
   ["chat", CHANNELS.memoryMap.cancel, [{ invalid: true }]],

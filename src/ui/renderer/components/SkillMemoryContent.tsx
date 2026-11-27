@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "../../../components/ui/button.js";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../../../components/ui/dialog.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { formatMediumDateTime } from "../../../shared/format-time.js";
 import type { SkillMemoryApi, SkillMemoryDecision, SkillMemoryLesson } from "../../../shared/skill-memory-types.js";
@@ -25,6 +26,7 @@ export function SkillMemoryContent({ api }: { api: SkillMemoryApi }) {
   const [snapshot, setSnapshot] = useState<SkillMemorySnapshot | null>();
   const [decisionFailed, setDecisionFailed] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [deleting, setDeleting] = useState<{ scopeId: string; lesson: SkillMemoryLesson } | null>(null);
   const requests = useRef(0);
   const refresh = useCallback(async () => {
     const request = ++requests.current;
@@ -61,6 +63,7 @@ export function SkillMemoryContent({ api }: { api: SkillMemoryApi }) {
     apply: t("skillMemory.applied"),
     reject: t("skillMemory.rejected"),
     undo: t("skillMemory.undone"),
+    delete: t("skillMemory.deleted"),
   };
   const retry = <Button size="sm" variant="outline" disabled={busy} onClick={() => {
     setDecisionFailed(false);
@@ -72,6 +75,12 @@ export function SkillMemoryContent({ api }: { api: SkillMemoryApi }) {
     disabled={busy}
     onClick={() => void handleDecision({ scopeId, action: "undo", changeId, digest })}
   >{t("skillMemory.undo")}</Button>;
+  const renderLessonActions = (scopeId: string, lesson: SkillMemoryLesson, changeId: string | undefined) => <div className="flex flex-wrap gap-2">
+    {renderUndo(scopeId, changeId, lesson.digest)}
+    <Button size="sm" variant="outline" disabled={busy} onClick={() => setDeleting({ scopeId, lesson })}>
+      {t("skillMemory.delete")}
+    </Button>
+  </div>;
   return <div className="min-h-0 flex-1 space-y-4 overflow-auto rounded-lg border p-4">
     {(snapshot === null || decisionFailed) && <div className="flex flex-wrap items-center gap-2">
       <p className="text-sm text-destructive" role="alert">{t(snapshot === null ? "skillMemory.storeUnavailable" : "skillMemory.unavailable")}</p>
@@ -112,7 +121,7 @@ export function SkillMemoryContent({ api }: { api: SkillMemoryApi }) {
         <h3 className="text-sm font-semibold">{t("skillMemory.active")}</h3>
         {active.map(lesson => <article key={lesson.id} className="space-y-2 rounded-md border p-3">
           <SkillMemoryLessonText lesson={lesson} />
-          {renderUndo(scope.id, undo[lesson.digest], lesson.digest)}
+          {renderLessonActions(scope.id, lesson, undo[lesson.digest])}
         </article>)}
       </section>}
       {retired.length > 0 && <details>
@@ -120,7 +129,7 @@ export function SkillMemoryContent({ api }: { api: SkillMemoryApi }) {
         <p className="my-2 text-sm text-muted-foreground">{t("skillMemory.retiredHint")}</p>
         {retired.map(lesson => <article key={lesson.digest} className="my-2 space-y-2 rounded-md border p-3">
           <SkillMemoryLessonText lesson={lesson} />
-          {renderUndo(scope.id, undo[lesson.digest], lesson.digest)}
+          {renderLessonActions(scope.id, lesson, undo[lesson.digest])}
         </article>)}
       </details>}
       <details>
@@ -131,10 +140,29 @@ export function SkillMemoryContent({ api }: { api: SkillMemoryApi }) {
             return <li key={change.id} className="space-y-2 rounded-md border p-3">
               <p className="text-xs text-muted-foreground">{actions[change.action]} · <time dateTime={change.at}>{formatMediumDateTime(change.at, locale)}</time></p>
               {lesson && <SkillMemoryLessonText lesson={lesson} />}
+              {change.action === "delete" && change.before && undo[change.before.digest] === change.id
+                && renderUndo(scope.id, change.id, change.before.digest)}
             </li>;
           })}
         </ul>
       </details>
     </section>)}
+    <Dialog open={deleting !== null} onOpenChange={open => { if (!open) setDeleting(null); }}>
+      <DialogContent size="sm">
+        <DialogHeader>
+          <DialogTitle>{t("skillMemory.delete")}</DialogTitle>
+          <DialogDescription>{t("skillMemory.deleteDescription", { lesson: deleting?.lesson.description ?? "" })}</DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <Button autoFocus variant="secondary" onClick={() => setDeleting(null)}>{t("common.cancel")}</Button>
+          <Button variant="destructive" disabled={busy} onClick={() => {
+            if (!deleting) return;
+            const { scopeId, lesson } = deleting;
+            setDeleting(null);
+            void handleDecision({ scopeId, action: "delete", lessonId: lesson.id, digest: lesson.digest });
+          }}>{t("skillMemory.delete")}</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   </div>;
 }

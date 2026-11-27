@@ -25,6 +25,7 @@ export function skillMemoryScopeId(filePath: string, projectRoot: string, projec
 
 const Hash = z.string().regex(SHA256_HEX);
 const Id = z.string().min(1).max(128);
+const HISTORY_LIMIT = SKILL_MEMORY_SCOPE_LIMIT * 2;
 const Scope = z.object({ id: Hash, skill: Id, projectRoot: z.string().min(1).max(4096) }).strict();
 const Lesson = z.object({
   id: Id,
@@ -38,7 +39,7 @@ const Lesson = z.object({
 }).strict();
 const ChangePayload = z.object({
   id: Id,
-  action: z.enum(["activate", "stage", "apply", "reject", "undo"]),
+  action: z.enum(["activate", "stage", "apply", "reject", "undo", "delete"]),
   at: z.iso.datetime(),
   actor: z.enum(["host", "owner"]),
   before: Lesson.nullable(),
@@ -50,17 +51,20 @@ const Group = z.object({
   active: z.array(Lesson).max(SKILL_MEMORY_SCOPE_LIMIT),
   staged: z.array(Lesson).max(SKILL_MEMORY_SCOPE_LIMIT),
   retired: z.array(Lesson).max(SKILL_MEMORY_SCOPE_LIMIT).optional(),
+  deleteUndoIds: z.array(Id).max(HISTORY_LIMIT).optional(),
   history: z.array(z.unknown()),
 }).strict();
 const Envelope = z.object({ version: z.union([z.literal(1), z.literal(2)]), groups: z.array(z.unknown()) }).strict();
 
-type StoredGroup = Omit<SkillMemoryGroup, "scope" | "undo"> & { scope: z.infer<typeof Group>["scope"] };
+type StoredGroup = Omit<SkillMemoryGroup, "scope" | "undo"> & {
+  scope: z.infer<typeof Scope> & { filePath: string };
+  deleteUndoIds: string[];
+};
 type Document = { version: 2; groups: StoredGroup[] };
 type NewLesson = { binding: SkillMemoryBinding; lesson: Omit<SkillMemoryLesson, "id" | "digest" | "fingerprint"> };
 
 const FILENAME = "lessons.json";
 const DOCUMENT_SCOPE_LIMIT = 128;
-const HISTORY_LIMIT = SKILL_MEMORY_SCOPE_LIMIT * 2;
 // Reserve half the trusted-file limit for owner decisions and retained ledger rows.
 const REVIEW_MAX_BYTES = AVE_HOME_INPUT_MAX_BYTES / 2;
 // A generated decision row has a UUID, millisecond timestamp and two SHA-256 digests.
@@ -105,18 +109,42 @@ function undoChange(history: SkillMemoryChange[], lesson: SkillMemoryLesson): Sk
     ?? history.findLast(row => row.action === "undo" && matches(row));
 }
 
-function undoByDigest({ active, history }: StoredGroup): SkillMemoryGroup["undo"] {
-  return Object.fromEntries(active.map(lesson => {
-    const change = undoChange(history, lesson);
-    if (!change) throw new Error("Active skill memory has no undo record");
-    return [lesson.digest, change.id];
-  }));
+function canRestoreDeleted(active: SkillMemoryLesson[], deleted: SkillMemoryLesson): boolean {
+  return active.length < SKILL_MEMORY_SCOPE_LIMIT && !active.some(lesson => lesson.id === deleted.id
+    || (lesson.description === deleted.description && lesson.fingerprint === deleted.fingerprint));
 }
 
-function compactHistory(group: StoredGroup, limit = HISTORY_LIMIT, keepId?: string): void {
+function undoByDigest({ active, history, deleteUndoIds }: StoredGroup): SkillMemoryGroup["undo"] {
+  const targets: [string, string][] = [];
+  const pending = new Set(deleteUndoIds);
+  for (const change of history) {
+    if (!pending.delete(change.id)) continue;
+    if (change.action !== "delete" || change.actor !== "owner" || !change.before || change.after) {
+      throw new Error("Invalid skill memory deletion undo record");
+    }
+    if (canRestoreDeleted(active, change.before)) targets.push([change.before.digest, change.id]);
+  }
+  if (pending.size > 0 || new Set(deleteUndoIds).size !== deleteUndoIds.length) {
+    throw new Error("Invalid skill memory deletion undo references");
+  }
+  for (const lesson of active) {
+    const change = undoChange(history, lesson);
+    if (!change) throw new Error("Active skill memory has no undo record");
+    targets.push([lesson.digest, change.id]);
+  }
+  return Object.fromEntries(targets);
+}
+
+function compactHistory(group: StoredGroup, limit = HISTORY_LIMIT, keepId: string | null = group.history.at(-1)?.id ?? null): void {
   let excess = group.history.length - limit;
   if (excess <= 0) return;
-  const undoIds = new Set(Object.values(undoByDigest(group)));
+  const undoIds = new Set([...Object.values(undoByDigest(group)), ...group.deleteUndoIds]);
+  // Active targets and the newest decision take precedence at the per-scope limit.
+  const keepSlots = keepId && !undoIds.has(keepId) ? 1 : 0;
+  const deletionSlots = HISTORY_LIMIT - group.active.length - keepSlots;
+  if (group.deleteUndoIds.length > deletionSlots) {
+    for (const id of group.deleteUndoIds.splice(0, group.deleteUndoIds.length - deletionSlots)) undoIds.delete(id);
+  }
   group.history = repairChain(group.scope.id, group.history.filter(row => {
     if (excess <= 0 || row.id === keepId || undoIds.has(row.id)) return true;
     excess--;
@@ -128,16 +156,16 @@ function compactOwnerHistory(document: Document, ownerScopeId?: string): void {
   for (const group of document.groups) {
     group.retired = [];
     const keepId = group.scope.id === ownerScopeId ? group.history.at(-1)?.id : undefined;
-    compactHistory(group, 0, keepId);
+    compactHistory(group, 0, keepId ?? null);
   }
 }
 
 function ownerDecisionsFit(document: Document): boolean {
   let bytes = Buffer.byteLength(JSON.stringify({ version: document.version, groups: [] }));
   let decisionBytes = 0;
-  for (const { scope, active, staged, history } of document.groups) {
-    bytes += Buffer.byteLength(JSON.stringify({ scope, active: [], staged: [], retired: [], history: [] })) + 1;
-    const slots = active.length + staged.length;
+  for (const { scope, active, staged, history, deleteUndoIds } of document.groups) {
+    bytes += Buffer.byteLength(JSON.stringify({ scope, active: [], staged: [], retired: [], history: [], deleteUndoIds: [] })) + 1;
+    const slots = active.length + staged.length + deleteUndoIds.length;
     if (slots === 0) continue;
 
     const lessons = new Map<string, SkillMemoryLesson>();
@@ -157,20 +185,26 @@ function ownerDecisionsFit(document: Document): boolean {
       idBytes = Math.max(idBytes, Buffer.byteLength(JSON.stringify(lesson.id)));
     }
     const lessonBytes = contentBytes + idBytes;
-    // Each slot may become active and need one undo row with two lesson snapshots.
-    // Owner actions cannot add slots or introduce new lesson text, provenance or IDs.
+    // Active, staged and undoable deletion slots can all become active.
+    // Reserve a lesson and a two-snapshot undo row for each, including its index entry.
     bytes += slots * (3 * lessonBytes + headerBytes + 2);
     decisionBytes = Math.max(decisionBytes, 2 * lessonBytes + OWNER_CHANGE_HEADER_BYTES + 1);
   }
   return bytes + decisionBytes <= AVE_HOME_INPUT_MAX_BYTES;
 }
 
-function addChange(group: StoredGroup, action: SkillMemoryChange["action"], before: SkillMemoryLesson | null, after: SkillMemoryLesson | null): void {
+function addChange(group: StoredGroup, action: SkillMemoryChange["action"], before: SkillMemoryLesson | null, after: SkillMemoryLesson | null,
+  undoDeletion = false): void {
   const actor = action === "activate" || action === "stage" ? "host" : "owner";
   const change = { id: randomUUID(), action, at: new Date().toISOString(), actor, before, after,
     prevDigest: group.history.at(-1)?.digest ?? null } as const;
   group.history.push({ ...change, digest: digestChange(group.scope.id, change) });
+  if (undoDeletion) group.deleteUndoIds.push(change.id);
   compactHistory(group);
+}
+
+function hasCompletionChange(group: StoredGroup, completionId: string): boolean {
+  return group.history.some(row => (row.action === "delete" ? row.before : row.after)?.origin.completionId === completionId);
 }
 
 function readDocument(bytes: Buffer): Document {
@@ -178,12 +212,12 @@ function readDocument(bytes: Buffer): Document {
   if (envelope.groups.length > DOCUMENT_SCOPE_LIMIT) throw new SkillMemoryCapacityError();
   const scopeIds = new Set<string>();
   const groups = envelope.groups.map(row => {
-    const { scope, active, staged, retired = [], history } = Group.parse(row);
+    const { scope, active, staged, retired = [], history, deleteUndoIds = [] } = Group.parse(row);
     if (scopeIds.has(scope.id) || ![...active, ...staged, ...retired].every(validLesson)) {
       throw new Error("Invalid skill memory records");
     }
     scopeIds.add(scope.id);
-    const group: StoredGroup = { scope, active, staged, retired, history: [] };
+    const group: StoredGroup = { scope, active, staged, retired, history: [], deleteUndoIds };
     const changeIds = new Set<string>();
     let previous: string | undefined;
     for (const item of history) {
@@ -216,7 +250,7 @@ function groupFor(document: Document, binding: SkillMemoryBinding): Document["gr
   const existing = document.groups.find(group => group.scope.id === binding.id);
   if (existing) return existing;
   const { id, skill, projectRoot, filePath } = binding;
-  const group = { scope: { id, skill, projectRoot, filePath }, active: [], staged: [], retired: [], history: [] };
+  const group: StoredGroup = { scope: { id, skill, projectRoot, filePath }, active: [], staged: [], retired: [], history: [], deleteUndoIds: [] };
   document.groups.push(group);
   return group;
 }
@@ -231,7 +265,8 @@ export class SkillMemoryStore {
   private cached: { digest: string; document: Document } | undefined;
 
   async listCurrent(isCurrent: (scope: StoredGroup["scope"], fingerprint: string) => Promise<boolean>): Promise<SkillMemoryGroup[]> {
-    return Promise.all(this.read().groups.map(async ({ scope, ...group }) => {
+    return Promise.all(this.read().groups.map(async group => {
+      const { scope, active, staged, history } = group;
       const fingerprints = new Set([...group.active, ...group.staged].map(row => row.fingerprint));
       const verified = await Promise.all([...fingerprints].map(async fingerprint => {
         try {
@@ -246,16 +281,16 @@ export class SkillMemoryStore {
       const retired = [...group.retired, ...group.active.filter(row => !isLive(row)), ...group.staged.filter(row => !isLive(row))];
       const { id, skill, projectRoot } = scope;
       return structuredClone({
-        scope: { id, skill, projectRoot }, active: group.active.filter(isLive), staged: group.staged.filter(isLive),
-        retired, history: group.history, undo: undoByDigest({ scope, ...group }),
+        scope: { id, skill, projectRoot }, active: active.filter(isLive), staged: staged.filter(isLive),
+        retired, history, undo: undoByDigest(group),
       });
     }));
   }
 
   list(): SkillMemoryGroup[] {
-    return this.read().groups.map(({ scope, ...group }) => {
-      const { id, skill, projectRoot } = scope;
-      return structuredClone({ ...group, scope: { id, skill, projectRoot }, undo: undoByDigest({ scope, ...group }) });
+    return this.read().groups.map(group => {
+      const { scope: { id, skill, projectRoot }, active, staged, retired, history } = group;
+      return structuredClone({ scope: { id, skill, projectRoot }, active, staged, retired, history, undo: undoByDigest(group) });
     });
   }
 
@@ -269,7 +304,7 @@ export class SkillMemoryStore {
   hasCompletion(completionId: string): boolean {
     return this.read().groups.some(group => [...group.active, ...group.staged, ...group.retired]
       .some(lesson => lesson.origin.completionId === completionId)
-      || group.history.some(change => change.after?.origin.completionId === completionId));
+      || hasCompletionChange(group, completionId));
   }
 
   record(candidates: readonly NewLesson[], canCommit: () => boolean, action: "activate" | "stage"): Promise<boolean> {
@@ -279,7 +314,7 @@ export class SkillMemoryStore {
     const { completionId, runKind, sessionId } = origin;
     if (action === "activate" && runKind !== "attended") return Promise.resolve(false);
     return this.mutate(document => {
-      if (document.groups.some(group => group.history.some(change => change.after?.origin.completionId === completionId))) return false;
+      if (document.groups.some(group => hasCompletionChange(group, completionId))) return false;
       for (const { binding, lesson } of candidates) {
         if (binding.id !== skillMemoryScopeId(binding.filePath, binding.projectRoot, binding.projectIdentity)) return false;
         if (lesson.origin.completionId !== completionId || lesson.origin.runKind !== runKind || lesson.origin.sessionId !== sessionId) return false;
@@ -305,12 +340,24 @@ export class SkillMemoryStore {
     }, canCommit);
   }
 
-  decide(decision: SkillMemoryDecision, canCommit: (scope: SkillMemoryScope & { filePath: string }, lesson: SkillMemoryLesson) => boolean): Promise<boolean> {
+  decide(decision: SkillMemoryDecision, canCommit: (scope: StoredGroup["scope"], lesson: SkillMemoryLesson, deletingStaged: boolean) => boolean): Promise<boolean> {
     let target: { scope: Document["groups"][number]["scope"]; lesson: SkillMemoryLesson } | undefined;
+    let deletingStaged = false;
     return this.mutate(document => {
       const group = document.groups.find(item => item.scope.id === decision.scopeId);
       if (!group) return false;
       if (decision.action === "undo") {
+        const deleteIndex = group.deleteUndoIds.indexOf(decision.changeId);
+        if (deleteIndex !== -1) {
+          const deleted = group.history.find(row => row.id === decision.changeId)?.before;
+          if (!deleted || !timingSafeEqualHexDigest(deleted.digest, decision.digest)
+            || !canRestoreDeleted(group.active, deleted)) return false;
+          group.deleteUndoIds.splice(deleteIndex, 1);
+          group.active.push(deleted);
+          addChange(group, "undo", null, deleted);
+          target = { scope: group.scope, lesson: deleted };
+          return true;
+        }
         const current = group.active.find(lesson => timingSafeEqualHexDigest(lesson.digest, decision.digest));
         const change = current && undoChange(group.history, current);
         if (!current || !change || change.id !== decision.changeId) return false;
@@ -318,6 +365,21 @@ export class SkillMemoryStore {
         addChange(group, "undo", current, change.before);
         target = { scope: group.scope, lesson: current };
         return true;
+      }
+      if (decision.action === "delete") {
+        for (const lessons of [group.active, group.retired, group.staged]) {
+          const index = lessons.findIndex(lesson => lesson.id === decision.lessonId
+            && timingSafeEqualHexDigest(lesson.digest, decision.digest));
+          const lesson = lessons[index];
+          if (!lesson) continue;
+          lessons.splice(index, 1);
+          // A stale source can display an active record as retired. Undo restores its original source binding.
+          addChange(group, "delete", lesson, null, lessons === group.active);
+          target = { scope: group.scope, lesson };
+          deletingStaged = lessons === group.staged;
+          return true;
+        }
+        return false;
       }
       const staged = group.staged.find(lesson => lesson.id === decision.lessonId);
       if (!staged || !timingSafeEqualHexDigest(staged.digest, decision.digest)) return false;
@@ -335,7 +397,7 @@ export class SkillMemoryStore {
       group.staged.splice(group.staged.indexOf(staged), 1);
       target = { scope: group.scope, lesson: staged };
       return true;
-    }, () => target !== undefined && canCommit(target.scope, target.lesson), decision.scopeId);
+    }, () => target !== undefined && canCommit(target.scope, target.lesson, deletingStaged), decision.scopeId);
   }
 
   private read(): Document {

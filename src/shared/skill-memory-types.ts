@@ -23,7 +23,7 @@ export interface SkillMemoryLesson {
 
 export interface SkillMemoryChange {
   id: string;
-  action: "activate" | "stage" | "apply" | "reject" | "undo";
+  action: "activate" | "stage" | "apply" | "reject" | "undo" | "delete";
   at: string;
   actor: "host" | "owner";
   prevDigest: string | null;
@@ -42,7 +42,7 @@ export interface SkillMemoryGroup {
 }
 
 export type SkillMemoryDecision =
-  | { scopeId: string; action: "apply" | "reject"; lessonId: string; digest: string }
+  | { scopeId: string; action: "apply" | "reject" | "delete"; lessonId: string; digest: string }
   | { scopeId: string; action: "undo"; changeId: string; digest: string };
 
 export interface SkillMemoryApi {

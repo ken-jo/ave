@@ -13,7 +13,7 @@ import type { IpcDeps } from "../types.js";
 const Hash = z.string().regex(SHA256_HEX);
 const Id = z.uuid();
 const Decision = z.union([
-  z.object({ action: z.enum(["apply", "reject"]), scopeId: Hash, lessonId: Id, digest: Hash }).strict(),
+  z.object({ action: z.enum(["apply", "reject", "delete"]), scopeId: Hash, lessonId: Id, digest: Hash }).strict(),
   z.object({ action: z.literal("undo"), scopeId: Hash, changeId: Id, digest: Hash }).strict(),
 ]);
 
@@ -57,14 +57,20 @@ export function registerSkillMemoryHandlers(deps: IpcDeps): void {
     const proof = securitySettingsGestures.consume(event.sender, operation);
     if (!proof) return { ok: false };
     try {
-      const scopeId = parsed.data.scopeId;
-      const skillName = parsed.data.action === "apply" ? current.list().find(group => group.scope.id === scopeId)?.scope.skill : undefined;
-      const skill = skillName ? await deps.skillStore?.load(skillName) : undefined;
+      const decision = parsed.data;
+      const group = decision.action === "apply" || decision.action === "delete"
+        ? current.list().find(group => group.scope.id === decision.scopeId) : undefined;
+      const stagedDeletion = decision.action === "delete" && group?.staged.some(lesson =>
+        lesson.id === decision.lessonId && lesson.digest === decision.digest);
+      const skill = group && (decision.action === "apply" || stagedDeletion)
+        ? await deps.skillStore?.load(group.scope.skill) : undefined;
       let redeemed = false;
-      return { ok: await current.decide(parsed.data, (scope, lesson) => {
+      return { ok: await current.decide(decision, (scope, lesson, deletingStaged) => {
         if (!isAttendedSkillMemoryOwner(event)) return false;
-        if (parsed.data.action === "apply" && (!isAuthorizedWorkspaceProjectRoot(scope.projectRoot)
+        if (decision.action === "apply" && (!isAuthorizedWorkspaceProjectRoot(scope.projectRoot)
           || !isSkillMemoryProposalCurrent(scope, lesson.fingerprint, skill))) return false;
+        if (deletingStaged && (!stagedDeletion || (isAuthorizedWorkspaceProjectRoot(scope.projectRoot)
+          && isSkillMemoryProposalCurrent(scope, lesson.fingerprint, skill)))) return false;
         // A transient rename retry stays within this decision and must still have the same live receipt.
         if (redeemed) return securitySettingsGestures.matches(event.sender, proof, operation);
         redeemed = securitySettingsGestures.redeem({ surface: event.sender, proof }, operation) === event.sender;

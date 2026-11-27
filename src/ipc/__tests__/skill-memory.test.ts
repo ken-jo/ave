@@ -5,7 +5,7 @@ import { sha256Hex } from "../../lib/hex-digest-equal.js";
 import { securitySettingsGestures } from "../security-settings-gesture.js";
 import { registerSkillMemoryHandlers } from "../domains/skill-memory.js";
 import { requiredFixture } from "../../__tests__/support/required-fixture.js";
-import type { SkillMemoryReviewState } from "../../shared/skill-memory-types.js";
+import type { SkillMemoryGroup, SkillMemoryReviewState } from "../../shared/skill-memory-types.js";
 
 const state = vi.hoisted(() => ({
   handlers: new Map<string, (...args: unknown[]) => unknown>(),
@@ -28,9 +28,9 @@ function fixture() {
   const contents = Object.assign(new EventEmitter(), { mainFrame: frame, isDestroyed: () => false });
   securitySettingsGestures.observe(contents as never);
   const event = { sender: contents, senderFrame: frame };
-  const list = vi.fn(() => []);
+  const list = vi.fn<() => SkillMemoryGroup[]>(() => []);
   const listCurrent = vi.fn(async () => []);
-  const decide = vi.fn(async (_input: unknown, grant: (scope: object, lesson: object) => boolean) => grant({}, {}));
+  const decide = vi.fn(async (_input: unknown, grant: (scope: object, lesson: object, deletingStaged: boolean) => boolean) => grant({}, {}, false));
   const ensureReviewAvailable = vi.fn<() => SkillMemoryReviewState>(() => "ready");
   registerSkillMemoryHandlers({
     conversationLoop: { deps: { skillMemory: { ensureReviewAvailable, store: { list, listCurrent, decide } } } }, auditLogger: { log: vi.fn() },
@@ -39,7 +39,7 @@ function fixture() {
     scopeId: sha256Hex("scope"), action: "apply", lessonId: "7c1c6b6e-1b53-4b47-b6ec-9b9ea567c8fe", digest: sha256Hex("lesson"),
   };
   return {
-    contents, event, listCurrent, decide, change, ensureReviewAvailable,
+    contents, event, list, listCurrent, decide, change, ensureReviewAvailable,
     invokeList: (...args: unknown[]) => requiredFixture(state.handlers.get(CHANNELS.skillMemory.list))(...args),
     invokeDecision: (...args: unknown[]) => requiredFixture(state.handlers.get(CHANNELS.skillMemory.decide))(...args),
   };
@@ -64,6 +64,39 @@ describe("skill memory IPC", () => {
     f.contents.emit("before-mouse-event", {}, { type: "mouseUp" });
     expect(await f.invokeDecision(f.event, f.change)).toEqual({ ok: true });
     expect(await f.invokeDecision(f.event, f.change)).toEqual({ ok: false });
+  });
+
+  it("admits exact delete payloads only from a focused owner with a one-use native receipt", async () => {
+    const f = fixture();
+    const deletion = { ...f.change, action: "delete" };
+    f.contents.emit("before-mouse-event", {}, { type: "mouseUp" });
+    expect(await f.invokeDecision({ ...f.event, senderFrame: { ...f.event.senderFrame } }, deletion))
+      .toMatchObject({ error: "unauthorized-frame" });
+    state.focused = false;
+    expect(await f.invokeDecision(f.event, deletion)).toMatchObject({ error: "unauthorized-frame" });
+    state.focused = true;
+    expect(await f.invokeDecision(f.event, { ...deletion, body: "new content" })).toEqual({ ok: false });
+    expect(f.decide).not.toHaveBeenCalled();
+    expect(await f.invokeDecision(f.event, deletion)).toEqual({ ok: true });
+    expect(f.decide).toHaveBeenCalledWith(deletion, expect.any(Function));
+    expect(await f.invokeDecision(f.event, deletion)).toEqual({ ok: false });
+  });
+
+  it("accepts a staged deletion only if the proposal is displayed as retired", async () => {
+    const f = fixture();
+    const deletion = { ...f.change, action: "delete" };
+    const lesson: SkillMemoryGroup["staged"][number] = {
+      id: deletion.lessonId, digest: deletion.digest, description: "Old proposal", body: "Check the report.",
+      fingerprint: sha256Hex("source"), origin: { sessionId: "session", messageId: "message", completionId: "completion", runKind: "headless" },
+    };
+    const scope = { id: deletion.scopeId, skill: "review", projectRoot: "/project" };
+    f.list.mockReturnValue([{ scope, active: [], staged: [lesson], retired: [], history: [], undo: {} }]);
+    f.decide.mockImplementation(async (_input, grant) => grant(scope, lesson, true));
+    f.contents.emit("before-mouse-event", {}, { type: "mouseUp" });
+    expect(await f.invokeDecision(f.event, deletion)).toEqual({ ok: false });
+    state.current = false;
+    f.contents.emit("before-mouse-event", {}, { type: "mouseUp" });
+    expect(await f.invokeDecision(f.event, deletion)).toEqual({ ok: true });
   });
 
   it.each(["unavailable", "capacity"] as const)("keeps listing and owner decisions available during automatic review state %s", async review => {
