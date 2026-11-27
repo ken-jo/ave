@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WindowsSessionRepository as SessionRepository } from '../../../memory/session-repository-win32.js';
 import { deferred } from '../../../__tests__/support/deferred.js';
+import { MXC_RELEASE_GATE_EVIDENCE } from '../../../__tests__/support/mxc-supervisor.js';
 import { setProcessPlatform } from '../../../__tests__/support/process-platform.js';
 import { createTmpDirTracker } from '../../../__tests__/support/tmp-dir-teardown.js';
 import { registerMxcReleaseGateEvidence } from '../../../permissions/mxc-extension-admission.js';
@@ -55,10 +56,6 @@ vi.mock('../../../shared/ave-home.js', async importOriginal => ({
 
 const HOST_PLATFORM = process.platform;
 const indexDirs = createTmpDirTracker();
-const EVIDENCE = {
-  ownProxySucceeded: true, otherListenerRefused: true, directEgressRefused: true,
-  forgedLabelsAttributed: true, noWorkerPort: true, reparseSubstitutionRefused: true,
-};
 let unregister: (() => void) | undefined;
 const policy = async (preference: boolean | undefined) => (await refreshWindowsBackgroundAdmission()).searchIndexPolicy(preference);
 const switches = async () => (await refreshWindowsBackgroundAdmission()).areSwitchesAvailable();
@@ -90,14 +87,24 @@ afterEach(async () => {
 });
 
 describe('Windows local inference release gate', () => {
+  it('keeps the local inference switch unavailable until release evidence is registered', async () => {
+    expect((await refreshLocalInferenceAdmission('switches')).areSwitchesAvailable()).toBe(false);
+    await expect(runtime(true)).rejects.toMatchObject({ code: 'local-runtime-unavailable' });
+
+    unregister = registerMxcReleaseGateEvidence(MXC_RELEASE_GATE_EVIDENCE);
+    expect((await refreshLocalInferenceAdmission('switches')).areSwitchesAvailable()).toBe(true);
+    await expect(runtime(true)).resolves.toBe('unconfined');
+    await expect(runtime(false)).rejects.toMatchObject({ code: 'local-inference-disabled' });
+  });
+
   it('preserves refusal without complete packaged evidence', async () => {
     await expect(runtime()).rejects.toEqual(expect.objectContaining({ code: 'local-runtime-unavailable' }));
-    unregister = registerMxcReleaseGateEvidence({ ...EVIDENCE, noWorkerPort: false });
+    unregister = registerMxcReleaseGateEvidence({ ...MXC_RELEASE_GATE_EVIDENCE, noWorkerPort: false });
     await expect(runtime()).rejects.toEqual(expect.objectContaining({ code: 'local-runtime-unavailable' }));
   });
 
   it('selects the available container regardless of the no-backend preference', async () => {
-    unregister = registerMxcReleaseGateEvidence(EVIDENCE);
+    unregister = registerMxcReleaseGateEvidence(MXC_RELEASE_GATE_EVIDENCE);
     state.plan = { selectedBackend: 'mxc', readiness: 'ready', reason: 'ready' };
     state.substrate = CONTAINER_ROUTE;
     expect(await runtime(false)).toBe('mxc');
@@ -105,7 +112,7 @@ describe('Windows local inference release gate', () => {
   });
 
   it.each(['shell', 'common'] as const)('keeps the pending inference gate in step with %s evidence loss', async scope => {
-    unregister = registerMxcReleaseGateEvidence(EVIDENCE);
+    unregister = registerMxcReleaseGateEvidence(MXC_RELEASE_GATE_EVIDENCE);
     state.plan = { selectedBackend: 'mxc', readiness: 'ready', reason: 'ready' };
     state.substrate = CONTAINER_ROUTE;
     const shellAdmission = await refreshWindowsBackgroundAdmission('container');
@@ -139,7 +146,7 @@ describe('Windows local inference release gate', () => {
   });
 
   it('defaults to the host child with confirmed backend absence and honours explicit false', async () => {
-    unregister = registerMxcReleaseGateEvidence(EVIDENCE);
+    unregister = registerMxcReleaseGateEvidence(MXC_RELEASE_GATE_EVIDENCE);
     expect(await runtime()).toBe('unconfined');
     expect(await runtime(true)).toBe('unconfined');
     await expect(runtime(false)).rejects.toEqual(expect.objectContaining({ code: 'local-inference-disabled' }));
@@ -148,7 +155,7 @@ describe('Windows local inference release gate', () => {
   });
 
   it('preserves the active offline sandbox independently of the preference', async () => {
-    unregister = registerMxcReleaseGateEvidence(EVIDENCE);
+    unregister = registerMxcReleaseGateEvidence(MXC_RELEASE_GATE_EVIDENCE);
     state.confined = true;
     state.substrate = ACCOUNT_ROUTE;
     expect(await runtime(false)).toBe('offline-sandbox');
@@ -157,12 +164,12 @@ describe('Windows local inference release gate', () => {
 
   it('keeps session indexing unchanged until complete packaged evidence is registered', async () => {
     expect(await policy(false)).toBe('enabled');
-    unregister = registerMxcReleaseGateEvidence({ ...EVIDENCE, noWorkerPort: false });
+    unregister = registerMxcReleaseGateEvidence({ ...MXC_RELEASE_GATE_EVIDENCE, noWorkerPort: false });
     expect(await policy(false)).toBe('enabled');
   });
 
   it('defaults session indexing on and stops it independently of inference on a released PC without a backend', async () => {
-    unregister = registerMxcReleaseGateEvidence(EVIDENCE);
+    unregister = registerMxcReleaseGateEvidence(MXC_RELEASE_GATE_EVIDENCE);
     expect(await policy(undefined)).toBe('enabled-with-recovery');
     expect(await policy(true)).toBe('enabled-with-recovery');
     expect(await policy(false)).toBe('paused');
@@ -176,14 +183,14 @@ describe('Windows local inference release gate', () => {
   });
 
   it('accepts definitive boot absence even while the extension release pin is in place', async () => {
-    unregister = registerMxcReleaseGateEvidence(EVIDENCE);
+    unregister = registerMxcReleaseGateEvidence(MXC_RELEASE_GATE_EVIDENCE);
     state.plan = { selectedBackend: 'none', readiness: 'unavailable', reason: 'native-validation-required' };
     expect(await switches()).toBe(true);
     expect(await runtime()).toBe('unconfined');
   });
 
   it('treats a live account runtime contradicting the absence record as inactive', async () => {
-    unregister = registerMxcReleaseGateEvidence(EVIDENCE);
+    unregister = registerMxcReleaseGateEvidence(MXC_RELEASE_GATE_EVIDENCE);
     state.confined = true;
     expect(await switches()).toBe(false);
     expect(await policy(false)).toBe('inactive');
@@ -200,7 +207,7 @@ describe('Windows local inference release gate', () => {
     ['installed account backend', () => { state.substrate = { mxc: { state: 'unavailable', reason: 'container-unavailable' }, srtWinReady: true, shells: 'none' }; }],
     ['inconclusive container probe', () => { state.substrate = { mxc: { state: 'unavailable', reason: 'probe-failed' }, srtWinReady: false, shells: 'none' }; }],
   ] as const)('refuses the host route with %s', async (_name, configure) => {
-    unregister = registerMxcReleaseGateEvidence(EVIDENCE);
+    unregister = registerMxcReleaseGateEvidence(MXC_RELEASE_GATE_EVIDENCE);
     configure();
     await expect(runtime()).rejects.toEqual(expect.objectContaining({ code: 'local-runtime-unavailable' }));
   });
@@ -211,7 +218,7 @@ describe('Windows local inference release gate', () => {
     ['native container startup', CONTAINER_ROUTE, () => {}, () => state.containerStart.mockResolvedValue({ state: 'unavailable', reason: 'powershell-start-failed' })],
     ['a container start that cannot be attempted', CONTAINER_ROUTE, () => {}, () => state.containerStart.mockRejectedValue(new Error('launcher failed'))],
   ] as const)('stops indexing when a published route loses %s with every boot record intact', async (_name, substrate, start, lose) => {
-    unregister = registerMxcReleaseGateEvidence(EVIDENCE);
+    unregister = registerMxcReleaseGateEvidence(MXC_RELEASE_GATE_EVIDENCE);
     state.substrate = substrate;
     start();
     expect(await policy(false)).toBe('enabled-with-recovery');
@@ -229,7 +236,7 @@ describe('Windows local inference release gate', () => {
     ['a container backend that is now degraded', () => state.containerInventory.mockResolvedValue({ ...NO_CONTAINER, baseContainerApiPresent: true })],
     ['a container backend that cannot be queried', () => state.containerInventory.mockRejectedValue(new Error('probe failed'))],
   ] as const)('withdraws the switches, the host route and unconfined indexing after published absence meets %s', async (_name, change) => {
-    unregister = registerMxcReleaseGateEvidence(EVIDENCE);
+    unregister = registerMxcReleaseGateEvidence(MXC_RELEASE_GATE_EVIDENCE);
     const { plan, substrate } = state;
     expect(await switches()).toBe(true);
     expect(await policy(false)).toBe('paused');
@@ -243,7 +250,7 @@ describe('Windows local inference release gate', () => {
   });
 
   it('refuses an admission whose evidence was replaced or invalidated before the decision', async () => {
-    unregister = registerMxcReleaseGateEvidence(EVIDENCE);
+    unregister = registerMxcReleaseGateEvidence(MXC_RELEASE_GATE_EVIDENCE);
     const earlier = await refreshWindowsBackgroundAdmission();
     expect(earlier.areSwitchesAvailable()).toBe(true);
     await refreshWindowsBackgroundAdmission();
@@ -260,7 +267,7 @@ describe('Windows local inference release gate', () => {
   it('never upgrades a pre-release admission or revives one after release evidence replacement', async () => {
     const early = await refreshWindowsBackgroundAdmission();
     expect(early.searchIndexPolicy(true)).toBe('enabled');
-    const remove = registerMxcReleaseGateEvidence(EVIDENCE);
+    const remove = registerMxcReleaseGateEvidence(MXC_RELEASE_GATE_EVIDENCE);
     const released = await refreshWindowsBackgroundAdmission();
     expect(released.areSwitchesAvailable()).toBe(true);
     expect.soft(early.areSwitchesAvailable()).toBe(false);
@@ -268,14 +275,14 @@ describe('Windows local inference release gate', () => {
 
     remove();
     expect.soft(released.searchIndexPolicy(true)).toBe('inactive');
-    unregister = registerMxcReleaseGateEvidence(EVIDENCE);
+    unregister = registerMxcReleaseGateEvidence(MXC_RELEASE_GATE_EVIDENCE);
     expect.soft(released.areSwitchesAvailable()).toBe(false);
     expect.soft(released.searchIndexPolicy(true)).toBe('inactive');
     expect((await refreshWindowsBackgroundAdmission()).areSwitchesAvailable()).toBe(true);
   });
 
   it.each([false, true])('keeps each probe receipt when a fast backend changes next to a shared slow backend (first clean: %s)', async firstClean => {
-    unregister = registerMxcReleaseGateEvidence(EVIDENCE);
+    unregister = registerMxcReleaseGateEvidence(MXC_RELEASE_GATE_EVIDENCE);
     const slow = deferred<object>();
     const rejected = { ...NO_ACCOUNT, warnings: ['inventory incomplete'] };
     state.accountInventory.mockResolvedValueOnce(firstClean ? NO_ACCOUNT : rejected)
@@ -297,7 +304,7 @@ describe('Windows local inference release gate', () => {
   });
 
   it('revokes a settled admission as soon as its replacement begins', async () => {
-    unregister = registerMxcReleaseGateEvidence(EVIDENCE);
+    unregister = registerMxcReleaseGateEvidence(MXC_RELEASE_GATE_EVIDENCE);
     const earlier = await refreshWindowsBackgroundAdmission();
     expect(earlier.areSwitchesAvailable()).toBe(true);
     const slow = deferred<object>();
@@ -315,7 +322,7 @@ describe('Windows local inference release gate', () => {
   });
 
   it('shares one probe between concurrent operations and admits nothing while it is pending or after a loss signal voids it', async () => {
-    unregister = registerMxcReleaseGateEvidence(EVIDENCE);
+    unregister = registerMxcReleaseGateEvidence(MXC_RELEASE_GATE_EVIDENCE);
     state.substrate = CONTAINER_ROUTE;
     const start = deferred<object>();
     state.containerStart.mockReturnValue(start.promise);
@@ -332,7 +339,7 @@ describe('Windows local inference release gate', () => {
 });
 
 it('a late search cannot reuse an earlier batch account receipt', async () => {
-  unregister = registerMxcReleaseGateEvidence(EVIDENCE);
+  unregister = registerMxcReleaseGateEvidence(MXC_RELEASE_GATE_EVIDENCE);
   const container = deferred<object>();
   state.containerInventory.mockReturnValue(container.promise);
   const aveDir = indexDirs.track(mkdtempSync(join(tmpdir(), 'ave-index-batch-')));
@@ -360,7 +367,7 @@ it('a late search cannot reuse an earlier batch account receipt', async () => {
 });
 
 it('revokes an account receipt when its verified helper identity changes', async () => {
-  unregister = registerMxcReleaseGateEvidence(EVIDENCE);
+  unregister = registerMxcReleaseGateEvidence(MXC_RELEASE_GATE_EVIDENCE);
   state.confined = true;
   state.substrate = ACCOUNT_ROUTE;
   const admission = await refreshWindowsBackgroundAdmission();

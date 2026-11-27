@@ -93,6 +93,7 @@
       "test/scripts/run-ci-suite.test.ts"
     ],
     "smoke": [
+      "src/main/memory-map/__tests__/local-runtime-release-gate.test.ts",
       "src/plugins/__tests__/tool-name-policy.test.ts",
       "src/__tests__/preload-shape.test.ts",
       "src/plugins/__tests__/public-contract-boundary.test.ts"
