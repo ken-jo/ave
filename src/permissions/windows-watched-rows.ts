@@ -11,9 +11,6 @@ import { createSandboxQuarantine, sandboxQuarantineRoot } from "./sandbox-quaran
 
 const log = createLogger("sandbox-watched-rows");
 
-/** Closed outcome of one protected deny row reachable from a Windows write root. */
-export type WindowsProtectedRowOutcome = "stamped" | "carried" | "excepted" | "watched" | "refused";
-
 /** The named violation a command result carries when a watched entry is quarantined. */
 export const WATCHED_ROW_VIOLATION = "sandbox-watched-path-created";
 

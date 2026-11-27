@@ -4,6 +4,7 @@ import { EventEmitter } from "node:events";
 import { useVerifiedAveHomePrivacy } from "../../__tests__/support/ave-home-privacy.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { registerLinuxWrapperProgramFixtures } from "../../__tests__/support/linux-wrapper-programs.js";
+import { reserveTailnetListenerPort, TAILNET_LOOPBACK_DESTINATION } from "../../shared/tailnet-listener-port.js";
 import {
   initializeAsrtSandbox,
   registerWorkerUnixSocketDir,
@@ -120,6 +121,33 @@ describe("worker socket directory ownership", () => {
     expect(allowed()).not.toContain(dir);
     await Promise.all([first, second]);
     expect(allowedAtResolution).toContain(dir);
+  });
+
+  it("refreshes the Tailnet port deny without replacing the admitted sandbox config", async () => {
+    const holder = {};
+    await registerWorkerUnixSocketDir(dir, holder);
+    const admitted = SandboxManager.getConfig();
+    if (!admitted) throw new Error("Sandbox config is unavailable");
+    const before = structuredClone(admitted);
+    expect(before.network.allowUnixSockets).toContain(dir);
+
+    const port = 43217;
+    const deny = `*:${port}`;
+    const release = reserveTailnetListenerPort(port);
+    try {
+      expect(manager.update).toHaveBeenLastCalledWith({
+        ...before,
+        network: {
+          ...before.network,
+          deniedDomains: [...before.network.deniedDomains, deny],
+          deniedDomainReasons: { ...before.network.deniedDomainReasons, [deny]: TAILNET_LOOPBACK_DESTINATION },
+        },
+      });
+    } finally {
+      release();
+    }
+    expect(manager.update).toHaveBeenLastCalledWith(before);
+    await unregisterWorkerUnixSocketDir(dir, holder);
   });
 
 });

@@ -11,6 +11,7 @@ import * as atomicFile from "../../lib/atomic-file.js";
 import { ensureAveHomePrivate } from "../../shared/ave-home.js";
 import type { TailnetWorkDecisionRequest } from "../../shared/tailnet-work-decisions.js";
 import type { WorkItem } from "../../shared/work-board-types.js";
+import { ToolRegistry } from "../../tools/registry.js";
 import { createHostGit, type HostGit } from "../../work-board/workflow/host-git.js";
 import { createStageWorkspaceProvider } from "../../work-board/workflow/stage-workspaces.js";
 import { runBranch } from "../../work-board/workflow/workspace-layout.js";
@@ -34,7 +35,7 @@ function remoteStart(h: Harness) {
   routines.bindTemplateAttachments(h.templates);
   const runtime = createTailnetWorkDecisions({
     workBoardStore: h.board, workBoardEngine: h.engine, workflowTemplateStore: h.templates, routinesStore: routines,
-    settingsService: { get: key => DEFAULT_SETTINGS[key] }, auditLogger: { log },
+    settingsService: { get: key => DEFAULT_SETTINGS[key] }, auditLogger: { log }, toolRegistry: new ToolRegistry(),
   });
   if (!runtime) throw new Error("Work decision runtime unavailable");
   return {

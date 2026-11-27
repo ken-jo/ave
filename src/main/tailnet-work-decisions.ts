@@ -4,9 +4,11 @@ import { hasUnsafeDirectiveControlChars } from "../engine/parent-directive.js";
 import type { TailnetWorkDecisionHandler } from "../api/tailnet-surface-server.js";
 import type { WorkBoardEngine } from "../core/work-board-engine.js";
 import type { SettingsService } from "../data/settings-store.js";
+import { createToolEffectResolver } from "../permissions/tool-effect-evidence.js";
 import type { TailnetRequestedOutputDecision, TailnetRequestedOutputReview, TailnetWorkDecisionRequest, TailnetWorkDecisionResponse, TailnetWorkReview } from "../shared/tailnet-work-decisions.js";
 import { MAX_PLAN_NOTE_LENGTH, workBoardOriginSessionId } from "../shared/work-board-types.js";
 import { isWorkflowTemplateProposalId, type TemplateScope, type TemplateVersionPin, type WorkflowTemplateDraftInput } from "../shared/workflow-template-types.js";
+import type { ToolRegistry } from "../tools/registry.js";
 import { requireTemplate, WorkflowTemplateError } from "../work-board/template-graph.js";
 import { WORK_DECISION_AUTHORITY_REVOKED, WorkDecisionAuthorityError } from "../work-board/work-decision-authority.js";
 import { isAuthorizedWorkspaceProjectRoot, listAuthorizedWorkspaceProjects, resolveAuthorizedWorkspaceProject } from "./project-root-authorization.js";
@@ -25,6 +27,7 @@ interface TailnetWorkDecisionServices {
   routinesStore: RoutinesStore;
   auditLogger: Pick<AuditLogger, "log">;
   settingsService: Pick<SettingsService, "get">;
+  toolRegistry: Pick<ToolRegistry, "findByName">;
 }
 
 type RequestedOutputDecision = { ok: true } | { ok: false; error: string };
@@ -58,13 +61,14 @@ function withProjectAuthority(evidence: RemoteWorkDecisionEvidence, projectRoot:
 
 export function createTailnetWorkDecisions(services: Partial<TailnetWorkDecisionServices>): TailnetWorkDecisions | undefined {
   if (!services.workBoardStore || !services.workBoardEngine || !services.workflowTemplateStore
-    || !services.routinesStore || !services.auditLogger || !services.settingsService) return undefined;
+    || !services.routinesStore || !services.auditLogger || !services.settingsService || !services.toolRegistry) return undefined;
   const board = services.workBoardStore;
   const engine = services.workBoardEngine;
   const templates = services.workflowTemplateStore;
   const routines = services.routinesStore;
   const auditLogger = services.auditLogger;
   const settingsService = services.settingsService;
+  const effects = createToolEffectResolver(services.toolRegistry);
   let outputRegistration: RequestedOutputDecisions | undefined;
 
   function withOutputAuthority(evidence: RemoteWorkDecisionEvidence, registered: RequestedOutputDecisions): RemoteWorkDecisionEvidence {
@@ -232,7 +236,7 @@ export function createTailnetWorkDecisions(services: Partial<TailnetWorkDecision
       requireTemplate((!record || scopeAuthorised(record.template.scope)) && (!draft || scopeAuthorised(draft.scope)), "scope-not-authorised");
       const draftRoot = draft?.scope.kind === "project" ? draft.scope.projectRoot : undefined;
       const proof = mintProof(withProjectAuthority(evidence, draftRoot));
-      const { templateId: id, version, graphHash } = await templates.confirmDraft(templateId, input, { who: evidence.login, origin: proof.origin, proof });
+      const { version: { templateId: id, version, graphHash } } = await templates.confirmDraft(templateId, input, { who: evidence.login, origin: proof.origin, proof }, effects);
       return { ok: true, kind: request.kind, pin: { templateId: id, version, graphHash } };
     }
     if (request.kind === "create-and-run") return start(request.input, evidence);

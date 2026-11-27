@@ -444,6 +444,16 @@ describe("native invocation permission evidence", () => {
     expect(requests).toHaveLength(0);
   });
 
+  it("keeps attended directory review on the foreground route when an approval surface is unavailable", async () => {
+    manager.setMode("auto");
+    const dispatch = reviewer();
+    await executor().executeAll([
+      { id: "outside-write", name: writeTool.name, input: { path: join(root, "outside.txt"), content: "report" } },
+    ], { sessionId, executionCwd: project, permissionContext: { trustOrigin: "user-keyboard", approvalSurface: "unavailable" } });
+    expect(dispatch.mock.calls[0]?.[3]).toMatchObject({ lane: "foreground-auto" });
+    expect(requests).toHaveLength(0);
+  });
+
   it("honors a remembered outside write before its headless directory fallback", async () => {
     manager.setMode("default");
     const path = join(root, "remembered-outside.txt");

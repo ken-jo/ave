@@ -24,7 +24,7 @@ const log = createLogger("asrt-windows-support");
 type WindowsUserState = NonNullable<SandboxWindowsStatusInfo["userState"]>;
 type WindowsWfpState = NonNullable<SandboxWindowsStatusInfo["wfpState"]>;
 
-export interface AsrtWindowsSandboxUserStatusLike {
+interface AsrtWindowsSandboxUserStatusLike {
   readonly provisioned?: boolean;
   readonly sid?: string;
   readonly groupExists?: boolean;
@@ -233,7 +233,7 @@ function hasUserProvisionSignal(user: AsrtWindowsSandboxUserStatusLike): boolean
   );
 }
 
-export function normalizeAsrtWindowsUserState(
+function normalizeAsrtWindowsUserState(
   user: AsrtWindowsSandboxUserStatusLike,
 ): WindowsUserState {
   if (!hasUserProvisionSignal(user)) return "absent";
@@ -252,7 +252,7 @@ export function normalizeAsrtWindowsUserState(
   return "incomplete";
 }
 
-export function normalizeAsrtWindowsWfpState(
+function normalizeAsrtWindowsWfpState(
   wfp: AsrtWindowsWfpStatusLike,
 ): WindowsWfpState {
   return wfp.state === "installed" || wfp.state === "cannot-read"
@@ -260,7 +260,7 @@ export function normalizeAsrtWindowsWfpState(
     : "absent";
 }
 
-export function isAsrtWindowsReady(
+function isAsrtWindowsReady(
   userState: WindowsUserState,
   wfpState: WindowsWfpState,
 ): boolean {
@@ -273,7 +273,7 @@ function windowsSandboxErrorCode(error: unknown): string | undefined {
   return typeof code === "string" ? code : undefined;
 }
 
-export async function resolveAsrtWindowsReady(
+async function resolveAsrtWindowsReady(
   userState: WindowsUserState,
   wfpState: WindowsWfpState,
   verifyWindowsWfpEgress: VerifyWindowsWfpEgressFn,

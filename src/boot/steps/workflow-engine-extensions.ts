@@ -1,5 +1,7 @@
 import { createLogger } from "../../lib/logger.js";
+import { isAllReadOnlyVersion } from "../../work-board/template-graph.js";
 import { authoriseRunSource } from "../../work-board/workflow/run-authority.js";
+import { assertPinnedVersion } from "../../work-board/workflow/stage-graph.js";
 import { createPassConditionRegistry } from "../../work-board/workflow/stage-gates.js";
 import type { WorkBoardStore } from "../../main/work-board-store.js";
 import type { RemovedRun } from "../../main/workflow-run-store.js";
@@ -10,6 +12,7 @@ import { createStageWorkspaceProvider } from "../../work-board/workflow/stage-wo
 import { bindStageWorkspace, unbindStageWorkspace } from "../../permissions/stage-workspace-binding.js";
 import type { PermissionManager } from "../../permissions/permission-manager.js";
 import { createRunScopeHooks } from "../../permissions/run-scope.js";
+import { unattendedLaneHooks } from "../../permissions/unattended-lane-registry.js";
 import type { StageRunEngineDeps } from "../../work-board/workflow/stage-run-engine.js";
 
 const log = createLogger("ave");
@@ -25,7 +28,8 @@ type WorkflowEngineExtensions = Pick<
  * is the board store's covered run file. Every stage works in its own folder under the home's `worktrees`, bound to its session, and with
  * no lane only an all-read-only version may run unattended. A run's "Allow for this run" grants and its stage sessions' reviewer
  * breakers are held by the permission manager and end as the run tells it. */
-export function workflowEngineExtensions(store: WorkBoardStore, attachments: Pick<WorkflowTemplateStore, "getAttachment">, permissionManager: PermissionManager): WorkflowEngineExtensions {
+export function workflowEngineExtensions(store: WorkBoardStore, templates: Pick<WorkflowTemplateStore, "getAttachment" | "resolveVersion">, permissionManager: PermissionManager): WorkflowEngineExtensions {
+  const runs = boardRunState(store);
   // A run's output folder lives as long as its item. A record can go while its row is still listed (a later run superseded it and the
   // row's history let it go): that run's output stays until the row goes. A board that cannot be read removes nothing.
   const workspace = createStageWorkspaceProvider({ removable: () => store.runsWithoutItem() });
@@ -72,7 +76,7 @@ export function workflowEngineExtensions(store: WorkBoardStore, attachments: Pic
   // run with no root and leave it whole with a warning, only for the next to take it apart.
   const reading = new Set<Promise<void>>();
   const scheduled = (runId: string, itemId: number, attachmentId: string): void => {
-    const read = attachments.getAttachment(attachmentId).catch(() => null).then((attachment) => {
+    const read = templates.getAttachment(attachmentId).catch(() => null).then((attachment) => {
       const approved = attachment?.approvedScope;
       if (approved?.kind === "project") note(runId, itemId, approved.projectRoot);
       reading.delete(read);
@@ -94,11 +98,29 @@ export function workflowEngineExtensions(store: WorkBoardStore, attachments: Pic
   };
   store.onItemRemoved = ask;
   return {
-    runs: boardRunState(store),
+    runs,
     workspace,
     workspaceBinding: { bind: bindStageWorkspace, unbind: unbindStageWorkspace },
     authoriseRunSource,
     passConditions: createPassConditionRegistry(),
+    lane: {
+      ...unattendedLaneHooks,
+      admit: async ({ runKey }) => {
+        const unavailable = { ok: false, code: "lane-unavailable" } as const;
+        const [, item, runId] = /^work-board:([1-9]\d*)#([^#]+)$/.exec(runKey) ?? [];
+        const itemId = Number(item);
+        if (!Number.isSafeInteger(itemId) || runId === undefined) return unavailable;
+        try {
+          const run = await runs.get(itemId, runId);
+          if (!run || run.settled !== undefined || run.runStartedBy.kind !== "schedule-attachment") return unavailable;
+          const version = await templates.resolveVersion(run.pin);
+          assertPinnedVersion(version, run.pin);
+          return isAllReadOnlyVersion(version) ? { ok: true } : unavailable;
+        } catch {
+          return unavailable;
+        }
+      },
+    },
     runScope: createRunScopeHooks(permissionManager),
   };
 }

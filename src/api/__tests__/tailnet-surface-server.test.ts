@@ -41,6 +41,7 @@ import { maybeStartTailnetObserverServer, resetTailnetObserverServerForTests, st
 import type { TailnetPairedSharingRuntime } from "../../main/tailnet-paired-sharing-runtime.js";
 import type { ConversationSurfaceRuntime } from "../../engine/conversation-surface-runtime.js";
 import { createTailnetWorkDecisions } from "../../main/tailnet-work-decisions.js";
+import { ToolRegistry } from "../../tools/registry.js";
 import { itemDigestOf } from "../../main/work-board-store.js";
 import { stageOf } from "../../work-board/workflow/__tests__/stage-fixtures.js";
 import { stageRunHarness } from "../../work-board/workflow/__tests__/stage-run-harness.js";
@@ -2236,7 +2237,7 @@ async function pairedWorkFixture(h: Awaited<ReturnType<typeof stageRunHarness>>)
   const log = vi.fn();
   const runtime = createTailnetWorkDecisions({
     workBoardStore: h.board, workBoardEngine: h.engine, workflowTemplateStore: h.templates, routinesStore: routines,
-    settingsService: { get: key => DEFAULT_SETTINGS[key] }, auditLogger: { log },
+    settingsService: { get: key => DEFAULT_SETTINGS[key] }, auditLogger: { log }, toolRegistry: new ToolRegistry(),
   });
   if (!runtime) throw new Error("Work decision runtime unavailable");
   const list = vi.fn(runtime.list);

@@ -1,3 +1,4 @@
+import { unknownToolEffects } from "../../__tests__/support/tool-effect-resolver.js";
 import { requiredValue } from "../../__tests__/support/required-value.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -23,7 +24,7 @@ beforeEach(async () => { dir = await mkdtemp(join(tmpdir(), "templates-")); path
 afterEach(async () => { await rm(dir, { recursive: true, force: true }); });
 async function confirmed() {
   const record = await store.draft(null, input());
-  const version = await store.confirmDraft(record.template.id, { expectedGraphHash: requiredValue(record.draft).graphHash, expectedDraftRevision: requiredValue(record.draft).revision }, actor);
+  const { version } = await store.confirmDraft(record.template.id, { expectedGraphHash: requiredValue(record.draft).graphHash, expectedDraftRevision: requiredValue(record.draft).revision }, actor, unknownToolEffects);
   return { id: record.template.id, version };
 }
 describe("workflow template store", () => {
@@ -39,7 +40,7 @@ describe("workflow template store", () => {
     const draft = await store.draft(id, next);
     expect(draft.draft).not.toHaveProperty("version");
     expect(await store.resolveVersion({ templateId: id, version: 1, graphHash: version.graphHash })).toEqual(version);
-    const v2 = await store.confirmDraft(id, { expectedGraphHash: requiredValue(draft.draft).graphHash, expectedDraftRevision: requiredValue(draft.draft).revision }, actor);
+    const { version: v2 } = await store.confirmDraft(id, { expectedGraphHash: requiredValue(draft.draft).graphHash, expectedDraftRevision: requiredValue(draft.draft).revision }, actor, unknownToolEffects);
     expect(v2.version).toBe(2); expect(v2.basedOn).toBe(1);
     const returned = await store.get(id); returned.versions[0].stages[0].goal = "forged";
     expect((await store.get(id)).versions[0]).toEqual(version);
@@ -49,7 +50,7 @@ describe("workflow template store", () => {
     const { id, version } = await confirmed();
     const first = await store.draft(id, input()); const edited = input(); edited.stages[0].goal = "Changed";
     await store.draft(id, edited);
-    await expect(store.confirmDraft(id, { expectedGraphHash: requiredValue(first.draft).graphHash, expectedDraftRevision: requiredValue(first.draft).revision }, actor)).rejects.toMatchObject({ code: "stale-draft" });
+    await expect(store.confirmDraft(id, { expectedGraphHash: requiredValue(first.draft).graphHash, expectedDraftRevision: requiredValue(first.draft).revision }, actor, unknownToolEffects)).rejects.toMatchObject({ code: "stale-draft" });
     await expect(store.resolveVersion({ templateId: id, version: 99, graphHash: version.graphHash })).rejects.toMatchObject({ code: "unknown-version" });
     await expect(store.resolveVersion({ templateId: id, version: 1, graphHash: "a".repeat(64) })).rejects.toMatchObject({ code: "graph-hash-mismatch" });
   });
@@ -65,10 +66,10 @@ describe("workflow template store", () => {
   });
   it("serializes concurrent confirmations and rejects reserved remote provenance", async () => {
     const r = await store.draft(null, input()); const request = { expectedGraphHash: requiredValue(r.draft).graphHash, expectedDraftRevision: requiredValue(r.draft).revision };
-    const results = await Promise.allSettled([store.confirmDraft(r.template.id, request, actor), store.confirmDraft(r.template.id, request, actor)]);
+    const results = await Promise.allSettled([store.confirmDraft(r.template.id, request, actor, unknownToolEffects), store.confirmDraft(r.template.id, request, actor, unknownToolEffects)]);
     expect(results.filter(r => r.status === "fulfilled")).toHaveLength(1);
     const d = await store.draft(r.template.id, input());
-    await expect(store.confirmDraft(r.template.id, { expectedGraphHash: requiredValue(d.draft).graphHash, expectedDraftRevision: requiredValue(d.draft).revision }, { who: "user", origin: "tailnet-surface" })).rejects.toMatchObject({ code: "invalid-input" });
+    await expect(store.confirmDraft(r.template.id, { expectedGraphHash: requiredValue(d.draft).graphHash, expectedDraftRevision: requiredValue(d.draft).revision }, { who: "user", origin: "tailnet-surface" }, unknownToolEffects)).rejects.toMatchObject({ code: "invalid-input" });
   });
   it("refuses tampered confirmed bytes rather than inventing a valid hash", async () => {
     await confirmed(); const data = JSON.parse(await readFile(path, "utf8")); data.templates[0].versions[0].stages[0].goal = "tampered";
@@ -84,7 +85,7 @@ describe("canonical graph hash", () => {
     expect(hash).toMatch(/^[a-f0-9]{64}$/);
     expect(hash).not.toBe(graphHashOf(input()));
     const draft = await store.draft(null, graph);
-    const version = await store.confirmDraft(draft.template.id, { expectedGraphHash: hash, expectedDraftRevision: requiredValue(draft.draft).revision }, actor);
+    const { version } = await store.confirmDraft(draft.template.id, { expectedGraphHash: hash, expectedDraftRevision: requiredValue(draft.draft).revision }, actor, unknownToolEffects);
     expect(version.graphHash).toBe(hash);
     expect((await new WorkflowTemplateStore(path).get(draft.template.id)).versions[0]).toEqual(version);
   });
@@ -127,9 +128,10 @@ it("persists a host-proven remote confirmation and attachment with the owner log
   const proof = mintHostDecisionProof("tailnet-surface", { login: "owner@example.com", conversationId: "conversation", authority: auth });
   const record = await store.draft(null, { ...input(), stages: input().stages.slice(0, 1), edges: [], name: "Remote workflow" });
   const draft = requiredValue(record.draft);
-  const version = await store.confirmDraft(record.template.id, {
+  const { version, unattended } = await store.confirmDraft(record.template.id, {
     expectedGraphHash: draft.graphHash, expectedDraftRevision: draft.revision,
-  }, { who: "owner@example.com", origin: "tailnet-surface", proof });
+  }, { who: "owner@example.com", origin: "tailnet-surface", proof }, unknownToolEffects);
+  expect(unattended).toEqual({ ok: false, code: "unattended-not-read-only" });
   const attachProof = mintHostDecisionProof("tailnet-surface", { login: "owner@example.com", conversationId: "conversation", authority: auth });
   const attachment = await store.attachSchedule({
     templateId: version.templateId, version: version.version, graphHash: version.graphHash, scheduleId: "remote-schedule",
@@ -147,6 +149,6 @@ it("refuses remote template confirmation without host proof", async () => {
   const draft = requiredValue(record.draft);
   await expect(store.confirmDraft(record.template.id, {
     expectedGraphHash: draft.graphHash, expectedDraftRevision: draft.revision,
-  }, { who: "owner@example.com", origin: "tailnet-surface" })).rejects.toMatchObject({ code: "invalid-input" });
+  }, { who: "owner@example.com", origin: "tailnet-surface" }, unknownToolEffects)).rejects.toMatchObject({ code: "invalid-input" });
   expect((await store.get(record.template.id)).template.currentVersion).toBe(0);
 });

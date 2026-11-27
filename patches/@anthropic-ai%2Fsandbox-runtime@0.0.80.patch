@@ -4,8 +4,6 @@ the patchedDependencies entry in package.json) when all are released and Ave
 pins that version.
 Transport failures use 502/504 and attributed failure records; policy refusals
 remain 403. DNS, route lookup, connect, and timeout errors stay fail-closed.
-test/scripts/asrt-patched-symbols.test.ts fails if any part is missing from
-the installed package.
 
 1. https://github.com/anthropics/sandbox-runtime/pull/722 (issue #721): a
    per-wrap `ttys` option that grants file-ioctl on the named pty slave only,

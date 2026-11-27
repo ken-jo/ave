@@ -76,6 +76,8 @@ export interface Tool {
   readonly description: string;
   readonly source: ToolSource;
   readonly category: ToolCategory;
+  readonly unattendedEffect?: import("../permissions/tool-effect-evidence.js").ToolEffectEvidence;
+  readonly effectAnnotations?: import("../permissions/tool-effect-evidence.js").ExternalEffectAnnotations;
   readonly categoryForInput?: (input: unknown, ctx?: ToolPolicyContext) => ToolCategory;
   /** Permission policy; declared only on `category === "meta"` tools. Tells the executor to take the explicit
    * short-circuit path rather than the standard Layer 3 decision matrix. See {@link ToolDecisionOverride} for semantics. */
@@ -226,6 +228,8 @@ export interface DynamicToolSpec {
   workerId?: string;
   mcpServerId?: string;
   mcpReadOnlyHint?: boolean;
+  unattendedEffect?: Tool["unattendedEffect"];
+  effectAnnotations?: Tool["effectAnnotations"];
   mcpRuleIdentity?: Tool["mcpRuleIdentity"];
   operationPolicy?: PluginToolOperationPolicy;
   /** MCP Apps app→server `tools/call` gate; see {@link Tool.appInvokable}. */
@@ -270,6 +274,8 @@ export function createDynamicTool(spec: DynamicToolSpec): Tool {
     workerId: spec.workerId,
     mcpServerId: spec.mcpServerId,
     mcpReadOnlyHint: spec.mcpReadOnlyHint,
+    unattendedEffect: spec.unattendedEffect,
+    effectAnnotations: spec.effectAnnotations,
     mcpRuleIdentity: spec.mcpRuleIdentity,
     operationPolicy: spec.operationPolicy,
     appInvokable: spec.appInvokable,

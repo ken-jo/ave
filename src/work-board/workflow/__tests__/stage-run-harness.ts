@@ -1,3 +1,4 @@
+import { unknownToolEffects } from "../../../__tests__/support/tool-effect-resolver.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -424,7 +425,7 @@ export async function stageRunHarness(opts: {
     const edges = stages.flatMap(stage => stage.inputs.map(from => ({ from, to: stage.id })));
     const record = await templates.draft(over.id ?? null, { name: "Template", scope: over.scope ?? { kind: "all" }, stages, edges, ...(over.setupCommands ? { setupCommands: over.setupCommands } : {}) });
     if (!record.draft) throw new Error("no draft");
-    return templates.confirmDraft(record.template.id, { expectedGraphHash: record.draft.graphHash, expectedDraftRevision: record.draft.revision }, actor);
+    return templates.confirmDraft(record.template.id, { expectedGraphHash: record.draft.graphHash, expectedDraftRevision: record.draft.revision }, actor, unknownToolEffects).then(({ version }) => version);
   }
   const pinOf = (version: TemplateVersion): TemplateVersionPin => ({ templateId: version.templateId, version: version.version, graphHash: version.graphHash });
   async function addItem(version: TemplateVersion, projectRoot?: string): Promise<number> {

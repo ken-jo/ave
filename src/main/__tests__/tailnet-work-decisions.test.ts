@@ -6,6 +6,7 @@ import { parseTailnetWorkDecision } from "../../api/tailnet-work-decision-input.
 import { outputHashOf } from "../../shared/workflow-template-output.js";
 import { DEFAULT_SETTINGS } from "../../data/settings-defaults.js";
 import type { TailnetRequestedOutputDecision, TailnetWorkDecisionRequest } from "../../shared/tailnet-work-decisions.js";
+import { ToolRegistry } from "../../tools/registry.js";
 import { autoStageOf, stageOf } from "../../work-board/workflow/__tests__/stage-fixtures.js";
 import { stageRunHarness } from "../../work-board/workflow/__tests__/stage-run-harness.js";
 import { RoutinesStore } from "../routines-store.js";
@@ -35,7 +36,7 @@ async function fixture(options: Parameters<typeof stageRunHarness>[0] = {}) {
   const settings = DEFAULT_SETTINGS;
   const runtime = createTailnetWorkDecisions({
     workBoardStore: h.board, workBoardEngine: h.engine, workflowTemplateStore: h.templates, routinesStore: routines,
-    auditLogger: { log }, settingsService: { get: key => settings[key] },
+    auditLogger: { log }, settingsService: { get: key => settings[key] }, toolRegistry: new ToolRegistry(),
   });
   if (!runtime) throw new Error("Work decision runtime unavailable");
   return { h, routines, log, runtime, decide: (request: TailnetWorkDecisionRequest) => runtime.decide(request, evidence) };

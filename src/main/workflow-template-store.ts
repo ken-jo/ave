@@ -7,11 +7,12 @@ import { ChangeSignal } from "../lib/change-signal.js";
 import { createLogger } from "../lib/logger.js";
 import { UUID_PATTERN } from "../shared/uuid.js";
 import { isRecord } from "../shared/is-record.js";
-import { attachmentScopeMatches, isTemplateScope, hasTemplateKeys, canonicalTemplateGraph, validateStageForConfirm, isAllReadOnlyVersion, graphHashOf, isGraphHash, isTemplateId, isTemplateVersion, parseTemplateDraft, requireTemplate, WorkflowTemplateError } from "../work-board/template-graph.js";
+import { attachmentScopeMatches, isTemplateScope, hasTemplateKeys, canonicalTemplateGraph, validateStageForConfirm, isAllReadOnlyVersion, graphHashOf, isGraphHash, isTemplateId, isTemplateVersion, parseTemplateDraft, qualifyUnattended, requireTemplate, WorkflowTemplateError } from "../work-board/template-graph.js";
+import type { ToolEffectResolver } from "../permissions/tool-effect-evidence.js";
 import { WorkDecisionAuthorityError } from "../work-board/work-decision-authority.js";
 import { parseTemplateConfirmInput } from "../work-board/work-decision-input.js";
 import { assertHostDecisionProof, type HostDecisionProof } from "./workflow-template-decision.js";
-import { isWorkflowTemplateProposalId, type ScheduleAttachment, type ScheduleAttachmentInput, type TemplateScope, type TemplateDecisionActor, type TemplateConfirmationOrigin, type TemplateVersion, type TemplateVersionPin, type WorkflowTemplate, type WorkflowTemplateConfirmInput, type WorkflowTemplateDraftInput, type WorkflowTemplateProposal, type WorkflowTemplateRecord } from "../shared/workflow-template-types.js";
+import { isWorkflowTemplateProposalId, type ScheduleAttachment, type ScheduleAttachmentInput, type TemplateScope, type TemplateDecisionActor, type TemplateConfirmationOrigin, type TemplateVersion, type TemplateVersionPin, type WorkflowTemplate, type WorkflowTemplateConfirmInput, type WorkflowTemplateConfirmResult, type WorkflowTemplateDraftInput, type WorkflowTemplateProposal, type WorkflowTemplateRecord } from "../shared/workflow-template-types.js";
 
 interface ScheduleRunAuthority {
   record: WorkflowTemplateRecord | null;
@@ -200,7 +201,7 @@ export class WorkflowTemplateStore {
       await this.commit(file); return structuredClone(record);
     });
   }
-  async confirmDraft(id: string, input: WorkflowTemplateConfirmInput, actor: { who: string; origin: TemplateConfirmationOrigin; proof?: HostDecisionProof }): Promise<TemplateVersion> {
+  async confirmDraft(id: string, input: WorkflowTemplateConfirmInput, actor: { who: string; origin: TemplateConfirmationOrigin; proof?: HostDecisionProof }, effects: ToolEffectResolver): Promise<WorkflowTemplateConfirmResult> {
     const binding = parseTemplateConfirmInput(input);
     requireTemplate(binding);
     requireTemplate(isDecisionOrigin(actor?.origin) && typeof actor.who === "string" && actor.who.length > 0 && actor.who.length <= maxActorLength(actor.origin));
@@ -231,7 +232,7 @@ export class WorkflowTemplateStore {
       if (proposal) file.templates.push(record);
       await this.commit(file, proof);
       if (proposal) this.removeProposal(id);
-      return structuredClone(confirmed);
+      return { version: structuredClone(confirmed), unattended: qualifyUnattended(confirmed, effects) };
     });
   }
   async attachSchedule(input: ScheduleAttachmentInput, proof: HostDecisionProof, approvedScope: TemplateScope, options?: { requireCurrent: true }): Promise<ScheduleAttachment> {
