@@ -347,6 +347,7 @@ it.each([true, false])("projects the winning focus observation for held settings
       get: <K extends keyof typeof settings>(key: K) => settings[key],
       getAll: () => settings,
       getSecret: vi.fn(),
+      hasStoredSecret: () => false,
     };
     const provider: LLMProvider = { vendor: "claude", async *streamTurn() {} };
     const subscriptionProviderFactory = vi.fn(() => provider);
@@ -361,7 +362,7 @@ it.each([true, false])("projects the winning focus observation for held settings
     dispose = await wireReviewerAndPermissions(context as never);
     const reviewerProvider = () => {
       const [wiring] = requiredFixture(wireReviewerAgent.mock.lastCall);
-      return wiring.streamProviderFor("subscription:claude-code");
+      return requiredFixture(wiring.streamProviderFor)("subscription:claude-code");
     };
     expect(reviewerProvider()).toBe(provider);
     clock.mockReturnValue(Date.now() + 6 * 60_000);
