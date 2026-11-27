@@ -61,9 +61,9 @@ describe.runIf(process.platform === "win32")("container shell and sibling sandbo
   it.for([
     { name: "the per-turn base directories", grantsBase: true },
     { name: "no additional directory", grantsBase: false },
-    // The working directory's grant covers the runtime root's parent: the root's own access is what keeps a sibling closed.
+    // A working directory above the runtime root would grant writes over the runtime.
     { name: "a working directory above the runtime root", grantsBase: false, aboveRoot: true },
-    // Directories inside the runtime root named as additional directories: none of them is granted.
+    // Additional directories inside the runtime root would grant writes over sandbox state.
     { name: "the runtime root, the HOME parent, a sibling HOME and staging as additional directories", grantsBase: false, grantsFloor: true },
     // A working directory inside the runtime root: the launch is refused, and nothing runs on the host instead.
     { name: "the HOME parent as the working directory", grantsBase: false, cwdInside: true },
@@ -110,12 +110,17 @@ describe.runIf(process.platform === "win32")("container shell and sibling sandbo
         command: probeScript({ siblingName: basename(sibling.path), tempRoot, nonce }),
         timeoutSeconds: TOOL_TIMEOUT_POLICY.shellDefaultMs / 1000,
       }, context);
-      if (cwdInside === true) {
-        console.info(`G1 evidence ${JSON.stringify({ cwdInside: true, isError: result.isError === true, output: result.output.slice(0, 200) })}`);
+      if (aboveRoot === true || grantsFloor === true || cwdInside === true) {
         expect(result.isError, result.output).toBe(true);
         expect(result.metadata?.sandboxed).not.toBe(true);
+        if (aboveRoot === true || grantsFloor === true) {
+          expect(result.output).toMatch(/\(confinement-state-write-grant\)$/u);
+        }
         expect(result.output).not.toContain("own-home-path=");
-        expect(existsSync(join(dirname(sibling.path), "cwd.txt"))).toBe(false);
+        expect(result.output).not.toContain(secret);
+        expect(existsSync(join(context.cwd, "cwd.txt"))).toBe(false);
+        expect(planted.filter((path) => existsSync(path))).toEqual([]);
+        expect(readFileSync(marker, "utf8")).toBe(markerText);
         return;
       }
       expect(result.metadata?.sandboxed, result.output).toBe(true);
