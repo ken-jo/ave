@@ -982,6 +982,7 @@ export const CHANNEL_GESTURE: Record<string, "required" | "none"> = {
   [WORK_BOARD.openJoin]: "required",
   [WORK_BOARD.captureDecisionIntent]: "required",
   [WORK_BOARD.retryStage]: "required",
+  [WORK_BOARD.retryOutput]: "required",
   [WORK_BOARD.templateConfirm]: "required",
   [WORK_BOARD.templateAttachSchedule]: "required",
   [WORK_BOARD.templateDetachSchedule]: "required",

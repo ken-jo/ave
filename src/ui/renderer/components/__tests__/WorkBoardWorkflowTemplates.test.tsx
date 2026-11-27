@@ -11,6 +11,8 @@ import { TEST_IDS } from "../../../../shared/test-ids.js";
 import type { RunProgressEventPayload, WorkItemResolved } from "../../../../shared/work-board-types.js";
 import type { TemplateVersion, WorkflowTemplate, WorkflowTemplateDraftInput } from "../../../../shared/workflow-template-types.js";
 import { WorkBoardPanel } from "../WorkBoardPanel.js";
+import { WorkflowDecisionCard } from "../work-board/WorkflowDecisionCard.js";
+import { WorkflowStageEvidence } from "../work-board/WorkflowRunEvidence.js";
 import type { ApprovalRequest, AveApi } from "../../types.js";
 
 const at = "2026-11-26T05:00:00.000Z";
@@ -347,6 +349,46 @@ it("moves focus to the run heading when the keyboard decision removes its card",
   expect(view.getByRole("heading", { name: item.title })).toHaveFocus();
 });
 
+it("shows the requested effect payload and approves the hash on the keyboard", async () => {
+  const binding = { runId: "run-a", stageId: "summarize", attempt: 1, resultHash: graphHash, outputHash: "b".repeat(64) };
+  const payload = JSON.stringify({ kind: "send-message", owner: "plugin", ownerId: "delivery", toolName: "send", args: { recipient: "Review team", text: "Exact body" } }, null, 2);
+  const row: WorkItemResolved = { ...item, runPin: pin, pendingWorkflowDecisions: [
+    { kind: "stage-gate", binding, result: "Ready", outputs: [{ id: "send", summary: "Notify", payload }], arrivedAt: at },
+  ] };
+  const { api } = mount([row]);
+  api.decideWorkStage.mockResolvedValue({ ok: true, status: "approved" });
+  fireEvent.click(await screen.findByRole("button", { name: t("workflowTemplates.openRun") }));
+  const view = within(await screen.findByRole("dialog", { name: item.title }));
+  expect(await view.findByText(payload, { normalizer: value => value })).toBeInTheDocument();
+  expect(view.getByText(t("workflowTemplates.outputPathsAsArguments"))).toBeInTheDocument();
+  const approve = view.getByRole("button", { name: t("workflowTemplates.approveStage") });
+  approve.focus();
+  await userEvent.keyboard("{Enter}");
+  expect(api.decideWorkStage).toHaveBeenCalledExactlyOnceWith(item.id, { ...binding, decision: "approve" });
+});
+
+it("the gate card of a push to an https remote shows the help text, and the card of a push to an ssh remote does not", () => {
+  const binding = { runId: "run-a", stageId: "summarize", attempt: 1, resultHash: graphHash, outputHash: "b".repeat(64) };
+  const card = (url: string) => <WorkflowDecisionCard itemId={item.id} onChanged={vi.fn()}
+    api={{ decideWorkStage: vi.fn(), decideWorkJoin: vi.fn(), openWorkBoardJoin: vi.fn() }}
+    review={{ kind: "stage-gate", binding, result: "Ready", arrivedAt: at, outputs: [{
+      id: "push", summary: "Publish", payload: JSON.stringify({ args: { url } }), pushRunBranch: true, httpsAccountsHelp: url.startsWith("https:"),
+    }] }} />;
+  const view = render(card("https://example.test/repo"));
+  expect(view.getByText(t("workflowTemplates.pushRunBranchAsRequested"))).toBeVisible();
+  expect(view.getByText(t("workflowTemplates.pushHttpsAccountsHelp"))).toBeVisible();
+  view.rerender(card("ssh://git@example.test/repo"));
+  expect(view.queryByText(t("workflowTemplates.pushHttpsAccountsHelp"))).toBeNull();
+});
+
+it("the authentication failure shows the https accounts help text", () => {
+  const detail = JSON.stringify({ exit: { code: "push-authentication", message: "Authentication failed" } });
+  const view = render(<WorkflowStageEvidence stageName={id => id}
+    stage={{ stageId: "summarize", attempt: 1, status: "passed", outputExecutions: [{ id: "push", status: "failed", detail }] }} />);
+  expect(view.getByText(t("workflowTemplates.pushHttpsAccountsHelp"))).toBeVisible();
+  expect(view.getByText("Authentication failed")).toBeVisible();
+});
+
 it("presents enabled controls for a reissued join conflict of the same files", async () => {
   const first = { runId: "run-a", joinId: "step-1", generation: 1, conflictHash: graphHash };
   const next = { ...first, generation: 2, conflictHash: "e".repeat(64) };
@@ -458,4 +500,14 @@ it("focuses the parked stage tool approval inside the run opened in another proj
   expect(approve).toBeEnabled();
   fireEvent.click(approve);
   expect(vi.mocked(surface.decide).mock.calls.map(call => call[0])).toEqual(["parked-tool"]);
+});
+
+it("uses the decision gesture message when no gesture accompanies approval", async () => {
+  const binding = { runId: "run-a", stageId: "summarize", attempt: 1, resultHash: graphHash };
+  const view = render(<WorkflowDecisionCard itemId={item.id} onChanged={vi.fn()}
+    api={{ decideWorkStage: vi.fn().mockResolvedValue({ ok: false, reason: "user-gesture-required" }), decideWorkJoin: vi.fn(), openWorkBoardJoin: vi.fn() }}
+    review={{ kind: "stage-gate", binding, result: "Ready", arrivedAt: at }} />);
+  fireEvent.click(view.getByRole("button", { name: t("workflowTemplates.approveStage") }));
+  expect(await view.findByText(t("workflowTemplates.decideWithGesture"))).toBeVisible();
+  expect(view.queryByText(t("reasonCodes.user-gesture-required"))).toBeNull();
 });

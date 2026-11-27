@@ -1,3 +1,5 @@
+import { createHostGit } from "../../../work-board/workflow/host-git.js";
+import { acceptRequestedOutput, requestedOutputHash } from "../../../work-board/workflow/requested-outputs.js";
 import { ApprovalGate, IPC_APPROVAL_REQUEST } from "../../../permissions/approval-gate.js";
 import { approvalSurfaceResolver } from "../../../boot/approval-surface.js";
 import { updateApprovalSurface } from "../../../permissions/approval-surface-registry.js";
@@ -131,7 +133,8 @@ it("refuses without a keyboard gesture or from a non-owner frame", async () => {
 it("forwards a gesture-carrying decision with the host's approval surface and audits the decision, never the note", async () => {
   const { event, engine, log } = setup();
   await expect(decide(WORK_BOARD.decideStage, event, 7, { ...gateInput, decision: "request_changes", note: "tighten the summary" })).resolves.toEqual({ ok: true, status: "approved" });
-  expect(engine.decideStageGate).toHaveBeenCalledWith(7, { ...gateInput, decision: "request_changes", note: "tighten the summary" });
+  expect(engine.decideStageGate).toHaveBeenCalledWith(7, { ...gateInput, decision: "request_changes", note: "tighten the summary" },
+    { kind: "local-desktop", receipt: expect.objectContaining({ surface: event.sender }) });
   await expect(decide(WORK_BOARD.decideJoin, event, 7, joinInput)).resolves.toEqual({ ok: true });
   expect(engine.decideStageJoin).toHaveBeenCalledWith(7, joinInput);
   await expect(decide(WORK_BOARD.retryStage, event, 7, retryInput)).resolves.toEqual({ ok: true });
@@ -743,4 +746,68 @@ it("keeps a B stage and its descendant approval details out of the launching A w
     projectSettings.mockRestore();
     await h.cleanup();
   }
+});
+
+it("a click approves a stage with requested outputs and shows the full request", async () => {
+  const execute = vi.fn(async ({ output }: { output: { id: string } }) => ({ id: output.id, status: "failed" as const, detail: "output-execution-failed" }));
+  const h = await stageRunHarness({ observeRunWork: true, workflow: { outputs: { execute, accept: input => acceptRequestedOutput(input, createHostGit()) } } });
+  await h.runThenEnd(async () => {
+    const decl = { kind: "send-message", owner: "plugin", ownerId: "delivery", toolName: "send" } as const;
+    const version = await h.confirm([stageOf("a", { requestedOutputs: [decl] })]);
+    const id = await h.addItem(version);
+    const start = h.start(id, h.local(version));
+    const [child] = await h.untilLive(1);
+    const { toolName, owner: outputOwner, ownerId } = decl;
+    const request = await child.input.stageOutputTool?.execute({ toolName, owner: outputOwner, ownerId,
+      args: { recipient: "Review team", text: "Full message body" }, summary: "Notify" },
+    { cwd: child.input.projectRoot ?? "", metadata: {}, extraAllowedDirectories: [] });
+    expect(request?.isError).toBe(false);
+    child.finish({ summary: "Ready" });
+    await expect(start).resolves.toMatchObject({ status: "awaiting_approval" });
+
+    const owner = workBoardTestSender();
+    const event = { sender: owner, senderFrame: owner.mainFrame };
+    const window = { isDestroyed: () => false, webContents: owner };
+    const deps = {
+      workBoardStore: h.board, workBoardEngine: h.engine, routinesStore: { list: () => [], listInvalid: () => [] },
+      auditLogger: { log: vi.fn() }, getMainWindow: () => window, getAppWindows: () => [window],
+    } as unknown as IpcDeps;
+    registerWorkBoardHandlers(deps);
+    registerWorkApprovalsHandlers(deps);
+    await bindDefaultProject(event);
+    const record = await h.item(id);
+    const stage = record.stageRuns[0];
+    const binding = { runId: record.runId, stageId: "a", attempt: 1, resultHash: stage.resultHash, outputHash: requestedOutputHash(stage) };
+    const card = {
+      kind: "stage-gate", binding,
+      outputs: [{ id: stage.requestedOutputs?.[0].id, summary: "Notify", payload: expect.stringContaining('"text": "Full message body"') }],
+    };
+    await expect(handler(WORK_BOARD.get)(event, id)).resolves.toMatchObject({ item: { pendingWorkflowDecisions: [card] } });
+    await expect(handler(WORK_APPROVALS.list)(event, {})).resolves.toMatchObject({ items: [card] });
+    const allProjects = await handler(WORK_APPROVALS.list)(event, { allProjects: true });
+    expect(allProjects).toMatchObject({ items: [{ kind: "navigation", targetKind: "stage-gate" }] });
+    expect(JSON.stringify(allProjects)).not.toContain("Full message body");
+    const approval = { ...binding, decision: "approve" };
+    await expect(handler(WORK_BOARD.decideStage)(event, id, approval)).resolves.toEqual({ ok: false, reason: "user-gesture-required" });
+    expect(execute).not.toHaveBeenCalled();
+
+    const token = "b".repeat(36);
+    event.sender.emit("before-mouse-event", {}, { type: "mouseUp" });
+    await expect(handler(WORK_BOARD.captureDecisionIntent)(event, token, workBoardDecisionKey(WORK_BOARD.decideStage, id, approval))).resolves.toBe(true);
+    await expect(handler(WORK_BOARD.decideStage)(event, id, approval, token)).resolves.toEqual({ ok: true, status: "approved" });
+    expect(execute).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ output: expect.objectContaining({ decl }) }));
+    await expect(handler(WORK_BOARD.decideStage)(event, id, approval, token)).resolves.toMatchObject({ ok: false });
+    expect(execute).toHaveBeenCalledTimes(1);
+    const view = await handler(WORK_BOARD.get)(event, id);
+    expect(view).toMatchObject({ item: { workflowRun: { stages: [{ outputExecutions: [{ status: "failed", detail: "output-execution-failed" }] }] } } });
+
+    const retry = { runId: binding.runId, stageId: binding.stageId, attempt: binding.attempt,
+      outputHash: binding.outputHash, outputId: stage.requestedOutputs?.[0].id };
+    await expect(handler(WORK_BOARD.retryOutput)(event, id, retry)).resolves.toEqual({ ok: false, reason: "user-gesture-required" });
+    const retryToken = "c".repeat(36);
+    event.sender.emit("before-mouse-event", {}, { type: "mouseUp" });
+    await expect(handler(WORK_BOARD.captureDecisionIntent)(event, retryToken, workBoardDecisionKey(WORK_BOARD.retryOutput, id, retry))).resolves.toBe(true);
+    await expect(handler(WORK_BOARD.retryOutput)(event, id, retry, retryToken)).resolves.toEqual({ ok: true });
+    expect(execute).toHaveBeenCalledTimes(2);
+  });
 });

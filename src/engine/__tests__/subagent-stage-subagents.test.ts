@@ -12,10 +12,12 @@ import { configureHostResources } from "../../main/host-resources.js";
 import { ApprovalGate, IPC_APPROVAL_REQUEST } from "../../permissions/approval-gate.js";
 import { approvalSurfaceRegistry, updateApprovalSurface } from "../../permissions/approval-surface-registry.js";
 import { __resetRunGrantsForTest, endRunSession, registerRunSession, runGrantKeyOfSession } from "../../permissions/run-grants.js";
+import { STAGE_REQUEST_OUTPUT_TOOL } from "../../shared/workflow-template-types.js";
 import { createAgentInterruptTool, createAgentSpawnTool, createAgentStatusTool } from "../../tools/agent-spawn.js";
-import { createDynamicTool } from "../../tools/base.js";
+import { createDynamicTool, type Tool } from "../../tools/base.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import { backgroundShellManager, listShellTasks } from "../../tools/shell-tools.js";
+import { createStageRequestOutputTool } from "../../tools/stage-request-output.js";
 import { ConversationLoop, type TurnResult } from "../conversation-loop.js";
 import { exactToolScope, PARENT_ALL_TOOL_SCOPE, SubAgentRunner } from "../subagent-runner.js";
 import { makeSubagentLoopDeps, patchLoopProvider } from "./support/subagent-loop-fixtures.js";
@@ -64,7 +66,7 @@ function fixture(saveSessionMetadata: (sessionId: string) => Promise<void> = asy
     registerRunSession("run", sessionId, { stageId: "scan", stageName: "Scan", lane: "attended", agentTitle: title });
     return () => endRunSession(sessionId);
   });
-  const start = (opts: { enabled?: boolean; unattended?: boolean; allTools?: boolean } = {}) =>
+  const start = (opts: { enabled?: boolean; unattended?: boolean; allTools?: boolean; stageOutputTool?: Tool } = {}) =>
     runner.spawn({
       title: "Scan",
       instructions: "stage",
@@ -73,6 +75,7 @@ function fixture(saveSessionMetadata: (sessionId: string) => Promise<void> = asy
       toolScope: opts.allTools ? PARENT_ALL_TOOL_SCOPE : exactToolScope(["read_stage"]),
       maxRounds: 3,
       ...(opts.enabled === false ? {} : { stageSubAgents: { stageName: "Scan", runKey: "run", max: 3 } }),
+      ...(opts.stageOutputTool ? { stageOutputTool: opts.stageOutputTool } : {}),
       ...(opts.unattended ? { unattendedStage: { runKey: "run", stageId: "scan" } } : {}),
     }, { onStageSubAgentLinked: bind });
   return { gate, request, contents, runner, tool, turn, start, bind, registry };
@@ -118,6 +121,25 @@ it("the grandchild cannot spawn", async () => {
     return done;
   });
   expect((await start()).ok).toBe(true);
+  expect(turn).toHaveBeenCalledTimes(2);
+});
+
+it.each(["parent-all", "exactly"] as const)("keeps stage output intake out of a grandchild with %s scope", async scope => {
+  const { tool, turn, start } = fixture();
+  const stageOutputTool = createStageRequestOutputTool([], async () => ({ ok: false, code: "output-not-declared" }));
+  turn.mockImplementation(async function (this: ConversationLoop, prompt, _callbacks, signal) {
+    if (prompt === "stage") {
+      expect(this.deps.toolRegistry.findByName(STAGE_REQUEST_OUTPUT_TOOL)).toBe(stageOutputTool);
+      const sourceTools = scope === "exactly" ? ["read_stage", STAGE_REQUEST_OUTPUT_TOOL] : undefined;
+      const result = await tool.execute({ title: "Extract", instructions: "grandchild", sourceTools }, toolContext(this.sessionId, signal));
+      expect(result.isError).toBe(false);
+    } else {
+      expect(this.deps.toolRegistry.findByName("read_stage")).toBeDefined();
+      expect(this.deps.toolRegistry.findByName(STAGE_REQUEST_OUTPUT_TOOL)).toBeUndefined();
+    }
+    return done;
+  });
+  expect((await start({ stageOutputTool })).ok).toBe(true);
   expect(turn).toHaveBeenCalledTimes(2);
 });
 

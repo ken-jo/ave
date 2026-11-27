@@ -2479,7 +2479,8 @@ export function WorkBoardPanel({
         <WorkflowRunDialog api={api} item={workflowItem} run={runState[workflowItem.id]} requestedVersion={workflowDialog.requestedVersion}
           approvals={renderApproval(workflowItem.title, workflowApprovals)}
           parkedApprovals={workflowParkedApprovals && renderApproval(workflowItem.title, workflowParkedApprovals)}
-          onStop={stop} onRetry={(id, input) => api.retryWorkStage(id, input)} onClose={closeWorkflowDialog} restoreFocus={focusWorkflowTrigger}
+          onStop={stop} onRetry={(id, input) => api.retryWorkStage(id, input)} onRetryOutput={(id, input) => api.retryWorkStageOutput(id, input)}
+          onClose={closeWorkflowDialog} restoreFocus={focusWorkflowTrigger}
           onHistory={() => {
             setWorkflowDialog(undefined);
             setDetailId(workflowItem.id);

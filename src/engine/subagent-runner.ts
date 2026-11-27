@@ -1,6 +1,7 @@
 /** Spawn isolated child history with scoped tools, a host-assigned round budget, labeled approval prompts, and streamed status.
  * Only an opted-in workflow stage can expose agent_spawn inside a child loop. */
 import { rethrowLocalityFailure, withLocalityDecision } from "../shared/local-path-io.js";
+import { STAGE_REQUEST_OUTPUT_TOOL } from "../shared/workflow-template-types.js";
 import type { ListSessionsOptions, RestoredSubAgentSession, SessionListEntry } from "../memory/session-repository.js";
 import {
   SUBAGENT_MAX_ROUNDS_DEFAULT,
@@ -23,6 +24,7 @@ import {
 } from "./turn/guidance-limits.js";
 import { createReadToolResultChunkTool } from "../tools/tool-result-chunk.js";
 import { isUnattendedReadTool } from "../tools/base.js";
+import type { Tool } from "../tools/base.js";
 import type { ToolRegistry } from "../tools/registry.js";
 import { type MemoryManager } from "../memory/memory-manager.js";
 import { errorMessage } from "../shared/error-message.js";
@@ -223,6 +225,8 @@ export interface SubAgentSpawnInput {
   hostInputTaint?: "file-content";
   /** Host-only: marks the child as one stage of an unattended workflow run. Minted by the stage scheduler, never by a model or a renderer. */
   unattendedStage?: { runKey: string; stageId: string };
+  /** Host-only stage intake, scoped to this child and never inherited. */
+  stageOutputTool?: Tool;
   /** Host-only lifetime and policy binding for descendants of an opted-in stage. */
   stageSubAgents?: { stageName: string; runKey: string; max: number };
 }
@@ -657,6 +661,7 @@ const STAGE_SUB_AGENT_TOOLS = ["agent_spawn", "agent_status", "agent_interrupt"]
 
 /** Only opted-in stage loops can control their own descendants. */
 const SUB_AGENT_TOOL_BLOCKLIST = new Set<string>([
+  STAGE_REQUEST_OUTPUT_TOOL,
   ...STAGE_SUB_AGENT_TOOLS,
   // Parent-only: `agent_guide` addresses the caller's OWN children, and a sub-agent has none. Its execute() already refuses a
   // non-root caller; the blocklist keeps it out of the child's registry so the refusal is never a tool the child can see and try.
@@ -2430,6 +2435,7 @@ export class SubAgentRunner {
     /** The parent behind this run, when it has one that could answer for it. `null` leaves the child's approvals on the path they took before tier 2 existed: straight to the user. */
     approvalProvenance: SubAgentApprovalProvenance | null;
     unattendedStage?: boolean;
+    stageOutputTool?: Tool;
     stageSpawnEnabled?: boolean;
     parentStage?: { registry: ToolRegistry; activePluginIds: ReadonlySet<string> };
   }): {
@@ -2471,6 +2477,7 @@ export class SubAgentRunner {
           : tool);
       }
     }
+    if (args.stageOutputTool) scopedRegistry.register(args.stageOutputTool);
     const recoveryTool = createReadToolResultChunkTool();
     if (args.parentStage === undefined && scopedRegistry.size > 0 && !scopedRegistry.findByName(recoveryTool.name)
       && (!args.unattendedStage || isUnattendedReadTool(recoveryTool))) scopedRegistry.register(recoveryTool);
@@ -2900,6 +2907,7 @@ export class SubAgentRunner {
           profileModel: input.profileModel,
           includeAgentSend: true,
           unattendedStage: input.unattendedStage !== undefined,
+          stageOutputTool: input.stageOutputTool,
           stageSpawnEnabled: stageAuthority !== undefined,
           ...(stageParent ? { parentStage: { registry: stageParent.stage.child.deps.toolRegistry, activePluginIds: stageParent.activePluginIds } } : {}),
           approvalProvenance: stageParent ? null : buildSubAgentApprovalProvenance({

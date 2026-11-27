@@ -130,7 +130,7 @@ it.each([
       const decide = kind === "gate"
         ? () => h.engine.decideStageGate(itemId, {
           runId, stageId: "a", attempt: 1, resultHash: parked.stageRuns[0].resultHash ?? "", decision: "approve",
-        }, authority)
+        }, { kind: "tailnet", authority })
         : () => h.engine.decideStageJoin(itemId, {
           runId, joinId: parked.stageJoins[0].joinId, conflictHash: parked.stageJoins[0].conflict?.conflictHash ?? "",
           generation: parked.stageJoins[0].conflictGeneration ?? 0, decision: "retry_merge",

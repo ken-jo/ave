@@ -139,6 +139,10 @@ export const workBoardApiSurface = {
       | import("../shared/work-board-types.js").StageJoinDecideIpcResult
       | { ok: false; error: string }
     >,
+  retryWorkStageOutput: async (itemId: number, input: import("../shared/work-board-types.js").StageOutputRetryInput) =>
+    invokeWorkBoardDecision(WORK_BOARD.retryOutput, itemId, input) as Promise<
+      import("../shared/work-board-types.js").StageOutputRetryIpcResult | { ok: false; error: string }
+    >,
   retryWorkStage: async (itemId: number, input: import("../shared/work-board-types.js").StageRetryInput) =>
     invokeWorkBoardDecision(WORK_BOARD.retryStage, itemId, input) as Promise<
       | import("../shared/work-board-types.js").StageRetryIpcResult

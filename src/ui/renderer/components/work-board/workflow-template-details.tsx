@@ -59,6 +59,7 @@ function StageCapabilities({ stage, setupCommands }: { stage: TemplateStage; set
       <CapabilityItems label={t("workflowTemplates.writePaths")} items={envelope?.writePaths} />
       <CapabilityItems label={t("workflowTemplates.readRoots")} items={envelope?.readRoots} />
       <CapabilityItems label={t("workflowTemplates.requestedOutputs")} items={requestedOutputs} />
+      {stage.requestedOutputs?.some(output => output.owner === "host" && output.ownerId === "host:git" && output.toolName === "git_push") && <dd>{t("workflowTemplates.pushHttpsAccountsHelp")}</dd>}
       <div>
         <dt className="font-medium">{t("workflowTemplates.subAgents")}</dt>
         <dd>{t(stage.allowSubAgents ? "workflowTemplates.subAgentsAllowed" : "workflowTemplates.subAgentsDisabled")}</dd>

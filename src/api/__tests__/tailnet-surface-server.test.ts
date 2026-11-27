@@ -2620,6 +2620,8 @@ it.runIf((process.platform === "darwin" || process.platform === "linux") && !sho
 describe("phone work reviews", () => {
   const pin = { templateId: "review-template", version: 2, graphHash: "b".repeat(64) };
   const runId = "review-run";
+  const outputDecl = { kind: "send-message", owner: "server", ownerId: "reports", toolName: "send_report" } as const;
+  const outputArgs = { to: "report-review" };
   const stageBinding = { runId, stageId: "review-stage", attempt: 2, resultHash: "c".repeat(64), outputHash: "d".repeat(64) };
   const joinBinding = { runId, joinId: "join-review", generation: 2, conflictHash: "e".repeat(64) };
   const templateScope = { kind: "all" } as const;
@@ -2641,7 +2643,9 @@ describe("phone work reviews", () => {
       kind: "stage", deny: "reject", binding: { itemId: 2, input: stageBinding },
       review: {
         kind: "stage-gate", key: "stage:2", itemId: 2, binding: stageBinding, title: "Stage review",
-        result: "The stage result", outputs: [{ id: "output", summary: "Send the report" }],
+        result: "The stage result", outputs: [{
+          id: "output", summary: "Send the report", payload: JSON.stringify({ ...outputDecl, args: outputArgs }, null, 2),
+        }],
         scope: { type: "unscoped" }, arrivedAt: null,
       },
     },
@@ -2674,8 +2678,8 @@ describe("phone work reviews", () => {
       kind: "requested-output", deny: "reject",
       binding: { input: { itemId: 2, runId, stageId: stageBinding.stageId, attempt: stageBinding.attempt, outputHash: stageBinding.outputHash } },
       review: { outputs: [{
-        id: "output", decl: { kind: "send-message", owner: "server", ownerId: "reports", toolName: "send_report" },
-        summary: "Send the report", args: '{"to":"report-review"}', files: [{ path: "reports/output.txt", sha256: "b".repeat(64), size: 43 }],
+        id: "output", decl: outputDecl,
+        summary: "Send the report", args: JSON.stringify(outputArgs), files: [{ path: "reports/output.txt", sha256: "b".repeat(64), size: 43 }],
       }] },
     },
   ] satisfies [TailnetWorkReview, ...TailnetWorkReview[]];

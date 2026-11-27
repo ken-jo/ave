@@ -3,7 +3,7 @@ import { deferred } from "../../../__tests__/support/deferred.js";
 import { within } from "../../../__tests__/support/signal-wait.js";
 import { boardRunState } from "../run-state.js";
 import { createPassConditionRegistry } from "../stage-gates.js";
-import { autoStageOf } from "./stage-fixtures.js";
+import { autoStageOf, stageOf } from "./stage-fixtures.js";
 import { stageRunHarness } from "./stage-run-harness.js";
 
 type Harness = Awaited<ReturnType<typeof stageRunHarness>>;
@@ -15,6 +15,38 @@ async function permittedRead(h: Harness): Promise<void> {
   }
   await h.engine.adoptParkedTemplateRuns();
 }
+
+it("collects a join once a permitted read sees its repaired board row", async () => {
+  const integrate = vi.fn(() => ({ ok: true as const }));
+  const h = await stageRunHarness({
+    observeRunWork: true,
+    integrate,
+    workspace: { seal: async ({ itemId }) => {
+      h.editRow(itemId, row => ({ ...row, title: null }));
+      await h.board.runBoardSnapshot();
+      return { ok: true };
+    } },
+  });
+  await h.runThenEnd(async () => {
+    const version = await h.confirm([autoStageOf("review"), stageOf("build", { inputs: ["review"] })]);
+    const itemId = await h.addItem(version);
+    const start = h.start(itemId, h.local(version));
+    const [child] = await h.untilLive(1, itemId);
+    const { runId, title } = await h.item(itemId);
+    if (runId === undefined) throw new Error("Missing run id");
+    child.finish();
+    await h.drainRunWork();
+    expect((await h.runOf(runId))?.stageJoins).toMatchObject([{ status: "integrating" }]);
+    expect(integrate).not.toHaveBeenCalled();
+
+    h.editRow(itemId, row => ({ ...row, title }));
+    await permittedRead(h);
+    const [next] = await h.untilLive(1, itemId);
+    expect(integrate).toHaveBeenCalledOnce();
+    next.finish();
+    await start;
+  });
+});
 
 it("concurrent readers preserve held arrival order and finish after evaluation resumes", async () => {
   let refusing = false;

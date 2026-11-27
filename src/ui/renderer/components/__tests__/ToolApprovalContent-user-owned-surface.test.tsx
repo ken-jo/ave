@@ -313,3 +313,21 @@ describe("shared user-owned surface approval card", () => {
     });
   });
 });
+
+it.each(["plugin", "mcp"] as const)("shows every argument of a long other-principal %s call through Show all", source => {
+  const args = { body: `${"Review ".repeat(90)}end`, nested: { label: "한글", count: 42 }, path: "notes/latest.txt" };
+  renderApproval({
+    id: "output-card", category: "tool", toolName: "send_report", source, toolCategory: "write",
+    sessionId: "output-review", args, reason: "Approve this call", createdAt: Date.now(), requireExplicit: true,
+    trustOrigin: "agent-message", allowedChoices: ["allow-once", "deny-once"],
+  }, vi.fn());
+  const details = screen.getByTestId("approval-review-details");
+  expect(details).not.toHaveAttribute("open");
+  fireEvent.click(within(details).getByText(t("toolApprovalDialog.reviewDetails")));
+  expect(details).toHaveAttribute("open");
+  const pre = within(details).getByText(t("toolApprovalDialog.showFullInput")).nextElementSibling;
+  expect(pre?.textContent).not.toContain(args.path);
+  fireEvent.click(within(details).getByRole("button", { name: t("toolApprovalDialog.showAll") }));
+  expect(pre).toBeVisible();
+  expect(pre?.textContent).toBe(JSON.stringify(args, null, 2));
+});

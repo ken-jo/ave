@@ -1,15 +1,17 @@
 import { createHash } from "node:crypto";
-import { copyFileSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { setFixtureOwner } from "../../__tests__/support/fixture-owner.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import { windowsPathKindHelperIn } from "../../main/windows-path-kind-launcher.js";
-import { hostScriptInvocationReadPaths, hostScriptRuntimePaths, isVerifiedHostScript } from "../../main/host-script-runtime.js";
+import { checkWindowsWorkbookAccess, hostScriptInvocationReadPaths, hostScriptRuntimePaths, isVerifiedHostScript } from "../../main/host-script-runtime.js";
+import * as windowsPathFacts from "../../shared/windows-path-facts.js";
 import { isSensitivePath } from "../../permissions/sensitive-paths.js";
 import { getDefaultSensitiveWriteDenyPaths } from "../../permissions/asrt-sandbox.js";
 import { findShellPathPolicyViolation } from "../shell-path-policy.js";
-import { findPowerShellAstPathViolation } from "../shell-tools.js";
+import { findPowerShellAstPathViolation, powerShellHostScriptReadPaths } from "../shell-tools.js";
 import { collectShellExecutableReadPaths } from "../shell-executable-read-paths.js";
 import { shellQuote } from "../../lib/shell-resolver.js";
 import type { PowerShellAstSummary } from "../powershell-ast.js";
@@ -46,7 +48,12 @@ function ast(...paths: string[]): PowerShellAstSummary {
   return { errors: [], redirections: [], unsupported: [], commands: [{ name: process.execPath,
     text: "literal runtime command", arguments: [process.execPath, script, ...paths].map((value) => ({ kind: "literal", text: value, value })) }] };
 }
-const powershellSource = (summary: PowerShellAstSummary) => `$env:ELECTRON_RUN_AS_NODE='1'; ${summary.commands[0]!.text}`;
+function firstCommand(summary: PowerShellAstSummary) {
+  const [command] = summary.commands;
+  if (!command) throw new Error("Expected a PowerShell command");
+  return command;
+}
+const powershellSource = (summary: PowerShellAstSummary) => `$env:ELECTRON_RUN_AS_NODE='1'; ${firstCommand(summary).text}`;
 
 describe("host-owned script roles", () => {
   it("admits the exact runtime/script pair in both shell policy dialects", () => {
@@ -62,11 +69,76 @@ describe("host-owned script roles", () => {
     expect(hostScriptRuntimePaths()?.javascriptRuntime).toBe(process.execPath);
   });
 
+  it("grants the main runtime/script paths for literal workbook commands", () => {
+    const workbookScript = join(root, "resources", "skill-scripts", "edit-xlsx.cjs");
+    const source = "console.log('ready');\n";
+    const digest = createHash("sha256").update(source).digest("hex");
+    writeFileSync(workbookScript, source);
+    writeFileSync(join(root, "resources", "skill-scripts", "manifest.json"), JSON.stringify({ version: 1,
+      scripts: { "command.cjs": digest, "edit-xlsx.cjs": digest } }));
+    const runtime = realpathSync.native(process.execPath);
+    const requests = [process.execPath, workbookScript, join(workspace, "book.xlsx"), join(workspace, "edits.json")];
+    const expected = [...new Set([process.execPath, runtime, dirname(runtime), workbookScript])];
+    const summary: PowerShellAstSummary = { errors: [], redirections: [], unsupported: [], commands: [{
+      name: process.execPath, text: "literal runtime command",
+      arguments: requests.map(value => ({ kind: "literal", text: value, value })),
+    }] };
+    expect.soft(powerShellHostScriptReadPaths(summary, powershellSource(summary))).toEqual(expected);
+    if (process.platform === "win32") {
+      const invocation = firstCommand(summary);
+      const request = invocation.arguments[3];
+      if (!request) throw new Error("Expected a workbook edit request");
+      const dynamic = { ...summary, commands: [{ ...invocation, arguments: [
+        ...invocation.arguments.slice(0, 2), { kind: "dynamic" as const, text: "$workbook" }, request,
+      ] }] };
+      expect.soft(powerShellHostScriptReadPaths(dynamic, powershellSource(dynamic))).toEqual([]);
+      const bashCommand = `ELECTRON_RUN_AS_NODE=1 ${requests.map(shellQuote).join(" ")}`;
+      expect(collectShellExecutableReadPaths(bashCommand, workspace, { dialect: "bash", environment: {} })).not.toContain(workbookScript);
+      expect(violation(bashCommand)?.reason).toContain("[workbook-acl-unreadable]");
+    }
+    try {
+      vi.stubGlobal("process", Object.create(process, { platform: { value: "linux" } }));
+      expect(hostScriptInvocationReadPaths(requests, { ELECTRON_RUN_AS_NODE: "1" })).toEqual(expected);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("keeps workbook operands and redirections inside the admitted write roots", () => {
     expect(violation(command(join(root, "outside.xlsx"), join(workspace, "edits.json")))?.kind).toBe("sandbox-boundary");
     expect(violation(`${command(join(workspace, "book.xlsx"), join(workspace, "edits.json"))} > ${shellQuote(join(root, "outside.txt"))}`)?.kind).toBe("sandbox-boundary");
     const summary = ast(join(root, "outside.xlsx"));
     expect(findPowerShellAstPathViolation(summary, workspace, workspace, [], true, powershellSource(summary))?.kind).toBe("sandbox-boundary");
+  });
+
+  it.runIf(process.platform === "win32").each([false, true])("binds workbook approval to the descriptor from the pinned leaf (elevated=%s)", (elevated) => {
+    const workbook = join(workspace, "book.xlsx");
+    writeFileSync(workbook, "workbook fixture");
+    setFixtureOwner(workbook);
+    const stats = lstatSync(workbook, { bigint: true });
+    const readDacls = windowsPathFacts.readWindowsDacls;
+    const access = vi.spyOn(windowsPathFacts, "readWindowsDacls").mockImplementationOnce((paths, options) =>
+      readDacls(paths, options).map(facts => ({ ...facts, elevated })));
+    const separate = vi.spyOn(windowsPathFacts, "readWindowsFileDacls");
+    try {
+      const decision = checkWindowsWorkbookAccess(workbook);
+      expect(access).toHaveBeenCalledExactlyOnceWith([workbook], { parent: true, access: true });
+      expect(separate).not.toHaveBeenCalled();
+      if (elevated) {
+        expect(decision).toEqual({ reason: expect.stringContaining("[workbook-acl-differs]") });
+        return;
+      }
+      expect(decision).toHaveProperty("identity");
+      if (!("identity" in decision)) throw new Error(decision.reason);
+      const [device, inode, change] = decision.identity.split(":").map(value => BigInt(value));
+      expect(device).toBe(stats.dev);
+      expect(inode).toBe(stats.ino);
+      if (change === undefined) throw new Error("Workbook identity has no change time");
+      expect((change - 116444736000000000n) * 100n).toBe(stats.ctimeNs);
+    } finally {
+      access.mockRestore();
+      separate.mockRestore();
+    }
   });
 
   it("never grants scripts write authority even inside a broader workspace", () => {
@@ -103,7 +175,7 @@ describe("host-owned script roles", () => {
     }
     expect(violation(command().replace("ELECTRON_RUN_AS_NODE=1 ", ""))).not.toBeNull();
     const summary = ast(join(workspace, "book.xlsx"), join(workspace, "edits.json"));
-    for (const source of [summary.commands[0]!.text, powershellSource(summary).replace("='1'", "='0'"),
+    for (const source of [firstCommand(summary).text, powershellSource(summary).replace("='1'", "='0'"),
       `$env:NODE_OPTIONS='--require evil'; ${powershellSource(summary)}`]) {
       expect(findPowerShellAstPathViolation(summary, workspace, workspace, [], true, source)).not.toBeNull();
     }

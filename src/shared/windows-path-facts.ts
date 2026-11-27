@@ -60,6 +60,10 @@ export interface WindowsDacl {
   readonly protected: boolean;
   readonly nullDacl: boolean;
   readonly aces: readonly WindowsAce[];
+  readonly sacl?: {
+    readonly integrityLabel: WindowsIntegrityLabel | null;
+    readonly dynamicAccessControl: boolean;
+  };
 }
 
 export interface WindowsDaclFacts extends WindowsPathFacts {
@@ -187,26 +191,21 @@ function windowsPinBatches(helper: string, paths: readonly string[]): string[][]
   return batches;
 }
 
-function request(paths: readonly string[], mode: "--pin" | "--dacl", flags: readonly string[] = [], batch = false): WindowsPathFacts[] {
-  if (paths.length === 0) return [];
-  const framed = mode === "--dacl" && flags.includes("--parent") && !flags.includes("--content");
-  if (!framed && paths.some(path => !isAbsolute(path))) throw new Error("Windows path facts require absolute paths");
-  const input = framed ? encodeParentDaclFrame(paths) : undefined;
+function requestNative(helper: string, mode: "--pin" | "--dacl", flags: readonly string[], paths: readonly string[], input?: Buffer): string {
+  const args = [mode, ...flags, ...(input === undefined ? paths : ["--stdin"])];
+  if (windowsCommandLineLength(helper, args) > WINDOWS_COMMAND_LINE_LIMIT) {
+    throw Object.assign(new Error("Windows path facts command line exceeds the process limit"), { code: "E2BIG" });
+  }
+  const output = execFileSync(helper, args, {
+    windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.windowsAclRequestMs,
+    maxBuffer: MAX_PATH_FACTS_OUTPUT_BYTES, input,
+  });
+  return decodeWindowsNativeReply(output);
+}
+
+function withPathFactsHelper<T>(flags: readonly string[], launch: (helper: string) => T): T {
   try {
-    return runWindowsNative(() => withWindowsPathKindHelper(helper => {
-      const batches = batch ? windowsPinBatches(helper, paths) : [paths];
-      return batches.flatMap(operands => {
-        const args = [mode, ...flags, ...(framed ? ["--stdin"] : operands)];
-        if (windowsCommandLineLength(helper, args) > WINDOWS_COMMAND_LINE_LIMIT) {
-          throw Object.assign(new Error("Windows path facts command line exceeds the process limit"), { code: "E2BIG" });
-        }
-        const output = execFileSync(helper, args, {
-          windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.windowsAclRequestMs,
-          maxBuffer: MAX_PATH_FACTS_OUTPUT_BYTES, input,
-        });
-        return decodeWindowsPathFacts(decodeWindowsNativeReply(output), operands.length, mode, flags, framed ? operands : undefined);
-      });
-    }));
+    return runWindowsNative(() => withWindowsPathKindHelper(launch));
   } catch (error) {
     // Spawn and timeout errors name the helper's install path; only their code is kept.
     if (isWindowsPathKindHelperTimeout(error)) {
@@ -224,6 +223,20 @@ function request(paths: readonly string[], mode: "--pin" | "--dacl", flags: read
   }
 }
 
+function request(paths: readonly string[], mode: "--pin" | "--dacl", flags: readonly string[] = [], batch = false): WindowsPathFacts[] {
+  if (paths.length === 0) return [];
+  const framed = mode === "--dacl" && flags.includes("--parent") && !flags.includes("--content");
+  if (!framed && paths.some(path => !isAbsolute(path))) throw new Error("Windows path facts require absolute paths");
+  const input = framed ? encodeParentDaclFrame(paths) : undefined;
+  return withPathFactsHelper(flags, helper => {
+    const batches = batch ? windowsPinBatches(helper, paths) : [paths];
+    return batches.flatMap(operands => {
+      const output = requestNative(helper, mode, flags, operands, input);
+      return decodeWindowsPathFacts(output, operands.length, mode, flags, framed ? operands : undefined);
+    });
+  });
+}
+
 export function decodeWindowsPathFacts(output: string, expectedRows: number, mode: "--pin" | "--dacl", flags: readonly string[] = [], expectedPaths?: readonly string[]): WindowsPathFacts[] {
   const response: unknown = JSON.parse(output);
   if (!Array.isArray(response) || response.length !== expectedRows) throw new Error("Invalid Windows path facts response");
@@ -231,9 +244,12 @@ export function decodeWindowsPathFacts(output: string, expectedRows: number, mod
   // snapshot from a present descriptor whose ACL is unrestricted.
   const rows = response.map((row: unknown, index) => {
     if (mode !== "--dacl" || row === null || typeof row !== "object") return row;
-    const { requestPath, identity, owner, group, protected: protectedDacl, nullDacl, aces, ...facts } = row as Record<string, unknown>;
+    const { requestPath, identity, owner, group, protected: protectedDacl, nullDacl, aces, sacl, ...facts } = row as Record<string, unknown>;
     if (expectedPaths !== undefined && requestPath !== expectedPaths[index]) throw new Error("Windows DACL request path mismatch");
-    return { ...facts, dacl: identity === null ? null : { identity, owner, ...(group === undefined ? {} : { group }), protected: protectedDacl, nullDacl, aces } };
+    return { ...facts, dacl: identity === null ? null : {
+      identity, owner, ...(group === undefined ? {} : { group }), protected: protectedDacl,
+      nullDacl, aces, ...(sacl === undefined ? {} : { sacl }),
+    } };
   });
   for (const row of rows as WindowsDaclFacts[]) {
     if (!isComponent(row) || !Array.isArray(row.ancestors) || !row.ancestors.every(isComponent)) throw new Error("Invalid Windows path pin");
@@ -249,6 +265,9 @@ export function decodeWindowsPathFacts(output: string, expectedRows: number, mod
       const parent = row.ancestors.at(-1);
       if (parent?.exists === true ? !isDescriptor(row.parent) : row.parent !== null) throw new Error("Invalid Windows parent DACL");
       if (row.parent && (row.parent.identity.volumeSerial !== parent?.volumeSerial || row.parent.identity.fileId !== parent.fileId)) throw new Error("Windows parent DACL identity mismatch");
+    }
+    if (flags.includes("--access") && [row.dacl, row.parent].some(descriptor => descriptor && !isAccessSacl(descriptor.sacl))) {
+      throw new Error("Invalid Windows access SACL");
     }
     if (flags.includes("--content") && row.contentHex !== null
       && (typeof row.contentHex !== "string" || row.contentHex.length > 2097152 || !/^(?:[0-9a-f]{2})*$/.test(row.contentHex))) throw new Error("Invalid Windows file content");
@@ -538,9 +557,126 @@ export function holdWindowsDirectory(path: string): Promise<HeldWindowsDirectory
 }
 
 /** Content is read on the descriptor's pinned handle, bounded to one MiB. */
-export function readWindowsDacls(paths: readonly string[], options: { parent?: boolean; content?: boolean } = {}): readonly WindowsDaclFacts[] {
+export function readWindowsDacls(paths: readonly string[], options: { parent?: boolean; content?: boolean; access?: boolean } = {}): readonly WindowsDaclFacts[] {
   // The native walk holds non-write/non-delete-shared component handles through DACL capture; separate pins add no snapshot binding.
-  return request(paths, "--dacl", [...(options.parent ? ["--parent"] : []), ...(options.content ? ["--content"] : [])]) as WindowsDaclFacts[];
+  return request(paths, "--dacl", [
+    ...(options.parent ? ["--parent"] : []), ...(options.content ? ["--content"] : []), ...(options.access ? ["--access"] : []),
+  ]) as WindowsDaclFacts[];
+}
+
+interface WindowsIntegrityLabel {
+  readonly sid: string;
+  readonly policy: number;
+  readonly flags: number;
+}
+
+interface WindowsFileDacl {
+  readonly volumeSerialNumber: string;
+  readonly fileIndex: string;
+  readonly changeTime: string;
+  readonly ownerSid: string;
+  readonly control: number;
+  readonly aceCount: number;
+  readonly aclHex: string | null;
+  readonly integrityLabel: WindowsIntegrityLabel | null;
+  readonly dynamicAccessControl: boolean;
+}
+
+const DACL_PRESENT = 0x0004;
+const FILE_DACL_CONTROL_MASK = 0x1500 | DACL_PRESENT;
+
+const ACL_HEADER_BYTES = 8;
+const ACE_HEADER_BYTES = 4;
+const SID_HEADER_BYTES = 8;
+const SID_MAX_SUB_AUTHORITIES = 15;
+
+// SID offset in each ACE layout NTFS keeps in a file DACL. Mask then SID: allow, deny, audit, alarm and their callback
+// forms. Mask, flags, optional GUIDs then SID: the object forms, which need ACL revision 4. Other types never qualify.
+// Like the native validator, a SID only has to fit; callback data may follow it.
+function aceSidOffset(ace: Buffer, revision: number): number | undefined {
+  switch (ace[0]) {
+    case 0x00: case 0x01: case 0x02: case 0x03: case 0x09: case 0x0a: case 0x0d: case 0x0e: return 8;
+    case 0x05: case 0x06: case 0x07: case 0x08: case 0x0b: case 0x0c: case 0x0f: case 0x10: {
+      if (revision !== 4 || ace.length < 12) return undefined;
+      const flags = ace.readUInt32LE(8);
+      if ((flags & ~3) !== 0) return undefined;
+      return 12 + (flags & 1 ? 16 : 0) + (flags & 2 ? 16 : 0);
+    }
+    default: return undefined;
+  }
+}
+
+function isCompleteAce(ace: Buffer, revision: number): boolean {
+  const sid = aceSidOffset(ace, revision);
+  if (sid === undefined || sid + SID_HEADER_BYTES > ace.length || ace[sid] !== 1) return false;
+  const subAuthorities = ace.readUInt8(sid + 1);
+  return subAuthorities <= SID_MAX_SUB_AUTHORITIES && sid + SID_HEADER_BYTES + 4 * subAuthorities <= ace.length;
+}
+
+function isCompleteFileAcl(aclHex: unknown, aceCount: number): boolean {
+  if (aclHex === null) return aceCount === 0;
+  // The wire form drops the 8-byte native ACL header, which the 16-bit native size still has to cover.
+  if (typeof aclHex !== "string" || aclHex.length > 2 * (1 + 0xffff - ACL_HEADER_BYTES) || aclHex.length % 2 !== 0
+    || !/^[0-9a-f]+$/u.test(aclHex)) return false;
+  const bytes = Buffer.from(aclHex, "hex");
+  const revision = bytes[0];
+  if (revision !== 2 && revision !== 3 && revision !== 4) return false;
+
+  let offset = 1;
+  for (let index = 0; index < aceCount; index++) {
+    if (offset + ACE_HEADER_BYTES > bytes.length) return false;
+    const size = bytes.readUInt16LE(offset + 2);
+    if (size < ACE_HEADER_BYTES || size % 4 !== 0 || size > bytes.length - offset
+      || !isCompleteAce(bytes.subarray(offset, offset + size), revision)) return false;
+    offset += size;
+  }
+  return offset === bytes.length;
+}
+
+function isFileOwnerSid(value: unknown): value is string {
+  if (typeof value !== "string" || !/^S-1-(?:[0-9]{1,15}|0x[0-9a-fA-F]{12})(?:-[0-9]{1,10}){0,15}$/u.test(value)) return false;
+  const [, , authority, ...parts] = value.split("-");
+  return authority !== undefined && BigInt(authority) <= 0xffffffffffffn && parts.every(part => Number(part) <= 0xffffffff);
+}
+
+function isIntegrityLabel(value: unknown): value is WindowsIntegrityLabel | null {
+  if (value === null) return true;
+  if (typeof value !== "object" || Object.keys(value).length !== 3) return false;
+  const { sid, policy, flags } = value as WindowsIntegrityLabel;
+  return typeof sid === "string" && /^S-1-16-(?:0|[1-9][0-9]{0,9})$/u.test(sid)
+    && Number(sid.slice("S-1-16-".length)) <= 0xffffffff
+    && isUint(policy, 0x07) && isUint(flags, 0x1f);
+}
+
+function isAccessSacl(value: unknown): boolean {
+  if (value === null || typeof value !== "object" || Object.keys(value).length !== 2) return false;
+  const { integrityLabel, dynamicAccessControl } = value as NonNullable<WindowsDacl["sacl"]>;
+  return isIntegrityLabel(integrityLabel) && typeof dynamicAccessControl === "boolean";
+}
+
+function isFileDacl(value: unknown): value is WindowsFileDacl {
+  if (value === null || typeof value !== "object" || Object.keys(value).length !== 9) return false;
+  const row = value as WindowsFileDacl;
+  return typeof row.volumeSerialNumber === "string" && HEX_64_PATTERN.test(row.volumeSerialNumber)
+    && BigInt(row.volumeSerialNumber) <= 0xffffffffn
+    && typeof row.fileIndex === "string" && HEX_64_PATTERN.test(row.fileIndex)
+    && typeof row.changeTime === "string" && HEX_64_PATTERN.test(row.changeTime)
+    && isFileOwnerSid(row.ownerSid)
+    && isIntegrityLabel(row.integrityLabel)
+    && typeof row.dynamicAccessControl === "boolean"
+    && isUint(row.control, FILE_DACL_CONTROL_MASK) && (row.control & ~FILE_DACL_CONTROL_MASK) === 0 && (row.control & DACL_PRESENT) !== 0
+    && isUint(row.aceCount, 0xffff) && isCompleteFileAcl(row.aclHex, row.aceCount);
+}
+
+/** File-only metadata from a component-pinned leaf. */
+export function readWindowsFileDacls(paths: readonly string[]): readonly WindowsFileDacl[] {
+  if (paths.length === 0) return [];
+  if (paths.some(path => !isAbsolute(path))) throw new Error("Windows path facts require absolute paths");
+  const flags = ["--file-access"];
+  const output = withPathFactsHelper(flags, helper => requestNative(helper, "--dacl", flags, paths));
+  const rows: unknown = JSON.parse(output);
+  if (!Array.isArray(rows) || rows.length !== paths.length || !rows.every(isFileDacl)) throw new Error("Invalid Windows file DACL response");
+  return rows;
 }
 
 /** This is the sole admission rule for Windows path pins, including unfamiliar tags. */

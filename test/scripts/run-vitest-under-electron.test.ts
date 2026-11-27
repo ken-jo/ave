@@ -300,9 +300,13 @@ describe("Electron Node-mode Vitest runner", () => {
     const mainBlock = runnerSource.indexOf("if (isMainModule()) {");
     expect(mainBlock).toBeGreaterThanOrEqual(0);
     const ensureCall = runnerSource.indexOf("ensureGeneratedAssets();", mainBlock);
-    const launch = runnerSource.indexOf("runVitestUnderElectron(process.argv.slice(2))", mainBlock);
+    const skillBuild = runnerSource.indexOf(".buildSkillScripts({ directory })", mainBlock);
+    const launch = runnerSource.indexOf("runVitestUnderElectron(process.argv.slice(2),", mainBlock);
     expect(ensureCall).toBeGreaterThan(mainBlock);
-    expect(launch).toBeGreaterThan(ensureCall);
+    expect(skillBuild).toBeGreaterThan(ensureCall);
+    expect(launch).toBeGreaterThan(skillBuild);
+    expect(runnerSource).toContain('const directory = join(scratch, "dist", "skill-scripts");');
+    expect(runnerSource).toContain("AVE_TEST_SKILL_SCRIPTS_DIR: directory");
   });
 
   it("rejects partially injected runtime paths instead of ignoring them", async () => {

@@ -1549,6 +1549,38 @@ resuming (`templateRunState`, added by the host on every list and get, never
 taken from a row) until the scheduler has taken it over; nothing starts by
 itself, and the user continues, decides or stops it. Deleting a run's row
 cancels the run and interrupts its live stage children.
+
+A stage with pinned output declarations can use `stage_request_output` to
+record a request for its human gate. The host matches the tool and its owner
+exactly and records canonical arguments that the ordinary approval card can
+show in full. Tool operand declarations are display only. The desktop stage
+gate shows the full request and binds the decision to a native gesture, the
+stage result digest and the output digest. A click or keyboard gesture can
+approve the gate or retry a tool output. The host computes the output digest
+from the stored stage result and requests and keeps it in memory.
+
+After recording approval, the host invokes each declared tool through the
+ordinary permission tree as another principal, with the deciding window as the
+approver. The call uses the authorized project root or the default workspace.
+The ordinary card shows the arguments the handler receives. A hook that changes
+those arguments prevents dispatch. The tool reads any file named in the
+arguments when it runs, under its ordinary permissions and confinement. The
+host records the path as text and does not bind file contents to the approval.
+A Stop cancels the open output card and records the output as interrupted. Row
+removal cancels the card and leaves no output outcome. An execution left pending
+is never replayed at startup. A user can retry a failed or denied tool output
+under the same approval binding.
+
+A push request binds a configured remote's one resolved, sanitized push URL
+and the run ref's commit. The host accepts HTTPS and SSH destinations and
+refuses local transports at intake and launch. The resolved URL and locked
+run ref must still match the approved URL and commit. The host checks configuration
+rewrites and effective URL-scoped HTTP settings, and suppresses inherited push
+options. It holds the run ref during transport and cancels transport if the
+lock process exits early. The push uses the approved commit as its source
+and the same-named run branch as its sole destination, without force or
+tags. A subsequent push requires a new request and approval.
+
 `ave:work-board:decide-plan` (internal, sender-validated board-window main
 frame, `CHANNEL_GESTURE: "required"`) carries the run id, the hash of the plan
 the card showed and the decision, never the plan text. The store checks all of

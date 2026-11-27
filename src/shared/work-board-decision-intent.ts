@@ -1,7 +1,7 @@
 import { WORK_BOARD } from "./ipc-channels.js";
 
 const DECISION_CHANNELS = [
-  WORK_BOARD.decidePlan, WORK_BOARD.decideStage, WORK_BOARD.decideJoin, WORK_BOARD.retryStage,
+  WORK_BOARD.decidePlan, WORK_BOARD.decideStage, WORK_BOARD.decideJoin, WORK_BOARD.retryStage, WORK_BOARD.retryOutput,
   WORK_BOARD.openJoin, WORK_BOARD.templateConfirm, WORK_BOARD.run, WORK_BOARD.add,
 ] as const;
 export type WorkBoardDecisionChannel = typeof DECISION_CHANNELS[number];

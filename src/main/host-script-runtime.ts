@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import { admitLocalRoute, localFs, withLocalityDecision } from "../shared/local-path-io.js";
 import { dirname, isAbsolute, join, relative } from "node:path";
+import { admitWindowsReparse, mapWindowsGenericRights, readWindowsDacls } from "../shared/windows-path-facts.js";
+import { classifyWindowsSpelling } from "../shared/windows-path-spelling.js";
 import { getConfiguredHostResources, type HostResources } from "./host-resources.js";
 
 interface ScriptRuntimePaths { javascriptRuntime: string; bundledScriptsDirectory: string }
@@ -87,6 +89,7 @@ export function isVerifiedHostScript(path: string): boolean {
 export function hostScriptInvocationReadPaths(
   argv: readonly (string | undefined)[],
   environment: Readonly<Record<string, string | undefined>> = {},
+  windowsWorkbookOperand?: string,
 ): readonly string[] {
   const paths = hostScriptRuntimePaths();
   const [runtime, script] = argv;
@@ -95,7 +98,53 @@ export function hostScriptInvocationReadPaths(
       && /^(?:NODE_|LD_|DYLD_)/i.test(name))) return [];
   if (!paths || !runtime || !script || runtime !== paths.javascriptRuntime || !isAbsolute(runtime) || !sameFile(runtime, paths.javascriptRuntime)
     || !isVerifiedHostScript(script)) return [];
+  if (isWindowsWorkbookScript(script) && (windowsWorkbookOperand === undefined || windowsWorkbookOperand !== argv[2])) return [];
   return [...new Set([runtime, realpathSync.native(runtime), dirname(realpathSync.native(runtime)), script])];
+}
+
+export function isWindowsWorkbookScript(path: string | undefined): boolean {
+  if (process.platform !== "win32" || path === undefined) return false;
+  const paths = hostScriptRuntimePaths();
+  return paths !== undefined && path === join(paths.bundledScriptsDirectory, "edit-xlsx.cjs");
+}
+
+export const WINDOWS_WORKBOOK_LITERAL_REQUIRED = "Windows workbook edits require a direct PowerShell command with a literal workbook path. [workbook-acl-unreadable]";
+const WORKBOOK_ACL_DIFFERS = "The workbook has access rules Ave cannot keep on the edited file. [workbook-acl-differs]";
+const WORKBOOK_ACL_UNREADABLE = "The workbook access rules could not be verified. [workbook-acl-unreadable]";
+const OBJECT_INHERIT_ACE = 0x01;
+const INHERITED_ACE = 0x10;
+const ENCRYPTED_FILE = 0x4000;
+const CREATOR_OWNER_SID = "S-1-3-0";
+
+export function checkWindowsWorkbookAccess(path: string): { identity: string } | { reason: string } {
+  try {
+    if (classifyWindowsSpelling(path, "win32").kind !== "local-drive") return { reason: WORKBOOK_ACL_UNREADABLE };
+    const [facts] = readWindowsDacls([path], { parent: true, access: true });
+    if (facts && admitWindowsReparse(facts) !== true) return { reason: WORKBOOK_ACL_DIFFERS };
+    if (!facts?.exists || !facts.dacl?.sacl || !facts.parent?.sacl || !facts.volumeSerialNumber || !facts.fileIndex || !facts.changeTime
+      || facts.fileSystemName !== "NTFS" || [facts.volumeSerialNumber, facts.fileIndex, facts.changeTime].some(value => BigInt(value) === 0n)) {
+      return { reason: WORKBOOK_ACL_UNREADABLE };
+    }
+    const { dacl, parent } = facts;
+    const leafAccess = facts.dacl.sacl;
+    if (facts.directory || (facts.attributes & ENCRYPTED_FILE) !== 0
+      || facts.elevated || dacl.owner !== facts.currentUserSid || dacl.protected || dacl.nullDacl || parent.nullDacl
+      || leafAccess.integrityLabel !== null || leafAccess.dynamicAccessControl || facts.parent.sacl.dynamicAccessControl
+      || ((facts.parent.sacl.integrityLabel?.flags ?? 0) & OBJECT_INHERIT_ACE) !== 0) {
+      return { reason: WORKBOOK_ACL_DIFFERS };
+    }
+    const inherited = parent.aces.filter(ace => (ace.flags & OBJECT_INHERIT_ACE) !== 0);
+    if (inherited.length !== dacl.aces.length || dacl.aces.some((ace, index) => {
+      const source = inherited[index];
+      return source === undefined || ace.flags !== INHERITED_ACE || (ace.type !== 0 && ace.type !== 1) || ace.type !== source.type
+        || ace.sid === null || ace.sid === CREATOR_OWNER_SID || ace.sid !== source.sid
+        || mapWindowsGenericRights(ace.mask) !== mapWindowsGenericRights(source.mask);
+    })) return { reason: WORKBOOK_ACL_DIFFERS };
+
+    return { identity: `${facts.volumeSerialNumber}:${facts.fileIndex}:${facts.changeTime}` };
+  } catch {
+    return { reason: WORKBOOK_ACL_UNREADABLE };
+  }
 }
 
 export function isHostScriptReadPath(path: string): boolean {

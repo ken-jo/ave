@@ -4,14 +4,14 @@ import { type FileHandle, lstat, readdir } from "node:fs/promises";
 import { isAbsolute, join, relative } from "node:path";
 import { compileGlobMatcher, containsGlobMetacharacter } from "../../lib/glob-matcher.js";
 import { isHostWorkspaceConsumable } from "../../shared/host-workspace-gate.js";
-import { type OwnedDir, OwnedFsError, openSource, type SourceRoot } from "./owned-fs.js";
+import { type NodeId, type OwnedDir, OwnedFsError, openSource, type SourceRoot } from "./owned-fs.js";
 
 export const MAX_SEED_FILES = 5_000;
 export const MAX_SEED_BYTES = 512 * 1024 * 1024;
 /** Entries one selection may look at before it gives up; a narrow glob over a huge tree is refused instead of walked. */
 const MAX_SEED_SCAN = 100_000;
 
-export interface SeedFile { path: string; size: number; sha256: string }
+interface CopiedSeedFile { path: string; size: number; sha256: string; directory: OwnedDir; id: NodeId }
 interface SeedSkip { path: string; why: "link" | "secret" | "ignored" | "not-a-file" }
 type SeedRefusal = "seed-too-large" | "seed-unreadable";
 type Listed = { ok: true; files: { path: string; size: number }[]; skipped: SeedSkip[] } | { ok: false; code: SeedRefusal };
@@ -165,11 +165,12 @@ export async function hashSeedFile(root: SourceRoot, path: string): Promise<{ sh
  * held folder, and the file is a new one: a file or link already at its name is unlinked, never written through. With `expect`, a copy
  * whose content is not the sha256 given for its path is removed again and the call throws.
  */
-export async function copySeedFiles(source: SourceRoot, target: OwnedDir, paths: readonly string[], expect?: ReadonlyMap<string, string>, fromProject = false): Promise<SeedFile[]> {
+export async function copySeedFiles(source: SourceRoot, target: OwnedDir, paths: readonly string[], expect?: ReadonlyMap<string, string>, fromProject = false, authority?: AbortSignal): Promise<CopiedSeedFile[]> {
   const assertConsumable = (): void => {
+    authority?.throwIfAborted();
     if (fromProject && !isHostWorkspaceConsumable(source.path)) throw new SeedStop("seed-unreadable");
   };
-  const copied: SeedFile[] = [];
+  const copied: CopiedSeedFile[] = [];
   for (const path of paths) {
     const segments = relativeSegments(path);
     if (segments === null) throw new Error("seed path is not a relative path");
@@ -181,7 +182,7 @@ export async function copySeedFiles(source: SourceRoot, target: OwnedDir, paths:
       const dir = target.ensurePath(segments.slice(0, -1));
       const { fd, id } = dir.createFile(leaf, { replace: true });
       let made: { sha256: string; size: number };
-      try { made = await digest(handle, { fd, held: () => dir.check() }); } finally { closeSync(fd); }
+      try { made = await digest(handle, { fd, held: () => { authority?.throwIfAborted(); dir.check(); } }); } finally { closeSync(fd); }
       dir.check();
       if (dir.entryId(leaf) !== id) throw new OwnedFsError("changed", "the copy was replaced while it was written");
       const wanted = expect?.get(path);
@@ -190,7 +191,7 @@ export async function copySeedFiles(source: SourceRoot, target: OwnedDir, paths:
         throw new OwnedFsError("changed", "the source is not the content that was recorded");
       }
       assertConsumable();
-      copied.push({ path: segments.join("/"), ...made });
+      copied.push({ path: segments.join("/"), ...made, directory: dir, id });
     } finally {
       await handle.close();
     }
