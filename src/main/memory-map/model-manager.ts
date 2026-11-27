@@ -4,7 +4,7 @@ import { lstat, readdir, realpath, rm } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { renameDirectoryOnce } from '../../lib/transient-fs-lock-retry.js';
 import { openFeatureNamespace, type FeatureNamespaceHandle } from '../storage/feature-namespace.js';
-import { MODEL_FILES, LOCAL_MODEL_REVISION, downloadModelFile, type ModelFile } from './model-manifest.js';
+import { MODEL_FILES, LOCAL_MODEL_REVISION, modelFileUrl, type ModelFile } from './model-manifest.js';
 import type { MemoryModelStatus, MemoryModelError as ModelErrorCode } from '../../shared/memory-model.js';
 
 const MODEL_SLOT_PARENT = 'multilingual-e5-small';
@@ -173,7 +173,7 @@ export class LocalModelManager {
         signal.throwIfAborted();
         const response = await (this.options.downloadFile
           ? this.options.downloadFile(file.name, signal)
-          : downloadModelFile(file.name, signal));
+          : fetch(modelFileUrl(file.name), { signal, redirect: 'follow' }));
         if (!response.ok || !response.body) throw new MemoryModelError('model-download-failed');
         const handle = await this.namespace.createFile(`${name}/${file.name}`);
         const hash = createHash('sha256');

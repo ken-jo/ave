@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { promises as dns, type LookupAddress, type LookupAllOptions } from 'node:dns';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { deferred } from '../../__tests__/support/deferred.js';
 import type { IpcMainInvokeEvent } from 'electron';
@@ -8,11 +9,13 @@ import type { WindowsMemoryEmbeddingConfig } from '../../shared/memory-embedding
 import { CHANNELS } from '../../contract/app-contract.js';
 import { graphMemoryRevision, type ReadMemoryMapCatalog } from '../../main/memory-map/catalog.js';
 import { MemoryMapHostError } from '../../main/memory-map/errors.js';
+import { LOCAL_MODEL_ID, LOCAL_MODEL_REVISION, MODEL_FILES } from '../../main/memory-map/model-manifest.js';
 import type { MemoryWorkerRunner } from '../../main/memory-map/worker-client-win32.js';
 const state = vi.hoisted(() => ({
   handles: new Map<string, (event: IpcMainInvokeEvent, ...args: unknown[]) => Promise<unknown>>(),
   get: vi.fn(async (_readCatalog: ReadMemoryMapCatalog) => null), build: vi.fn(async (_readCatalog?: ReadMemoryMapCatalog, _onAdmission?: (assertLive: () => void) => void) => ({ snapshotId: 'snapshot' })), cancel: vi.fn(), invalidate: vi.fn(), retrieve: vi.fn(async () => ({ queryId: 'query' })),
   status: vi.fn(async () => ({ status: 'unconfigured' })), download: vi.fn(async () => ({ status: 'ready' })), modelCancel: vi.fn(), adoptExistingFolder: vi.fn(async () => ({ status: 'ready' })),
+  downloadFile: undefined as ConstructorParameters<typeof import('../../main/memory-map/model-manager-win32.js').LocalModelManager>[0]['downloadFile'],
   readModelPath: undefined as ((signal: AbortSignal) => Promise<string>) | undefined,
   validatedPath: vi.fn(async () => '/example/model'),
   startWorker: undefined as MemoryWorkerRunner | undefined,
@@ -22,7 +25,7 @@ const state = vi.hoisted(() => ({
 }));
 vi.mock('electron', () => ({ ipcMain: { handle: (channel: string, handler: never) => state.handles.set(channel, handler) }, dialog: { showOpenDialog: state.dialog } }));
 vi.mock('../../main/memory-map/host-win32.js', async importOriginal => ({ ...await importOriginal<typeof import('../../main/memory-map/host-win32.js')>(), MemoryMapHost: class { constructor(options: { validatedModelPath: (signal: AbortSignal) => Promise<string>; runWorker: MemoryWorkerRunner }) { state.readModelPath = options.validatedModelPath; state.startWorker = options.runWorker; } get = state.get; build = state.build; cancel = state.cancel; invalidate = state.invalidate; retrieve = state.retrieve; } }));
-vi.mock('../../main/memory-map/model-manager-win32.js', async importOriginal => ({ ...await importOriginal<typeof import('../../main/memory-map/model-manager-win32.js')>(), LocalModelManager: class { validatedPath = state.validatedPath; status = state.status; download = state.download; cancel = state.modelCancel; adoptExistingFolder = state.adoptExistingFolder; } }));
+vi.mock('../../main/memory-map/model-manager-win32.js', async importOriginal => ({ ...await importOriginal<typeof import('../../main/memory-map/model-manager-win32.js')>(), LocalModelManager: class { constructor(options: { downloadFile?: typeof state.downloadFile }) { state.downloadFile = options.downloadFile; } validatedPath = state.validatedPath; status = state.status; download = state.download; cancel = state.modelCancel; adoptExistingFolder = state.adoptExistingFolder; } }));
 vi.mock('../../main/memory-map/worker-client-win32.js', () => ({ runMemoryWorker: state.runWorker }));
 vi.mock('../../main/memory-map/local-runtime-win32.js', async importOriginal => {
   const { MemoryMapHostError } = await import('../../main/memory-map/errors.js');
@@ -46,6 +49,7 @@ if (!originalPlatform) throw new Error('Missing platform descriptor');
 beforeEach(() => {
   Object.defineProperty(process, 'platform', { ...originalPlatform, value: 'linux' });
   vi.clearAllMocks(); state.handles.clear(); state.localConfined = true; state.releaseGateOpen = false;
+  state.downloadFile = undefined;
   state.readModelPath = undefined;
   state.startWorker = undefined;
   state.runWorker.mockReset();
@@ -56,6 +60,60 @@ beforeEach(() => {
 });
 afterEach(() => { Object.defineProperty(process, 'platform', originalPlatform); });
 describe('memory map host boundary', () => {
+  const artifactDns: { lookup: (host: string, options: LookupAllOptions) => Promise<LookupAddress[]> } = dns;
+
+  it('streams the pinned artifact through the host transport and keeps cancellation attached', async () => {
+    const lookup = vi.spyOn(artifactDns, 'lookup').mockResolvedValue([{ address: '93.184.216.34', family: 4 }]);
+    const redirectedUrl = 'https://artifacts.example.com/model';
+    const transport = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(null, { status: 302, headers: { location: redirectedUrl } }))
+      .mockResolvedValueOnce(new Response('artifact'));
+    try {
+      registerWindowsMemoryMapHandlers({ singleHopNetworkFetch: transport, settingsService: { get: () => undefined } } as unknown as IpcDeps,
+        () => ({ ok: true, options: {} }));
+      await invoke('modelStatus');
+      const downloadFile = state.downloadFile;
+      assert.ok(downloadFile);
+      const controller = new AbortController();
+      const file = MODEL_FILES[0].name;
+      const response = await downloadFile(file, controller.signal, vi.fn());
+      expect(await response.text()).toBe('artifact');
+      expect(transport.mock.calls.map(([url, init]) => [url, init?.redirect, init?.credentials])).toEqual([
+        [`https://huggingface.co/${LOCAL_MODEL_ID}/resolve/${LOCAL_MODEL_REVISION}/onnx/${file}`, 'manual', 'omit'],
+        [redirectedUrl, 'manual', 'omit'],
+      ]);
+      controller.abort();
+      expect(transport.mock.calls[1][1]?.signal?.aborted).toBe(true);
+    } finally {
+      lookup.mockRestore();
+    }
+  });
+
+  it('checks artifact admission after resolving a redirect and before sending it', async () => {
+    const revoked = new MemoryMapHostError('local-runtime-unavailable');
+    let admitted = true;
+    const lookup = vi.spyOn(artifactDns, 'lookup').mockImplementation(async host => {
+      if (host === 'artifacts.example.com') admitted = false;
+      return [{ address: '93.184.216.34', family: 4 }];
+    });
+    const transport = vi.fn<typeof fetch>().mockResolvedValueOnce(
+      new Response(null, { status: 302, headers: { location: 'https://artifacts.example.com/model' } }),
+    );
+    try {
+      registerWindowsMemoryMapHandlers({ singleHopNetworkFetch: transport, settingsService: { get: () => undefined } } as unknown as IpcDeps,
+        () => ({ ok: true, options: {} }));
+      await invoke('modelStatus');
+      const downloadFile = state.downloadFile;
+      assert.ok(downloadFile);
+      await expect(downloadFile(MODEL_FILES[0].name, new AbortController().signal, () => {
+        if (!admitted) throw revoked;
+      })).rejects.toBe(revoked);
+      expect(transport).toHaveBeenCalledOnce();
+    } finally {
+      lookup.mockRestore();
+    }
+  });
+
   it('refuses a completed build whose publication receipt expires before the IPC reply', async () => {
     state.build.mockImplementationOnce(async (_catalog, onAdmission) => {
       let live = true;

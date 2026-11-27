@@ -1,59 +1,33 @@
 import type { SettingsService } from '../../data/settings-store.js';
-import { secretKeyFor } from '../../engine/llm/provider-factory.js';
-import { LLM_VENDORS, getLlmVendorSettings, canUseLlmVendorWithoutApiKey, isOpenAICompatibleVendor } from '../../shared/llm-vendor-defaults.js';
-import { marketplaceProviderPresetSecretKey } from '../../shared/marketplace-package-assets.js';
-import { isDefaultModelListEndpoint } from '../../engine/llm/model-list.js';
-import { MEMORY_EMBEDDING_CONSENT_VERSION, type MemoryEmbeddingConsent } from '../../shared/memory-embedding-config.js';
+import type { MemoryEmbeddingConsent } from '../../shared/memory-embedding-config.js';
 import type { EmbeddingNamespace, MemoryEmbeddingProvider, MemoryMapProgress, GraphSnapshot, MemoryMapRecord } from '../../shared/memory-map.js';
 import type { MemoryMapCatalog } from './catalog.js';
 import { runMemoryWorker, type MemoryWorkerRunner } from './worker-client-win32.js';
-import { digest, LOCAL_NAMESPACE, vectorKey, type VectorCache } from './graph.js';
+import { vectorKey, type VectorCache } from './graph.js';
 import { MemoryMapHostError } from './errors.js';
 import type { ProviderEgress } from './provider-egress.js';
-import { sendProviderEmbeddings } from './provider-embeddings.js';
+import { ProviderEmbeddings as ProviderIntegration } from './provider-embeddings.js';
 import { commitUnderAdmission } from '../../shared/admission-commit.js';
 
 const EMBEDDING_BATCH_SIZE = 16;
-const SDK_EMBEDDING_MODELS: Record<string, string[]> = {
-  openai: ['text-embedding-3-small', 'text-embedding-3-large', 'text-embedding-ada-002'],
-  gemini: ['gemini-embedding-001', 'gemini-embedding-2', 'gemini-embedding-2-preview'],
-};
-const DEFAULT_ENDPOINTS: Record<string, string> = { openai: 'https://api.openai.com/v1', gemini: 'https://generativelanguage.googleapis.com/v1beta' };
 export class ProviderEmbeddings {
-  private suspended = false;
-  suspend(): void { this.suspended = true; }
-  resume(): void { this.suspended = false; }
-  constructor(private readonly settings: SettingsService, private readonly egress: ProviderEgress, private readonly runWorker: MemoryWorkerRunner = runMemoryWorker) {}
-  namespace(): EmbeddingNamespace {
-    const config = this.settings.get('memoryEmbedding');
-    if (config?.source !== 'provider') return LOCAL_NAMESPACE;
-    const providerId = config.providerId ?? '';
-    return {
-      source: 'provider', providerId, modelId: config.modelId ?? '',
-      modelRevision: this.endpointId(providerId) ?? 'unavailable', preprocessingRevision: 'text-l2-v1', dimensions: 0,
-    };
+  private readonly integration: ProviderIntegration;
+
+  constructor(settings: SettingsService, egress: ProviderEgress, private readonly runWorker: MemoryWorkerRunner = runMemoryWorker) {
+    this.integration = new ProviderIntegration(settings, egress, runWorker);
   }
-  currentConsent(): MemoryEmbeddingConsent | undefined {
-    const config = this.settings.get('memoryEmbedding');
-    const consent = config?.consent;
-    if (this.suspended || config?.source !== 'provider' || !consent
-      || consent.version !== MEMORY_EMBEDDING_CONSENT_VERSION || consent.providerId !== config.providerId
-      || consent.modelId !== config.modelId || consent.endpointId !== this.endpointId(consent.providerId)
-      || !Number.isFinite(Date.parse(consent.timestamp))) return undefined;
-    return consent;
+
+  suspend(): void { this.integration.suspend(); }
+  resume(): void { this.integration.resume(); }
+  namespace(): EmbeddingNamespace { return this.integration.namespace(); }
+  currentConsent(): MemoryEmbeddingConsent | undefined { return this.integration.currentConsent(); }
+  assertCurrentEndpoint(providerId: string, endpointId: string): void { this.integration.assertCurrentEndpoint(providerId, endpointId); }
+  issueConsent(providerId: string, modelId: string, endpointId: string): Promise<MemoryEmbeddingConsent> {
+    return this.integration.issueConsent(providerId, modelId, endpointId);
   }
-  assertCurrentEndpoint(providerId: string, endpointId: string): void {
-    if (endpointId !== this.endpointId(providerId)) throw new MemoryMapHostError('request-stale');
-  }
-  async issueConsent(providerId: string, modelId: string, endpointId: string): Promise<MemoryEmbeddingConsent> {
-    this.assertCurrentEndpoint(providerId, endpointId);
-    try {
-      await this.validate(providerId, modelId);
-    } finally {
-      this.assertCurrentEndpoint(providerId, endpointId);
-    }
-    return { version: MEMORY_EMBEDDING_CONSENT_VERSION, providerId, modelId, endpointId, timestamp: new Date().toISOString() };
-  }
+  providers(): Promise<MemoryEmbeddingProvider[]> { return this.integration.providers(); }
+  validate(providerId: string, modelId: string): Promise<void> { return this.integration.validate(providerId, modelId); }
+
   bindConsent(namespace: EmbeddingNamespace, signal: AbortSignal): () => void {
     const timestamp = this.currentConsent()?.timestamp;
     const assertCurrent = () => {
@@ -65,75 +39,14 @@ export class ProviderEmbeddings {
     assertCurrent();
     return assertCurrent;
   }
-  private endpointId(providerId: string): string | undefined {
-    try {
-      return this.describeRoute(this.route(providerId))?.endpointId;
-    } catch {
-      return undefined;
-    }
-  }
-  private describeRoute({ baseUrl, vendor, block, preset }: ReturnType<ProviderEmbeddings['route']>): MemoryEmbeddingProvider['route'] {
-    const url = URL.parse(baseUrl ?? '');
-    if (!url || url.origin === 'null') return undefined;
-    return {
-      endpointId: digest(JSON.stringify([url.href, vendor, block.wire, preset?.trust?.networkAccess])),
-      origin: url.origin,
-    };
-  }
-  private route(providerId: string) {
-    const preset = (this.settings.get('marketplace')?.installedProviderPresets ?? []).find(value => value.providerId === providerId);
-    const vendor = preset ? 'openai-compatible' : LLM_VENDORS.find(value => value === providerId);
-    if (!vendor) throw new MemoryMapHostError('provider-unavailable');
-    const block = getLlmVendorSettings(this.settings.get('llm')?.vendors, vendor);
-    const baseUrl = preset?.baseUrl ?? block.baseUrl ?? DEFAULT_ENDPOINTS[vendor];
-    const secret = preset ? marketplaceProviderPresetSecretKey(preset.providerId) : secretKeyFor(vendor);
-    return { vendor, block, baseUrl, preset, secret };
-  }
-  async providers(): Promise<MemoryEmbeddingProvider[]> {
-    const candidates = [...LLM_VENDORS, ...(this.settings.get('marketplace')?.installedProviderPresets ?? []).map(value => value.providerId)];
-    const result: MemoryEmbeddingProvider[] = [];
-    for (const id of candidates) {
-      const route = this.route(id);
-      const { vendor, block, baseUrl, preset } = route;
-      const keyless = preset ? preset.requiresApiKey === false && Boolean(baseUrl) : Boolean(this.settings.get('llm')?.vendors?.[vendor]?.baseUrl && block.model) && canUseLlmVendorWithoutApiKey(vendor, block);
-      if (!keyless && !await this.settings.hasStoredSecret(route.secret)) continue;
-      const destination = this.describeRoute(route);
-      const entry = { id, ...(destination ? { route: destination } : {}) };
-      if (!this.egress.isRouteEligible(baseUrl)) {
-        result.push({ ...entry, models: [], reason: 'provider-route-ineligible' });
-        continue;
-      }
-      const models: string[] = [];
-      const compatible = isOpenAICompatibleVendor(vendor) && (vendor !== 'openai-compatible' || !block.wire || block.wire === 'openai-chat' || block.wire === 'openai-responses' || Boolean(preset));
-      const builtInModels = SDK_EMBEDDING_MODELS[vendor];
-      if (builtInModels && (!block.baseUrl || block.baseUrl === DEFAULT_ENDPOINTS[vendor])) models.push(...builtInModels);
-      for (const cached of Object.values(this.settings.get('llm')?.modelListCache ?? {})) {
-        if (cached.vendor !== vendor || (preset ? cached.credentialScope !== preset.providerId || cached.baseUrl !== baseUrl : cached.credentialScope || !isDefaultModelListEndpoint(this.settings.get('llm').vendors, vendor, cached.endpoint))) continue;
-        if (compatible || vendor === 'azure-foundry' || vendor === 'openai' || vendor === 'gemini' || (vendor === 'openai-compatible' && block.wire === 'google-gemini')) {
-          for (const entry of cached.modelEntries ?? []) if (entry.outputModalities?.includes('embedding') && cached.models.includes(entry.id)) models.push(entry.id);
-        }
-      }
-      result.push({ ...entry, models: [...new Set(models)], ...(!models.length ? { reason: 'provider-no-embedding-model' as const } : {}) });
-    }
-    return result;
-  }
-  async validate(providerId: string, modelId: string): Promise<void> {
-    const provider = (await this.providers()).find(value => value.id === providerId);
-    if (!provider) throw new MemoryMapHostError('provider-unavailable');
-    if (!provider.models.includes(modelId)) throw new MemoryMapHostError(provider.reason ?? 'provider-no-embedding-model');
-  }
   async embed(namespace: EmbeddingNamespace, values: string[], signal: AbortSignal, assertAuthority?: () => void): Promise<number[][]> {
-    const providerId = namespace.providerId ?? ''; const modelId = namespace.modelId;
     const assertConsent = this.bindConsent(namespace, signal);
-    if (!values.length || values.length > EMBEDDING_BATCH_SIZE) throw new MemoryMapHostError('invalid-input');
-    await this.validate(providerId, modelId);
-    const route = this.route(providerId);
-    const assertCurrent = () => {
+    return this.integration.embed(namespace, values, signal, () => {
       assertConsent();
       assertAuthority?.();
-    };
-    return sendProviderEmbeddings({ settings: this.settings, egress: this.egress, route, namespace, modelId, values, signal, assertCurrent });
+    });
   }
+
   async build(catalog: MemoryMapCatalog, namespace: EmbeddingNamespace, saved: { snapshot: { model: { namespace: EmbeddingNamespace } } | null; cache: VectorCache }, signal: AbortSignal, onProgress: (progress: MemoryMapProgress) => void, assertAuthority: (batch: readonly MemoryMapRecord[]) => void, assertCatalog: () => void) {
     const assertConsent = this.bindConsent(namespace, signal);
     const records = [...catalog.records].sort((a, b) => a.memoryId.localeCompare(b.memoryId));

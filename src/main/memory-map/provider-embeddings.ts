@@ -127,11 +127,48 @@ export class ProviderEmbeddings {
     if (!values.length || values.length > EMBEDDING_BATCH_SIZE) throw new MemoryMapHostError('invalid-input');
     await this.validate(providerId, modelId);
     const route = this.route(providerId);
+    const { baseUrl } = route;
+    if (!baseUrl) throw new MemoryMapHostError('provider-unavailable');
     const assertCurrent = () => {
       this.assertConsent(namespace, signal);
       assertAuthority?.();
     };
-    return sendProviderEmbeddings({ settings: this.settings, egress: this.egress, route, namespace, modelId, values, signal, assertCurrent });
+    let egressError: MemoryMapHostError | undefined;
+    const egress: typeof fetch = async (input, init) => {
+      assertCurrent();
+      const url = new URL(typeof input === 'string' || input instanceof URL ? input.toString() : input.url);
+      if (url.origin !== new URL(baseUrl).origin) throw new MemoryMapHostError('provider-unavailable');
+      try {
+        return await this.egress.send(url, { ...init, signal: init?.signal ? AbortSignal.any([signal, init.signal]) : signal }, assertCurrent);
+      } catch (error) {
+        if (error instanceof MemoryMapHostError) egressError = error;
+        throw error;
+      }
+    };
+    const transport = selectProviderRuntimeFetch({ vendor: route.vendor, baseUrl: route.baseUrl, providerMetadata: route.preset, llmFetch: createSafeLlmFetch(egress), networkFetch: egress }) ?? createPublicModelProviderFetch(route.baseUrl, egress);
+    const fetchImpl = transport;
+    try {
+      const apiKey = await this.settings.getSecret(route.secret) ?? '';
+      if (!apiKey && (route.preset ? route.preset.requiresApiKey !== false : !canUseLlmVendorWithoutApiKey(route.vendor, route.block))) throw new MemoryMapHostError('provider-unavailable');
+      assertCurrent();
+      const model = await createEmbeddingModel({ vendor: route.vendor, apiKey, baseUrl: route.baseUrl, wire: route.block.wire, fetch: fetchImpl, providerMetadata: route.preset, getRetiredModelId: noRetirementEvidence }, modelId);
+      const outcome = await runWithCeiling(abortSignal => embedMany({ model, values, abortSignal, maxParallelCalls: 1, maxRetries: 0, telemetry: { isEnabled: false, recordInputs: false, recordOutputs: false } }), TOOL_TIMEOUT_POLICY.modelStreamIdleCeilingMs, signal, 'memory embeddings');
+      if (!outcome.ok) throw outcome.error;
+      const { embeddings } = outcome.value;
+      assertCurrent();
+      if (embeddings.length !== values.length) throw new MemoryMapHostError('provider-embedding-failed');
+      const dimensions = namespace.dimensions || embeddings[0]?.length;
+      return embeddings.map(vector => {
+        if (!dimensions || dimensions > 65536 || vector.length !== dimensions) throw new MemoryMapHostError('provider-dimension-mismatch');
+        const norm = Math.hypot(...vector);
+        if (!Number.isFinite(norm) || !norm || vector.some(value => !Number.isFinite(value))) throw new MemoryMapHostError('provider-embedding-failed');
+        return vector.map(value => value / norm);
+      });
+    } catch (error) {
+      if (egressError) throw egressError;
+      if (error instanceof MemoryMapHostError) throw error;
+      throw new MemoryMapHostError(signal.aborted ? 'request-stale' : 'provider-embedding-failed');
+    }
   }
   async build(catalog: MemoryMapCatalog, namespace: EmbeddingNamespace, saved: { snapshot: { model: { namespace: EmbeddingNamespace } } | null; cache: VectorCache }, signal: AbortSignal, onProgress: (progress: MemoryMapProgress) => void, assertAuthority: (batch: readonly MemoryMapRecord[]) => void) {
     this.assertConsent(namespace, signal);
@@ -157,55 +194,5 @@ export class ProviderEmbeddings {
     if (!selected.dimensions) throw new MemoryMapHostError('provider-embedding-failed');
     this.assertConsent(selected, signal);
     return this.runWorker<{ snapshot: GraphSnapshot; cache: VectorCache }>('', { kind: 'project', input: { ...catalog, namespace: selected, cache, jobId } }, signal, progress => { if (progress.phase !== 'embedding') onProgress(progress); });
-  }
-}
-
-export async function sendProviderEmbeddings({ settings, egress: providerEgress, route, namespace, modelId, values, signal, assertCurrent }: {
-  settings: SettingsService;
-  egress: ProviderEgress;
-  route: ReturnType<ProviderEmbeddings['route']>;
-  namespace: EmbeddingNamespace;
-  modelId: string;
-  values: string[];
-  signal: AbortSignal;
-  assertCurrent: () => void;
-}): Promise<number[][]> {
-  const { baseUrl } = route;
-  if (!baseUrl) throw new MemoryMapHostError('provider-unavailable');
-  let egressError: MemoryMapHostError | undefined;
-  const egress: typeof fetch = async (input, init) => {
-    assertCurrent();
-    const url = new URL(typeof input === 'string' || input instanceof URL ? input.toString() : input.url);
-    if (url.origin !== new URL(baseUrl).origin) throw new MemoryMapHostError('provider-unavailable');
-    try {
-      return await providerEgress.send(url, { ...init, signal: init?.signal ? AbortSignal.any([signal, init.signal]) : signal }, assertCurrent);
-    } catch (error) {
-      if (error instanceof MemoryMapHostError) egressError = error;
-      throw error;
-    }
-  };
-  const transport = selectProviderRuntimeFetch({ vendor: route.vendor, baseUrl: route.baseUrl, providerMetadata: route.preset, llmFetch: createSafeLlmFetch(egress), networkFetch: egress }) ?? createPublicModelProviderFetch(route.baseUrl, egress);
-  const fetchImpl = transport;
-  try {
-    const apiKey = await settings.getSecret(route.secret) ?? '';
-    if (!apiKey && (route.preset ? route.preset.requiresApiKey !== false : !canUseLlmVendorWithoutApiKey(route.vendor, route.block))) throw new MemoryMapHostError('provider-unavailable');
-    assertCurrent();
-    const model = await createEmbeddingModel({ vendor: route.vendor, apiKey, baseUrl: route.baseUrl, wire: route.block.wire, fetch: fetchImpl, providerMetadata: route.preset, getRetiredModelId: noRetirementEvidence }, modelId);
-    const outcome = await runWithCeiling(abortSignal => embedMany({ model, values, abortSignal, maxParallelCalls: 1, maxRetries: 0, telemetry: { isEnabled: false, recordInputs: false, recordOutputs: false } }), TOOL_TIMEOUT_POLICY.modelStreamIdleCeilingMs, signal, 'memory embeddings');
-    if (!outcome.ok) throw outcome.error;
-    const { embeddings } = outcome.value;
-    assertCurrent();
-    if (embeddings.length !== values.length) throw new MemoryMapHostError('provider-embedding-failed');
-    const dimensions = namespace.dimensions || embeddings[0]?.length;
-    return embeddings.map(vector => {
-      if (!dimensions || dimensions > 65536 || vector.length !== dimensions) throw new MemoryMapHostError('provider-dimension-mismatch');
-      const norm = Math.hypot(...vector);
-      if (!Number.isFinite(norm) || !norm || vector.some(value => !Number.isFinite(value))) throw new MemoryMapHostError('provider-embedding-failed');
-      return vector.map(value => value / norm);
-    });
-  } catch (error) {
-    if (egressError) throw egressError;
-    if (error instanceof MemoryMapHostError) throw error;
-    throw new MemoryMapHostError(signal.aborted ? 'request-stale' : 'provider-embedding-failed');
   }
 }

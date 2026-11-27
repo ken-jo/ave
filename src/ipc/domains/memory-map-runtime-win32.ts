@@ -1,3 +1,4 @@
+import { fetchPublicHttpResponse } from '../../core/network-guard.js';
 import { pickNativeFiles } from "../../main/desktop-approval-presentation.js";
 import type { IpcMainInvokeEvent } from 'electron';
 import { watch } from 'node:fs';
@@ -14,6 +15,7 @@ import { assertLocalEmbeddingRuntime, bindLocalEmbeddingRuntime, refreshLocalInf
 import type { WindowsBackgroundAdmission } from '../../permissions/windows-background-features.js';
 import { runMemoryWorker } from '../../main/memory-map/worker-client-win32.js';
 import { LocalModelManager, MemoryModelError } from '../../main/memory-map/model-manager-win32.js';
+import { modelFileUrl } from '../../main/memory-map/model-manifest.js';
 import { MemoryMapHost, MemoryMapHostError } from '../../main/memory-map/host-win32.js';
 import { readGraphCatalog, memoryFacets, graphMemoryRevision, isGraphMemory, matchesGraphRecord, memoryMapScopeId, type ReadMemoryMapCatalog } from '../../main/memory-map/catalog.js';
 import { ProviderEmbeddings } from '../../main/memory-map/provider-embeddings-win32.js';
@@ -82,6 +84,19 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
   let buildEvent: IpcMainInvokeEvent | undefined;
   const model = new LocalModelManager({
     refreshAdmission: refreshLocalAdmission,
+    downloadFile: (name, signal, assertStillValid) => fetchPublicHttpResponse(modelFileUrl(name), {
+      signal,
+      credentials: 'omit',
+      authorizeTarget: async url => {
+        if (url.protocol !== 'https:') throw new MemoryModelError('model-download-failed');
+      },
+      fetchImpl: (input, init) => {
+        assertStillValid();
+        // Keep cancellation connected to the body after the redirect guard returns its headers.
+        const requestSignal = init?.signal ? AbortSignal.any([signal, init.signal]) : signal;
+        return deps.singleHopNetworkFetch(input, { ...init, signal: requestSignal });
+      },
+    }),
     readPath: () => deps.settingsService.get('memoryEmbedding')?.localModelPath,
     savePath: async (path, assertStillValid) => {
       try {

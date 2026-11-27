@@ -196,9 +196,14 @@ describe('provider memory embeddings', () => {
     expect(f.requests).toHaveLength(1); expect(f.requests[0].input).toHaveLength(16);
     expect(await host.get(() => f.catalog)).toBeNull();
   });
-  it('rechecks consent after asynchronous credential resolution before host egress', async () => {
+  it.each(['modelId', 'timestamp'] as const)('rechecks the consent %s after asynchronous credential resolution before host egress', async field => {
     const f = await fixture(); f.consent();
-    vi.mocked(f.settings.getSecret).mockImplementation(async () => { const consent = f.config.consent; assert.ok(consent); consent.modelId = 'other'; return f.key; });
+    vi.mocked(f.settings.getSecret).mockImplementation(async () => {
+      const consent = f.config.consent;
+      assert.ok(consent);
+      consent[field] = field === 'timestamp' ? '2020-01-01T00:00:00.000Z' : 'other';
+      return f.key;
+    });
     await expect(f.provider.embed(f.provider.namespace(), ['Private'], new AbortController().signal)).rejects.toThrow('provider-consent-required');
     expect(f.chokepoint).not.toHaveBeenCalled(); expect(f.requests).toEqual([]);
   });

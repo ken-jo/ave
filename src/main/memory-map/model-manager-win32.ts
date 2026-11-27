@@ -6,7 +6,7 @@ import { commitUnderAdmission } from '../../shared/admission-commit.js';
 import { renameDirectoryOnce } from '../../lib/transient-fs-lock-retry.js';
 import { openFeatureNamespace, type FeatureNamespaceHandle } from '../storage/feature-namespace.js';
 import { MemoryMapHostError } from './errors.js';
-import { MODEL_FILES, LOCAL_MODEL_REVISION, downloadModelFile, type ModelFile } from './model-manifest.js';
+import { MODEL_FILES, LOCAL_MODEL_REVISION, type ModelFile } from './model-manifest.js';
 import type { MemoryModelStatus, MemoryModelError as ModelErrorCode } from '../../shared/memory-model.js';
 
 const MODEL_SLOT_PARENT = 'multilingual-e5-small';
@@ -62,7 +62,7 @@ export async function verifyModelFolder(folder: string, files: readonly ModelFil
 interface ModelManagerOptions {
   namespace?: FeatureNamespaceHandle;
   files?: readonly ModelFile[];
-  downloadFile?: (name: string, signal: AbortSignal) => Promise<Response>;
+  downloadFile?: (name: string, signal: AbortSignal, assertStillValid: () => void) => Promise<Response>;
   refreshAdmission?: () => Promise<() => void>;
   readPath: () => string | undefined;
   /** `assertStillValid` is the admission the path is saved under; it holds at the step that writes the setting. */
@@ -207,12 +207,12 @@ export class LocalModelManager {
   }
   download(onProgress?: (status: MemoryModelStatus) => void, onAdmission?: (assertLive: () => void) => void): Promise<MemoryModelStatus> {
     return this.run((signal, assertStillValid, publish) => this.install(signal, assertStillValid, async name => {
+      const { downloadFile } = this.options;
+      if (!downloadFile) throw new MemoryModelError('model-download-failed');
       publish({ status: 'downloading', receivedBytes: 0, totalBytes: this.files.reduce((n, f) => n + f.bytes, 0), completedFiles: 0, totalFiles: this.files.length });
       for (const file of this.files) {
         assertStillValid();
-        const response = await (this.options.downloadFile
-          ? this.options.downloadFile(file.name, signal)
-          : downloadModelFile(file.name, signal));
+        const response = await downloadFile(file.name, signal, assertStillValid);
         if (!response.ok || !response.body) throw new MemoryModelError('model-download-failed');
         const reader = response.body.getReader();
         try {
