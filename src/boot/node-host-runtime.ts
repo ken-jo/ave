@@ -102,10 +102,7 @@ export async function createNodeBootHost(options: NodeBootHostOptions): Promise<
     relaunch: () => { throw new Error("relaunch-unsupported"); },
     close: () => dispatcher.destroy(),
   };
-  const releaseSettingsPath = withLocalityDecision(
-    () => protectRuntimeSettingsPath(settingsFilePath(host.userDataPath)),
-    openLocalityDecision(host.resourcePath),
-  );
+  const releaseSettingsPath = protectRuntimeSettingsPath(settingsFilePath(host.userDataPath), host.resourcePath);
   const close = host.close.bind(host);
   host.close = async () => {
     try { await close(); } finally { releaseSettingsPath(); }

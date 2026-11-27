@@ -41,8 +41,9 @@ import { compileSensitivePathGlob } from "./sensitive-path-glob.js";
 import { isWindowsNetworkOrDevicePath, localDriveAlias, modelShellPath, withoutStreamSuffixes } from "../shared/shell-native-path.js";
 import {
   admitLocalPath, admitLocalRoute, admitRouteAncestor, decisionMemo, type LocalFilesystemFacts, localFs, matcherMemo,
-  type LocalRoute, rethrowLocalityFailure, unprovenLookup, withLocalityDecision,
+  type LocalRoute, openLocalityDecision, rethrowLocalityFailure, unprovenLookup, withLocalityDecision,
 } from "../shared/local-path-io.js";
+import { isWindowsPathKindHelperUnavailable } from "../main/windows-path-kind-launcher.js";
 import { classifyWindowsSpelling } from "../shared/windows-path-spelling.js";
 
 // Bounded walk-up depth used by canonicalizePathForMatch when the input path does not yet exist on disk. We try `realpathSync.native` on progressively higher ancestors until we find one that exists, then compose `<resolvedAncestor>/<remainder>`. Capped to defend against adversarial inputs (deep paths, symlink cycles).
@@ -55,19 +56,23 @@ const runtimeSecretKeyMemo = {};
 const runtimeSettingsScopes = new Map<symbol, ReadonlySet<string>>();
 
 /** Protect one live host's settings file and its directory until that host closes. */
-export function protectRuntimeSettingsPath(path: string): () => void {
-  return withLocalityDecision(() => {
-    if (!isAbsolute(path) || path.includes("\0")) throw new Error("Settings path must be absolute");
-    const targets = new Set<string>();
-    for (const file of [canonicalizePathForMatch(path), pathResolve(path)]) {
-      for (const target of [file, dirname(file)]) {
-        targets.add(caseFoldForMatch(target).replace(/\/+$/u, ""));
-      }
-    }
-    const scope = Symbol();
-    runtimeSettingsScopes.set(scope, targets);
-    return () => { runtimeSettingsScopes.delete(scope); };
-  });
+export function protectRuntimeSettingsPath(path: string, resourcePath?: string): () => void {
+  if (!isAbsolute(path) || path.includes("\0")) throw new Error("Settings path must be absolute");
+  const files = [process.platform === "win32" ? foldCanonicalPathSeparators(pathResolve(path)) : pathResolve(path)];
+  try {
+    files.push(withLocalityDecision(() => canonicalizePathForMatch(path),
+      resourcePath === undefined ? undefined : openLocalityDecision(resourcePath)));
+  } catch (error) {
+    if (process.platform !== "win32" || !isWindowsPathKindHelperUnavailable(error)) throw error;
+    // Install the lexical deny without attempting target I/O. Native lookups still require a working classifier.
+  }
+  const targets = new Set<string>();
+  for (const file of files) {
+    for (const target of [file, dirname(file)]) targets.add(caseFoldForMatch(target).replace(/\/+$/u, ""));
+  }
+  const scope = Symbol();
+  runtimeSettingsScopes.set(scope, targets);
+  return () => { runtimeSettingsScopes.delete(scope); };
 }
 
 // The native host's configured external key is secret regardless of its name or workspace grants. Both the host guard and the OS deny floor consume these same literal paths. Host startup resolves them before exposing tools; retain that target if a directory symlink changes later. The host owns this process environment setting and keeps it unchanged for the encryption lifetime.
