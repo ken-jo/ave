@@ -80,6 +80,8 @@ export interface ExecRequest {
 
 export interface ExecDeps {
   readonly conversationLoop: ConversationLoop;
+  // Required for inline prompts when the conversation loop has skill memory.
+  readonly runWithSkillMemoryOwnerInput?: (prompt: string, run: () => Promise<TurnResult>) => Promise<TurnResult>;
   readonly permissionManager: PermissionManager | undefined;
   readonly approvalGate: ApprovalGate | undefined;
   readonly settingsService: SettingsService;
@@ -434,6 +436,12 @@ async function runTurnRequest(deps: ExecDeps, request: ExecTurnRequest): Promise
   }
   if (request.approveMode === "allow") permissionManager.setMode("allow");
   try {
+    // Stdin may carry arbitrary external text. Only an inline prompt can supply owner input.
+    const skillMemory = request.prompt === null ? undefined : deps.conversationLoop.deps?.skillMemory;
+    const { runWithSkillMemoryOwnerInput } = deps;
+    if (skillMemory && !runWithSkillMemoryOwnerInput) {
+      throw new Error("skill memory owner-input hook is missing");
+    }
     await deps.conversationLoop.newConversation("main", {
       projectRoot: request.cwd,
       projectName: basename(request.cwd),
@@ -450,7 +458,6 @@ async function runTurnRequest(deps: ExecDeps, request: ExecTurnRequest): Promise
     }
     const { runStreamedTurn } =
       await import("../ipc/handlers/chat-stream.js");
-    const skillMemory = deps.conversationLoop.deps?.skillMemory;
     const sink = (event: PlatformConversationEvent) => {
       if (request.output === "stream-json") {
         deps.stdout.write(`${JSON.stringify(event)}\n`);
@@ -465,9 +472,8 @@ async function runTurnRequest(deps: ExecDeps, request: ExecTurnRequest): Promise
       unattendedAuthority: issueUnattendedTurnAuthority(),
       ...(request.maxRounds === undefined ? {} : { maxRounds: request.maxRounds }),
     });
-    // Only an explicit command-line prompt carries the originating operator input. A stdin pipe may carry arbitrary external text.
-    const result = skillMemory && request.prompt !== null
-      ? await (await import("../memory/skill-memory-service.js")).runWithSkillMemoryOwnerInput(prompt, run)
+    const result = skillMemory && runWithSkillMemoryOwnerInput
+      ? await runWithSkillMemoryOwnerInput(prompt, run)
       : await run();
     if (request.output === "json") {
       // An authorization terminal is a control response, not a normal model result. Do not serialize `toolCalls`: they contain raw command/tool arguments and
@@ -488,7 +494,7 @@ async function runTurnRequest(deps: ExecDeps, request: ExecTurnRequest): Promise
         : result;
       deps.stdout.write(`${JSON.stringify(output)}\n`);
     }
-    if (skillMemory && boundProjectRoot && request.prompt !== null && result.stopReason === "end_turn"
+    if (skillMemory && boundProjectRoot && result.stopReason === "end_turn"
       && !result.inputRequired && !result.authorizationRequired) {
       await skillMemory.queueUnattended({
         sessionId: deps.conversationLoop.getSessionId(),
