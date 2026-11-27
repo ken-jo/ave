@@ -2,8 +2,18 @@
 // resident supervisor: the process-group launch gate, then `/usr/bin/sandbox-exec -p <profile>`, then a three-line
 // ready shim, then the holder. Its stdio is its own fds 0/1/2 on pipes to Ave. The profile ends with the holder's label
 // (`holder-label-sweep.ts`), so its stop can end every process it started, including ones that left its group.
+import type { ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
+import { lstatSync, readFileSync, readlinkSync } from "node:fs";
 import { posix } from "node:path";
+import type { Readable, Writable } from "node:stream";
+import { setTimeout as sleep } from "node:timers/promises";
+import {
+  observeManagedProcessGroup, spawnGatedManagedProcess, terminateManagedProcessGroup, type ConfirmedExit, type ManagedResources,
+} from "../main/managed-child-processes.js";
+import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
+import { assertHolderSweepHelperUnchanged, runHolderSweep, type HolderSweepHelper } from "./holder-label-sweep.js";
+import { MxcHolderStartRefusedError, MxcProcessCleanupError, MxcProcessContractError } from "./mxc-extension-errors.js";
 import { getDefaultSensitiveWriteDenyEntries, runWithSandboxWritePreflight, seatbeltHolderFloorRows } from "./asrt-sandbox.js";
 import { assertConfiguredLauncherEnvironment, buildLauncherEnvironment } from "./launcher-environment.js";
 import { atOrUnder, canonicalPath, posixPathFoldsCase, posixPolicyLookups, rankPosixContainerRows, type PosixFilesystemGrants, type PosixPolicyLookups } from "./mxc-posix.js";
@@ -161,4 +171,204 @@ export function composeSeatbeltHolderLaunch(input: SeatbeltHolderLaunchInput, ho
 /** Capture the host's floors for this start and compose its launch. */
 export async function buildSeatbeltHolderLaunch(input: SeatbeltHolderLaunchInput, signal?: AbortSignal): Promise<SeatbeltHolderLaunch> {
   return composeSeatbeltHolderLaunch(input, await captureSeatbeltHolderFloors(input, signal));
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// The programs of the chain: constant, root-owned paths, measured at the boot check and compared at every start.
+
+const SELECTED_SHELL = "/private/var/select/sh";
+const SELECTED_SHELL_TARGETS = new Set(["/bin/bash", "/bin/dash", "/bin/zsh"]);
+
+interface LauncherFile {
+  readonly path: string;
+  readonly sha256: string;
+  readonly dev: bigint;
+  readonly ino: bigint;
+  readonly size: bigint;
+  readonly mtimeNs: bigint;
+  readonly ctimeNs: bigint;
+}
+
+/** `sandbox-exec`, `/bin/sh` and the interpreter `/private/var/select/sh` names, as the boot check found them. */
+export interface SeatbeltHolderLaunchers {
+  readonly files: readonly LauncherFile[];
+}
+
+function measureLauncher(path: string): LauncherFile {
+  const stat = lstatSync(path, { bigint: true });
+  if (!stat.isFile() || stat.uid !== 0n || (Number(stat.mode) & 0o022) !== 0) {
+    throw new MxcHolderStartRefusedError("integrity", `${path} is not a root-owned file nobody else can write`);
+  }
+  return {
+    path, sha256: createHash("sha256").update(readFileSync(path)).digest("hex"),
+    dev: stat.dev, ino: stat.ino, size: stat.size, mtimeNs: stat.mtimeNs, ctimeNs: stat.ctimeNs,
+  };
+}
+
+export function measureSeatbeltHolderLaunchers(): SeatbeltHolderLaunchers {
+  const selected = readlinkSync(SELECTED_SHELL);
+  if (!SELECTED_SHELL_TARGETS.has(selected) || lstatSync(SELECTED_SHELL, { bigint: true }).uid !== 0n) {
+    throw new MxcHolderStartRefusedError("integrity", `${SELECTED_SHELL} does not name a system shell`);
+  }
+  return Object.freeze({ files: Object.freeze([SANDBOX_EXEC, HOLDER_SHELL, selected].map(measureLauncher)) });
+}
+
+export function assertSeatbeltHolderLaunchersUnchanged(launchers: SeatbeltHolderLaunchers): void {
+  const now = measureSeatbeltHolderLaunchers();
+  const same = now.files.length === launchers.files.length && now.files.every((file, index) => {
+    const was = launchers.files[index] as LauncherFile;
+    return file.path === was.path && file.sha256 === was.sha256 && file.dev === was.dev && file.ino === was.ino
+      && file.size === was.size && file.mtimeNs === was.mtimeNs && file.ctimeNs === was.ctimeNs;
+  });
+  if (!same) throw new MxcHolderStartRefusedError("integrity", "a launcher of the holder chain changed since boot");
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Start and stop.
+
+/** The holder's own streams; Ave reads and writes them directly. */
+export interface SeatbeltHolderProcess {
+  readonly pid: number;
+  readonly stdin: Writable;
+  readonly stdout: Readable;
+  readonly stderr: Readable;
+  /** The holder's exit after it started. A stdin write that failed because it had exited never replaces this. */
+  readonly completion: Promise<{ readonly code: number | null; readonly signal: NodeJS.Signals | null }>;
+}
+
+export interface SeatbeltHolder {
+  readonly process: SeatbeltHolderProcess;
+  readonly confinement: "macos-seatbelt";
+  readonly labels: SeatbeltHolderLabels;
+  /** Group stop, then the label sweep. Resolves with the receipt only when both were verified. */
+  dispose(reason?: string): Promise<ConfirmedExit>;
+}
+
+export interface SeatbeltHolderEgress {
+  release(): void;
+  /** Opened with `holdPortAfterRelease`: closed on a verified stop, held refusing until quit otherwise. */
+  readonly lease?: { close(): Promise<void> };
+}
+
+export interface StartSeatbeltHolderOptions {
+  readonly label: string;
+  readonly helper: HolderSweepHelper;
+  readonly launchers: SeatbeltHolderLaunchers;
+  /** The digest admitted for this launch; the recheck refuses a record that differs from it. */
+  readonly admittedDigest: string;
+  /** The row-2 recheck. It runs synchronously after the group is registered and before the release byte. */
+  readonly assertStillValid: () => void;
+  readonly egress?: SeatbeltHolderEgress;
+  readonly resources?: ManagedResources;
+  readonly startMs?: number;
+}
+
+/** Leases whose holder stop was not verified: bound and refusing until Ave quits. */
+const heldUnverifiedLeases = new Set<{ close(): Promise<void> }>();
+
+export function heldUnverifiedHolderLeaseCount(): number {
+  return heldUnverifiedLeases.size;
+}
+
+/** Quit: every held lease closes with the app. */
+export async function closeHeldHolderLeases(): Promise<void> {
+  const leases = [...heldUnverifiedLeases];
+  heldUnverifiedLeases.clear();
+  await Promise.allSettled(leases.map(lease => lease.close()));
+}
+
+const DIAGNOSTIC_BYTES = 4 * 1024;
+const EXIT_PROFILE_REJECTED = 65;
+const EXIT_SHIM_NOT_EXECUTED = 71;
+
+type StartObservation =
+  | { readonly kind: "ready" }
+  | { readonly kind: "closed"; readonly code: number | null; readonly signal: NodeJS.Signals | null }
+  | { readonly kind: "stalled" };
+
+function startRefusal(code: number | null, signal: NodeJS.Signals | null, diagnostic: string): MxcHolderStartRefusedError {
+  if (code === EXIT_PROFILE_REJECTED) return new MxcHolderStartRefusedError("request-rejected", diagnostic || "the kernel refused the profile");
+  const what = code === EXIT_SHIM_NOT_EXECUTED ? "sandbox-exec could not run the ready shim" : `the launch ended before the holder started (${signal ?? `exit ${code}`})`;
+  return new MxcHolderStartRefusedError("holder-start-failed", diagnostic ? `${what}: ${diagnostic}` : what);
+}
+
+/**
+ * Start one holder through the launch gate and `sandbox-exec`. It is started only once the ready byte arrives from
+ * inside the sandbox; a start that ends or stalls before that is stopped, swept, and refused with no fallback route.
+ */
+export async function startSeatbeltHolder(launch: SeatbeltHolderLaunch, options: StartSeatbeltHolderOptions): Promise<SeatbeltHolder> {
+  assertSeatbeltHolderLaunchersUnchanged(options.launchers);
+  assertHolderSweepHelperUnchanged(options.helper);
+  let observed: ReturnType<typeof observeManagedProcessGroup> | undefined;
+  let spawned: ChildProcess | undefined;
+  const child = await spawnGatedManagedProcess(SANDBOX_EXEC, launch.argv, {
+    cwd: launch.cwd, env: { ...launch.env }, stdio: ["pipe", "pipe", "pipe", "ignore", "pipe"],
+  }, {
+    label: options.label,
+    onSpawn: (started) => {
+      spawned = started;
+      observed = observeManagedProcessGroup(started, options.resources);
+      // A write after the holder exited fails with EPIPE; the exit result stands (the caller reads `completion`).
+      started.stdin?.on("error", () => {});
+    },
+    assertStillValid: () => {
+      options.assertStillValid();
+      if (seatbeltHolderLaunchDigest(launch) !== options.admittedDigest) {
+        throw new MxcProcessContractError("Container holder launch changed after admission");
+      }
+    },
+  }).catch(async (error: unknown) => {
+    // Nothing passed the gate. Its shell was killed by the gate; wait for its group so the owner can release.
+    if (spawned !== undefined && observed !== undefined) await observed.confirmExit("holder launch gate refused");
+    throw error;
+  });
+  const exit = observed as ReturnType<typeof observeManagedProcessGroup>;
+  const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
+    child.once("close", (code, signal) => resolve({ code, signal }));
+  });
+  let diagnostic = "";
+  const onDiagnostic = (chunk: Buffer): void => {
+    if (diagnostic.length < DIAGNOSTIC_BYTES) diagnostic += chunk.toString("utf8").slice(0, DIAGNOSTIC_BYTES - diagnostic.length);
+  };
+  child.stderr?.on("data", onDiagnostic);
+  const ready = child.stdio[4] as Readable;
+  const observation = await new Promise<StartObservation>((resolve) => {
+    const timer = setTimeout(() => resolve({ kind: "stalled" }), options.startMs ?? TOOL_TIMEOUT_POLICY.mxcMacHolderStartMs);
+    timer.unref?.();
+    ready.once("data", () => { clearTimeout(timer); resolve({ kind: "ready" }); });
+    void closed.then(({ code, signal }) => { clearTimeout(timer); resolve({ kind: "closed", code, signal }); });
+  });
+  ready.destroy();
+  child.stderr?.off("data", onDiagnostic);
+
+  let disposing: Promise<ConfirmedExit> | undefined;
+  const dispose = (reason = "holder released"): Promise<ConfirmedExit> => disposing ??= (async () => {
+    options.egress?.release();
+    terminateManagedProcessGroup(child, TOOL_TIMEOUT_POLICY.mxcMacHolderTermGraceMs);
+    await Promise.race([exit.wait(), sleep(TOOL_TIMEOUT_POLICY.mxcMacHolderTermGraceMs, undefined, { ref: false })]);
+    const receipt = await exit.confirmExit(reason);
+    const sweep = await runHolderSweep(options.helper, "sweep", launch.labels.holder, TOOL_TIMEOUT_POLICY.mxcMacHolderSweepMs);
+    if (receipt !== undefined && sweep.verified) {
+      await options.egress?.lease?.close();
+      return receipt;
+    }
+    if (options.egress?.lease) heldUnverifiedLeases.add(options.egress.lease);
+    const why = receipt === undefined ? "its process group did not end" : sweep.verified ? "" : sweep.reason;
+    throw new MxcProcessCleanupError(`Container holder stopped, cleanup unverified: ${why}`);
+  })();
+
+  if (observation.kind !== "ready") {
+    // A refused start still runs the sweep: something may have started between the profile and the failure.
+    await dispose(observation.kind === "stalled" ? "holder start stalled" : "holder start refused");
+    if (observation.kind === "stalled") throw new MxcHolderStartRefusedError("holder-start-failed", "the holder did not start in time");
+    throw startRefusal(observation.code, observation.signal, diagnostic.trim());
+  }
+  const holderProcess: SeatbeltHolderProcess = Object.freeze({
+    pid: child.pid as number,
+    stdin: child.stdin as Writable,
+    stdout: child.stdout as Readable,
+    stderr: child.stderr as Readable,
+    completion: closed,
+  });
+  return Object.freeze({ process: holderProcess, confinement: "macos-seatbelt" as const, labels: launch.labels, dispose });
 }

@@ -3,8 +3,13 @@ import { egressInvocationOwner, onEgressInvocationReleased } from "./egress-invo
 import { openInvocationProxyListener, type InvocationProxyAdmission, type InvocationProxyListener } from "./egress-invocation-listener.js";
 import { openEgressRelay } from "./egress-relay/relay.js";
 
-/** One endpoint-scoped egress lease; control traffic belongs on native streams. */
-export async function openMxcEgressLease(token: string): Promise<InvocationProxyListener> {
+/**
+ * One endpoint-scoped egress lease; control traffic belongs on native streams. By default the lease closes when its
+ * invocation is released. `holdPortAfterRelease` keeps the port bound and refusing every request instead, until the
+ * owner closes it: a macOS holder whose stop was not verified may have a process left whose profile allows this port,
+ * so the number must not go to another listener while Ave runs.
+ */
+export async function openMxcEgressLease(token: string, options: { readonly holdPortAfterRelease?: boolean } = {}): Promise<InvocationProxyListener> {
   if (!egressInvocationOwner(token)) throw new Error("Container egress requires a live invocation");
   const relay = await openHostEgressListener(token);
   let listener: InvocationProxyListener | undefined;
@@ -29,9 +34,12 @@ export async function openMxcEgressLease(token: string): Promise<InvocationProxy
     relay.registerPort(listener.port);
     // Admission may have ended while the asynchronous listener bind was pending.
     if (!egressInvocationOwner(token)) throw new Error("Container egress invocation ended during preparation");
-    unsubscribe = onEgressInvocationReleased((released) => {
-      if (released === token) void close().catch(() => {});
-    });
+    // Held: the upstream reads the invocation on every request, so a released one is refused while the port stays bound.
+    if (!options.holdPortAfterRelease) {
+      unsubscribe = onEgressInvocationReleased((released) => {
+        if (released === token) void close().catch(() => {});
+      });
+    }
     return { port: listener.port, url: listener.url, close };
   } catch (error) {
     try {

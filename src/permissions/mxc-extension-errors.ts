@@ -14,6 +14,14 @@ export class MxcProcessCleanupError extends Error {
   }
 }
 
+/** A macOS holder start that the container refused before the holder ran: nothing of it is left, the sweep proved it. */
+export class MxcHolderStartRefusedError extends MxcProcessContractError {
+  constructor(readonly reason: "request-rejected" | "holder-start-failed" | "integrity", detail: string, options?: ErrorOptions) {
+    super(`Container start refused (${reason}): ${detail}`, options);
+    this.name = "MxcHolderStartRefusedError";
+  }
+}
+
 export class MxcSupervisorLostError extends Error {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);

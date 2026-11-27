@@ -51,6 +51,12 @@ export const TOOL_TIMEOUT_POLICY = {
   mxcRawIpProbeMs: 12_000,
   mxcMacShellStopMs: 12_000,
   mxcMacShellOutputDrainMs: 1_000,
+  // A macOS holder must write its ready byte from inside the sandbox within this bound, or it is stopped and refused.
+  mxcMacHolderStartMs: 10_000,
+  // SIGTERM to a macOS holder's group, then SIGKILL after this grace.
+  mxcMacHolderTermGraceMs: 2_000,
+  // One label sweep of a macOS holder (two clean passes, at most 50), and the watcher's exit at quit.
+  mxcMacHolderSweepMs: 2_000,
   // A holder's own start must report its ready-frame evidence inside this bound, from supervisor start, or it is refused.
   mxcExtensionReadinessMs: 30_000,
   // Share the exact workload-identity handshake budget with the protocol.
