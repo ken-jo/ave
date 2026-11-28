@@ -455,10 +455,10 @@ describe("PostTurnHookChain", () => {
         tokenUsage: { inputTokens: 100, outputTokens: 50 },
         route: "llm",
         vendorProvider: "claude",
-        vendorModel: "claude-3-5-sonnet-20241022",
+        vendorModel: "claude-sonnet-4-6",
       });
 
-      expect(completion()).toEqual([expect.objectContaining({ route: "claude/claude-3-5-sonnet-20241022" })]);
+      expect(completion()).toEqual([expect.objectContaining({ route: "claude/claude-sonnet-4-6" })]);
     });
 
     it("falls back to the route classification for a credential-shaped model identifier", async () => {
@@ -473,6 +473,24 @@ describe("PostTurnHookChain", () => {
         vendorModel: `sk-${"a".repeat(48)}`,
       });
 
+      expect(completion()).toEqual([expect.objectContaining({ route: "llm" })]);
+    });
+
+    it("omits a free-form model identifier from a token-bearing custom route", async () => {
+      const model = "N4v7Q2mP9xL3sT6kR8wC5hJ2dF7uV4zB";
+      await makeChain().run({
+        sessionId: "session-custom-route",
+        messages: createMessages(),
+        input: "Ask a question",
+        output: "Answer",
+        toolCalls: [],
+        route: "llm",
+        tokenUsage: { inputTokens: 1, outputTokens: 1 },
+        vendorProvider: "openai-compatible",
+        vendorModel: model,
+      });
+
+      expect(JSON.stringify(permissionEvents())).not.toContain(model);
       expect(completion()).toEqual([expect.objectContaining({ route: "llm" })]);
     });
 

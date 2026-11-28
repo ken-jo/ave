@@ -1,5 +1,4 @@
 import { logPermissionEvent, permissionLogId } from "../lib/permission-log.js";
-import { maskSensitiveData } from "../shared/dlp.js";
 
 import type { RunModelSettings } from "../shared/run-model-settings.js";
 import { detectFromStream, type DetectorResult } from "../engine/checkpoint-detector.js";
@@ -9,7 +8,8 @@ import type { IdleSchedulerService } from "../main/idle-scheduler.js";
 import type { SettingsService } from "../data/settings-store.js";
 import { createLogger } from "../lib/logger.js";
 import { EMPTY_ASSISTANT_RESPONSE_TEXT } from "../lib/chat-stream-state.js";
-import { activeLlmRouteModel } from "../shared/llm-vendor-defaults.js";
+import { activeLlmRouteModel, isLLMVendor } from "../shared/llm-vendor-defaults.js";
+import { catalogChatModelIds, vendorHasCatalogProvider } from "../shared/model-catalog/vendor-models.js";
 import type { SubscriptionUsageTelemetry } from "../shared/subscription-runtime.js";
 import type { ChatInputOrigin } from "../shared/chat-origin.js";
 import type {
@@ -165,9 +165,10 @@ export class PostTurnHookChain {
         ctx.vendorModel ??
         (llmSettings ? activeLlmRouteModel(llmSettings) : undefined);
       const providerId = permissionLogId(provider);
-      const modelId = model && /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(model)
-        && maskSensitiveData(model).detections.length === 0 ? model : undefined;
-      const route = ctx.tokenUsage && providerId && modelId ? `${providerId}/${modelId}` : permissionLogId(ctx.route);
+      const route = ctx.tokenUsage && providerId && model && isLLMVendor(provider)
+        && vendorHasCatalogProvider(provider) && catalogChatModelIds(provider).includes(model)
+        ? `${providerId}/${model}`
+        : permissionLogId(ctx.route);
       logPermissionEvent("post_turn_hook_finished", { sessionId: permissionLogId(ctx.sessionId), route });
     } catch (err) {
       log.warn("turn completion logging failed: %s", err);
