@@ -218,3 +218,17 @@ it("lets an empty Windows shard succeed only after validating the full assignmen
   assert.equal(invalid.status, 1);
   assert.match(invalid.stderr, /Windows plan assigns a suite twice/u);
 });
+
+for (const operation of ["rename", "copy"]) {
+  it(`runs the full suite when a merged PR has a ${operation} of a collected test`, (t) => {
+    const repo = fixture(t);
+    repo.git("switch", "-qc", "topic");
+    const destination = "src/core/__tests__/relocated.test.ts";
+    if (operation === "rename") repo.git("mv", suite, destination);
+    else repo.file(destination, readFileSync(join(repo.root, suite), "utf8"));
+    merge(repo);
+    const [plan] = writePlan(repo.root, "pull_request", repo.base);
+    assert.equal(JSON.parse(plan).mode, "full", operation);
+    assert.equal(Object.hasOwn(JSON.parse(plan), "testOnlyFiles"), false, operation);
+  });
+}

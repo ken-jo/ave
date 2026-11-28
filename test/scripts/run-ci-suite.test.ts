@@ -388,7 +388,7 @@ describe("event rules over the pull request merge and the whole push", () => {
       expect(plan.reason).toBe("test-only diff: changed test files");
       expect(plan.tests).toEqual([changedTest]);
       expect(plan).toHaveProperty("testOnlyFiles", [changedTest]);
-      expect(vi.mocked(spawnSync).mock.calls[1][1]).toEqual(["diff", "--no-renames", "--raw", "-z", "first", "HEAD", "--"]);
+      expect(vi.mocked(spawnSync).mock.calls[1][1]).toEqual(["diff", "--find-renames", "--find-copies-harder", "-l0", "--raw", "-z", "first", "HEAD", "--"]);
     });
   });
 

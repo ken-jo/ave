@@ -319,15 +319,15 @@ function trackedVitestFiles() {
   return git(["ls-files", "-z", "--", "src", "test"]).split("\0").filter((path) => path && isCollectedVitestFile(path)).sort();
 }
 
-function rawDiff(base, what) {
-  const entries = parseGitRawDiff(git(["diff", "--no-renames", "--raw", "-z", base, "HEAD", "--"]));
+function rawDiff(base, what, detection = ["--no-renames"]) {
+  const entries = parseGitRawDiff(git(["diff", ...detection, "--raw", "-z", base, "HEAD", "--"]));
   return entries === null ? { reason: `${what} could not be parsed` } : { entries, base };
 }
 
 function pullRequestChanges() {
   const parents = git(["rev-list", "--parents", "-n", "1", "HEAD"]).trim().split(" ").slice(1);
   if (parents.length !== 2) return { reason: `HEAD has ${parents.length} parent(s), not a pull request merge commit` };
-  return rawDiff(parents[0], "the merge commit's diff");
+  return rawDiff(parents[0], "the merge commit's diff", ["--find-renames", "--find-copies-harder", "-l0"]);
 }
 
 const FULL_SHA = /^[0-9a-f]{40}$/u;
@@ -381,6 +381,9 @@ export function planCiSuite(eventName, { headRef, baseRef, ref, before } = {}) {
   if (changes.reason) {
     return full(changes.reason);
   }
+  if (!mainPush && changes.entries.some(({ status }) => /^[RC]/u.test(status))) {
+    return full("the pull request renames or copies files");
+  }
   const testOnlyFiles = mainPush ? null : testOnlyFilesForDiff(changes.entries);
   if (testOnlyFiles !== null) {
     return {
@@ -428,6 +431,7 @@ export function planCiSuite(eventName, { headRef, baseRef, ref, before } = {}) {
 // Only proven renderer-only patches omit native regression runners. Unknown
 // paths and broad plans retain all platforms, including on scheduled releases.
 export function platformChecksRequired(eventName, plan, changes, baseRef) {
+  if (eventName === "pull_request" && changes?.some(({ status }) => /^[RC]/u.test(status))) return true;
   if (eventName === "pull_request" && baseRef?.startsWith("integration/")) return false;
   if (plan.mode === "full" || !["pull_request", "push"].includes(eventName) || !Array.isArray(changes) || changes.length === 0) return true;
   return changes.some(({ path }) => path === "src/ui/renderer/types.ts" || !["src/ui/renderer/", "src/components/", "src/i18n/messages/"].some((prefix) => path.startsWith(prefix)));
