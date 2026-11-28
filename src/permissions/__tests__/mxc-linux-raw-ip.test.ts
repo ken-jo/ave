@@ -194,7 +194,9 @@ describe("Linux raw-IP verdict rules", () => {
     expect(linuxFirewallPayloadDrops(`${V4_PAYLOAD}\n${V4_PAYLOAD.replace("-A OUTPUT -j MXC_EGRESS\n", "")}`, 4, 12345)).toBe(true);
   });
 
-  describe("the launcher's firewall payload on disk", () => {
+  // POSIX only: the payload's evidence rests on owner and mode bits and on not following a link, which Windows files do
+  // not carry. The payload rules above are platform-neutral and run everywhere.
+  describe.runIf(process.platform !== "win32")("the launcher's firewall payload on disk", () => {
     let dir: string;
     const make = () => {
       dir = mkdtempSync(join(tmpdir(), "mxc-bwrap-proxy-"));

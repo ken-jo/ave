@@ -103,7 +103,9 @@ describe("Linux holder bwrap record", () => {
   });
 });
 
-describe("Linux holder capture folder and translation", () => {
+// POSIX only: the capture folder is checked by owner, mode and realpath, and the launchers here are sh scripts. The
+// record parsing and structure checks above are platform-neutral and run everywhere.
+describe.runIf(process.platform !== "win32")("Linux holder capture folder and translation", () => {
   let root: string;
   let helper: string;
   let pin: string;

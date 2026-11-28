@@ -132,14 +132,22 @@ describe("container egress lease on a socket file", () => {
     return `${prefix}${"s".repeat(length - Buffer.byteLength(prefix))}`;
   }
 
-  // 107 bytes on Linux, where holders run; 103 on macOS.
-  it(`refuses a socket path one byte over ${UNIX_SOCKET_PATH_MAX} by name before anything binds, and binds one of ${UNIX_SOCKET_PATH_MAX} owner-only`, async () => {
-    const { invocation, relay, observed } = await fixture();
+  // 107 bytes on Linux, where holders run; 103 on macOS. The refusal by name binds nothing, so it runs everywhere.
+  it(`refuses a socket path one byte over ${UNIX_SOCKET_PATH_MAX} by name before anything binds`, async () => {
+    const { invocation } = await fixture();
     const base = folder();
     if (Buffer.byteLength(base) > 90) throw new Error(`temporary folder ${base} is too long for this case`);
     await expect(openMxcEgressSocketLease(invocation.token, undefined, { socketPath: pathOf(base, UNIX_SOCKET_PATH_MAX + 1) }))
       .rejects.toMatchObject({ code: "proxy-socket-path-too-long" });
     expect(existsSync(pathOf(base, UNIX_SOCKET_PATH_MAX + 1))).toBe(false);
+  });
+
+  // Socket files are the POSIX holders' proxy form: Windows cannot bind a listener at a file path here (EACCES), and
+  // its containers reach the proxy on a loopback port instead.
+  it.runIf(process.platform !== "win32")(`binds a socket path of ${UNIX_SOCKET_PATH_MAX} bytes owner-only`, async () => {
+    const { invocation, relay, observed } = await fixture();
+    const base = folder();
+    if (Buffer.byteLength(base) > 90) throw new Error(`temporary folder ${base} is too long for this case`);
     const lease = await openMxcEgressSocketLease(invocation.token, undefined, { socketPath: pathOf(base, UNIX_SOCKET_PATH_MAX) });
     cleanups.push(lease.close);
     expect(Object.keys(lease).sort()).toEqual(["close", "socketPath"]);
@@ -150,7 +158,7 @@ describe("container egress lease on a socket file", () => {
     expect(observed).toEqual([relay.proxyAuthorization]);
   });
 
-  it("refuses once the invocation ended, and removes the socket file", async () => {
+  it.runIf(process.platform !== "win32")("refuses once the invocation ended, and removes the socket file", async () => {
     const { invocation } = await fixture();
     const lease = await openMxcEgressSocketLease(invocation.token, undefined, { socketPath: join(folder(), "proxy.sock") });
     expect(await socketRequest(lease.socketPath)).toBe(200);
@@ -159,7 +167,7 @@ describe("container egress lease on a socket file", () => {
     await expect(socketRequest(lease.socketPath)).rejects.toThrow();
   });
 
-  it("stays bound and refusing after an unverified release, and is removed once the owner closes it", async () => {
+  it.runIf(process.platform !== "win32")("stays bound and refusing after an unverified release, and is removed once the owner closes it", async () => {
     const { invocation } = await fixture();
     const lease = await openMxcEgressSocketLease(invocation.token, undefined, { socketPath: join(folder(), "proxy.sock"), holdPortAfterRelease: true });
     expect(await socketRequest(lease.socketPath)).toBe(200);

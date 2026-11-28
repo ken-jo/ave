@@ -23,7 +23,9 @@ vi.mock("../mxc-runtime-root.js", async (importOriginal) => ({
 const { buildBubblewrapHolderRequest, linuxContainerPolicyModel, linuxHolderPolicyModel, LINUX_HOLDER_BRIDGE_PORT } = await import("../mxc-linux.js");
 const { posixPolicyLookups, rankPosixContainerRows } = await import("../mxc-posix.js");
 
-describe("Linux holder request", () => {
+// POSIX only: a Linux holder request is built over this host's real folders (canonical POSIX paths, owner and mode
+// checks), so a Windows host has no paths it could describe; Windows holders build their own request.
+describe.runIf(process.platform !== "win32")("Linux holder request", () => {
   let home: string;
   let work: string;
   let programs: { launcher: string; helper: string };
