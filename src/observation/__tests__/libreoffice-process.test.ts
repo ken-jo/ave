@@ -303,6 +303,7 @@ describe("private conversion process ownership", () => {
     expect(jobs()).toHaveLength(1);
   });
 
+  // Host-skipped on Windows: there the office pipe is a named pipe with no /tmp name to squat, so the start has no such check.
   it.skipIf(HOST_PLATFORM === "win32")("refuses a start whose pipe name is taken, by name, and leaves that entry alone", async () => {
     pipeFixture.squat = true;
     await expect(pool.prepare(installation, "one", "docx", new AbortController().signal))
