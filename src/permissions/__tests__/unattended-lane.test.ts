@@ -41,6 +41,24 @@ const write: PermissionDecisionRequest = {
   paths: [{ canonical: output, lexical: output, runtimePath: output, effect: "write" }],
   fileWrite: { checkpointAvailable: true, insideProject: true },
 };
+
+it.runIf(process.platform === "win32")("accepts lexical case aliases only with a native target inside the declared root", () => {
+  const alias = workspaceRoot.toUpperCase();
+  const nativeRoot = realpathSync.native(workspaceRoot);
+  const nativeInput = resolve(nativeRoot, "input.txt");
+  const nativeOutput = resolve(nativeRoot, "output", "report.txt");
+  expect(alias).not.toBe(workspaceRoot);
+  expect(decideUnattended({ ...read, paths: [{
+    lexical: resolve(alias, "input.txt"), canonical: nativeInput.toLowerCase(), runtimePath: nativeInput, effect: "read",
+  }] }).outcome).toBe("allow");
+  expect(decideUnattended({ ...write, paths: [{
+    lexical: resolve(alias, "output", "report.txt"), canonical: nativeOutput.toLowerCase(), runtimePath: nativeOutput, effect: "write",
+  }] }).outcome).toBe("allow");
+  const outside = resolve(`${nativeRoot}-sibling`, "input.txt");
+  expect(decideUnattended({ ...read, paths: [{
+    lexical: resolve(alias, "input.txt"), canonical: outside.toLowerCase(), runtimePath: outside, effect: "read",
+  }] }).outcome).toBe("deny");
+});
 const shell: PermissionDecisionRequest = {
   ...read, tool: { name: "bash", kind: "shell", source: "builtin" },
   unattendedCommand: ["render report"], shell: { sandboxed: true, readOnlyProven: false, unproven: false, destructive: false },

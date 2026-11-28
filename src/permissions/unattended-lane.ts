@@ -1,4 +1,4 @@
-import { isAbsolute, resolve, sep } from "node:path";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 import { globMatch } from "../lib/glob-matcher.js";
 import { withLocalityDecision } from "../shared/local-path-io.js";
 import { relativeNativePath, tryNativeRealpath } from "../shared/shell-filesystem-path.js";
@@ -14,6 +14,13 @@ export function unattendedGenerationTool(request: PermissionDecisionRequest): St
   const { source, name } = request.tool;
   const tools = source === "mcp" ? envelope?.mcpGenerationTools : source === "plugin" ? envelope?.pluginGenerationTools : undefined;
   return tools?.find(tool => tool.name === name);
+}
+
+function relativeLexicalPath(root: string, operand: string): string | undefined {
+  if (sep !== "\\") return relativeNativePath(root, operand);
+  // Windows accepts case aliases in the operand. The resolved target still needs exact native membership.
+  const child = relative(root, operand);
+  return isAbsolute(child) || child === ".." || child.startsWith(`..${sep}`) ? undefined : child;
 }
 
 function insideEnvelope(request: PermissionDecisionRequest, entry: UnattendedStageEntry): { inside: true } | { inside: false; why: string } {
@@ -55,12 +62,12 @@ function insideEnvelope(request: PermissionDecisionRequest, entry: UnattendedSta
       if (!isAbsolute(lexical) || runtimePath === undefined) return false;
       const operand = resolve(lexical);
       if (effect === "read") {
-        return roots.some(root => relativeNativePath(root.lexical, operand) !== undefined)
+        return roots.some(root => relativeLexicalPath(root.lexical, operand) !== undefined)
           && roots.some(root => relativeNativePath(root.physical, runtimePath) !== undefined);
       }
       const workspace = roots.find(root => root.workspace);
       if (workspace === undefined) return false;
-      return [relativeNativePath(workspace.lexical, operand), relativeNativePath(workspace.physical, runtimePath)].every(child =>
+      return [relativeLexicalPath(workspace.lexical, operand), relativeNativePath(workspace.physical, runtimePath)].every(child =>
         child !== undefined && child !== "" && envelope.writePaths.some(pattern =>
           globMatch(child.split(sep).join("/"), pattern, { caseInsensitive: false, normalizeSeparators: sep === "\\" })));
     });
