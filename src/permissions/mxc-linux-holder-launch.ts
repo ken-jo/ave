@@ -1,9 +1,15 @@
-import { spawn } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, copyFileSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import { chmodSync, copyFileSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { posix } from "node:path";
-import type { Readable } from "node:stream";
+import type { Readable, Writable } from "node:stream";
+import { setTimeout as sleep } from "node:timers/promises";
+import { isMainThread } from "node:worker_threads";
+import {
+  type ConfirmedExit, type ManagedResources, observeManagedProcessGroup, spawnGatedManagedProcess,
+} from "../main/managed-child-processes.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
+import { MxcHolderStartRefusedError, MxcProcessCleanupError, MxcProcessContractError } from "./mxc-extension-errors.js";
 
 /**
  * The translation step of a Linux extension holder (design 1.3). The pinned launcher turns Ave's request into one
@@ -18,11 +24,10 @@ const CAPTURE_FD = 9;
 const RECORD_LIMIT = 4 * 1024 * 1024;
 const RECORD_MAGIC = Buffer.from("AVEBWRAP");
 
-class LinuxHolderRequestRejected extends Error {
-  readonly code = "request-rejected";
-
-  constructor(readonly reason: string) {
-    super(`Linux holder request rejected: ${reason}`);
+/** A translation refused before anything ran: `request-rejected`, with the named cause and no fallback. */
+class LinuxHolderRequestRejected extends MxcHolderStartRefusedError {
+  constructor(cause: string) {
+    super("request-rejected", cause);
     this.name = "LinuxHolderRequestRejected";
   }
 }
@@ -260,4 +265,237 @@ export async function translateLinuxHolderRequest(input: {
   }
   if (bytes.length === 0) throw new LinuxHolderRequestRejected("the launcher made no bwrap call");
   return checkBwrapCall(parseBwrapRecord(bytes), input.request);
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// The run (design 1.4, 1.5, 5): the gate shell execs the system bwrap with the replay; the helper inside writes the
+// ready byte once the filter is on.
+
+/** A file's identity: replaced, rewritten or touched files differ. */
+export function linuxFileIdentity(path: string): string {
+  const { dev, ino, size, mtimeNs, ctimeNs } = statSync(path, { bigint: true });
+  return `${dev}:${ino}:${size}:${mtimeNs}:${ctimeNs}`;
+}
+
+/** The system bwrap as the holder canary found it; every run compares it again. */
+interface LinuxHolderBwrap {
+  readonly path: string;
+  readonly identity: string;
+}
+
+/** What admission saw: the staged request's bytes, the checked call and the holder executable's identity. */
+export function linuxHolderLaunchDigest(input: { readonly request: Buffer; readonly call: LinuxHolderCall; readonly executable: string }): string {
+  const hash = createHash("sha256");
+  for (const part of [input.request, Buffer.from(JSON.stringify([input.call.options, input.call.command])), input.call.seccomp,
+    input.call.resolver ?? Buffer.alloc(0), Buffer.from(linuxFileIdentity(input.executable))]) {
+    hash.update(String(part.length)).update(":").update(part);
+  }
+  return hash.digest("hex");
+}
+
+interface LinuxHolderProcess {
+  readonly pid: number;
+  readonly stdin: Writable;
+  readonly stdout: Readable;
+  readonly stderr: Readable;
+  /** The holder's exit after it started. A stdin write that failed because it had exited never replaces this. */
+  readonly completion: Promise<{ readonly code: number | null; readonly signal: NodeJS.Signals | null }>;
+}
+
+export interface LinuxHolder {
+  readonly process: LinuxHolderProcess;
+  readonly confinement: "linux-container";
+  /** The holder's TERM, bwrap's TERM, the group kill; resolves with the receipt only when every resident process is gone. */
+  dispose(reason?: string): Promise<ConfirmedExit>;
+}
+
+export interface StartLinuxHolderOptions {
+  readonly label: string;
+  readonly bwrap: LinuxHolderBwrap;
+  readonly cwd: string;
+  /** The digest admitted for this launch, and how to recompute it now. The gate refuses when they differ. */
+  readonly admittedDigest: string;
+  readonly currentDigest: () => string;
+  /** The row-2 recheck. It runs synchronously after the group is registered and before the release byte. */
+  readonly assertStillValid: () => void;
+  /** Runs before the gate releases: the Git snapshot of the write roots. */
+  readonly beforeRelease?: () => Promise<void>;
+  /**
+   * Runs only once the stop is verified: the Git sweep, then the release of the listener, the staging folder, the Git
+   * hold and any placeholder ownership. An unverified stop keeps all of them.
+   */
+  readonly afterVerifiedStop?: () => Promise<void>;
+  readonly resources?: ManagedResources;
+  readonly startMs?: number;
+}
+
+const DIAGNOSTIC_BYTES = 4 * 1024;
+
+type ResidentProcess = { readonly pid: number; readonly start: string };
+
+function processStart(pid: number): string | undefined {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    // Field 22 (start time), counted after the command name's closing parenthesis.
+    return stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19];
+  } catch {
+    return undefined;
+  }
+}
+
+function processParent(pid: number): number | undefined {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    return Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1]);
+  } catch {
+    return undefined;
+  }
+}
+
+function onlyChild(pid: number): number | undefined {
+  try {
+    const children = readFileSync(`/proc/${pid}/task/${pid}/children`, "utf8").trim().split(/\s+/u).filter(Boolean).map(Number);
+    return children.length === 1 ? children[0] : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function resident(pid: number | undefined): ResidentProcess | undefined {
+  if (pid === undefined) return undefined;
+  const start = processStart(pid);
+  return start === undefined ? undefined : { pid, start };
+}
+
+/** Still the same process: alive with the start time recorded at the ready byte. */
+function alive(process: ResidentProcess): boolean {
+  return processStart(process.pid) === process.start;
+}
+
+/**
+ * The resident set at the ready byte: outer bwrap, inner bwrap, the helper (the bridge when online), and the holder's
+ * own pid, which is the bridge's single child, or the helper itself once it executed the holder offline.
+ */
+function residentSet(outer: number) {
+  const outerBwrap = resident(outer);
+  const innerBwrap = resident(outerBwrap === undefined ? undefined : onlyChild(outer));
+  const helper = resident(innerBwrap === undefined ? undefined : onlyChild(innerBwrap.pid));
+  const holderChild = helper === undefined ? undefined : onlyChild(helper.pid);
+  const holder = holderChild === undefined ? helper : resident(holderChild);
+  return { processes: [outerBwrap, innerBwrap, helper].filter((entry): entry is ResidentProcess => entry !== undefined), holder, helper };
+}
+
+type StartObservation =
+  | { readonly kind: "ready" }
+  | { readonly kind: "closed"; readonly code: number | null; readonly signal: NodeJS.Signals | null }
+  | { readonly kind: "stalled" };
+
+/**
+ * Start one Linux holder through the launch gate and the system bwrap. It counts as started only once the ready byte
+ * arrives from the helper inside; a start that ends or stalls before that is stopped and refused, with no fallback.
+ */
+export async function startLinuxHolder(call: LinuxHolderCall, options: StartLinuxHolderOptions): Promise<LinuxHolder> {
+  // bwrap's parent-death signal belongs to the thread that created it (prctl(2) PR_SET_PDEATHSIG).
+  if (!isMainThread) throw new MxcProcessContractError("A Linux holder must be started from the main thread");
+  const replay = linuxHolderReplay(call);
+  let observed: ReturnType<typeof observeManagedProcessGroup> | undefined;
+  let spawned: ChildProcess | undefined;
+  await options.beforeRelease?.();
+  const stdio: ("pipe" | "ignore")[] = ["pipe", "pipe", "pipe", "ignore", "pipe", "pipe", "pipe", "pipe"];
+  const child = await spawnGatedManagedProcess(options.bwrap.path, replay.argv, { cwd: options.cwd, env: {}, stdio }, {
+    label: options.label,
+    onSpawn: (started) => {
+      spawned = started;
+      observed = observeManagedProcessGroup(started, options.resources);
+      // A write after the holder exited fails with EPIPE; the exit result stands (the caller reads `completion`).
+      started.stdin?.on("error", () => {});
+      for (const [fd, bytes] of replay.descriptors) {
+        const pipe = (started.stdio as readonly unknown[])[fd] as Writable;
+        pipe.on("error", () => {});
+        pipe.end(bytes);
+      }
+    },
+    assertStillValid: () => {
+      options.assertStillValid();
+      if (linuxFileIdentity(options.bwrap.path) !== options.bwrap.identity) {
+        throw new MxcHolderStartRefusedError("integrity", "the system bwrap changed since the holder canary proved it");
+      }
+      if (options.currentDigest() !== options.admittedDigest) {
+        throw new MxcProcessContractError("Container holder launch changed after admission");
+      }
+    },
+  }).catch(async (error: unknown) => {
+    // Nothing passed the gate. Its shell was killed by the gate; wait for its group so the owner can release.
+    if (spawned !== undefined && observed !== undefined) await observed.confirmExit("holder launch gate refused");
+    throw error;
+  });
+  const exit = observed as ReturnType<typeof observeManagedProcessGroup>;
+  const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
+    if (child.exitCode !== null || child.signalCode !== null) resolve({ code: child.exitCode, signal: child.signalCode });
+    else child.once("close", (code, signal) => resolve({ code, signal }));
+  });
+  let diagnostic = "";
+  const onDiagnostic = (chunk: Buffer): void => {
+    if (diagnostic.length < DIAGNOSTIC_BYTES) diagnostic += chunk.toString("utf8").slice(0, DIAGNOSTIC_BYTES - diagnostic.length);
+  };
+  child.stderr?.on("data", onDiagnostic);
+  const ready = child.stdio[4] as Readable;
+  const observation = await new Promise<StartObservation>((resolve) => {
+    const timer = setTimeout(() => resolve({ kind: "stalled" }), options.startMs ?? TOOL_TIMEOUT_POLICY.mxcLinuxHolderStartMs);
+    timer.unref?.();
+    ready.once("data", () => { clearTimeout(timer); resolve({ kind: "ready" }); });
+    void closed.then(({ code, signal }) => { clearTimeout(timer); resolve({ kind: "closed", code, signal }); });
+  });
+  ready.destroy();
+  child.stderr?.off("data", onDiagnostic);
+  const set = observation.kind === "ready" && child.pid !== undefined ? residentSet(child.pid) : { processes: [], holder: undefined, helper: undefined };
+
+  let disposing: Promise<ConfirmedExit> | undefined;
+  const dispose = (reason = "holder released"): Promise<ConfirmedExit> => disposing ??= (async () => {
+    if (child.stdin?.writable) child.stdin.end();
+    const finished = () => child.exitCode !== null || child.signalCode !== null;
+    // 1. The holder's own TERM, so it can see it: TERM to bwrap ends the namespace before the holder runs its handler.
+    //    Signalled only while it is still the process recorded at the ready byte, under the same parent.
+    const holder = set.holder;
+    if (holder !== undefined && alive(holder) && (set.helper === holder || processParent(holder.pid) === set.helper?.pid)) {
+      try { process.kill(holder.pid, "SIGTERM"); } catch { /* gone since the check */ }
+    }
+    // 2. Its grace, ended early when bwrap closes.
+    if (!finished()) await Promise.race([closed, sleep(TOOL_TIMEOUT_POLICY.mxcLinuxHolderTermGraceMs, undefined, { ref: false })]);
+    // 3. TERM to the outer bwrap; 4. its group's KILL after the stop grace.
+    if (!finished() && child.pid !== undefined) {
+      try { process.kill(child.pid, "SIGTERM"); } catch { /* gone */ }
+      await Promise.race([closed, sleep(TOOL_TIMEOUT_POLICY.mxcLinuxShellStopMs, undefined, { ref: false })]);
+      if (!finished()) {
+        try { process.kill(-child.pid, "SIGKILL"); } catch { /* gone */ }
+      }
+    }
+    for (const stream of [child.stdin, child.stdout, child.stderr]) stream?.destroy();
+    // 5. Verified only when the group ended and every resident process is gone within the tree-kill bound.
+    const receipt = await exit.confirmExit(reason);
+    const deadline = Date.now() + TOOL_TIMEOUT_POLICY.processTreeKillMs;
+    while (set.processes.some(alive) && Date.now() < deadline) await sleep(20, undefined, { ref: false });
+    const survivors = set.processes.filter(alive);
+    if (receipt !== undefined && survivors.length === 0) {
+      await options.afterVerifiedStop?.();
+      return receipt;
+    }
+    const why = receipt === undefined ? "its process group did not end" : `pids ${survivors.map(entry => entry.pid).join(", ")} are still running`;
+    throw new MxcProcessCleanupError(`Container holder stopped, cleanup unverified: ${why}`);
+  })();
+
+  if (observation.kind !== "ready") {
+    await dispose(observation.kind === "stalled" ? "holder start stalled" : "holder start refused");
+    if (observation.kind === "stalled") throw new MxcHolderStartRefusedError("holder-start-failed", "the holder did not start in time");
+    const what = `the launch ended before the holder started (${observation.signal ?? `exit ${observation.code}`})`;
+    throw new MxcHolderStartRefusedError("holder-start-failed", diagnostic.trim() ? `${what}: ${diagnostic.trim()}` : what);
+  }
+  const holderProcess: LinuxHolderProcess = Object.freeze({
+    pid: set.holder?.pid ?? (child.pid as number),
+    stdin: child.stdin as Writable,
+    stdout: child.stdout as Readable,
+    stderr: child.stderr as Readable,
+    completion: closed,
+  });
+  return Object.freeze({ process: holderProcess, confinement: "linux-container" as const, dispose });
 }

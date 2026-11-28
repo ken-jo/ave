@@ -2,13 +2,17 @@ import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createServer as createUnixServer } from "node:net";
 import { join, resolve } from "node:path";
-import type { Writable } from "node:stream";
+import type { Readable, Writable } from "node:stream";
 import { collectStream as collect } from "../../__tests__/support/collect-stream.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import seccompPins from "../mxc-linux-seccomp-pins.json" with { type: "json" };
 import { buildBubblewrapHolderRequest, requireMxcLinuxShellPrograms } from "../mxc-linux.js";
 import { posixPolicyLookups } from "../mxc-posix.js";
-import { establishLinuxCaptureFolder, linuxHolderReplay, translateLinuxHolderRequest } from "../mxc-linux-holder-launch.js";
+import {
+  establishLinuxCaptureFolder, linuxFileIdentity, linuxHolderLaunchDigest, linuxHolderReplay, startLinuxHolder, type StartLinuxHolderOptions,
+  translateLinuxHolderRequest,
+} from "../mxc-linux-holder-launch.js";
+import { __resetManagedChildProcessesForTest } from "../../main/managed-child-processes.js";
 
 const NATIVE = process.env.AVE_RUN_MXC_LINUX_BOUNDARY === "1";
 const BWRAP = "/usr/bin/bwrap";
@@ -118,5 +122,128 @@ describe.runIf(NATIVE)("native Linux holder translation", () => {
       + `exec bwrap ${[...words, "--", "sh", "-c", command].map(quoted).join(" ")}\n`, { mode: 0o755 });
     await expect(translate(command, [], launcher)).rejects.toThrow(reason);
     expect(() => readFileSync(ran)).toThrow();
+  });
+});
+
+// H10: a holder through the real chain: launch gate, system bwrap from the replay, the helper's ready byte.
+describe.runIf(NATIVE)("native Linux holder start and stop", () => {
+  const resources = { resourcePath: resolve("resources"), isPackaged: false };
+  const pin = seccompPins[process.arch === "arm64" ? "arm64" : "x64"];
+  let root: string;
+  let work: string;
+  beforeEach(() => {
+    root = realpathSync.native(mkdtempSync("/tmp/ave-linux-holder-run-"));
+    work = join(root, "work");
+    mkdirSync(work);
+  });
+  afterEach(() => {
+    __resetManagedChildProcessesForTest();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  async function prepare(script: string, argv?: readonly string[]) {
+    const programs = await requireMxcLinuxShellPrograms(resources);
+    const request = buildBubblewrapHolderRequest({
+      grants: { readwrite: [work], readonly: ["/usr", "/etc"], denied: [], chainFolders: [], ungrantedDenies: [] },
+      lookups: posixPolicyLookups(root, false), argv: argv ?? ["/bin/sh", "-c", script], cwd: work, env: { PATH: "/usr/bin:/bin" },
+      proxySocket: "offline", helper: programs.helper,
+    });
+    const requestPath = join(root, `request-${Math.random().toString(16).slice(2)}.json`);
+    const bytes = Buffer.from(JSON.stringify(request));
+    writeFileSync(requestPath, bytes, { mode: 0o600 });
+    const call = await translateLinuxHolderRequest({ launcher: programs.launcher, env: programs.env,
+      captureFolder: establishLinuxCaptureFolder(root, programs.helper, pin), helperSha256: pin, bwrap: BWRAP,
+      requestPath, logPath: `${requestPath}.log`, request });
+    const digest = () => linuxHolderLaunchDigest({ request: readFileSync(requestPath), call, executable: "/bin/sh" });
+    return { call, digest, admitted: digest(), requestPath };
+  }
+
+  async function start(script: string, over: Partial<StartLinuxHolderOptions> = {}, argv?: readonly string[]) {
+    const prepared = await prepare(script, argv);
+    const events: string[] = [];
+    const holder = await startLinuxHolder(prepared.call, {
+      label: "test:linux-holder", bwrap: { path: BWRAP, identity: linuxFileIdentity(BWRAP) }, cwd: work,
+      admittedDigest: prepared.admitted, currentDigest: prepared.digest, assertStillValid: () => { events.push("recheck"); },
+      beforeRelease: async () => { events.push("before-release"); }, afterVerifiedStop: async () => { events.push("after-verified-stop"); },
+      ...over,
+    });
+    return { holder, events, prepared };
+  }
+
+  function line(stream: Readable): Promise<string> {
+    return new Promise(done => {
+      let text = "";
+      const onData = (chunk: Buffer) => {
+        text += chunk.toString("utf8");
+        if (text.includes("\n")) { stream.off("data", onData); done(text.slice(0, text.indexOf("\n"))); }
+      };
+      stream.on("data", onData);
+    });
+  }
+
+  it("starts at the ready byte, gives the holder its own TERM first, and releases only after a verified stop", async () => {
+    const { holder, events } = await start(`trap 'echo term; exit 0' TERM; echo started; while :; do sleep 0.1; done`);
+    expect(await line(holder.process.stdout)).toBe("started");
+    expect(events).toEqual(["before-release", "recheck"]);
+    const output: string[] = [];
+    holder.process.stdout.on("data", (chunk: Buffer) => output.push(chunk.toString()));
+    await expect(holder.dispose()).resolves.toBeDefined();
+    expect(output.join("")).toContain("term");
+    expect(events).toEqual(["before-release", "recheck", "after-verified-stop"]);
+    expect(await holder.process.completion).toMatchObject({ code: expect.any(Number) });
+  });
+
+  it("releases a holder that exits 1.5 s after its TERM, within its grace", async () => {
+    const { holder, events } = await start(`trap 'sleep 1.5; echo late; exit 0' TERM; echo started; while :; do sleep 0.1; done`);
+    expect(await line(holder.process.stdout)).toBe("started");
+    const started = Date.now();
+    await expect(holder.dispose()).resolves.toBeDefined();
+    expect(Date.now() - started).toBeGreaterThanOrEqual(1_400);
+    expect(Date.now() - started).toBeLessThan(2_000 + 1_000);
+    expect(events.at(-1)).toBe("after-verified-stop");
+  });
+
+  it("stops a holder that ignores TERM through bwrap's TERM and its group's KILL, and still verifies", async () => {
+    const { holder, events } = await start(`trap '' TERM; echo started; while :; do sleep 0.1; done`);
+    expect(await line(holder.process.stdout)).toBe("started");
+    await expect(holder.dispose()).resolves.toBeDefined();
+    expect(events.at(-1)).toBe("after-verified-stop");
+  }, 15_000);
+
+  it("keeps a holder's exit status, and a stdin write after it exited does not replace it", async () => {
+    const { holder } = await start("echo started; exit 3");
+    expect(await line(holder.process.stdout)).toBe("started");
+    expect(await holder.process.completion).toEqual({ code: 3, signal: null });
+    holder.process.stdin.write("late\n");
+    await new Promise(done => setTimeout(done, 50));
+    expect(await holder.process.completion).toEqual({ code: 3, signal: null });
+    await holder.dispose();
+  });
+
+  it("refuses a start that closes before the ready byte as holder-start-failed, with bwrap's bounded stderr", async () => {
+    const prepared = await prepare("echo started");
+    // bwrap itself fails before the helper runs: the request's working directory is gone.
+    rmSync(work, { recursive: true });
+    const refused = startLinuxHolder(prepared.call, {
+      label: "test:linux-holder", bwrap: { path: BWRAP, identity: linuxFileIdentity(BWRAP) }, cwd: root,
+      admittedDigest: prepared.admitted, currentDigest: prepared.digest, assertStillValid: () => {},
+    });
+    await expect(refused).rejects.toMatchObject({ reason: "holder-start-failed" });
+    await expect(refused).rejects.toThrow(/before the holder started \(exit \d+\): bwrap: /u);
+  });
+
+  it("reports a program the helper cannot execute after the ready byte as the holder's own exit", async () => {
+    const { holder } = await start("", {}, ["/nonexistent/holder"]);
+    expect(await holder.process.completion).toEqual({ code: 127, signal: null });
+    await holder.dispose();
+  });
+
+  it("stops and refuses a start whose ready byte does not arrive in time", async () => {
+    await expect(start("echo started; sleep 30", { startMs: 1 })).rejects.toMatchObject({ reason: "holder-start-failed" });
+  });
+
+  it("refuses in the gate when the system bwrap changed since the canary, or the launch changed after admission", async () => {
+    await expect(start("echo started", { bwrap: { path: BWRAP, identity: "0:0:0:0:0" } })).rejects.toMatchObject({ reason: "integrity" });
+    await expect(start("echo started", { currentDigest: () => "changed" })).rejects.toThrow("changed after admission");
   });
 });
