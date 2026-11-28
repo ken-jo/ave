@@ -160,7 +160,8 @@ async function processesUsingRuntime(directory: string, uid: number): Promise<nu
 /**
  * Boot hygiene: an Ave crash or kill leaves its confined resident running and its private input copies and profile
  * behind. For a runtime directory whose recorded Ave owner process no longer exists, end this user's processes that
- * run with that directory's unique profile, then remove the directory. A directory is touched only when it is a
+ * run with that directory's unique profile, then remove the directory and the single-instance pipe named for that
+ * profile. A directory is touched only when it is a
  * real 0700 directory of this user under the runtime prefix with a valid owner record; live owners, this process,
  * links and unmarked directories are left alone.
  */
@@ -180,6 +181,14 @@ export async function sweepStaleDocumentEngineRuntimes(root = runtimeTempRoot())
     const pids = (await processesUsingRuntime(directory, uid)).filter((pid) => pid !== process.pid);
     const resources = createManagedResources();
     recordManagedPaths(resources, { path: directory, recursive: true });
+    // The killed resident's pipe stays in the shared temp; only the one named for this directory's profile, if it is
+    // this user's socket, goes with it.
+    const pipe = instancePipePath({ profile: join(directory, "output", "profile") });
+    const pipeInfo = pipe === undefined ? undefined : await lstat(pipe).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return undefined;
+      throw error;
+    });
+    if (pipe !== undefined && pipeInfo?.isSocket() === true && pipeInfo.uid === uid) recordManagedPaths(resources, { path: pipe });
     const receipt = await stopOrphanedManagedProcesses(pids, resources);
     if (!receipt) throw new Error("An orphaned document engine process did not exit.");
     if ((await readdir(directory)).some(entry => entry.startsWith(".offline-scan-"))) continue;

@@ -595,6 +595,12 @@ describe("stale private runtime directories", () => {
       const unrelated = await runtimeDirectory(root, "other-dead", exited.pid);
       const target = await runtimeDirectory(root, "link-target", exited.pid);
       await symlink(target, join(root, "avd-link"));
+      // The office leaves its pipe behind when killed; the sweep removes the one named for the stale profile only.
+      const pipeOf = (directory: string): string => instancePipe({ ipc: "", profile: join(directory, "output", "profile") });
+      for (const directory of [dead, live]) {
+        await writeFile(pipeOf(directory), "");
+        sharedPipes.add(pipeOf(directory));
+      }
       // The crashed owner's confined resident outlives it; it is recognised only by that directory's unique profile.
       const orphan = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)", "--", `-env:UserInstallation=${pathToFileURL(join(dead, "output", "profile")).href}`],
         { stdio: "ignore", env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" } });
@@ -610,6 +616,8 @@ describe("stale private runtime directories", () => {
         expect(bystander.signalCode).toBeNull();
       } finally { orphan.kill("SIGKILL"); bystander.kill("SIGKILL"); }
       await expect(stat(dead)).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(stat(pipeOf(dead))).rejects.toMatchObject({ code: "ENOENT" });
+      expect((await stat(pipeOf(live))).isFile()).toBe(true);
       for (const kept of [live, self, unmarked, shared, unrelated, target]) expect((await stat(kept)).isDirectory()).toBe(true);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
