@@ -1,9 +1,12 @@
 // Shell and plugin-worker settings have separate gates over one runtime; activating either must never confine the other scope.
 // Simulated Linux here is Linux before its holder route, the one POSIX place an extension still met the wrap these
-// cases pin; with the route on a Linux extension is a holder (mxc-linux-holder-boundary.native, adversarial-escapes).
+// cases pin; with the route on a Linux extension is a holder (mxc-linux-holder-boundary.native, adversarial-escapes),
+// which the invariant case below switches on.
+const linuxRoute = vi.hoisted(() => ({ on: false }));
 vi.mock("../../shared/container-platform.js", async (original) => {
   const actual = await original<typeof import("../../shared/container-platform.js")>();
-  return { ...actual, isContainerHolderRouteEnabled: (platform: NodeJS.Platform) => platform !== "linux" && actual.isContainerHolderRouteEnabled(platform) };
+  return { ...actual, isContainerHolderRouteEnabled: (platform: NodeJS.Platform) =>
+    platform === "linux" ? linuxRoute.on && actual.isContainerHolderRouteEnabled(platform) : actual.isContainerHolderRouteEnabled(platform) };
 });
 import { EventEmitter } from "node:events";
 import { readdirSync, readFileSync } from "node:fs";
@@ -16,6 +19,7 @@ import { setProcessPlatform } from "../../__tests__/support/process-platform.js"
 import {
   initializeAsrtSandbox,
   isAsrtSandboxActive,
+  isOfflineProcessConfinementActive,
   isPluginWorkerConfinementActive,
   isShellSandboxActive,
   resetAsrtSandbox,
@@ -95,6 +99,22 @@ describe("scoped sandbox gates", () => {
     expect(probeMocks.spawn).toHaveBeenCalledExactlyOnceWith(
       "/bin/bash", ["-c", CONFIGURED_LINUX_BWRAP_COMMAND], expect.objectContaining({ shell: false }),
     );
+  });
+
+  // Invariant 1 (slice 8 design): with the Linux holder route on, no extension meets the wrap, whatever was requested;
+  // a host-owned offline process still does.
+  it.each([true, false])("with the Linux holder route on and ASRT active, workers=%s never confines an extension on the wrap", async (workers) => {
+    linuxRoute.on = true;
+    try {
+      setShellSandboxRequestedAtBoot(true);
+      setPluginWorkerConfinementRequestedAtBoot(workers);
+      await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
+      expect(isAsrtSandboxActive()).toBe(true);
+      expect(isPluginWorkerConfinementActive()).toBe(false);
+      expect(isOfflineProcessConfinementActive()).toBe(true);
+    } finally {
+      linuxRoute.on = false;
+    }
   });
 
   it("neither scope is active while ASRT is not initialized, whatever was requested", () => {
