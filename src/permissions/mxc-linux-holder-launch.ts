@@ -409,11 +409,12 @@ export function readLinuxResidentSet(outer: number, online: boolean, launcherCom
     const ticks = (start: string): number => Number(start.slice(start.lastIndexOf(":") + 1));
     const started = innerChildren.flatMap((pid) => { const start = reader.start(pid); return start === null ? [] : [{ pid, start }]; })
       .sort((a, b) => ticks(a.start) - ticks(b.start));
-    if (started.length === 0) return "the inner bwrap's children are gone";
-    if (started.length > 1 && ticks(started[0]!.start) === ticks(started[1]!.start)) {
+    const [first, second] = started;
+    if (first === undefined) return "the inner bwrap's children are gone";
+    if (second !== undefined && ticks(first.start) === ticks(second.start)) {
       return `the inner bwrap has ${innerChildren.length} children and no single first one`;
     }
-    below = started[0]!;
+    below = first;
   }
   if (typeof below === "string") return below;
   const shell = shells.length === 1 ? below : undefined;

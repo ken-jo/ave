@@ -640,7 +640,7 @@ describe.runIf(NATIVE)("native Linux holder row-2 admission", () => {
         workerTransport: "output-only-v1", parent });
       expect((await collect(worker.process.stdout)).trim()).toMatch(/^HTTP\/1\.[01] 403 /u);
       expect(asked.map(entry => entry.host)).toEqual(["refused-n8.example"]);
-      expect(JSON.parse(asked[0]!.owner)).toMatchObject({ role: "worker", pluginId: "p8", instanceId: "w" });
+      expect(JSON.parse(asked[0]?.owner ?? "null")).toMatchObject({ role: "worker", pluginId: "p8", instanceId: "w" });
     });
 
     // Design 10.4 N3: release ends what a holder started to escape it; a live control holder keeps its own.
@@ -675,7 +675,7 @@ describe.runIf(NATIVE)("native Linux holder row-2 admission", () => {
     it("refuses a holder's connect to a socket named like an office instance's pipe; the host connects (control)", async () => {
       const python = "/usr/bin/python3";
       if (!existsSync(python)) throw new Error(`this case needs ${python} as the holder's socket client`);
-      const pipe = `/tmp/OSL_PIPE_${process.getuid!()}_SingleOfficeIPC_avetest${randomBytes(4).toString("hex")}`;
+      const pipe = `/tmp/OSL_PIPE_${process.getuid?.() ?? "unknown"}_SingleOfficeIPC_avetest${randomBytes(4).toString("hex")}`;
       const server = createUnixServer(socket => socket.end("office\n"));
       await new Promise<void>(done => server.listen(pipe, done));
       try {
