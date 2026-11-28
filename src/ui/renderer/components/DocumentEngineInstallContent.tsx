@@ -10,6 +10,8 @@ import { DOCUMENT_ENGINE_IMPORTER } from "../../../shared/document-engine-import
 import { getApi } from "../api-client.js";
 
 const INSTALLATION_POLL_MS = 500;
+/** LibreOffice is installed by the user, like any other app (owner decision 2026-11-28). */
+const LIBREOFFICE_DOWNLOAD_URL = "https://www.libreoffice.org/download/download-libreoffice/";
 const ACTIVE_INSTALL_PHASES: readonly DocumentEngineInstallationState["phase"][] = Object.freeze([
   "downloading", "verifying", "installing", "cancelling", "verifying-installation",
 ]);
@@ -21,6 +23,7 @@ function installationErrorKey(error: DocumentEngineApiError): string {
     case "signature-failed": return "documentEngine.signatureFailed";
     case "unsupported-platform": return "documentEngine.unsupported";
     case "cancelled": return "documentEngine.cancelled";
+    case "app-missing": return "documentEngine.appMissing";
     case "busy": return "documentEngine.busy";
     case "unauthorized":
     case "bad-request":
@@ -98,6 +101,7 @@ export function DocumentEngineInstallContent({ onDismiss, api = getApi().documen
 
   const working = state !== undefined && ACTIVE_INSTALL_PHASES.includes(state.phase);
   const ready = state?.phase === "ready";
+  const appMissing = state?.phase === "app-missing";
   const supported = state?.phase !== "unsupported";
   const percent = state && state.downloadBytes > 0
     ? Math.min(100, Math.floor(100 * state.downloadedBytes / state.downloadBytes)) : 0;
@@ -109,7 +113,7 @@ export function DocumentEngineInstallContent({ onDismiss, api = getApi().documen
   // Runtime admission of an installed engine is not an install operation and cannot be cancelled.
   const cancellable = working && state?.phase !== "verifying-installation";
 
-  const historyActions = statusReadFailed
+  const historyActions = statusReadFailed || appMissing
     ? [{ label: t("documentEngine.checkAgain"), disabled: acting, run: () => { void refresh(); } }]
     : cancellable
       ? [{ label: t("documentEngine.cancel"), disabled: acting || state?.phase === "cancelling", run: () => { void handleAction("cancel"); } }]
@@ -137,8 +141,8 @@ export function DocumentEngineInstallContent({ onDismiss, api = getApi().documen
       </Button> : null}
     </div>
     {state ? <p className="text-xs text-muted-foreground" data-testid="document-engine-size">{t("documentEngine.size", {
-      download: mebibytes(state.downloadBytes), installed: mebibytes(state.installedBytes), version: state.version,
-    })}</p> : <p role="status" className="text-xs text-muted-foreground">{t("documentEngine.loading")}</p>}
+      download: mebibytes(state.downloadBytes),
+    })}{state.version ? ` · LibreOffice ${state.version}` : ""}</p> : <p role="status" className="text-xs text-muted-foreground">{t("documentEngine.loading")}</p>}
     <p className="text-xs text-muted-foreground">{t("documentEngine.localOnly")}</p>
     <p className="text-xs text-muted-foreground">{t("documentEngine.hwpRuntime")}</p>
     <div className="flex flex-wrap gap-3 text-xs">
@@ -159,8 +163,13 @@ export function DocumentEngineInstallContent({ onDismiss, api = getApi().documen
     {error && <p role={announcedByHistory ? undefined : error === "cancelled" ? "status" : "alert"} className="text-xs text-destructive">{t(installationErrorKey(error))}</p>}
     {statusReadFailed && error === "integrity-failed" ? <p className="text-xs text-muted-foreground">{t("documentEngine.repairRequired")}</p> : null}
     {!supported && !error && <p role="status" className="text-xs text-muted-foreground">{t("documentEngine.unsupported")}</p>}
+    {appMissing && !error ? <p role="status" className="text-xs text-muted-foreground" data-testid="document-engine-app-missing">
+      {t("documentEngine.appMissing")}{" "}
+      <a className="underline underline-offset-2" href={LIBREOFFICE_DOWNLOAD_URL} rel="noreferrer"
+        onClick={(event) => { event.preventDefault(); void handleOpenProvenance(LIBREOFFICE_DOWNLOAD_URL); }}>{t("documentEngine.getLibreOffice")}</a>
+    </p> : null}
     <div className="flex flex-wrap gap-2">
-      {statusReadFailed ? <Button type="button" size="sm" variant="outline" disabled={acting} onClick={() => void refresh()}>
+      {statusReadFailed || appMissing ? <Button type="button" size="sm" variant="outline" disabled={acting} onClick={() => void refresh()}>
         {t("documentEngine.checkAgain")}</Button>
         : cancellable ? <Button type="button" size="sm" variant="outline" disabled={acting || state?.phase === "cancelling"}
         onClick={() => void handleAction("cancel")}>{t("documentEngine.cancel")}</Button>
