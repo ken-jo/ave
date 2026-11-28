@@ -81,6 +81,30 @@ afterEach(() => {
 
 describe("runtime root paths with a simulated platform", () => {
   it.each([
+    ["win32", String.raw`C:\scratch\run`, winPath],
+    ["darwin", "/scratch/run", posixPath],
+    ["linux", "/scratch/run", posixPath],
+  ] as const)("keeps the %s test cache when a test simulates a packaged host", (platform, sandboxBase, flavor) => {
+    const nativePlatform = process.platform;
+    const cache = flavor.join(sandboxBase, "mxc-cache");
+    try {
+      setProcessPlatform(platform);
+      vi.stubEnv("AVE_TEST_SANDBOX_BASE", sandboxBase);
+      vi.stubEnv("LOCALAPPDATA", String.raw`C:\account\AppData\Local`);
+      vi.stubEnv("HOME", "/account");
+      vi.stubEnv("XDG_CACHE_HOME", "/account/.cache");
+      expect(currentMxcRuntimeHost().cacheHome).toBe(cache);
+
+      devFlags.setIsPackaged(true);
+      expect(currentMxcRuntimeHost().cacheHome).toBe(cache);
+      expect(mxcRuntimeRootFloorPath()).toBe(mxcRuntimeRootFloorPath(cache, platform));
+    } finally {
+      devFlags._resetForTest();
+      setProcessPlatform(nativePlatform);
+    }
+  });
+
+  it.each([
     ["darwin", String.raw`C:\scratch\run`, posixPath],
     ["linux", String.raw`C:\scratch\run`, posixPath],
     ["win32", "/scratch/run", winPath],

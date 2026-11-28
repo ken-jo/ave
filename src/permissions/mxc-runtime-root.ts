@@ -6,7 +6,7 @@ import {
 } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { posix as posixPath, win32 as winPath } from "node:path";
-import { getIsPackaged, isConfigured, isPackagedElectronProcess } from "../boot/dev-flags.js";
+import { isPackagedElectronProcess } from "../boot/dev-flags.js";
 import { createLogger } from "../lib/logger.js";
 import { renameDirectorySyncOnce } from "../lib/transient-fs-lock-retry.js";
 import { aveHome } from "../shared/ave-home.js";
@@ -96,14 +96,10 @@ export function mxcCacheHome(platform: NodeJS.Platform, env: Readonly<Record<str
   return xdg !== undefined && posixPath.isAbsolute(xdg) ? xdg : posixPath.join(home, ".cache");
 }
 
-function isPackagedHost(): boolean {
-  return isConfigured() ? getIsPackaged() : isPackagedElectronProcess();
-}
-
 /** Under the test runner the root lives in the run's own directory, never in the account's cache. */
 function currentCacheHome(): string {
   const platform = process.platform;
-  if (AVE_HOME_ISOLATION_GUARD_ACTIVE && !isPackagedHost()) {
+  if (AVE_HOME_ISOLATION_GUARD_ACTIVE && !isPackagedElectronProcess()) {
     const flavor = platform === "win32" ? winPath : posixPath;
     const base = process.env.AVE_TEST_SANDBOX_BASE;
     // Test setup uses the host's path spelling, while callers can simulate another platform.
@@ -181,7 +177,7 @@ export function canonicalWhereItExists(path: string, flavor: typeof posixPath = 
 }
 
 function assertIsolatedMacCache(cacheHome: string, platform: NodeJS.Platform): void {
-  if (platform !== "darwin" || !(AVE_HOME_ISOLATION_GUARD_ACTIVE || process.env.AVE_HOME_ISOLATION_GUARD_ACTIVE === "1") || isPackagedHost()) return;
+  if (platform !== "darwin" || !(AVE_HOME_ISOLATION_GUARD_ACTIVE || process.env.AVE_HOME_ISOLATION_GUARD_ACTIVE === "1") || isPackagedElectronProcess()) return;
   const accountCache = mxcCacheHome("darwin", {}, userInfo().homedir);
   const spellings = (path: string): string[] => {
     const named = posixPath.resolve(path).toLowerCase();
