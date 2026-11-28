@@ -847,13 +847,6 @@ export function createOutOfProcessPluginFactory(
   }
 
   const factory = async (context: PluginRuntimeContext): Promise<RuntimePlugin> => {
-    // A `process` launch runs code the host cannot read, so it runs only under a live sandbox that confines processes: never unwrapped (unlike an `entry` launch with
-    // the sandbox off), and never where the holder route runs plugins (Windows, and macOS once its holders are on: owner card 2026-11-28, "Windows처럼 거부"),
-    // since a holder admits only the reference child runtime (§2.2, §7.3). The deny floor and the wrap stay `spawnConfinedChild`'s.
-    // Refused before the start gate: no person is asked about a start that cannot run.
-    if (spec.launch.kind === "process" && (!isPluginWorkerConfinementActive() || processLaunchRefusedOnThisPlatform())) {
-      throw new ProcessEntryUnconfinedError();
-    }
     // A native launch is admitted by row 2's own native-entry guard; the legacy guard refuses a selected container plan.
     // The factory, the child spawn and its wrap are three crossings of one start: they share this consent.
     const extensionStart = spec.prepareMxcChild ? undefined : {
@@ -866,6 +859,11 @@ export function createOutOfProcessPluginFactory(
     const hostProtocolVersion = connectionHostProtocol(spec.manifest);
     if (spec.prepareMxcChild && spec.launch.kind !== "entry") {
       throw new MxcProcessContractError("Native plugin launch requires the reference child runtime");
+    }
+    // A `process` launch requires live process confinement, and a holder admits only the reference child runtime.
+    // Check this after the start gate so a start that needs per-start consent still reports that requirement first.
+    if (spec.launch.kind === "process" && (!isPluginWorkerConfinementActive() || processLaunchRefusedOnThisPlatform())) {
+      throw new ProcessEntryUnconfinedError();
     }
     const hostApi = context.hostApi as unknown as DispatchableHostApi;
     // Derived ONCE, here, and then held: the spawn wraps the child with it and the dispatch table checks delegated workers against it, so the two cannot be looking at different answers

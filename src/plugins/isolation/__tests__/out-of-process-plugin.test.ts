@@ -199,7 +199,7 @@ import { createOutOfProcessPluginFactory, PluginSandboxGrantError, pluginFactory
 import { TOOL_TIMEOUT_POLICY, windowsSrtPluginChildFactoryBudgetMs } from "../../../shared/tool-timeout-policy.js";
 import { setAveHomePrivacyAtBoot, _resetAveHomePrivacyForTest } from "../../../shared/ave-home.js";
 import { approvedExtensionStart } from "../../../__tests__/support/approved-extension-start.js";
-import { EXTENSION_START_CONSENT_REQUIRED_CODE, pluginChildStartKey, type ExtensionStartAuthority } from "../../../permissions/extension-start-consent.js";
+import { EXTENSION_START_CONSENT_REQUIRED_CODE, isExtensionStartConsentRequired, pluginChildStartKey, type ExtensionStartAuthority } from "../../../permissions/extension-start-consent.js";
 import { setPluginWorkerConfinementRequestedAtBoot, __resetSandboxRequestedAtBootForTest, __resetWindowsSandboxSubstrateForTest, setWindowsSandboxSubstrate } from "../../../permissions/sandbox-capability.js";
 import { planWindowsSandbox } from "../../../boot/steps/windows-sandbox-plan.js";
 import { prepareMxcPluginChildLaunch } from "../mxc-plugin-child-launch.js";
@@ -1869,8 +1869,45 @@ describe("the factory's launch reaches the spawn as decided", () => {
     },
   );
 
-  // Owner card 2026-11-28, "Windows처럼 거부": where holders run plugins a process launch is refused before the start gate.
-  it("refuses a process launch on the macOS holder route even with the sandbox on, before anything is spawned or asked", async () => {
+  it.each(["darwin", "win32"] as const)("checks start authority before refusing a process launch on the %s holder route", async (platform) => {
+    const roots = spawnableRoots();
+    spawnConfinedChild.mockClear();
+    sandbox.active = true;
+    macHolderRoute.forced = true;
+    setProcessPlatform(platform);
+    setPluginWorkerConfinementRequestedAtBoot(true);
+    const takeExtensionStart = vi.fn<() => ExtensionStartAuthority | undefined>();
+    try {
+      const { pluginRoot } = roots.context;
+      if (!pluginRoot) throw new Error("Missing plugin root");
+      setAveHomePrivacyAtBoot({ enforcement: "none", home: pluginRoot, category: "read-back-failed", reason: "fixture" });
+      const factory = createOutOfProcessPluginFactory({
+        manifest: PROCESS_MANIFEST,
+        launch: processLaunch(pluginRoot),
+        takeExtensionStart,
+      });
+      const context = hostContext(fakeHostApi(), roots.context);
+      const refused = await Promise.resolve(factory(context)).catch((error: unknown) => error);
+      expect(refused).toMatchObject({ code: EXTENSION_START_CONSENT_REQUIRED_CODE });
+      if (!isExtensionStartConsentRequired(refused) || !refused.start) {
+        throw new Error("The start gate did not name the refused start");
+      }
+      const authority = await approvedExtensionStart(refused.start.key, refused.start.identity);
+      expect(authority).toBeDefined();
+      takeExtensionStart.mockReturnValueOnce(authority);
+      await expect(factory(context)).rejects.toBeInstanceOf(ProcessEntryUnconfinedError);
+      expect(spawnConfinedChild).not.toHaveBeenCalled();
+    } finally {
+      _resetAveHomePrivacyForTest();
+      __resetSandboxRequestedAtBootForTest();
+      setProcessPlatform(hostPlatform);
+      macHolderRoute.forced = false;
+      sandbox.active = false;
+      roots.remove();
+    }
+  });
+
+  it("refuses a process launch on the macOS holder route even with the sandbox on, before anything is spawned", async () => {
     const roots = spawnableRoots();
     spawnConfinedChild.mockClear();
     sandbox.active = true;
