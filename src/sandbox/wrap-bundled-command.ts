@@ -563,28 +563,43 @@ export function resolvePosixHolderLaunch(command: string, env: NodeJS.ProcessEnv
   if (interpreter === undefined || !posixPath.isAbsolute(interpreter)) return refuse();
   let program: string;
   let programArgs: readonly string[];
-  if (interpreter === "/usr/bin/env") {
+  // Decide on the program the line names, not its spelling: `//usr/bin/env` and `/usr/bin/../bin/env` are env too.
+  const resolvedInterpreter = resolvePosixHolderExecutable(interpreter, env);
+  if (resolvedInterpreter === systemEnv()) {
     const [name, ...rest] = interpreterArgs;
     if (name === undefined || rest.length > 0 || name.startsWith("-") || name.includes("=") || name.includes("/")) return refuse();
     program = resolvePosixHolderExecutable(name, env);
     programArgs = [];
   } else {
-    program = resolvePosixHolderExecutable(interpreter, env);
+    program = resolvedInterpreter;
     programArgs = interpreterArgs;
   }
   if (shebangOf(program) !== undefined) return refuse();
   return Object.freeze({ command: program, prefix: Object.freeze([...programArgs, file]), files: Object.freeze([file, program]) });
 }
 
+let systemEnvPath: string | undefined;
+function systemEnv(): string {
+  return systemEnvPath ??= realpathSync.native("/usr/bin/env");
+}
+
+/** The `#!` line, ended by a newline or, as the kernel reads it, by the end of a short file. */
 function shebangOf(file: string): string | undefined {
   const head = Buffer.alloc(SHEBANG_BYTES);
-  const fd = openSync(file, "r");
   let read: number;
-  try { read = readSync(fd, head, 0, SHEBANG_BYTES, 0); } finally { closeSync(fd); }
+  try {
+    const fd = openSync(file, "r");
+    try { read = readSync(fd, head, 0, SHEBANG_BYTES, 0); } finally { closeSync(fd); }
+  } catch (error) {
+    // An executable Ave cannot read is one whose interpreter it cannot measure.
+    throw new MxcExecutableNotAdmissibleError(t("be_wrapBundledCommand.interpreterNotAdmissible", { path: file, line: (error as NodeJS.ErrnoException).code ?? "unreadable" }));
+  }
   if (read < 2 || head[0] !== 0x23 || head[1] !== 0x21) return undefined;
-  const end = head.subarray(0, read).indexOf(0x0a);
-  if (end < 0) throw new MxcExecutableNotAdmissibleError(t("be_wrapBundledCommand.interpreterNotAdmissible", { path: file, line: "#!" }));
-  return head.subarray(2, end).toString("utf8");
+  const newline = head.subarray(0, read).indexOf(0x0a);
+  if (newline < 0 && read === SHEBANG_BYTES) {
+    throw new MxcExecutableNotAdmissibleError(t("be_wrapBundledCommand.interpreterNotAdmissible", { path: file, line: "#!" }));
+  }
+  return head.subarray(2, newline < 0 ? read : newline).toString("utf8");
 }
 
 /** Contract rule: never an executable from a workspace or any holder-writable root, this holder's own included. */
