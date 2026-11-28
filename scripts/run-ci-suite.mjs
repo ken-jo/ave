@@ -19,9 +19,11 @@ import {
   selectMessageCatalogChecks,
   selectTriggeredLockSuites,
 } from "./hooks/pre-push-source-policy.mjs";
+import { EMPTY_TEST_ONLY_NOTICE, readTestOnlyFiles, testOnlyFilesForDiff } from "./lib/ci-test-only-selection.mjs";
+import { NATIVE_TIER_TESTS } from "./lib/vitest-tiers.mjs";
 import { ciShardCount, readPlanFile, runsCoverage } from "./verify-ci-shard-count.mjs";
 
-export { readPlanFile };
+export { readPlanFile, testOnlyFilesForDiff };
 
 export const MUST_RUN_TESTS_PATH = "config/ci-must-run-tests.json";
 
@@ -377,10 +379,16 @@ export function planCiSuite(eventName, { headRef, baseRef, ref, before } = {}) {
     changes = { reason: error instanceof Error ? error.message : String(error) };
   }
   if (changes.reason) {
-    if (!mainPush && baseRef.startsWith("integration/")) {
-      throw new Error(`integration base requires a resolved pull request diff: ${changes.reason}`);
-    }
     return full(changes.reason);
+  }
+  const testOnlyFiles = mainPush ? null : testOnlyFilesForDiff(changes.entries);
+  if (testOnlyFiles !== null) {
+    return {
+      mode: "affected",
+      reason: "test-only diff: changed test files",
+      tests: testOnlyFiles.filter(path => isCollectedVitestFile(path) && !NATIVE_TIER_TESTS.includes(path)),
+      testOnlyFiles,
+    };
   }
   const trackedTests = trackedVitestFiles();
   const mustRunTests = expandMustRunTests(JSON.parse(readFileSync(MUST_RUN_TESTS_PATH, "utf8")), trackedTests, changes.entries.map(({ path }) => path));
@@ -478,6 +486,7 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
       writeSummary(plan, coverage);
       if (process.env.GITHUB_OUTPUT) {
         appendFileSync(process.env.GITHUB_OUTPUT, `shards=${JSON.stringify(shards)}\nshard_count=${shardCount}\nplatform_checks=${platforms}\n`);
+        if (plan.testOnlyFiles !== undefined) appendFileSync(process.env.GITHUB_OUTPUT, "test_only=true\n");
         if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, `\nNative platform checks: ${platforms ? "required" : "not selected (renderer-only diff)"}.\n`);
       }
       process.exit(0);
@@ -485,6 +494,12 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
     const shard = parseCiShard(process.env.AVE_CI_SHARD);
     console.log(`[ci-suite] ${describeRun(plan, coverage)}${shard ? `, shard ${shard}` : ""}: ${plan.reason}`);
     if (!planFile) writeSummary(plan, coverage);
+    const testOnlyFiles = planFile && process.env.AVE_CI_TEST_ONLY_PLAN
+      ? readTestOnlyFiles() : plan.testOnlyFiles ?? null;
+    if (testOnlyFiles !== null && plan.tests.length === 0) {
+      console.log(EMPTY_TEST_ONLY_NOTICE);
+      process.exit(0);
+    }
     const result = runPlan(plan, coverage, shard);
     if (result.error) throw result.error;
     process.exitCode = result.status ?? 1;

@@ -3,6 +3,7 @@ import { availableParallelism } from "node:os";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { runCommand, splitArgumentsWithinBudget } from "./hooks/spawn-command.mjs";
+import { EMPTY_TEST_ONLY_NOTICE, intersectTestOnlyFiles, readTestOnlyFiles } from "./lib/ci-test-only-selection.mjs";
 import { collectedVitestFiles, isCollectedVitestFile } from "./lib/vitest-collection.mjs";
 import { CENSUS_TIER_TESTS, NATIVE_TIER_TESTS } from "./lib/vitest-tiers.mjs";
 
@@ -99,7 +100,12 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
   if (process.argv.length !== 2) throw new Error("The Windows shard runner takes its plan and shard from the environment");
   const { AVE_WINDOWS_TEST_PLAN: planPath, AVE_WINDOWS_TEST_SHARD: shard, AVE_WINDOWS_TEST_TIER: tier = "default" } = process.env;
   if (!planPath || !/^[1-9]\d*$/u.test(shard ?? "")) throw new Error("A Windows test shard requires AVE_WINDOWS_TEST_PLAN and AVE_WINDOWS_TEST_SHARD");
-  const files = windowsShardFiles(JSON.parse(readFileSync(planPath, "utf8")), Number(shard), process.cwd(), tier);
+  const inventory = windowsShardFiles(JSON.parse(readFileSync(planPath, "utf8")), Number(shard), process.cwd(), tier);
+  const files = intersectTestOnlyFiles(inventory, readTestOnlyFiles());
+  if (files.length === 0) {
+    console.log(EMPTY_TEST_ONLY_NOTICE);
+    process.exit(0);
+  }
   console.log(`Windows ${tier} shard ${shard}: ${files.length} suite(s), ${availableParallelism()} logical CPU(s)`);
   runWindowsTests(files);
 }

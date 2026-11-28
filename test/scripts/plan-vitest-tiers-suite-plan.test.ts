@@ -39,15 +39,22 @@ afterEach(() => { scenario.paths = []; scenario.discovery = undefined; });
 
 describe("Vitest tiers for written planCiSuite plans", () => {
   it.each([
-    ["a pull request into main", { headRef: "test/renderer", baseRef: "main" }, "pull request into main; "],
-    ["a test-only category merge", { headRef: "integration/renderer", baseRef: "main" }, "test-only category merge; "],
-    ["a pull request into an integration base", { headRef: "test/renderer", baseRef: "integration/renderer" }, "pull request into integration/renderer; "],
-  ])("selects neither tier for %s that traces an unrelated test", (_label, refs, rule) => {
+    ["a pull request into main", { headRef: "test/renderer", baseRef: "main" }],
+    ["a category merge", { headRef: "integration/renderer", baseRef: "main" }],
+    ["a pull request into an integration base", { headRef: "test/renderer", baseRef: "integration/renderer" }],
+  ])("selects neither tier for %s with only a default-tier test change", (_label, refs) => {
     const { written, tiers } = suitePlan([UNRELATED_TEST], PULL_REQUEST, refs);
-    expect(written).toMatchObject({ mode: "affected", reason: expect.stringMatching(new RegExp(`^${rule}`, "u")) });
-    expect(written.tests).toContain(UNRELATED_TEST);
+    expect(written).toMatchObject({ mode: "affected", reason: "test-only diff: changed test files", tests: [UNRELATED_TEST] });
     expect(tiers()).toMatchObject({ census: false, native: false });
   }, 120_000);
+
+  it("selects a tier only when its inventory contains a changed suite", () => {
+    const refs = { headRef: "test/permissions", baseRef: "main" };
+    const native = "src/permissions/__tests__/asrt-mxc-egress.test.ts";
+    const census = "src/permissions/__tests__/powershell-encoded-unicode/bash-head-first.test.ts";
+    expect(suitePlan([native], PULL_REQUEST, refs).tiers()).toMatchObject({ census: false, native: true });
+    expect(suitePlan([census], PULL_REQUEST, refs).tiers()).toMatchObject({ census: true, native: false });
+  });
 
   it("selects only the native tier for a comparable main push", () => {
     const { written, tiers } = suitePlan([UNRELATED_TEST], MAIN_PUSH, {});
@@ -85,7 +92,10 @@ describe("Vitest tiers for written planCiSuite plans", () => {
     expect(fullPlan.written.mode).toBe("full");
     expect(fullPlan.tiers()).toMatchObject({ census: true, native: true });
     const { written, tiers } = suitePlan([UNRELATED_TEST], PULL_REQUEST, { headRef: "test/renderer", baseRef: "main" });
-    for (const plan of [{ ...written, tests: [] }, { ...written, tests: [null, 42] }, { ...written, reason: undefined }, null]) {
+    for (const plan of [
+      { mode: written.mode, reason: "pull request into main; empty legacy selection", tests: [] },
+      { ...written, tests: [null, 42] }, { ...written, reason: undefined }, null,
+    ]) {
       expect(tiers(plan)).toMatchObject({ census: true, native: true });
     }
   }, 120_000);

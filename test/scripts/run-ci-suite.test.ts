@@ -382,12 +382,12 @@ describe("event rules over the pull request merge and the whole push", () => {
   const isAncestor = { stdout: "", status: 0 };
 
   it("selects a test-only category merge over the merge commit's first parent", () => {
-    withGitOutputs(["head first second\n", `:100644 100644 aaaa bbbb M\0${changedTest}\0`, trackedTests.join("\0")], () => {
+    withGitOutputs(["head first second\n", `:100644 100644 aaaa bbbb M\0${changedTest}\0`], () => {
       const plan = planCiSuite("pull_request", { headRef: "integration/test-speed", baseRef: "main" });
       expect(plan.mode).toBe("affected");
-      expect(plan.reason).toContain("test-only category merge");
-      expect(plan.reason).toContain("test-only diff");
-      expect(plan.tests).toEqual(expect.arrayContaining([changedTest, ...expandMustRunTests(mustRunDocument, trackedTests, [changedTest, "src/core/route-input.ts"])]));
+      expect(plan.reason).toBe("test-only diff: changed test files");
+      expect(plan.tests).toEqual([changedTest]);
+      expect(plan).toHaveProperty("testOnlyFiles", [changedTest]);
       expect(vi.mocked(spawnSync).mock.calls[1][1]).toEqual(["diff", "--no-renames", "--raw", "-z", "first", "HEAD", "--"]);
     });
   });
@@ -676,10 +676,10 @@ describe("unresolved pull request diffs", () => {
     },
   ];
 
-  it.each(cases)("fails clearly for $name on an integration base before selecting tests", ({ outputs, reason }) => {
+  it.each(cases)("keeps the full fallback for $name on an integration base", ({ outputs, reason }) => {
     withGitOutputs(outputs, () => {
-      expect(() => planCiSuite("pull_request", { headRef: "ci/change", baseRef: "integration/test-speed" }))
-        .toThrow(`integration base requires a resolved pull request diff: ${reason}`);
+      expect(planCiSuite("pull_request", { headRef: "ci/change", baseRef: "integration/test-speed" }))
+        .toEqual({ mode: "full", reason, tests: [] });
     });
   });
 

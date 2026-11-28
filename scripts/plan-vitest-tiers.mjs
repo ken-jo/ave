@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { appendFileSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { testOnlyFilesFromPlan } from "./lib/ci-test-only-selection.mjs";
 import { CENSUS_TIER_TESTS, NATIVE_TIER_TESTS } from "./lib/vitest-tiers.mjs";
 import { readPlanFile } from "./run-ci-suite.mjs";
 
@@ -78,6 +79,14 @@ export function planVitestTiers({ eventName, ref, plan, changedPaths }) {
   if (!Array.isArray(changedPaths)) return all("the diff is unresolved");
   const decoded = decodePlan(plan);
   if (decoded === null) return all("the suite plan is unreadable");
+  const selected = eventName === "pull_request" ? testOnlyFilesFromPlan(plan) : null;
+  if (selected !== null) {
+    return {
+      census: selected.some(path => CENSUS_TIER_TESTS.includes(path)),
+      native: selected.some(path => NATIVE_TIER_TESTS.includes(path)),
+      reason: "test-only diff: changed files in each tier",
+    };
+  }
   if (decoded.mode === "full") return all("the full plan runs every tier");
   if (decoded.tests.length === 0) return all("the affected plan selects no test");
   if (!tracedPlanReason(eventName, decoded.reason)) return all("the affected plan is best-effort");
@@ -150,7 +159,7 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
     eventName,
     ref: process.env.GITHUB_REF,
     plan,
-    changedPaths: needsDiff ? changedPathsFor(eventName, process.env.AVE_CI_DIFF_BASE) : [],
+    changedPaths: needsDiff && plan?.testOnlyFiles === undefined ? changedPathsFor(eventName, process.env.AVE_CI_DIFF_BASE) : [],
   });
   const outputs = vitestTierOutputs(eventName, process.env.GITHUB_REF, tiers);
   const lines = Object.entries(outputs).map(([key, value]) => `${key}=${value}`);

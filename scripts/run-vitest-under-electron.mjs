@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { EMPTY_TEST_ONLY_NOTICE, readTestOnlyFiles, testOnlyVitestArgs } from "./lib/ci-test-only-selection.mjs";
 import { guardedNodeOptions } from "./lib/document-consumer-node-options.mjs";
 
 const require = createRequire(import.meta.url);
@@ -261,13 +262,18 @@ function isMainModule() {
 
 if (isMainModule()) {
   try {
+    const args = testOnlyVitestArgs(process.argv.slice(2), readTestOnlyFiles(), process.env.AVE_VITEST_TIERS);
+    if (args === null) {
+      console.log(EMPTY_TEST_ONLY_NOTICE);
+      process.exit(0);
+    }
     ensureGeneratedAssets();
     const scratch = mkdtempSync(join(tmpdir(), "ave-vitest-skill-scripts-"));
     const directory = join(scratch, "dist", "skill-scripts");
     let result;
     try {
       await (await import("./build-skill-scripts.mjs")).buildSkillScripts({ directory });
-      result = await runVitestUnderElectron(process.argv.slice(2), {
+      result = await runVitestUnderElectron(args, {
         env: { ...process.env, AVE_TEST_SKILL_SCRIPTS_DIR: directory },
       });
     } finally {
