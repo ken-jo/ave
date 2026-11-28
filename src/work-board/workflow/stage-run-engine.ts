@@ -1408,7 +1408,9 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       };
       // Asked before anything is prepared, so a refused run prepares nothing, and again at the spawn itself (below).
       const lane = (await authorise()).lane;
-      if (stageDeclaresOutputs(stage) && !deps.outputs) throw new WorkflowInvariantError("outputs-unavailable");
+      const mayRequestOutputs = lane === "attended" && stageDeclaresOutputs(stage);
+      const mayDelegate = lane === "attended" && stage.allowSubAgents;
+      if (mayRequestOutputs && !deps.outputs) throw new WorkflowInvariantError("outputs-unavailable");
 
       const stageWorkspaceEffect = <T>(work: () => Promise<T>) => queueEffect(state, () => {
         checkDeadline();
@@ -1492,7 +1494,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
         if (!canAdmitRunEffect(state.ref)) throw new WorkflowInvariantError("run-write-held");
       };
 
-      const intake = deps.outputs && stageDeclaresOutputs(stage) ? stageOutputIntake(deps.outputs, {
+      const intake = deps.outputs && mayRequestOutputs ? stageOutputIntake(deps.outputs, {
         stage, workspaceRoot: stageRoot, run: state.ref,
         repository: record.runWorkspace?.kind === "git" ? state.ref.projectRoot : undefined,
       }) : undefined;
@@ -1598,7 +1600,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
               ...(prompt.taint ? { hostInputTaint: prompt.taint } : {}),
               ...(lane === "unattended" ? { unattendedStage: { runKey, stageId } } : {}),
               ...(intake ? { stageOutputTool: intake.tool } : {}),
-              ...(stage.allowSubAgents ? { stageSubAgents: { stageName: stage.name, runKey, max: MAX_STAGE_SUB_AGENTS } } : {}),
+              ...(mayDelegate ? { stageSubAgents: { stageName: stage.name, runKey, max: MAX_STAGE_SUB_AGENTS } } : {}),
             },
             {
               onLinked: ({ childSessionId }) => {
@@ -1617,7 +1619,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
                 emit({ itemId: state.itemId, phase: "executing", stageId, attempt, runSessionId: childSessionId });
                 post(state, { type: "stage_linked", stageId, childSessionId, ...(budget ? { usage: snapshotUsage() } : {}) }, attempt);
               },
-              ...(stage.allowSubAgents ? { onStageSubAgentLinked: (sessionId: string, agentTitle: string) => {
+              ...(mayDelegate ? { onStageSubAgentLinked: (sessionId: string, agentTitle: string) => {
                 requireLaunch();
                 checkDeadline();
                 if (!linked || state.live.get(stageId) !== linked || budgetFailure !== undefined || halted(state, stageId)) throw new WorkflowInvariantError("run-stopped");

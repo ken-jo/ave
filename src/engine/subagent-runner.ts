@@ -2471,14 +2471,10 @@ export class SubAgentRunner {
       for (const name of STAGE_SUB_AGENT_TOOLS) {
         const tool = registry.findByName(name);
         if (tool?.source !== "builtin") continue;
-        // An admitted unattended stage already has the pinned authority to delegate and stop its own work.
-        // The meta policy still evaluates admission, deny rules and forced floors. Descendant effects are checked separately.
-        scopedRegistry.register(args.unattendedStage && tool.category === "meta"
-          ? { ...tool, decisionOverride: "always-allow-with-audit" }
-          : tool);
+        scopedRegistry.register(tool);
       }
     }
-    if (args.stageOutputTool) scopedRegistry.register(args.stageOutputTool);
+    if (!args.unattendedStage && args.stageOutputTool) scopedRegistry.register(args.stageOutputTool);
     const recoveryTool = createReadToolResultChunkTool();
     if (args.parentStage === undefined && scopedRegistry.size > 0 && !scopedRegistry.findByName(recoveryTool.name)
       && allowedByLane(recoveryTool)) scopedRegistry.register(recoveryTool);
@@ -2849,10 +2845,9 @@ export class SubAgentRunner {
         callbacks,
       );
     }
-    const stageAuthority = input.stageSubAgents;
+    const stageAuthority = input.unattendedStage ? undefined : input.stageSubAgents;
     const bindStageSubAgent = callbacks?.onStageSubAgentLinked;
-    if (stageAuthority && (stageAuthority.max !== MAX_STAGE_SUB_AGENTS || !bindStageSubAgent
-      || (input.unattendedStage && stageAuthority.runKey !== input.unattendedStage.runKey))) {
+    if (stageAuthority && (stageAuthority.max !== MAX_STAGE_SUB_AGENTS || !bindStageSubAgent)) {
       throw new Error("Invalid workflow stage sub-agent authority");
     }
     const stageStop = stageAuthority ? new AbortController() : undefined;

@@ -7,7 +7,6 @@ import { listSessionApprovals, lookupUserDecision, recordApproval, __resetSessio
 import { autoStageOf, runScopePermissions, stageOf } from "./stage-fixtures.js";
 import { stageRunHarness } from "./stage-run-harness.js";
 import type { StageRunEngineDeps } from "../stage-run-engine.js";
-import type { ScheduleAttachment, TemplateVersionPin } from "../../../shared/workflow-template-types.js";
 
 afterEach(() => {
   __resetRunGrantsForTest();
@@ -221,10 +220,14 @@ it("records an interrupted stage when the workspace bind fails with sub-agents d
   }
 });
 
-it("links a scheduled grandchild with the same lane, workspace and envelope as its stage", async () => {
+it("links only the scheduled stage and tears down its workspace and lane", async () => {
   const manager = runScopePermissions();
   const budget = { rounds: 2, minutes: 1, costUsd: 0 };
-  const links: Parameters<NonNullable<StageRunEngineDeps["lane"]>["sessionLinked"]>[0][] = [];
+  const envelope = {
+    budget, tools: ["read_file"], commands: [], readRoots: [], writePaths: [],
+    network: [], outputs: [], mcpReadOnlyTools: [], mcpGenerationTools: [], pluginGenerationTools: [],
+  };
+  const sessionLinked = vi.fn<NonNullable<StageRunEngineDeps["lane"]>["sessionLinked"]>();
   const tornDown: string[] = [];
   const h = await stageRunHarness({ workflow: {
     unattendedAllowed: () => ({ ok: true }),
@@ -232,48 +235,30 @@ it("links a scheduled grandchild with the same lane, workspace and envelope as i
     workspaceBinding: { bind: () => undefined, unbind: sessionId => { tornDown.push(`workspace:${sessionId}`); } },
     lane: {
       admit: async () => ({ ok: true }),
-      sessionLinked: entry => {
-        links.push(entry);
-        if (entry.sessionId === "refused") throw new Error("Lane refused the session");
-      },
+      sessionLinked,
       sessionEnded: sessionId => { tornDown.push(`lane:${sessionId}`); },
       onDenied: () => () => undefined,
     },
   } });
-  try {
-    const version = await h.confirm([autoStageOf("a", { allowSubAgents: true, envelope: {
-      budget, tools: ["read_file"], commands: [], readRoots: [], writePaths: [],
-      network: [], outputs: [], mcpReadOnlyTools: [], mcpGenerationTools: [], pluginGenerationTools: [],
-    } })]);
+  await h.runThenEnd(async () => {
+    const version = await h.confirm([autoStageOf("a", { allowSubAgents: true, envelope })]);
     const id = await h.addItem(version);
-    // Provide the exact attachment under test so the inheritance assertions can use a fixed identity.
-    const pin: TemplateVersionPin = { templateId: version.templateId, version: version.version, graphHash: version.graphHash };
-    const attachment: ScheduleAttachment = {
-      ...pin, id: "attachment", scheduleId: "daily", approvedScope: { kind: "all" },
-      who: "owner", at: version.confirmedAt, origin: "local-desktop",
-    };
-    const record = { ...await h.templates.get(version.templateId), scheduleAttachments: [attachment] };
-    vi.spyOn(h.templates, "get").mockResolvedValue(record);
-    vi.spyOn(h.templates, "getAttachment").mockResolvedValue(attachment);
-    vi.spyOn(h.templates, "readScheduleRunAuthority").mockResolvedValue({ record, attachment });
-    const run = h.start(id, { kind: "schedule-attachment", attachmentId: attachment.id, pin, firedAt: attachment.at });
+    const { source } = await h.attach(version);
+    const run = h.start(id, source);
     const [stage] = await h.untilLive(1);
     expect(stage.input.maxRounds).toBe(budget.rounds);
-    const bind = stage.callbacks?.onStageSubAgentLinked;
-    if (!bind) throw new Error("No sub-agent link for the opted-in scheduled stage");
-    const release = bind("grandchild", "Extract");
-    expect(links).toEqual([expect.objectContaining({ sessionId: stage.sessionId }), { ...links[0], sessionId: "grandchild" }]);
-    expect(runSessionOf("grandchild")?.lane).toBe("unattended");
-    expect(runGrantKeyOfSession("grandchild")).toBeUndefined();
-    release();
-    expect(() => bind("refused", "Extract")).toThrow("Lane refused the session");
-    expect(runSessionOf("refused")).toBeUndefined();
-    expect(tornDown).toEqual(["workspace:grandchild", "lane:grandchild", "workspace:refused", "lane:refused"]);
+    expect(stage.input.stageSubAgents).toBeUndefined();
+    expect(stage.callbacks?.onStageSubAgentLinked).toBeUndefined();
+    expect(sessionLinked).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      sessionId: stage.sessionId, stageId: "a", workspaceRoot: stage.input.projectRoot, envelope,
+    }));
+    expect(runSessionOf(stage.sessionId)?.lane).toBe("unattended");
+    expect(runGrantKeyOfSession(stage.sessionId)).toBeUndefined();
     stage.finish();
-    await run;
-  } finally {
-    await h.cleanup();
-  }
+    expect(await run).toMatchObject({ status: "completed" });
+    expect(runSessionOf(stage.sessionId)).toBeUndefined();
+    expect(tornDown).toEqual([`workspace:${stage.sessionId}`, `lane:${stage.sessionId}`]);
+  });
 });
 
 it("an attended stage keeps its existing round ceiling with an envelope", async () => {

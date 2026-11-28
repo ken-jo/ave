@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { join, resolve } from "node:path";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { afterEach, beforeAll, expect, it, vi } from "vitest";
 import { deferred } from "../../__tests__/support/deferred.js";
@@ -22,6 +22,9 @@ import { ConversationLoop, type TurnResult } from "../conversation-loop.js";
 import { exactToolScope, PARENT_ALL_TOOL_SCOPE, SubAgentRunner } from "../subagent-runner.js";
 import { makeSubagentLoopDeps, patchLoopProvider } from "./support/subagent-loop-fixtures.js";
 
+import { endUnattendedStage, registerUnattendedStage } from "../../permissions/unattended-lane-registry.js";
+import { createToolEffectResolver } from "../../permissions/tool-effect-evidence.js";
+import { emptyStageEnvelope } from "../../work-board/workflow/__tests__/stage-fixtures.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { MemoryManager } from "../../memory/memory-manager.js";
 import { ReadFileTool } from "../../tools/file-tools.js";
@@ -355,12 +358,12 @@ it("interrupting the stage interrupts its grandchildren", async () => {
   expect(await running).toMatchObject({ stopReason: "interrupted" });
 });
 
-it("an admitted unattended stage delegates through the model tool and receives the result", async () => {
+it("withholds scheduled delegation and requested-output tools that lack safe envelope evidence", async () => {
   const root = await mkdtemp(join(tmpdir(), "stage-model-"));
   const memory = new MemoryManager({ aveDir: join(root, "memory") });
+  let sessionId: string | undefined;
   try {
     memory.load();
-    await writeFile(join(root, ".env"), "TEST_VALUE=private-fixture");
     const registry = new ToolRegistry();
     const { contents, gate } = fixture();
     const permissionManager = new PermissionManager(join(root, "permissions.json"));
@@ -373,42 +376,48 @@ it("an admitted unattended stage delegates through the model tool and receives t
     registry.register(createAgentStatusTool({ getRunner: () => runner }));
     registry.register(createAgentInterruptTool({ getRunner: () => runner }));
     registry.register(new ReadFileTool());
-    const toolRound = (id: string, name: string, input: Record<string, unknown>): StreamEvent[] => [
-      { type: "tool_call", id, name, input }, { type: "message_complete", stopReason: "tool_use" },
-    ];
-    const textRound = (text: string): StreamEvent[] => [
-      { type: "text_delta", text }, { type: "message_complete", stopReason: "end_turn" },
-    ];
-    const rounds = [
-      toolRound("spawn-helper", "agent_spawn", { title: "Extract", instructions: "grandchild", sourceTools: ["read_file"] }),
-      toolRound("secret-read", "read_file", { path: ".env" }),
-      textRound("helper finished"),
-      textRound("stage finished"),
-    ];
-    const streamTurn = vi.fn(async function* (_params: StreamTurnParams) {
-      const round = rounds.shift();
-      if (!round) throw new Error("Unexpected model round");
-      yield* round;
+    permissionManager.setUnattendedToolEffectResolver(createToolEffectResolver(registry));
+    const stageSubAgents = { stageName: "Scan", runKey: "run", max: 3 };
+    const requestOutput = vi.fn(async () => ({ ok: true as const, id: "report" }));
+    const declaration = { kind: "send-message", owner: "server", ownerId: "reports", toolName: "send_report" } as const;
+    const bind = vi.fn(() => () => undefined);
+    const streamTurn = vi.fn(async function* ({ messages }: StreamTurnParams): AsyncGenerator<StreamEvent> {
+      if (!messages.some(message => message.role === "tool_result")) {
+        yield { type: "tool_call", id: "spawn-helper", name: "agent_spawn", input: { title: "Extract", instructions: "grandchild" } };
+        yield { type: "tool_call", id: "queue-report", name: STAGE_REQUEST_OUTPUT_TOOL,
+          input: { toolName: declaration.toolName, owner: declaration.owner, ownerId: declaration.ownerId, args: {}, summary: "Send report" } };
+        yield { type: "message_complete", stopReason: "tool_use" };
+      } else {
+        yield { type: "text_delta", text: "stage finished" };
+        yield { type: "message_complete", stopReason: "end_turn" };
+      }
     });
     patchLoopProvider({ vendor: "openai", streamTurn });
-    const bind = vi.fn(() => () => undefined);
-    const stageSubAgents = { stageName: "Scan", runKey: "run", max: 3 };
+    const stage = { runKey: "run", stageId: "scan" };
     const result = await runner.spawn({
       title: "Scan", instructions: "stage", projectRoot: root, originSessionId: "work-board:1",
-      toolScope: exactToolScope(["read_file"]), stageSubAgents, unattendedStage: { runKey: "run", stageId: "scan" },
-    }, { onStageSubAgentLinked: bind });
+      toolScope: exactToolScope(["read_file"]), stageSubAgents, unattendedStage: stage,
+      stageOutputTool: createStageRequestOutputTool([declaration], requestOutput),
+    }, {
+      onStageSubAgentLinked: bind,
+      onLinked: ({ childSessionId }) => {
+        sessionId = childSessionId;
+        registerUnattendedStage(childSessionId, {
+          ...stage, workspaceRoot: root, isolation: { proven: true },
+          envelope: { ...emptyStageEnvelope(), tools: ["read_file"] },
+        });
+      },
+    });
     expect(result).toMatchObject({ ok: true, summary: "stage finished" });
-    expect(streamTurn.mock.calls[0][0].tools?.map(tool => tool.name)).toEqual(expect.arrayContaining(["agent_spawn", "agent_status", "agent_interrupt"]));
-    expect(streamTurn.mock.calls[1][0].tools?.map(tool => tool.name)).toEqual(["read_file"]);
-    expect(streamTurn.mock.calls[2][0].messages).toContainEqual(expect.objectContaining({
-      role: "tool_result", toolUseId: "secret-read", isError: true,
-    }));
-    const delivery = streamTurn.mock.calls[3][0].messages.find(message => message.role === "tool_result" && message.toolUseId === "spawn-helper");
-    expect(delivery).toMatchObject({ role: "tool_result", toolName: "agent_spawn" });
-    expect(delivery).not.toHaveProperty("isError", true);
-    expect(delivery?.role === "tool_result" && JSON.parse(delivery.content)).toMatchObject({ summary: "helper finished" });
+    expect(streamTurn.mock.calls[0][0].tools?.map(tool => tool.name)).toEqual(["read_file"]);
+    for (const toolUseId of ["spawn-helper", "queue-report"]) {
+      expect(streamTurn.mock.calls[1][0].messages).toContainEqual(expect.objectContaining({ role: "tool_result", toolUseId, isError: true }));
+    }
+    expect(bind).not.toHaveBeenCalled();
+    expect(requestOutput).not.toHaveBeenCalled();
     expect(contents.send).not.toHaveBeenCalledWith(IPC_APPROVAL_REQUEST, expect.anything());
   } finally {
+    if (sessionId) endUnattendedStage(sessionId);
     memory.sessions.closeSearchIndex();
     await rm(root, { recursive: true, force: true });
   }

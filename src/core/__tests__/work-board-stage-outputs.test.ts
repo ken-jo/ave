@@ -54,7 +54,7 @@ const ENVELOPE: StageEnvelope = {
   mcpGenerationTools: [], pluginGenerationTools: [], outputs: ["branch"], budget: { rounds: 5, minutes: 1, costUsd: 0 },
 };
 
-it("a scheduled run ends at the gate with outputs pending and nothing sent", async () => {
+it("a scheduled run reaches its human gate without delegation or requested-output intake", async () => {
   const send = vi.fn();
   const h = await stageRunHarness({ observeRunWork: true, workflow: {
     outputs: createRequestedOutputHooks(createHostGit(), { invoke: send }, process.cwd()),
@@ -62,7 +62,7 @@ it("a scheduled run ends at the gate with outputs pending and nothing sent", asy
     lane: { admit: async () => ({ ok: true }), sessionLinked: vi.fn(), sessionEnded: vi.fn(), onDenied: () => () => {} },
   } });
   await h.runThenEnd(async () => {
-    const version = await h.confirm([stageOf("review", { envelope: ENVELOPE, requestedOutputs: [DECLARATION] })]);
+    const version = await h.confirm([stageOf("review", { envelope: ENVELOPE, allowSubAgents: true, requestedOutputs: [DECLARATION] })]);
     const pin = h.pinOf(version);
     const proof = mintHostDecisionProof("local-desktop");
     await expect(h.templates.attachSchedule({ scheduleId: "daily", ...pin }, proof, { kind: "all" })).rejects.toMatchObject({ code: "schedule-requires-read-only" });
@@ -74,17 +74,16 @@ it("a scheduled run ends at the gate with outputs pending and nothing sent", asy
     writeFileSync(path, JSON.stringify(file));
     const start = h.engine.startScheduledTemplate({ kind: "schedule-attachment", pin, attachmentId: attachment.id, firedAt: proof.decidedAt }, "Scheduled report");
     const [child] = await h.untilLive(1);
-    const cwd = child.input.projectRoot ?? "";
     expect(child.input.unattendedStage).toMatchObject({ stageId: "review" });
-    const { toolName, owner, ownerId } = DECLARATION;
-    expect(await child.input.stageOutputTool?.execute({ toolName, owner, ownerId, args: { body: "Ready" }, summary: "Send report" },
-      { cwd, metadata: {}, extraAllowedDirectories: [] })).toMatchObject({ isError: false });
+    expect.soft(child.input.stageOutputTool).toBeUndefined();
+    expect.soft(child.input.stageSubAgents).toBeUndefined();
     child.finish({ summary: "Report ready" });
     const run = await start;
     if (!run.ok) throw new Error(run.code);
     await expect(run.result).resolves.toMatchObject({ status: "awaiting_approval" });
     const stage = await h.stageRun(run.itemId, "review");
-    expect(stage).toMatchObject({ requestedOutputs: [{ decl: DECLARATION }], gate: { status: "pending" } });
+    expect(stage).toMatchObject({ gate: { status: "pending" } });
+    expect(stage.requestedOutputs).toBeUndefined();
     expect(stage.outputExecutions).toBeUndefined();
     expect(send).not.toHaveBeenCalled();
   });
