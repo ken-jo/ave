@@ -5,7 +5,7 @@ import { t } from "../i18n/index.js";
 import type { ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { lstatSync } from "node:fs";
-import { isIPv4 } from "node:net";
+import { BlockList, isIPv4, isIPv6 } from "node:net";
 import { gzipSync } from "node:zlib";
 import type { ProbeOutput } from "@microsoft/mxc-sdk/v1";
 import { z } from "zod";
@@ -37,6 +37,7 @@ import { launcherPathFor, pinnedLauncherSha256 } from "./mxc-launcher.js";
 import { openMxcRawIpUdpListener, type MxcRawIpUdpArrival, type MxcRawIpUdpSend } from "./mxc-raw-ip-udp.js";
 import { createLogger } from "../lib/logger.js";
 import type { openInvocationProxyListener } from "./egress-invocation-listener.js";
+import { addRange, addressInSet } from "./egress-relay/address-set.js";
 
 // The stable MXC configuration schema version every request is written in. The launcher is `@microsoft/mxc-sdk` 1.1.0's, pinned by scripts/fetch-mxc.mjs.
 const MXC_CONFIG_SCHEMA_VERSION = "1.0.0";
@@ -190,8 +191,10 @@ const MXC_START_EXIT_RESERVE_MS = 1_000;
 const MXC_START_CLEANUP_RETRY_MS = 1_000;
 const MXC_RAW_IP_TARGET_TIMEOUT_MS = 3_000;
 const MXC_RAW_IP_PROBE_TIMEOUT_MS = 12_000;
-const MXC_LAN_TARGET_LOOKUP_TIMEOUT_MS = 6_000;
+const MXC_HOST_NETWORK_LOOKUP_TIMEOUT_MS = 6_000;
 const MXC_RAW_IP_EVIDENCE_MARKER = "AVE_MXC_RAW_IP ";
+const MXC_IPV6_ROUTES_MARKER = "AVE_MXC_IPV6_ROUTES ";
+const MXC_RAW_IP_T6_ADDRESS = "2001:db8::1";
 const MXC_NETWORK_CAPABILITY_SIDS = new Set(["S-1-15-3-1", "S-1-15-3-2", "S-1-15-3-3"]);
 
 type MxcRawIpTargetResult = number | "connected" | "deadline" | "other";
@@ -205,6 +208,7 @@ type MxcStartDiagnostic = "STATUS_DLL_INIT_FAILED" | "nonzero-exit" | "launch-re
 type MxcStartSupport = Extract<MxcSupport, { state: "unavailable" }>
   | (Extract<MxcSupport, { state: "available" }> & { readonly rawIpProbe?: MxcRawIpProbeVerdict });
 type MxcLanProbeTarget = { readonly address: string; readonly port: number };
+type MxcHostRawIpEvidence = { readonly hostIpv6Route: "absent" | "present" | "unknown" };
 
 function isRawIpTargetResult(value: unknown): value is MxcRawIpTargetResult {
   return value === "connected" || value === "deadline" || value === "other"
@@ -242,12 +246,15 @@ function rawIpInconclusiveReason(result: MxcRawIpTargetResult): "timeout" | "unc
 export function mxcRawIpBlockingRequirement(
   { t6, tl, capabilitySids }: Pick<MxcRawIpProbeEvidence, "t6" | "capabilitySids"> & Partial<Pick<MxcRawIpProbeEvidence, "tl">>,
   udpArrival?: MxcRawIpUdpArrival,
+  hostEvidence?: MxcHostRawIpEvidence,
 ): "refused-local" | "refused-structural" | "ipv6-unmeasured" | "udp-unmeasured" | "timeout" | "unclassified" {
   if (t6 === 10013) return "refused-local";
   if (t6 === 10051 || t6 === 10065) {
     if (capabilitySids !== null && !capabilitySids.some(sid => MXC_NETWORK_CAPABILITY_SIDS.has(sid))) return "refused-structural";
-    if (tl === 10013 && udpArrival === "absent") return "refused-structural";
-    if (tl === 10013 && udpArrival === "unmeasured") return "udp-unmeasured";
+    if (hostEvidence?.hostIpv6Route === "absent" && tl === 10013) {
+      if (udpArrival === "absent") return "refused-structural";
+      if (udpArrival === "unmeasured") return "udp-unmeasured";
+    }
     return "ipv6-unmeasured";
   }
   if (t6 === 10049 || t6 === 10047) return "ipv6-unmeasured";
@@ -256,6 +263,7 @@ export function mxcRawIpBlockingRequirement(
 
 export function classifyMxcRawIpProbe(
   evidence: MxcRawIpProbeEvidence | undefined, controlRefused: boolean, udpArrival: MxcRawIpUdpArrival,
+  hostEvidence?: MxcHostRawIpEvidence,
 ): MxcRawIpProbeVerdict {
   const reachableTargets: (MxcRawIpTarget | "udp")[] = evidence === undefined
     ? [] : (["t4", "t6", "tl"] as const).filter(target => evidence[target] === "connected" || evidence[target] === 10061);
@@ -269,7 +277,7 @@ export function classifyMxcRawIpProbe(
   if (reachableTargets.length > 0) return unknown("raw-ip-reachable");
   if (evidence.t4 === 10051 || evidence.t4 === 10065) return unknown("no-route");
   if (evidence.t4 !== 10013) return unknown(rawIpInconclusiveReason(evidence.t4));
-  const t6 = mxcRawIpBlockingRequirement(evidence, udpArrival);
+  const t6 = mxcRawIpBlockingRequirement(evidence, udpArrival, hostEvidence);
   if (t6 !== "refused-local" && t6 !== "refused-structural") return unknown(t6);
   if (udpArrival === "unmeasured") return unknown("udp-unmeasured");
   return { rawIp: "blocked", reason: "blocked", evidenceKind: t6 === "refused-local" ? "measured" : "structural", reachableTargets, udpArrival };
@@ -399,7 +407,7 @@ try {
   $control = (Invoke-Tcp '127.0.0.1' ${port} '${controlHost}') -ceq 'refused'
   $udp = ${udp === undefined ? "'unmeasured'" : `Invoke-Udp '${udp.address}' ${udp.port} '${probeId}'`}
   $t4 = Invoke-Tcp '192.0.2.1' 443
-  $t6 = Invoke-Tcp '2001:db8::1' 443
+  $t6 = Invoke-Tcp '${MXC_RAW_IP_T6_ADDRESS}' 443
   $tl = ${lan === undefined ? "'other'" : `Invoke-Tcp '${lan.address}' ${lan.port}`}
   $capabilitySids = $null
   if ($t6 -eq 10051 -or $t6 -eq 10065) { $capabilitySids = Read-CapabilitySids }
@@ -419,11 +427,33 @@ try { $probe = $reader.ReadToEnd() } finally { $reader.Dispose() }
 `;
 }
 
-async function findMxcLanProbeTarget(deps: DetectMxcSupportDeps, timeoutMs: number): Promise<MxcLanProbeTarget | undefined> {
+function classifyMxcHostIpv6Route(line: string): MxcHostRawIpEvidence["hostIpv6Route"] {
+  try {
+    const prefixes: unknown = JSON.parse(line.slice(MXC_IPV6_ROUTES_MARKER.length));
+    if (!Array.isArray(prefixes)) return "unknown";
+    const routes = new BlockList();
+    for (const prefix of prefixes) {
+      if (typeof prefix !== "string" || !prefix.includes("/") || !isIPv6(prefix.split("/")[0] ?? "") || !addRange(routes, prefix)) {
+        return "unknown";
+      }
+    }
+    return addressInSet(routes, MXC_RAW_IP_T6_ADDRESS) ? "present" : "absent";
+  } catch {
+    return "unknown";
+  }
+}
+
+async function lookupMxcHostNetwork(
+  deps: DetectMxcSupportDeps, timeoutMs: number,
+): Promise<MxcHostRawIpEvidence & { readonly lan?: MxcLanProbeTarget }> {
   const shell = win32SystemBinary("WindowsPowerShell/v1.0/powershell", { SystemRoot: deps.systemRoot });
   const command = `
 $ErrorActionPreference = 'Stop'
 $env:PSModulePath = [IO.Path]::Combine($PSHOME, 'Modules')
+try {
+  $prefixes = @(Get-NetRoute -AddressFamily IPv6 -PolicyStore ActiveStore | Select-Object -ExpandProperty DestinationPrefix)
+  [Console]::WriteLine('${MXC_IPV6_ROUTES_MARKER}' + (ConvertTo-Json -InputObject $prefixes -Compress))
+} catch {}
 $route = Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' |
   Sort-Object { [int]$_.RouteMetric + [int]$_.InterfaceMetric } | Select-Object -First 1
 if (-not $route) { exit 0 }
@@ -436,14 +466,18 @@ if ($port) { [Console]::WriteLine(('{0}:{1}' -f $address, $port)) }
 `;
   try {
     const result = await deps.run(shell, [...WIN32_POWERSHELL_STARTUP_ARGS, "-EncodedCommand", Buffer.from(command, "utf16le").toString("base64")], timeoutMs);
-    const match = /^([\d.]+):(\d+)$/.exec(result.stdout.trim());
-    if (result.code !== 0 || match === null) return undefined;
+    if (result.code !== 0) return { hostIpv6Route: "unknown" };
+    const [first = "", ...rest] = result.stdout.trim().split(/\r?\n/);
+    const hasRouteEvidence = first.startsWith(MXC_IPV6_ROUTES_MARKER);
+    const hostIpv6Route = hasRouteEvidence && !result.stderr && rest.length <= 1 ? classifyMxcHostIpv6Route(first) : "unknown";
+    const match = /^([\d.]+):(\d+)$/.exec(hasRouteEvidence ? rest.join("\n") : result.stdout.trim());
+    if (match === null) return { hostIpv6Route };
     const [, address = "", portText] = match;
     const port = Number(portText);
     return isIPv4(address) && !address.startsWith("127.") && address !== "0.0.0.0" && port >= 49152 && port <= 65535
-      ? { address, port } : undefined;
+      ? { hostIpv6Route, lan: { address, port } } : { hostIpv6Route };
   } catch {
-    return undefined;
+    return { hostIpv6Route: "unknown" };
   }
 }
 
@@ -641,8 +675,9 @@ export async function probeMxcPowerShellStart(
           if (expired()) return unavailable("powershell-start-failed", "startup-deadline");
           result = await launch(buildPlainRequest(startBudget), startBudget);
         } else {
-          const lookupBudget = Math.min(MXC_LAN_TARGET_LOOKUP_TIMEOUT_MS, measurementDeadline - Date.now());
-          const lan = lookupBudget > 0 ? await raceWithAbort(findMxcLanProbeTarget(deps, lookupBudget), signal) : undefined;
+          const lookupBudget = Math.min(MXC_HOST_NETWORK_LOOKUP_TIMEOUT_MS, measurementDeadline - Date.now());
+          const hostNetwork = lookupBudget > 0 ? await raceWithAbort(lookupMxcHostNetwork(deps, lookupBudget), signal) : undefined;
+          const lan = hostNetwork?.lan;
           let udp: Awaited<ReturnType<typeof openMxcRawIpUdpListener>>;
           if (lan !== undefined) {
             const binding = openMxcRawIpUdpListener(lan.address, probeId, measurementDeadline, release => { closeUdp = release; }).then((bound) => {
@@ -666,7 +701,7 @@ export async function probeMxcPowerShellStart(
             const evidence = started?.code === 0 && !expired()
               ? parseMxcRawIpProbeEvidence(started.stdout, probeId, started.stderr) : undefined;
             const udpArrival = await udp?.observe(evidence?.udp ?? "unmeasured", MXC_RAW_IP_TARGET_TIMEOUT_MS) ?? "unmeasured";
-            rawIpProbe = classifyMxcRawIpProbe(evidence, controlRefused, udpArrival);
+            rawIpProbe = classifyMxcRawIpProbe(evidence, controlRefused, udpArrival, hostNetwork);
           }
         }
       } finally {

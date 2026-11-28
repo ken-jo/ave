@@ -82,8 +82,16 @@ describe("additional raw IP blocking requirements", () => {
   const proxyEvidence = { ...REFUSED, t6: 10051, capabilitySids: ["S-1-15-3-3"] };
 
   it.each([10051, 10065])("accepts structural evidence from the proxy probe for no-route result %s", (t6) => {
-    expect(classifyMxcRawIpProbe({ ...proxyEvidence, t6 }, true, "absent")).toEqual({
+    expect(classifyMxcRawIpProbe({ ...proxyEvidence, t6 }, true, "absent", { hostIpv6Route: "absent" })).toEqual({
       rawIp: "blocked", reason: "blocked", evidenceKind: "structural", reachableTargets: [], udpArrival: "absent",
+    });
+  });
+
+  it.each([
+    [10051, "present"], [10065, "present"], [10051, "unknown"], [10065, "unknown"],
+  ] as const)("keeps T6 %i unmeasured when the host route is %s", (t6, hostIpv6Route) => {
+    expect(classifyMxcRawIpProbe({ ...proxyEvidence, t6 }, true, "absent", { hostIpv6Route })).toMatchObject({
+      rawIp: "unknown", reason: "ipv6-unmeasured",
     });
   });
 
@@ -97,19 +105,19 @@ describe("additional raw IP blocking requirements", () => {
     { scenario: "UDP arrival is unmeasured", evidence: { udp: "unmeasured" }, controlRefused: true, udpArrival: "unmeasured", reason: "udp-unmeasured", reachableTargets: [] },
     { scenario: "UDP datagram arrives", evidence: { udp: "sent" }, controlRefused: true, udpArrival: "arrived", reason: "raw-ip-reachable", reachableTargets: ["udp"] },
   ] as const)("keeps proxy coverage unknown when $scenario", ({ evidence, controlRefused, udpArrival, reason, reachableTargets }) => {
-    expect(classifyMxcRawIpProbe({ ...proxyEvidence, ...evidence }, controlRefused, udpArrival)).toEqual({
+    expect(classifyMxcRawIpProbe({ ...proxyEvidence, ...evidence }, controlRefused, udpArrival, { hostIpv6Route: "absent" })).toEqual({
       rawIp: "unknown", reason, reachableTargets, udpArrival,
     });
   });
 
   it.each([10049, 10047])("keeps IPv6 result %s unmeasured with proxy evidence", (t6) => {
-    expect(classifyMxcRawIpProbe({ ...proxyEvidence, t6 }, true, "absent")).toMatchObject({
+    expect(classifyMxcRawIpProbe({ ...proxyEvidence, t6 }, true, "absent", { hostIpv6Route: "absent" })).toMatchObject({
       rawIp: "unknown", reason: "ipv6-unmeasured",
     });
   });
 
-  it("reports a local IPv6 refusal as measured evidence", () => {
-    expect(classifyMxcRawIpProbe({ ...proxyEvidence, t6: 10013 }, true, "absent")).toMatchObject({
+  it.each(["absent", "present", "unknown"] as const)("reports a local IPv6 refusal as measured when the host route is %s", (hostIpv6Route) => {
+    expect(classifyMxcRawIpProbe({ ...proxyEvidence, t6: 10013 }, true, "absent", { hostIpv6Route })).toMatchObject({
       rawIp: "blocked", evidenceKind: "measured",
     });
   });
@@ -246,6 +254,25 @@ describe("raw IP startup observation", () => {
     }), openInvocationProxyListener);
     expect(result).toMatchObject({ state: "available", rawIpProbe: { rawIp, reason, udpArrival } });
     await expectUdpPortReleased(udpPort);
+  });
+
+  it.each([
+    ['["::1/128","fe80::/64"]', "blocked"],
+    ['["::/0"]', "ipv6-unmeasured"],
+    ['["2001:db8::/48"]', "ipv6-unmeasured"],
+    ['["invalid"]', "ipv6-unmeasured"],
+    [undefined, "ipv6-unmeasured"],
+  ] as const)("classifies startup evidence with host IPv6 routes %s", async (routes, reason) => {
+    const result = await probeMxcPowerShellStart(makeDeps(async (_file, args) => {
+      if (args[0] !== "--config-base64") {
+        const hostOutput = routes === undefined ? "" : `AVE_MXC_IPV6_ROUTES ${routes}\r\n`;
+        return { code: 0, stdout: `${hostOutput}192.0.2.2:49152`, stderr: "" };
+      }
+      const { id, controlHost, proxyUrl } = probeScriptInputs(args);
+      expect(await requestProxyRefusal(proxyUrl, controlHost)).toBe(403);
+      return { code: 0, stdout: evidenceFrame(id, { ...REFUSED, t6: 10051, capabilitySids: ["S-1-15-3-3"] }), stderr: "" };
+    }), openInvocationProxyListener);
+    expect(result).toMatchObject({ state: "available", rawIpProbe: { reason } });
   });
 
   it("requires the exact control destination and a fresh evidence ID for each launch", async () => {
