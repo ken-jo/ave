@@ -297,7 +297,8 @@ describe("CI test selection fallbacks", () => {
     ["affected", "pull_request", true, "1", "2"],
     ["affected", "pull_request", false, "1", "4"],
   ] as const)("validates the reported count for %s/%s with native checks %s", (mode, event, platforms, expected, wrong) => {
-    const plan = readPlanFile(JSON.stringify({ mode, reason: "planned", tests: [] }));
+    const tests = mode === "affected" ? ["src/core/__tests__/route-input.test.ts"] : [];
+    const plan = readPlanFile(JSON.stringify({ mode, reason: "planned", tests }));
     expect(() => validateCiShardCount(plan, runsCoverage(event, plan), platforms, wrong))
       .toThrow(`expected ${expected} Vitest shard(s)`);
     expect(() => validateCiShardCount(plan, runsCoverage(event, plan), platforms, expected)).not.toThrow();

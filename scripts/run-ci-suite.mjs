@@ -19,13 +19,11 @@ import {
   selectMessageCatalogChecks,
   selectTriggeredLockSuites,
 } from "./hooks/pre-push-source-policy.mjs";
-import { EMPTY_TEST_ONLY_NOTICE, readTestOnlyFiles, testOnlyFilesForDiff } from "./lib/ci-test-only-selection.mjs";
-import { NATIVE_TIER_TESTS } from "./lib/vitest-tiers.mjs";
+import { expandMustRunTests, MUST_RUN_TESTS_PATH } from "./lib/ci-must-run-tests.mjs";
+import { TEST_ONLY_REASON, testOnlyFilesForDiff, testOnlyLinuxTests } from "./lib/ci-test-only-selection.mjs";
 import { ciShardCount, readPlanFile, runsCoverage } from "./verify-ci-shard-count.mjs";
 
-export { readPlanFile, testOnlyFilesForDiff };
-
-export const MUST_RUN_TESTS_PATH = "config/ci-must-run-tests.json";
+export { expandMustRunTests, MUST_RUN_TESTS_PATH, readPlanFile, testOnlyFilesForDiff };
 
 // Broad affected selections use the full suite on non-integration bases.
 export const AFFECTED_TEST_LIMIT = 600;
@@ -98,43 +96,6 @@ export function testRunsRepoCodeOutOfProcess(testPath, readText) {
     }
   }
   return false;
-}
-
-// Directory entries expand to collected tests; stale entries selecting nothing fail.
-export function expandMustRunTests(document, trackedTests, changedPaths) {
-  const groups = document?.groups;
-  if (!groups || typeof groups !== "object" || Array.isArray(groups)) {
-    throw new Error(`${MUST_RUN_TESTS_PATH} must hold a "groups" object`);
-  }
-  const triggers = document.triggers ?? {};
-  if (!triggers || typeof triggers !== "object" || Array.isArray(triggers)) throw new Error("must-run triggers must be an object");
-  for (const [group, paths] of Object.entries(triggers)) {
-    if (!Object.hasOwn(groups, group) || !Array.isArray(paths) || paths.length === 0 || paths.some((path) => typeof path !== "string" || !isCanonicalGitPath(path.replace(/\/$/u, "")))) {
-      throw new Error(`invalid must-run triggers for ${group}`);
-    }
-  }
-  const selected = new Set();
-  for (const [group, entries] of Object.entries(groups)) {
-    if (!Array.isArray(entries) || entries.length === 0) {
-      throw new Error(`${MUST_RUN_TESTS_PATH} group "${group}" must list at least one path`);
-    }
-    for (const entry of entries) {
-      if (typeof entry !== "string" || entry.length === 0) {
-        throw new Error(`${MUST_RUN_TESTS_PATH} group "${group}" holds a non-path entry`);
-      }
-      const matches = entry.endsWith("/")
-        ? trackedTests.filter((test) => test.startsWith(entry))
-        : trackedTests.filter((test) => test === entry);
-      if (matches.length === 0) {
-        throw new Error(`${MUST_RUN_TESTS_PATH} group "${group}" entry ${entry} selects no collected test file`);
-      }
-      const triggered = changedPaths === undefined || !Object.hasOwn(triggers, group)
-        || changedPaths.some((path) => triggers[group].some((prefix) => path.startsWith(prefix)));
-      if (triggered) for (const test of matches) selected.add(test);
-    }
-  }
-  if (selected.size === 0) throw new Error(`${MUST_RUN_TESTS_PATH} must select at least one collected test file`);
-  return [...selected].sort();
 }
 
 // Reject malformed shard values so the aggregate cannot misreport coverage.
@@ -389,12 +350,12 @@ export function planCiSuite(eventName, { headRef, baseRef, ref, before } = {}) {
   const mustRunDocument = JSON.parse(readFileSync(MUST_RUN_TESTS_PATH, "utf8"));
   if (testOnlyFiles !== null) {
     const guards = expandMustRunTests(mustRunDocument, trackedTests, []);
-    const changedTests = testOnlyFiles.filter(path => isCollectedVitestFile(path) && !NATIVE_TIER_TESTS.includes(path));
     return {
       mode: "affected",
-      reason: "test-only diff: changed test files",
-      tests: [...new Set([...changedTests, ...guards])].sort(),
+      reason: TEST_ONLY_REASON,
+      tests: testOnlyLinuxTests(testOnlyFiles, guards),
       testOnlyFiles,
+      testOnlyChanges: changes.entries,
     };
   }
   const mustRunTests = expandMustRunTests(mustRunDocument, trackedTests, changes.entries.map(({ path }) => path));
@@ -477,7 +438,7 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
     if (process.argv[2] === "--write-plan" && !writePlanAt) throw new Error("--write-plan needs a file path");
     const planFile = process.env.AVE_CI_PLAN_FILE;
     const plan = planFile && !writePlanAt
-      ? readPlanFile(readFileSync(planFile, "utf8"))
+      ? readPlanFile(readFileSync(planFile, "utf8"), process.cwd())
       : planCiSuite(process.env.GITHUB_EVENT_NAME, {
         headRef: process.env.GITHUB_HEAD_REF,
         baseRef: process.env.GITHUB_BASE_REF,
@@ -505,11 +466,8 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
     const shard = parseCiShard(process.env.AVE_CI_SHARD);
     console.log(`[ci-suite] ${describeRun(plan, coverage)}${shard ? `, shard ${shard}` : ""}: ${plan.reason}`);
     if (!planFile) writeSummary(plan, coverage);
-    const testOnlyFiles = planFile && process.env.AVE_CI_TEST_ONLY_PLAN
-      ? readTestOnlyFiles() : plan.testOnlyFiles ?? null;
-    if (testOnlyFiles !== null && plan.tests.length === 0) {
-      console.log(EMPTY_TEST_ONLY_NOTICE);
-      process.exit(0);
+    if (process.env.AVE_CI_TEST_ONLY_PLAN && plan.testOnlyFiles === undefined) {
+      throw new Error("The test-only CI plan has no selection");
     }
     const result = runPlan(plan, coverage, shard);
     if (result.error) throw result.error;

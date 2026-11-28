@@ -98,9 +98,12 @@ describe("Vitest tiers for written planCiSuite plans", () => {
     const { written, tiers } = suitePlan([UNRELATED_TEST], PULL_REQUEST, { headRef: "test/renderer", baseRef: "main" });
     for (const plan of [
       { mode: written.mode, reason: "pull request into main; empty legacy selection", tests: [] },
-      { ...written, tests: [null, 42] }, { ...written, reason: undefined }, null,
+      null,
     ]) {
       expect(tiers(plan)).toMatchObject({ census: true, native: true });
+    }
+    for (const plan of [{ ...written, tests: [null, 42] }, { ...written, reason: undefined }, { ...written, testOnlyFiles: [] }]) {
+      expect(() => tiers(plan)).toThrow("Invalid test-only CI plan");
     }
   }, 120_000);
 

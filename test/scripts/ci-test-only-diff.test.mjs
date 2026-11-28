@@ -13,6 +13,12 @@ const scriptSuite = "test/scripts/route.test.mjs";
 const mustRun = "src/core/__tests__/contract.test.ts";
 const modified = path => ({ path, status: "M", oldMode: "100644", newMode: "100644" });
 const deleted = path => ({ ...modified(path), status: "D", newMode: "000000" });
+const testOnlyReason = "test-only diff: changed test files";
+const selector = fileURLToPath(new URL("../../scripts/lib/ci-test-only-selection.mjs", import.meta.url));
+
+function testOnlyPlan(files, tests) {
+  return { mode: "affected", reason: testOnlyReason, tests, testOnlyFiles: files, testOnlyChanges: files.map(modified) };
+}
 
 it("selects only changed collected suites and Node script tests", () => {
   assert.deepEqual(ci.testOnlyFilesForDiff([modified(suite), modified(scriptSuite)]), [suite, scriptSuite]);
@@ -196,15 +202,18 @@ it("preserves the shell boundary report check whenever a selected suite runs", a
   const repo = fixture(t);
   const plan = join(repo.root, "selection.json");
   const boundary = "src/permissions/__tests__/mxc-linux-boundary.native.test.ts";
+  repo.file(boundary, "// boundary suite\n");
   // The full run is whatever the step lists, so a suite added to the job is covered without editing this test.
   const fullList = [...step.run.match(/suites=\(\n([\s\S]*?)\n\s*\)/u)[1].matchAll(/\S+/gu)].map(match => match[0]);
   assert.ok(fullList.includes(boundary));
-  const run = `bun() { shift 7; printf 'test: %s\\n' "$@"; }\njq() { echo 'checked report'; return 42; }\n${step.run}`;
+  const run = `bun() { shift 7; printf 'test: %s\\n' "$@"; }\njq() { echo 'checked report'; return 42; }\n${step.run.replace("scripts/lib/ci-test-only-selection.mjs", '"$SELECTOR"')}`;
   const cases = [[null, 42], [[suite], 0], [[boundary], 42]];
   for (const [selection, status] of cases) {
-    writeFileSync(plan, JSON.stringify({ testOnlyFiles: selection }));
+    if (selection) writeFileSync(plan, JSON.stringify(testOnlyPlan(selection, selection[0] === boundary ? [mustRun] : [mustRun, suite])));
     const result = spawnSync("bash", ["-e", "-c", run], {
-      encoding: "utf8", env: { ...process.env, AVE_CI_TEST_ONLY_PLAN: selection ? plan : "", RUNNER_TEMP: repo.root },
+      cwd: repo.root, encoding: "utf8", env: {
+        ...process.env, AVE_CI_TEST_ONLY_PLAN: selection ? plan : "", RUNNER_TEMP: repo.root, SELECTOR: selector,
+      },
     });
     assert.ifError(result.error);
     assert.equal(result.status, status, result.stderr);
@@ -224,7 +233,7 @@ it("lets an empty Windows shard succeed only after validating the full assignmen
   const windowsPlan = join(repo.root, "windows.json");
   const selection = join(repo.root, "selection.json");
   const runner = fileURLToPath(new URL("../../scripts/run-windows-test-list.mjs", import.meta.url));
-  writeFileSync(selection, JSON.stringify({ testOnlyFiles: [mustRun] }));
+  writeFileSync(selection, JSON.stringify(testOnlyPlan([mustRun], [mustRun])));
   const run = (files) => {
     writeFileSync(windowsPlan, JSON.stringify({
       shards: files.map((path, index) => ({ id: index + 1, files: [path] })), tiers: [], tierShards: [],
@@ -257,5 +266,46 @@ for (const operation of ["rename", "copy"]) {
     const [plan] = writePlan(repo.root, "pull_request", repo.base);
     assert.equal(JSON.parse(plan).mode, "full", operation);
     assert.equal(Object.hasOwn(JSON.parse(plan), "testOnlyFiles"), false, operation);
+  });
+}
+
+const scriptRunner = fileURLToPath(new URL("../../scripts/run-script-tests.mjs", import.meta.url));
+const shardVerifier = fileURLToPath(new URL("../../scripts/verify-ci-shard-count.mjs", import.meta.url));
+const tiersRunner = fileURLToPath(new URL("../../scripts/plan-vitest-tiers.mjs", import.meta.url));
+
+for (const [label, command, contents] of [
+  ["script runner with an empty artifact", scriptRunner, { testOnlyFiles: [] }],
+  ["script runner with a nonexistent suite", scriptRunner, {
+    mode: "affected", reason: testOnlyReason, tests: [mustRun],
+    testOnlyFiles: [scriptSuite], testOnlyChanges: [modified(scriptSuite)],
+  }],
+  ["Linux shard with missing default tests", planner, {
+    mode: "affected", reason: testOnlyReason, tests: [],
+    testOnlyFiles: [suite], testOnlyChanges: [modified(suite)],
+  }],
+  ["tier planner with a dropped native selection", tiersRunner, {
+    mode: "affected", reason: testOnlyReason, tests: [mustRun], testOnlyFiles: [],
+    testOnlyChanges: [modified("src/permissions/__tests__/mxc-linux-boundary.native.test.ts")],
+  }],
+  ["shard verifier with a dropped guard", shardVerifier, {
+    mode: "affected", reason: testOnlyReason, tests: [suite],
+    testOnlyFiles: [suite], testOnlyChanges: [modified(suite)],
+  }],
+  ["shard verifier with an empty affected plan", shardVerifier, { mode: "affected", reason: "sample", tests: [] }],
+  ["tier planner with an empty affected plan", tiersRunner, { mode: "affected", reason: "sample", tests: [] }],
+]) {
+  it(`rejects an inconsistent CI plan in the ${label}`, (t) => {
+    const repo = fixture(t);
+    repo.file("ci-plan.json", JSON.stringify(contents));
+    const path = join(repo.root, "ci-plan.json");
+    const result = spawnSync(process.execPath, [command, ...(command === tiersRunner ? [path] : [])], {
+      cwd: repo.root, encoding: "utf8", env: {
+        ...process.env, AVE_CI_PLAN_FILE: path, AVE_CI_TEST_ONLY_PLAN: path, GITHUB_EVENT_NAME: "pull_request",
+        GITHUB_OUTPUT: "", GITHUB_STEP_SUMMARY: "", PLATFORM_CHECKS: "true", VITEST_SHARD_COUNT: "1",
+      },
+    });
+    assert.ifError(result.error);
+    assert.equal(result.status, 1, result.stdout);
+    assert.match(result.stderr, /test-only CI plan|affected CI selection must not be empty/u);
   });
 }
