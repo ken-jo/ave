@@ -1,5 +1,5 @@
-import { spawnSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { t } from "../../i18n/index.js";
@@ -271,4 +271,68 @@ describe.runIf(process.platform === "linux")("Linux placeholder ownership", () =
     }
     expect(existsSync(leaf)).toBe(false);
   });
+
+  describe("a holder run whose Ave exited (boot orphan stop)", () => {
+    const noPlaceholders = (policyLookups: PosixPolicyLookups) => rankPosixContainerRows(buildPolicyModel({
+      floors: [], launchGrants: [policyGrantRow(work, "rw", "launch-grant", true)], userGrants: [], extensionManifests: [],
+    }), "bubblewrap", policyLookups);
+    // Ave (pid 81) is gone; the holder marker is pid 82, alive with start "s82" and executable /usr/bin/bwrap.
+    const aveGone = (over: { start?: string } = {}) => ({
+      processExists: (pid: number) => pid === 82 || pid === host.pid,
+      processStart: (pid: number) => pid === 82 ? over.start ?? "s82" : pid === host.pid ? currentMxcRuntimeHost().processStart(pid) : null,
+    });
+    function leaveHolderRun() {
+      writeFileSync(journalPath(), JSON.stringify({
+        runs: [{ id: "7c9e6679-7425-40de-944b-e07fc1f90ae7", owner: { pid: 81, start: "gone" }, holder: { pid: 82, start: "s82", executable: "/usr/bin/bwrap" } }],
+        directories: [],
+      }));
+    }
+
+    it("records a holder's run entry even when it owns no placeholder, and retires it at release", async () => {
+      const hold = await holdMxcLinuxPlaceholders(lookups, noPlaceholders, host);
+      await hold.recordHolder(process.pid, "/usr/bin/bwrap");
+      const runs = (JSON.parse(readFileSync(journalPath(), "utf8")) as { runs: { holder?: unknown }[] }).runs;
+      expect(runs).toEqual([expect.objectContaining({ holder: { pid: process.pid, start: expect.any(String), executable: "/usr/bin/bwrap" } })]);
+      await hold.release();
+      expect((JSON.parse(readFileSync(journalPath(), "utf8")) as { runs: unknown[] }).runs).toEqual([]);
+    });
+
+    it("stops the recorded bwrap only when its start time and executable both match, and retires the run", async () => {
+      for (const [name, over, executable, stopped] of [
+        ["both match", {}, "/usr/bin/bwrap", true],
+        ["start time changed", { start: "other" }, "/usr/bin/bwrap", false],
+        ["executable changed", {}, "/usr/bin/sleep", false],
+      ] as const) {
+        leaveHolderRun();
+        const kill = vi.fn();
+        await sweepMxcLinuxPlaceholders({ ...host, ...aveGone(over) }, { stopOrphanHolders: { executable: () => executable, kill } });
+        expect(kill.mock.calls, name).toEqual(stopped ? [[82]] : []);
+        expect((JSON.parse(readFileSync(journalPath(), "utf8")) as { runs: unknown[] }).runs, name).toEqual([]);
+      }
+    });
+
+    it("leaves a live holder alone at an ordinary sweep, which keeps its run", async () => {
+      leaveHolderRun();
+      const kill = vi.fn();
+      await sweepMxcLinuxPlaceholders({ ...host, ...aveGone() });
+      expect(kill).not.toHaveBeenCalled();
+      expect((JSON.parse(readFileSync(journalPath(), "utf8")) as { runs: unknown[] }).runs).toHaveLength(1);
+    });
+
+    it("stops a real orphaned process group by its recorded executable", async () => {
+      const orphan = spawn("/bin/sleep", ["30"], { detached: true, stdio: "ignore" });
+      await new Promise(done => orphan.once("spawn", done));
+      const pid = orphan.pid as number;
+      writeFileSync(journalPath(), JSON.stringify({
+        runs: [{ id: "7c9e6679-7425-40de-944b-e07fc1f90ae7", owner: { pid: 81, start: "gone" },
+          holder: { pid, start: currentMxcRuntimeHost().processStart(pid), executable: readlinkSync(`/proc/${pid}/exe`) } }],
+        directories: [],
+      }));
+      const exited = new Promise(done => orphan.once("exit", (_code, signal) => done(signal)));
+      await sweepMxcLinuxPlaceholders({ ...host, processExists: (candidate: number) => candidate !== 81 && currentMxcRuntimeHost().processExists(candidate) },
+        { stopOrphanHolders: true });
+      expect(await exited).toBe("SIGKILL");
+    });
+  });
+
 });

@@ -644,7 +644,8 @@ async function recordLinuxShellSupport(startupSignal?: AbortSignal) {
   try {
     establishMxcRuntimeRoot();
     // Boot runs after the host instance lock, so an unreadable journal can be set aside here and nowhere else.
-    await sweepMxcLinuxPlaceholders(undefined, { recoverCorruptJournal: { ownsHostInstance: isHostInstanceLockHeld } });
+    // It also stops Linux holders an exited Ave left running, before the canary opens the first listener.
+    await sweepMxcLinuxPlaceholders(undefined, { recoverCorruptJournal: { ownsHostInstance: isHostInstanceLockHeld }, stopOrphanHolders: true });
   } catch (error) {
     log.warn("boot: container runtime root unavailable: %s", errorMessage(error));
   }

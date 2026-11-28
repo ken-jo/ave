@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { lstatSync, mkdirSync, readFileSync, realpathSync, rmdirSync } from "node:fs";
+import { lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, rmdirSync } from "node:fs";
 import { posix } from "node:path";
 import { z } from "zod";
 import { isMissingPathError, writeUtf8FileAtomicSync } from "../lib/atomic-file.js";
@@ -16,7 +16,11 @@ const DirectoryIdentity = z.object({ device: z.string().regex(/^\d+$/u), inode: 
 const AbsolutePath = z.string().refine((path) => path !== "/" && posix.isAbsolute(path) && posix.normalize(path) === path);
 const PidMarker = z.object({ pid: z.number().int().positive(), start: z.string().min(1).nullable() });
 const PlaceholderRegistry = z.object({
-  runs: z.array(z.object({ id: z.uuid(), owner: PidMarker, launcher: PidMarker.optional() })),
+  runs: z.array(z.object({
+    id: z.uuid(), owner: PidMarker, launcher: PidMarker.optional(),
+    /** A Linux holder's outer bwrap, which Ave started directly: stopped at the next boot if its owner died first. */
+    holder: z.object({ pid: z.number().int().positive(), start: z.string().min(1), executable: AbsolutePath }).optional(),
+  })),
   directories: z.array(z.object({
     path: AbsolutePath, identity: DirectoryIdentity.optional(), parent: DirectoryIdentity,
     leaf: z.boolean(), owners: z.array(z.uuid()),
@@ -130,7 +134,8 @@ function retireRun(registry: PlaceholderRegistry, id: string): void {
 function sweepDeadRuns(registry: PlaceholderRegistry, host: MxcRuntimeHost): boolean {
   let changed = false;
   for (const run of registry.runs) {
-    if (isLive(run.owner, host) || (run.launcher !== undefined && isLive(run.launcher, host))) continue;
+    if (isLive(run.owner, host) || (run.launcher !== undefined && isLive(run.launcher, host))
+      || (run.holder !== undefined && isLive(run.holder, host))) continue;
     retireRun(registry, run.id);
     changed = true;
   }
@@ -142,12 +147,52 @@ function registryPath(host: MxcRuntimeHost): string {
   return posix.join(requireMxcContainerStartRoot(host), "shell-placeholders.json");
 }
 
+/** How the boot stop reads and stops a recorded holder: `/proc/<pid>/exe` and a group KILL by default. */
+interface MxcLinuxOrphanHolderOps {
+  executable(pid: number): string | null;
+  kill(pid: number): void;
+}
+
+const PROC_ORPHAN_HOLDER_OPS: MxcLinuxOrphanHolderOps = {
+  executable(pid) {
+    try { return readlinkSync(`/proc/${pid}/exe`); } catch { return null; }
+  },
+  kill(pid) {
+    // The outer bwrap leads its own group (the launch gate starts it detached); its namespace ends with it.
+    try { process.kill(-pid, "SIGKILL"); } catch {
+      try { process.kill(pid, "SIGKILL"); } catch { /* gone */ }
+    }
+  },
+};
+
+/**
+ * Boot, before any listener opens (design 3 rule 4): a holder whose Ave died, and whose recorded bwrap is still the
+ * same process (same start time) running the recorded executable, is stopped. A pid failing either check is a
+ * different process now and is left alone; its marker is dropped. Either way the run is retired by the dead-run sweep.
+ */
+function stopOrphanHolders(registry: PlaceholderRegistry, host: MxcRuntimeHost, ops: MxcLinuxOrphanHolderOps): boolean {
+  let changed = false;
+  for (const run of registry.runs) {
+    const holder = run.holder;
+    if (holder === undefined || isLive(run.owner, host)) continue;
+    if (host.processExists(holder.pid) && host.processStart(holder.pid) === holder.start && ops.executable(holder.pid) === holder.executable) {
+      log.warn("Stopping Linux holder bwrap %d left running by an Ave that exited", holder.pid);
+      ops.kill(holder.pid);
+    }
+    delete run.holder;
+    changed = true;
+  }
+  return changed;
+}
+
 export interface MxcLinuxPlaceholderSweepOptions {
   /**
    * Boot only: set an unreadable journal aside and start empty. Another Ave on this account could still be using the
    * file, so this needs the host instance lock.
    */
   readonly recoverCorruptJournal?: { readonly ownsHostInstance: () => boolean };
+  /** Boot only: stop holders whose Ave died (design 3 rule 4). */
+  readonly stopOrphanHolders?: MxcLinuxOrphanHolderOps | true;
 }
 
 export async function sweepMxcLinuxPlaceholders(
@@ -168,7 +213,9 @@ export async function sweepMxcLinuxPlaceholders(
       recoveryNotice = t("sandboxPolicy.linuxPlaceholderJournalRecovered", { file: aside });
       return;
     }
-    if (sweepDeadRuns(registry, host)) saveRegistry(journal, registry);
+    const orphans = options.stopOrphanHolders;
+    const stopped = orphans !== undefined && stopOrphanHolders(registry, host, orphans === true ? PROC_ORPHAN_HOLDER_OPS : orphans);
+    if (sweepDeadRuns(registry, host) || stopped) saveRegistry(journal, registry);
   }, { createTarget: false });
 }
 
@@ -176,6 +223,8 @@ export interface MxcLinuxPlaceholderHold<Grants> {
   readonly grants: Grants;
   validate(): void;
   recordLauncher(pid: number): Promise<void>;
+  /** A Linux holder's run entry, written even when it owns no placeholder: Ave's pid and its outer bwrap. */
+  recordHolder(pid: number, executable: string): Promise<void>;
   release(): Promise<void>;
 }
 
@@ -264,6 +313,7 @@ export async function holdMxcLinuxPlaceholders<Grants extends PosixFilesystemGra
       throw error;
     }
 
+    let holderRecorded = false;
     return {
       grants,
       validate() {
@@ -284,8 +334,25 @@ export async function holdMxcLinuxPlaceholders<Grants extends PosixFilesystemGra
           saveRegistry(journal, registry);
         }, lockOptions);
       },
+      async recordHolder(pid, executable) {
+        const start = host.processStart(pid);
+        if (start === null) throw new Error("Container holder marker could not be proved");
+        await withFileLock(journal, async () => {
+          const registry = readRegistry(journal);
+          let run = registry.runs.find((run) => run.id === id);
+          if (run === undefined) {
+            // A run that owns no placeholder was never saved; the holder's marker needs its entry all the same.
+            if (owned.size > 0) throw new Error("Container placeholder ownership was lost");
+            run = { id, owner };
+            registry.runs.push(run);
+          }
+          run.holder = { pid, start, executable };
+          saveRegistry(journal, registry);
+        }, lockOptions);
+        holderRecorded = true;
+      },
       async release() {
-        if (owned.size === 0) return;
+        if (owned.size === 0 && !holderRecorded) return;
         await withFileLock(journal, async () => {
           const registry = readRegistry(journal);
           if (!registry.runs.some((run) => run.id === id)) return;
