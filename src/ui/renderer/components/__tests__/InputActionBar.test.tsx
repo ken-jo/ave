@@ -14,7 +14,7 @@ import type {
 import type { InputStatusRow } from "../../hooks/use-input-status-row.js";
 import { TEST_IDS, testIdSelector } from "../../../../shared/test-ids.js";
 import { getLlmThinkingBudgetRungs } from "../../../../shared/llm-vendor-defaults.js";
-import { readRepoFile } from "../../../../__tests__/test-helpers.js";
+import { deferred, readRepoFile } from "../../../../__tests__/test-helpers.js";
 import { mergeLlmPatch } from "../../../../data/settings-normalization.js";
 import type { LLMSettingsPatch } from "../../../../data/settings-store.js";
 import { fakeAppSettings } from "../../../../../test/renderer/fake-app-settings.js";
@@ -818,6 +818,26 @@ describe("model card (status-row model cell)", () => {
     await act(async () => { fireEvent.click(view.getByTestId("iab-status-model")); });
     expect(view.queryByTestId("model-quick-picker-option:codex")).toBeNull();
     expect(subscriptionRuntimeStatus).toHaveBeenLastCalledWith("codex", { refresh: true });
+  });
+
+  it("checks current status after a settings broadcast beats the initial picker read", async () => {
+    const llm = { activeChatRuntime: { kind: "subscription", provider: "codex", model: "example-model" } } as const;
+    const connected = fakeAppSettings({ llm, activeChatModel: llm.activeChatRuntime });
+    const initialSettings = deferred<typeof connected>();
+    const live = deferred<Awaited<ReturnType<typeof subscriptionRuntimeStatus>>>();
+    getSettings.mockReturnValue(initialSettings.promise);
+    subscriptionRuntimeStatus.mockReturnValueOnce(live.promise);
+    const view = renderBar();
+    fireEvent.click(view.getByTestId("iab-status-model"));
+    const update = onSettingsUpdated.mock.lastCall?.[0];
+    if (!update) throw new Error("Missing settings listener");
+    act(() => update(connected));
+    await act(async () => { initialSettings.resolve(connected); });
+    expect(subscriptionRuntimeStatus).toHaveBeenLastCalledWith("codex", { refresh: true });
+
+    act(() => update(connected));
+    await act(async () => { live.resolve({ ok: true, status: { provider: "codex", connection: "signed-out" } }); });
+    expect(view.queryByTestId("model-quick-picker-option:codex")).toBeNull();
   });
 
   it("drops a disconnected subscription from an open picker and adds it back after sign-in", async () => {

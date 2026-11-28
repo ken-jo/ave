@@ -10,6 +10,7 @@ import { SandboxRestartDialog } from "./SandboxRestartDialog.js";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../../components/ui/tooltip.js";
 import { t } from "../../../i18n/runtime.js";
 import { useTranslation } from "../../../i18n/react.js";
+import { resolveActiveChatModel } from "../../../shared/active-chat-model.js";
 import { isSubscriptionRuntimeId, subscriptionRuntimeDescriptor } from "../../../shared/subscription-runtime.js";
 import type { PluginEntry } from "../types.js";
 import { SandboxStatusBadge } from "./SandboxStatusBadge.js";
@@ -771,7 +772,8 @@ function ModelQuickPicker({
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
-    let updated = false;
+    let opening = true;
+    let latestUpdate: AppSettings | undefined;
     const take = (settings: AppSettings, activeChatModel = settings.activeChatModel) => {
       if (cancelled) return;
       const nextChoices = modelCardChoices(settings.llm, activeChatModel);
@@ -781,21 +783,31 @@ function ModelQuickPicker({
     };
     const api = getApi();
     const unsubscribe = api.onSettingsUpdated((settings) => {
-      updated = true;
-      take(settings);
-    });
-    void api.getSettings().then(async (settings) => {
-      if (updated || cancelled) return;
-      const active = settings.activeChatModel;
-      if (active?.kind !== "subscription") {
+      latestUpdate = settings;
+      if (opening && settings.llm.activeChatRuntime?.kind === "subscription") {
+        take(settings, resolveActiveChatModel(settings.llm, false));
+      } else {
         take(settings);
+      }
+    });
+    void api.getSettings().catch(() => undefined).then(async (initial) => {
+      const settings = latestUpdate ?? initial;
+      if (cancelled) return;
+      const route = settings?.llm.activeChatRuntime;
+      if (!settings || route?.kind !== "subscription") {
+        opening = false;
+        if (settings && !latestUpdate) take(settings);
         return;
       }
-      take(settings, { kind: "none", reason: "no-connected-provider" });
-      const result = await api.subscriptionRuntimeStatus(active.provider, { refresh: true });
-      if (!updated && result.ok && result.status.provider === active.provider && result.status.connection === "connected") {
-        take(settings);
-      }
+      take(settings, resolveActiveChatModel(settings.llm, false));
+      const result = await api.subscriptionRuntimeStatus(route.provider, { refresh: true }).catch(() => null);
+      opening = false;
+      const latest = latestUpdate ?? settings;
+      const current = latest.llm.activeChatRuntime;
+      const connected = result?.ok === true && result.status.provider === route.provider && result.status.connection === "connected";
+      take(latest, current?.kind === "subscription" && current.provider === route.provider
+        ? resolveActiveChatModel(latest.llm, connected)
+        : latest.activeChatModel);
     }).catch(() => {});
     return () => { cancelled = true; unsubscribe(); };
   }, [open]);
