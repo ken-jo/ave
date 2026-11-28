@@ -270,6 +270,13 @@ async function runRipgrep(
   if (authorizeCandidate !== undefined && !authorizeCandidate(root, realRoot)) {
     return { entries: [], more: false, exitCode: 1, stderr: "" };
   }
+  const listOnly = authorizeCandidate !== undefined;
+  // Names-only traversal never compiles the pattern. Validate with empty stdin before enumerating any candidates.
+  if (listOnly) {
+    await searchStdin(executable, undefined, cwd, input, root, 1, signal);
+    signal?.throwIfAborted();
+    seal?.verify();
+  }
   const explicitRealRoot = explicitSecretRoot === undefined ? undefined : realRoot;
   const policy = createFilePathPolicy("read", { keyMaterialByName: authorizeCandidate !== undefined });
   const skip = createStageWorkspacesSkip(windowsRealRoot === undefined ? realRoot : root);
@@ -279,7 +286,6 @@ async function runRipgrep(
   const listing: ListingState = { exitCode: null, stderr: "" };
   // A few files are searched ahead of the one whose results are taken next; they are cancelled once enough are found.
   const searches = new AbortController();
-  const listOnly = authorizeCandidate !== undefined;
   const files = listedFiles(executable, buildRipgrepArgs(root, input, listOnly), cwd, searches.signal, listing,
     !listOnly && input.outputMode === "count");
   const forward = (): void => searches.abort(signal?.reason);
@@ -524,7 +530,7 @@ async function searchBoundFile(
     const opened = await handle.stat({ bigint: true });
     if (!opened.isFile()) return [];
     scheduled?.rootSeal?.verify();
-    const found = await searchHandle(executable, handle, cwd, input, path, needed, signal);
+    const found = await searchStdin(executable, handle, cwd, input, path, needed, signal);
     if (!explicit) {
       const size = Number((await handle.stat({ bigint: true })).size);
       let sensitive = isSensitiveContent(judged, found.bytes, size);
@@ -564,13 +570,12 @@ async function searchBoundFile(
 }
 
 /**
- * Search the bytes of `handle`, from its start, for `input`; results are shown under `path`. ripgrep decodes them and
- * tells binary ones as in a file it is named: their lines show up to the first NUL byte, as the tree search shows them, and
- * a count is of the whole input, given only for a file the tree search counted (`buildRipgrepArgs`).
+ * Search bytes from the start of `handle`, or compile the pattern against empty stdin when there is no handle.
+ * The engine decodes stdin and applies the same binary heuristics as for an explicit file operand.
  */
-function searchHandle(
+function searchStdin(
   executable: string,
-  handle: FileHandle,
+  handle: FileHandle | undefined,
   cwd: string,
   input: GrepFilesInput,
   path: string,
@@ -669,7 +674,7 @@ function searchHandle(
       child.once("close", done);
     });
     const feed = async (): Promise<void> => {
-      for (let position = 0; !ended();) {
+      for (let position = 0; handle !== undefined && !ended();) {
         const buffer = Buffer.allocUnsafe(BOUND_READ_CHUNK_BYTES);
         const { bytesRead } = await handle.read(buffer, 0, buffer.length, position);
         // The search can end while a read is under way.
