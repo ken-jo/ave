@@ -2,15 +2,13 @@ import { spawn, execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createServer as createUnixServer } from "node:net";
-import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import { collectStream as collect } from "../../__tests__/support/collect-stream.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import seccompPins from "../mxc-linux-seccomp-pins.json" with { type: "json" };
-import { buildBubblewrapHolderRequest, requireMxcLinuxShellPrograms } from "../mxc-linux.js";
+import { buildBubblewrapHolderRequest, linuxHolderBwrap, requireMxcLinuxShellPrograms } from "../mxc-linux.js";
 import { posixPolicyLookups } from "../mxc-posix.js";
-import { measurePosixExecutableIdentity } from "../holder-admission-darwin.js";
 import {
   establishLinuxCaptureFolder, linuxHolderLaunchDigest, linuxHolderReplay, startLinuxHolder, type StartLinuxHolderOptions,
   translateLinuxHolderRequest,
@@ -177,7 +175,7 @@ describe.runIf(NATIVE)("native Linux holder start and stop", () => {
     const prepared = await prepare(script, argv);
     const events: string[] = [];
     const holder = await startLinuxHolder(prepared.call, {
-      label: "test:linux-holder", bwrap: { path: BWRAP, identity: measurePosixExecutableIdentity(BWRAP) }, cwd: work, online: false,
+      label: "test:linux-holder", bwrap: linuxHolderBwrap(BWRAP), cwd: work, online: false,
       admittedDigest: prepared.admitted, currentDigest: prepared.digest, assertStillValid: () => { events.push("recheck"); },
       beforeRelease: async () => { events.push("before-release"); }, afterVerifiedStop: async () => { events.push("after-verified-stop"); },
       ...over,
@@ -240,7 +238,7 @@ describe.runIf(NATIVE)("native Linux holder start and stop", () => {
     // bwrap itself fails before the helper runs: the request's working directory is gone.
     rmSync(work, { recursive: true });
     const refused = startLinuxHolder(prepared.call, {
-      label: "test:linux-holder", bwrap: { path: BWRAP, identity: measurePosixExecutableIdentity(BWRAP) }, cwd: root, online: false,
+      label: "test:linux-holder", bwrap: linuxHolderBwrap(BWRAP), cwd: root, online: false,
       admittedDigest: prepared.admitted, currentDigest: prepared.digest, assertStillValid: () => {},
     });
     await expect(refused).rejects.toMatchObject({ reason: "holder-start-failed" });
@@ -285,7 +283,7 @@ describe.runIf(NATIVE)("native Linux holder row-2 admission", () => {
     const programs = await requireMxcLinuxShellPrograms(resources);
     setProvenLinuxHolderRoute({
       programs, helperSha256: pin, captureFolder: establishLinuxCaptureFolder(requireMxcContainerStartRoot(), programs.helper, pin),
-      bwrap: { path: BWRAP, identity: measurePosixExecutableIdentity(BWRAP) },
+      bwrap: linuxHolderBwrap(BWRAP),
     });
   });
   afterEach(async () => {
@@ -439,11 +437,15 @@ describe.runIf(NATIVE)("native Linux holder row-2 admission", () => {
     });
 
     // Design 10.4 N2: what a holder with one write root cannot reach. Each probe prints ok or no; nothing prints content.
-    it("N2: denies the Ave home, the account's secret dotfolder and writes outside its root, and its own root cannot be moved; writing inside works", async () => {
-      const ssh = join(homedir(), ".ssh");
-      // Control: the host reads both (by listing, never by content).
-      // A denied folder is masked: inside it is absent or empty.
-      if (!existsSync(ssh) || readdirSync(ssh).length === 0) throw new Error(`N2 needs the account's ${ssh}, not empty, as its denied dotfolder`);
+    it("N2: denies the Ave home, the home's secret dotfolder and writes outside its root, and its own root cannot be moved; writing inside works", async () => {
+      // The sensitive floor is anchored at the policy home ($HOME): a fixture home with its own key, never the account's.
+      const policyHome = join(root, "policy-home");
+      const ssh = join(policyHome, ".ssh");
+      mkdirSync(ssh, { recursive: true });
+      writeFileSync(join(ssh, "id_fixture"), "fixture key");
+      vi.stubEnv("HOME", policyHome);
+      // Control: the host sees both. A denied folder is masked: inside it is absent or empty.
+      expect(readdirSync(ssh)).toEqual(["id_fixture"]);
       readdirSync(aveHome());
       const probe = `r() { if "$@" >/dev/null 2>&1; then printf ok; else printf no; fi; printf '|'; }
         seen() { [ -n "$(ls -A "$1" 2>/dev/null)" ]; }

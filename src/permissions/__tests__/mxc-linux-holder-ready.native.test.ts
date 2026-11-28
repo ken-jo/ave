@@ -9,9 +9,8 @@ import seccompPins from "../mxc-linux-seccomp-pins.json" with { type: "json" };
 import { __resetManagedChildProcessesForTest } from "../../main/managed-child-processes.js";
 import { spawnMxcConfinedChild, type MxcConfinedChildSpawn, type MxcConfinedChildSpec } from "../confined-child.js";
 import { startEgressRelayService, stopEgressRelayService } from "../egress-relay/relay.js";
-import { measurePosixExecutableIdentity } from "../holder-admission-darwin.js";
 import { setProvenLinuxHolderRoute } from "../linux-holder-route.js";
-import { requireMxcLinuxShellPrograms } from "../mxc-linux.js";
+import { linuxHolderBwrap, requireMxcLinuxShellPrograms } from "../mxc-linux.js";
 import { establishLinuxCaptureFolder } from "../mxc-linux-holder-launch.js";
 import { currentMxcRuntimeHost, establishMxcRuntimeRoot, requireMxcContainerStartRoot, _forgetMxcRuntimeRootForTest } from "../mxc-runtime-root.js";
 import { __resetSandboxRequestedAtBootForTest, setPluginWorkerConfinementRequestedAtBoot } from "../sandbox-capability.js";
@@ -65,7 +64,7 @@ describe.runIf(NATIVE)("native Linux holder start, proved again after the gate",
     const programs = await requireMxcLinuxShellPrograms(resources);
     setProvenLinuxHolderRoute({
       programs, helperSha256: pin, captureFolder: establishLinuxCaptureFolder(requireMxcContainerStartRoot(), programs.helper, pin),
-      bwrap: { path: BWRAP, identity: measurePosixExecutableIdentity(BWRAP) },
+      bwrap: linuxHolderBwrap(BWRAP),
     });
   });
   afterEach(async () => {

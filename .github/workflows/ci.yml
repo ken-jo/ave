@@ -2066,6 +2066,7 @@ jobs:
             src/permissions/__tests__/mxc-linux-filter-helper.native.test.ts
             src/permissions/__tests__/mxc-linux-holder-boundary.native.test.ts
             src/permissions/__tests__/mxc-linux-holder-canary.native.test.ts
+            src/permissions/__tests__/mxc-linux-holder-ready.native.test.ts
             src/permissions/__tests__/mxc-linux-holder-watch.test.ts
             src/permissions/__tests__/mxc-linux-placeholders.test.ts
           )
@@ -2097,6 +2098,7 @@ jobs:
           suites=(
             src/permissions/__tests__/mxc-linux-holder-boundary.native.test.ts
             src/permissions/__tests__/mxc-linux-holder-canary.native.test.ts
+            src/permissions/__tests__/mxc-linux-holder-ready.native.test.ts
           )
           if [[ -n "$AVE_CI_TEST_ONLY_PLAN" ]]; then
             selected=$(node scripts/lib/ci-test-only-selection.mjs "${suites[@]}")
