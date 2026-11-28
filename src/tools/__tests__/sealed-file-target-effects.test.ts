@@ -126,6 +126,29 @@ describe.runIf(process.platform === "win32")("sealed file targets at handler adm
     rmSync(root, { recursive: true, force: true });
   });
 
+  it("returns scheduled grep matches for directory and file case aliases", async () => {
+    const registry = new ToolRegistry();
+    registry.register(new GrepFilesTool());
+    manager.setUnattendedToolEffectResolver(createToolEffectResolver(registry));
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, undefined, undefined);
+    const sessionId = "scheduled-grep-case-alias";
+    registerUnattendedStage(sessionId, {
+      runKey: "run", stageId: "stage", workspaceRoot: project, isolation: { proven: false }, readOnly: true,
+      envelope: { ...emptyStageEnvelope(), tools: ["grep_files"] },
+    });
+    try {
+      for (const path of ["SUB", join("SUB", "NOTE.TXT")]) {
+        const [result] = await executor.executeAll([{
+          id: "grep", name: "grep_files", input: { path, pattern: "before" },
+        }], { executionCwd: project, sessionId, permissionContext: { headless: true, trustOrigin: "llm-tool-arg" } });
+        expect(result?.is_error, result?.content).not.toBe(true);
+        expect(result?.content).toContain("1: before");
+      }
+    } finally {
+      endUnattendedStage(sessionId);
+    }
+  });
+
   async function write(path: string, cwd: string, requestAndWait = answeringRequestAndWait(() => ({ choice: "deny-once" }))) {
     const tool = new WriteFileTool();
     const execute = vi.spyOn(tool, "execute").mockResolvedValue({ output: "written", isError: false });

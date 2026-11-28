@@ -6,7 +6,7 @@ import { z } from "zod";
 import type { ToolExecutionResult } from "./base.js";
 import { admissionDeniedFilePattern, createFilePathPolicy, createStageWorkspacesSkip, sensitiveFilePattern } from "./file-access-policy.js";
 import { isSensitiveContent, judgedPathNamesOpenedFile, KEY_MATERIAL_SCAN_BYTES } from "../permissions/sensitive-paths.js";
-import { openSealedReadTarget, sealReadTargets, type TargetSeal } from "../permissions/target-seal.js";
+import { openSealedReadTarget, sealReadTargets, sealsHold, TargetIdentityChangedError, type TargetSeal } from "../permissions/target-seal.js";
 import { buildSafeChildEnv } from "./safe-env.js";
 import { resolvePinnedRipgrepExecutable } from "./ripgrep-executable.js";
 import { forceKillManagedChildProcess, spawnManaged } from "../main/managed-child-processes.js";
@@ -264,7 +264,9 @@ async function runRipgrep(
   const wanted = input.offset + input.limit + 1;
   // Every file read lies under the real root: the tree search does not follow links, so only a path changed after it listed
   // the file can lead out. An explicitly searched secret root admits what lies beneath it, judged on real paths too.
-  const realRoot = windowsRealRoot ?? seal?.pathFor?.(root) ?? await realpath(resolve(cwd, root));
+  const realRoot = authorizeCandidate === undefined
+    ? windowsRealRoot ?? seal?.pathFor?.(root) ?? await realpath(resolve(cwd, root))
+    : sealedReadPath(root, seal);
   if (authorizeCandidate !== undefined && !authorizeCandidate(root, realRoot)) {
     return { entries: [], more: false, exitCode: 1, stderr: "" };
   }
@@ -453,6 +455,13 @@ type BoundSearchRoots = {
   readonly skip: (path: string) => boolean;
 } & ({ readonly lexical: string } | { readonly lexical?: undefined; readonly explicit: string | undefined });
 
+/** Scheduled comparisons use the native spelling recorded with the read identity. */
+function sealedReadPath(operand: string, seal: TargetSeal | undefined): string {
+  const path = seal?.pathFor?.(operand);
+  if (path === undefined || seal?.assertOpenedRead === undefined) throw new TargetIdentityChangedError();
+  return path;
+}
+
 function checkBoundSearchPath(
   path: string,
   cwd: string,
@@ -487,14 +496,15 @@ async function searchBoundFile(
 ): Promise<GrepEntry[]> {
   let judged: string;
   let handle: FileHandle;
+  let candidateSeal: TargetSeal | undefined;
   let explicit = false;
   try {
     const operand = resolve(cwd, path);
     const rootSeal = scheduled?.rootSeal;
-    const candidateSeal = scheduled === undefined ? undefined
+    candidateSeal = scheduled === undefined ? undefined
       : rootSeal?.assertOpenedRead && rootSeal.pathFor?.(operand) !== undefined ? rootSeal : sealReadTargets([operand]);
     if (roots.lexical === undefined) {
-      judged = candidateSeal?.pathFor?.(operand) ?? await realpath(operand);
+      judged = scheduled === undefined ? await realpath(operand) : sealedReadPath(operand, candidateSeal);
       if (!liesUnderRealRoot(judged, roots.real)) return [];
       explicit = roots.explicit !== undefined && isWithinAdmittedRoot(judged, roots.explicit);
       if (withLocalityDecision(() => policy.admissionDenied(judged) !== null || (!explicit && policy.sensitive(judged) !== null) || roots.skip(judged))) return [];
@@ -503,8 +513,7 @@ async function searchBoundFile(
       if (accepted === undefined) return [];
       ({ candidate: judged, explicit } = accepted);
     }
-    if (scheduled !== undefined &&
-        (candidateSeal?.pathFor?.(operand) !== judged || !scheduled.authorizeCandidate(operand, judged))) return [];
+    if (scheduled !== undefined && !scheduled.authorizeCandidate(operand, judged)) return [];
     rootSeal?.verify();
     handle = await openSealedReadTarget(judged, candidateSeal);
   } catch {
@@ -536,7 +545,9 @@ async function searchBoundFile(
       }
       if (sensitive !== null) return [];
     }
-    if (roots.lexical === undefined) {
+    if (scheduled !== undefined) {
+      if (!sealsHold(candidateSeal)) return [];
+    } else if (roots.lexical === undefined) {
       if (!withLocalityDecision(() => judgedPathNamesOpenedFile(judged, opened))) return [];
     } else {
       const current = withLocalityDecision(() => {
@@ -775,7 +786,7 @@ export async function searchWithRipgrep(
       return grepError(`grep_files: cannot search ${root}: ${errorMessage(error)}`);
     }
   } else {
-    let scope: { cwd: string; realRoot: string } | null | undefined;
+    let scope: { cwd: string; realRoot: string | undefined } | null | undefined;
     try {
       scope = withLocalityDecision(() => {
         seal?.verify();
@@ -783,7 +794,10 @@ export async function searchWithRipgrep(
         const route = admitLocalRoute(resolve(root)).verdict;
         const rootStat = localFs.stat(route);
         if (!rootStat.isFile() && !rootStat.isDirectory()) return undefined;
-        return { cwd: rootStat.isDirectory() ? root : dirname(root), realRoot: localFs.realpath(route) };
+        return {
+          cwd: rootStat.isDirectory() ? root : dirname(root),
+          realRoot: authorizeCandidate === undefined ? localFs.realpath(route) : undefined,
+        };
       });
     } catch (error) {
       return grepError(`grep_files: cannot search ${root}: ${errorMessage(error)}`);
@@ -804,6 +818,7 @@ export async function searchWithRipgrep(
 
   let run: RipgrepRun;
   try {
+    if (authorizeCandidate !== undefined) seal ??= sealReadTargets([root]);
     seal?.verify();
     const explicitSecretRoot = authorizeCandidate === undefined && !isWindows && sensitiveFilePattern(root) !== null ? root : undefined;
     run = await runRipgrep(executable, root, cwd, windowsRealRoot, input, signal, seal, explicitSecretRoot, authorizeCandidate);
