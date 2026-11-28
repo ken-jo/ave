@@ -208,7 +208,11 @@ type MxcStartDiagnostic = "STATUS_DLL_INIT_FAILED" | "nonzero-exit" | "launch-re
 type MxcStartSupport = Extract<MxcSupport, { state: "unavailable" }>
   | (Extract<MxcSupport, { state: "available" }> & { readonly rawIpProbe?: MxcRawIpProbeVerdict });
 type MxcLanProbeTarget = { readonly address: string; readonly port: number };
-type MxcHostRawIpEvidence = { readonly hostIpv6Route: "absent" | "present" | "unknown" };
+type MxcHostIpv6Route = "absent" | "present" | "unknown";
+type MxcHostRawIpEvidence = {
+  readonly hostIpv6Route: MxcHostIpv6Route;
+  readonly launchMode?: "proxy" | "plain";
+};
 
 function isRawIpTargetResult(value: unknown): value is MxcRawIpTargetResult {
   return value === "connected" || value === "deadline" || value === "other"
@@ -251,7 +255,7 @@ export function mxcRawIpBlockingRequirement(
   if (t6 === 10013) return "refused-local";
   if (t6 === 10051 || t6 === 10065) {
     if (capabilitySids !== null && !capabilitySids.some(sid => MXC_NETWORK_CAPABILITY_SIDS.has(sid))) return "refused-structural";
-    if (hostEvidence?.hostIpv6Route === "absent" && tl === 10013) {
+    if (hostEvidence?.launchMode === "proxy" && hostEvidence.hostIpv6Route === "absent" && tl === 10013) {
       if (udpArrival === "absent") return "refused-structural";
       if (udpArrival === "unmeasured") return "udp-unmeasured";
     }
@@ -427,7 +431,7 @@ try { $probe = $reader.ReadToEnd() } finally { $reader.Dispose() }
 `;
 }
 
-function classifyMxcHostIpv6Route(line: string): MxcHostRawIpEvidence["hostIpv6Route"] {
+function classifyMxcHostIpv6Route(line: string): MxcHostIpv6Route {
   try {
     const prefixes: unknown = JSON.parse(line.slice(MXC_IPV6_ROUTES_MARKER.length));
     if (!Array.isArray(prefixes)) return "unknown";
@@ -445,7 +449,7 @@ function classifyMxcHostIpv6Route(line: string): MxcHostRawIpEvidence["hostIpv6R
 
 async function lookupMxcHostNetwork(
   deps: DetectMxcSupportDeps, timeoutMs: number,
-): Promise<MxcHostRawIpEvidence & { readonly lan?: MxcLanProbeTarget }> {
+): Promise<{ readonly hostIpv6Route: MxcHostIpv6Route; readonly lan?: MxcLanProbeTarget }> {
   const shell = win32SystemBinary("WindowsPowerShell/v1.0/powershell", { SystemRoot: deps.systemRoot });
   const command = `
 $ErrorActionPreference = 'Stop'
@@ -701,7 +705,10 @@ export async function probeMxcPowerShellStart(
             const evidence = started?.code === 0 && !expired()
               ? parseMxcRawIpProbeEvidence(started.stdout, probeId, started.stderr) : undefined;
             const udpArrival = await udp?.observe(evidence?.udp ?? "unmeasured", MXC_RAW_IP_TARGET_TIMEOUT_MS) ?? "unmeasured";
-            rawIpProbe = classifyMxcRawIpProbe(evidence, controlRefused, udpArrival, hostNetwork);
+            rawIpProbe = classifyMxcRawIpProbe(evidence, controlRefused, udpArrival, {
+              hostIpv6Route: hostNetwork?.hostIpv6Route ?? "unknown",
+              launchMode: result?.request.runtimeConfig.networkProxy === listener.url ? "proxy" : undefined,
+            });
           }
         }
       } finally {
