@@ -2462,7 +2462,7 @@ export const en = {
   "formatIpcError.subscriptionRuntimeNativeRequired": "This subscription runtime requires a native installation. Run claude install or use the official native installer, then remove the npm-installed copy and check again.",
   "formatIpcError.subscriptionModelNotSupported": "The selected model is unavailable. Choose a supported model in Settings.",
   "formatIpcError.missingPluginPromptEnvelope": "Template prompt source information is missing.",
-  "formatIpcError.processEntryUnconfined": "This extension runs its own program, which Ave runs only inside the OS Tool Sandbox on macOS or Linux. Turn on Settings > Permissions > OS Tool Sandbox, then restart the extension. It cannot run on Windows.",
+  "formatIpcError.processEntryUnconfined": "This extension runs its own program, which Ave does not run: on Windows, macOS and Linux extensions start in containers that accept only Ave's own extension runtime. Changing the OS Tool Sandbox setting or reinstalling will not help; use a version of the extension that runs on Ave's runtime.",
   "formatIpcError.processEntryRequiresPinnedArtifact": "This extension runs its own program, which Ave installs only from a marketplace release or archive pinned by its sha256 hash, so this copy was refused. Install it from a marketplace that pins its release; a direct or local install of it is always refused.",
   "formatIpcError.pluginsMissing": "This routine cannot run because none of its allowed extensions are installed. Reinstall them or remove the routine.",
   "formatIpcError.invalidPath": "That path is not valid.",
@@ -4691,8 +4691,8 @@ export const en = {
   "pluginConfigSchemaForm.customPanelNote": "This extension provides an additional settings panel ({exportName}) that will be auto-mounted via the UI Slot System (§9.3) in a future release.",
 
   /** Source fragment assembled into the locale catalogs. */
-  "pluginConfigTab.doctorProcessEntryUnconfinedTitle": "Extension needs the OS Tool Sandbox",
-  "pluginConfigTab.doctorProcessEntryUnconfinedDescription": "This extension runs its own program, which Ave allows only inside the OS Tool Sandbox on macOS or Linux. Turn on Settings > Permissions > OS Tool Sandbox, then restart the extension. Reinstalling will not help, and it cannot run on Windows.",
+  "pluginConfigTab.doctorProcessEntryUnconfinedTitle": "Extension Ave does not run",
+  "pluginConfigTab.doctorProcessEntryUnconfinedDescription": "This extension runs its own program, which Ave does not run: on Windows, macOS and Linux extensions start in containers that accept only Ave's own extension runtime. Changing the OS Tool Sandbox setting or reinstalling will not help.",
   "pluginConfigTab.doctorProcessEntryUnpinnedTitle": "Extension install is not pinned",
   "pluginConfigTab.doctorProcessEntryUnpinnedDescription": "This installed copy was refused: Ave runs an extension that runs its own program only when it was installed from a marketplace release or archive pinned by its sha256 hash. Remove it, then install it from a marketplace that pins its release; reinstalling it from the same source will not help.",
   "pluginConfigTab.protocolUpdateRepository": "Update required: get a compatible release from {source}",

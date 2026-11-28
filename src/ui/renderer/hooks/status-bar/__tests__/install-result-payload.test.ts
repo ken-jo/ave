@@ -86,7 +86,7 @@ describe("install-result payload", () => {
     expect(toastCopyFor(unpinned)).toContain("이 사본은 거부되었습니다. 릴리스를 고정한 마켓플레이스에서 설치하세요.");
     const unconfined = buildInstallFailureResult("process-kit", new ProcessEntryUnconfinedError(), "addPlugin failed");
     expect(unconfined.error).toBe("process-entry-unconfined");
-    expect(toastCopyFor(unconfined)).toContain("OS 도구 샌드박스 안에서만 실행합니다");
+    expect(toastCopyFor(unconfined)).toContain("Ave 자체 익스텐션 런타임만 받는 컨테이너");
   });
 
   it("falls back to the caller's message when the failure carries no text", () => {

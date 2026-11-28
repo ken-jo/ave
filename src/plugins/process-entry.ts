@@ -11,8 +11,9 @@ export const PROCESS_ENTRY_FIRST_APP_VERSION = "0.13.0";
 
 export const PROCESS_ENTRY_UNCONFINED_CODE = "process-entry-unconfined";
 const PROCESS_ENTRY_UNCONFINED_MESSAGE =
-  "This extension runs its own program, which Ave runs only inside the OS Tool Sandbox on macOS or Linux. "
-  + "Turn on Settings > Permissions > OS Tool Sandbox, then restart the extension. It cannot run on Windows.";
+  "This extension runs its own program, which Ave does not run: on Windows, macOS and Linux extensions start in "
+  + "containers that accept only Ave's own extension runtime. Changing the OS Tool Sandbox setting or reinstalling "
+  + "will not help; use a version of the extension that runs on Ave's runtime.";
 
 export const PROCESS_ENTRY_REQUIRES_PINNED_ARTIFACT_CODE = "process-entry-requires-pinned-artifact";
 export const PROCESS_ENTRY_REQUIRES_PINNED_ARTIFACT_MESSAGE =

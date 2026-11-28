@@ -2464,7 +2464,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "formatIpcError.subscriptionRuntimeNativeRequired": "이 구독 실행 환경은 네이티브 설치가 필요합니다. claude install 또는 공식 네이티브 설치 프로그램으로 설치한 다음 npm으로 설치한 복사본을 제거하고 다시 확인하세요.",
   "formatIpcError.subscriptionModelNotSupported": "선택한 모델을 사용할 수 없습니다. 설정에서 지원되는 모델을 선택하세요.",
   "formatIpcError.missingPluginPromptEnvelope": "템플릿 프롬프트의 출처 정보가 없습니다.",
-  "formatIpcError.processEntryUnconfined": "이 익스텐션은 자체 프로그램을 실행하며, Ave는 이런 프로그램을 macOS 또는 Linux의 OS 도구 샌드박스 안에서만 실행합니다. 설정 > 권한 > OS 도구 샌드박스를 켠 뒤 익스텐션을 다시 시작하세요. Windows에서는 실행할 수 없습니다.",
+  "formatIpcError.processEntryUnconfined": "이 익스텐션은 자체 프로그램을 실행하는데, Ave는 이를 실행하지 않습니다. Windows, macOS, Linux에서 익스텐션은 Ave 자체 익스텐션 런타임만 받는 컨테이너에서 시작됩니다. OS 도구 샌드박스 설정을 바꾸거나 다시 설치해도 해결되지 않으니, Ave 런타임에서 동작하는 버전의 익스텐션을 사용하세요.",
   "formatIpcError.processEntryRequiresPinnedArtifact": "이 익스텐션은 자체 프로그램을 실행하므로, Ave는 sha256 해시로 고정된 마켓플레이스 릴리스 또는 아카이브에서만 설치합니다. 그래서 이 사본은 거부되었습니다. 릴리스를 고정한 마켓플레이스에서 설치하세요. 직접 설치나 로컬 설치는 항상 거부됩니다.",
   "formatIpcError.pluginsMissing": "이 루틴에서 허용한 익스텐션이 모두 설치되어 있지 않아 실행할 수 없습니다. 익스텐션을 다시 설치하거나 루틴을 삭제해 주세요.",
   "formatIpcError.invalidPath": "경로가 올바르지 않습니다.",
@@ -4693,8 +4693,8 @@ export const ko: Record<MessageCatalogKey, string> = {
   "pluginConfigSchemaForm.customPanelNote": "이 익스텐션은 추가 설정 패널 ({exportName}) 을 제공합니다. 향후 UI Slot System(§9.3) 을 통해 자동 마운트될 예정입니다.",
 
   /** Source fragment assembled into the locale catalogs. */
-  "pluginConfigTab.doctorProcessEntryUnconfinedTitle": "OS 도구 샌드박스가 필요한 익스텐션",
-  "pluginConfigTab.doctorProcessEntryUnconfinedDescription": "이 익스텐션은 자체 프로그램을 실행하며, Ave는 이를 macOS 또는 Linux의 OS 도구 샌드박스 안에서만 허용합니다. 설정 > 권한 > OS 도구 샌드박스를 켠 뒤 익스텐션을 다시 시작하세요. 다시 설치해도 해결되지 않으며, Windows에서는 실행할 수 없습니다.",
+  "pluginConfigTab.doctorProcessEntryUnconfinedTitle": "Ave가 실행하지 않는 익스텐션",
+  "pluginConfigTab.doctorProcessEntryUnconfinedDescription": "이 익스텐션은 자체 프로그램을 실행하는데, Ave는 이를 실행하지 않습니다. Windows, macOS, Linux에서 익스텐션은 Ave 자체 익스텐션 런타임만 받는 컨테이너에서 시작됩니다. OS 도구 샌드박스 설정을 바꾸거나 다시 설치해도 해결되지 않습니다.",
   "pluginConfigTab.doctorProcessEntryUnpinnedTitle": "고정되지 않은 익스텐션 설치",
   "pluginConfigTab.doctorProcessEntryUnpinnedDescription": "설치된 이 사본은 거부되었습니다. Ave는 자체 프로그램을 실행하는 익스텐션을 sha256 해시로 고정된 마켓플레이스 릴리스 또는 아카이브에서 설치한 경우에만 실행합니다. 익스텐션을 제거한 뒤 릴리스를 고정한 마켓플레이스에서 설치하세요. 같은 소스에서 다시 설치해도 해결되지 않습니다.",
   "pluginConfigTab.protocolUpdateRepository": "업데이트 필요: {source}에서 호환 버전 확인",
