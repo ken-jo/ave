@@ -12,9 +12,6 @@ import {
   abandonManagedLaunch, createManagedResources, forceKillManagedChildProcess, ManagedExitUnconfirmedError, observeManagedProcessGroup,
   recordManagedPaths, releaseManagedResources, spawnManaged, stopOrphanedManagedProcesses, type ConfirmedExit, type ManagedResources,
 } from "../main/managed-child-processes.js";
-import { OfflineScanExitUnconfirmedError, startOfflineProcessHolder, wrapOfflineProcess, type OfflineProcessHolder } from "../permissions/offline-process-sandbox.js";
-import { isOfflineHolderConfinementActive } from "../permissions/asrt-sandbox.js";
-import { MxcProcessCleanupError } from "../permissions/mxc-extension-errors.js";
 import { buildSandboxedChildEnv } from "../tools/safe-env.js";
 import { PREVIEW_DOCUMENT_LIMITS } from "../shared/preview-document.js";
 import { readPreviewDocumentInput } from "../tools/preview-document-input.js";
@@ -85,6 +82,25 @@ function runtimeTempRoot(): string {
   // claim + 0700), not the root. On win32 the absolute-path analogue is the system temp directory.
   if (process.platform === "win32") return tmpdir();
   return process.platform === "darwin" ? "/private/tmp" : "/tmp";
+}
+
+/**
+ * Where the resident's single-instance pipe appears on POSIX. The office binds it under `/tmp` whenever that is
+ * writable, which it is for the unconfined app, and uses `OSL_SOCKET_PATH` only otherwise (measured with 26.8.3.1 on
+ * macOS): `/tmp/OSL_PIPE_<uid>_SingleOfficeIPC_<hash>`, the hash being the MD5 of the profile URL in UTF-16LE, printed
+ * byte by byte without zero padding. The fresh private profile makes the name this session's own.
+ */
+function instancePipePath(runtime: Pick<SessionRuntime, "profile">): string | undefined {
+  if (process.platform === "win32") return undefined;
+  const digest = createHash("md5").update(Buffer.from(pathToFileURL(runtime.profile).href, "utf16le")).digest();
+  const hash = [...digest].map(byte => byte.toString(16)).join("");
+  return join(runtimeTempRoot(), `OSL_PIPE_${ownUid()}_SingleOfficeIPC_${hash}`);
+}
+
+function ownUid(): number {
+  const uid = process.getuid?.();
+  if (uid === undefined) throw failure("Document engine user identity is unavailable.");
+  return uid;
 }
 
 function processAlive(pid: number): boolean {
@@ -174,8 +190,8 @@ export async function sweepStaleDocumentEngineRuntimes(root = runtimeTempRoot())
 }
 
 interface RunningProcess {
-  /** The managed wrap's group observer, or a macOS holder's: the same wait and receipt contract. */
-  exit: OfflineProcessHolder["exit"];
+  /** The managed process group's observer: its wait and its exit receipt. */
+  exit: ReturnType<typeof observeManagedProcessGroup>;
   ended: boolean;
   /** Diagnostic text since the last job boundary; the resident's window restarts for each forwarded job. */
   output: string;
@@ -199,7 +215,6 @@ interface SessionRuntime extends EngineScope {
   profile: string;
   ipc: string;
   env: NodeJS.ProcessEnv;
-  runtimeDirectories: string[];
   resident?: RunningProcess;
   children: Set<RunningProcess>;
   importerReady: boolean;
@@ -239,7 +254,7 @@ function aborted(signal: AbortSignal): void { signal.throwIfAborted(); }
 
 function childEnvironment(output: string): NodeJS.ProcessEnv {
   return {
-    ...buildSandboxedChildEnv({}), PATH: "/usr/bin:/bin", HOME: output,
+    ...buildSandboxedChildEnv({}), ...(process.platform === "win32" ? {} : { PATH: "/usr/bin:/bin" }), HOME: output,
     TMPDIR: output, TMP: output, TEMP: output, PWD: output, XDG_CACHE_HOME: join(output, "cache"),
     XDG_CONFIG_HOME: join(output, "config"), XDG_DATA_HOME: join(output, "data"),
     SAL_USE_VCLPLUGIN: "svp", SAL_DISABLE_OPENCL: "1", LANG: "en_US.UTF-8", LC_ALL: "en_US.UTF-8",
@@ -390,7 +405,6 @@ export class LibreOfficeSessionPool {
 
   private async createRuntime(session: EngineSession, signal: AbortSignal): Promise<SessionRuntime> {
     await session.installation.verifyBeforeSpawn(signal);
-    const runtimeDirectory = await realpath(session.installation.root);
     signal.throwIfAborted();
     const directory = await createPrivateTempDirectory(join(runtimeTempRoot(), RUNTIME_PREFIX));
     const output = join(directory, "output");
@@ -401,7 +415,7 @@ export class LibreOfficeSessionPool {
     recordManagedPaths(resources, { path: directory, recursive: true });
     const runtime: SessionRuntime = {
       directory, input, output, profile, ipc, env: { ...childEnvironment(output), OSL_SOCKET_PATH: ipc },
-      runtimeDirectories: [runtimeDirectory], children: new Set(), resources, importerReady: false,
+      children: new Set(), resources, importerReady: false,
     };
     // Publish ownership before any child starts, so cancellation can always drain it.
     session.runtime = runtime;
@@ -438,7 +452,15 @@ export class LibreOfficeSessionPool {
     const residentResources = createManagedResources(runtime.resources);
     recordManagedPaths(residentResources, { path: holderDirectory, recursive: true });
     const holder = join(holderDirectory, `${randomUUID()}.fodt`);
+    const pipe = instancePipePath(runtime);
+    // A shared-temp pipe the resident left behind (a killed office does not unlink it) is removed with its receipt.
+    if (pipe !== undefined) recordManagedPaths(residentResources, { path: pipe });
     try {
+      // The name is derived from this session's fresh profile; an entry already there is not this resident's.
+      if (pipe !== undefined && await lstat(pipe).then(() => true, (error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return false;
+        throw error;
+      })) throw failure("Document engine instance pipe name is already in use.");
       await mkdir(holderDirectory, { mode: 0o700 });
       await writeFile(holder, HOST_TEXT_DOCUMENT, { flag: "wx", mode: 0o600 });
     } catch (error) {
@@ -465,7 +487,7 @@ export class LibreOfficeSessionPool {
     for (;;) {
       aborted(signal);
       if (resident.ended) throw resident.failure ?? failure("Document engine exited before it was ready.");
-      const pipe = await this.hasInstancePipe(runtime.ipc);
+      const pipe = await this.hasInstancePipe(runtime);
       const framed = await lstat(lock).then(entry => entry.isFile(), (error: NodeJS.ErrnoException) => {
         if (error.code === "ENOENT") return false;
         throw error;
@@ -476,7 +498,15 @@ export class LibreOfficeSessionPool {
     }
   }
 
-  private async hasInstancePipe(ipc: string): Promise<boolean> {
+  private async hasInstancePipe(runtime: SessionRuntime): Promise<boolean> {
+    const shared = instancePipePath(runtime);
+    if (shared !== undefined) {
+      return lstat(shared).then(entry => entry.isSocket() && entry.uid === ownUid(), (error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return false;
+        throw error;
+      });
+    }
+    const ipc = runtime.ipc;
     for (const name of await readdir(ipc)) {
       if (name.startsWith("OSL_PIPE_") && (await lstat(join(ipc, name))).isSocket()) return true;
     }
@@ -551,7 +581,6 @@ export class LibreOfficeSessionPool {
   private async spawn(session: EngineSession, runtime: SessionRuntime, command: string,
     args: readonly string[], signal: AbortSignal, scope: EngineScope = runtime,
     resources = createManagedResources(scope.resources)): Promise<RunningProcess> {
-    let scanExit: ConfirmedExit | undefined;
     const noteExit = (receipt: ConfirmedExit): void => {
       scope.lastExit = receipt;
       runtime.lastExit = receipt;
@@ -582,25 +611,12 @@ export class LibreOfficeSessionPool {
     try {
       aborted(signal);
       await session.installation.verifyBeforeSpawn(signal);
-      if (isOfflineHolderConfinementActive()) {
-        // macOS with the holder route on: the standard holder plus the session's one socket directory (owner L-O1).
-        session.installation.assertCurrent();
-        const holder = await startOfflineProcessHolder({ label: "document-engine", command, args, inputDirectory: runtime.input,
-          outputDirectory: runtime.output, ipcDirectory: runtime.ipc, runtimeDirectories: runtime.runtimeDirectories, env: runtime.env,
-          signal, resources });
-        const { process, collect } = track(holder.exit, (reason) => { void holder.exit.confirmExit(reason); });
-        holder.stdout.on("data", collect);
-        holder.stderr.on("data", collect);
-        void holder.exit.wait().then(({ code, signal: childSignal }) => ended(process, code, childSignal), () => ended(process, null, null));
-        return process;
-      }
-      const wrap = await wrapOfflineProcess({ command, args, inputDirectory: runtime.input, outputDirectory: runtime.output,
-        ipcDirectory: runtime.ipc, runtimeDirectories: runtime.runtimeDirectories, env: runtime.env, signal, resources,
-        noteExit: receipt => { scanExit = receipt; noteExit(receipt); } });
+      // LibreOffice is a verified app the user installed (owner decision 2026-11-28): Ave starts it as it starts any
+      // installed program, unconfined, with its private profile, environment and fixed command lines.
       aborted(signal);
       session.installation.assertCurrent();
-      spawnManaged(wrap.argv[0], wrap.argv.slice(1), {
-        env: wrap.env, cwd: runtime.output, stdio: ["ignore", "pipe", "pipe"], detached: true, shell: false,
+      spawnManaged(command, [...args], {
+        env: runtime.env, cwd: runtime.output, stdio: ["ignore", "pipe", "pipe"], detached: true, shell: false,
       }, { label: "document-engine", killProcessGroup: true }, child => {
         const { process, collect } = track(observeManagedProcessGroup(child, resources), (reason) => { void forceKillManagedChildProcess(child, reason); });
         child.stdout?.on("data", collect);
@@ -613,10 +629,7 @@ export class LibreOfficeSessionPool {
       });
     } catch (error) {
       if (running) await this.finishProcess(runtime, running, "document engine launch failed");
-      else if (error instanceof OfflineScanExitUnconfirmedError) runtime.unconfirmedExit = error;
-      // A holder start refused with an unverified stop may have left a process: its resources stay owned.
-      else if (error instanceof MxcProcessCleanupError) runtime.unconfirmedExit = terminationUnconfirmed();
-      else await (scanExit ? releaseManagedResources(resources, scanExit) : abandonManagedLaunch(resources));
+      else await abandonManagedLaunch(resources);
       throw runtime.unconfirmedExit ?? error;
     }
     if (!running) {
@@ -719,7 +732,6 @@ export class LibreOfficeSessionPool {
     if (runtime.importerReady) return;
     const javaHome = await this.findJavaHome(signal);
     runtime.javaHome = javaHome;
-    runtime.runtimeDirectories.push(javaHome);
     runtime.env = { ...runtime.env, JAVA_HOME: javaHome, JRE_HOME: javaHome,
       UNO_JAVA_JFW_JREHOME: pathToFileURL(javaHome).href };
     // A profile's extension registry is never changed while its resident is using it.

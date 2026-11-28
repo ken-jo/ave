@@ -126,10 +126,10 @@ describe("container route call sites", () => {
       .toEqual(["src/boot/steps/sandbox-init.ts"]);
   });
 
-  it("lets only the offline holder session open a Unix-socket directory, and only the document engine start one (L-O1)", () => {
-    expect(callers(/\bunixSocketDirectory\b/u, "src/permissions/seatbelt-holder-launch.ts")).toEqual(["src/sandbox/wrap-bundled-command.ts"]);
-    expect(callers(/\bsession:\s*\{\s*writeRoot:/u, "src/sandbox/wrap-bundled-command.ts")).toEqual(["src/permissions/offline-process-sandbox.ts"]);
-    expect(callers(/\bstartOfflineProcessHolder\s*\(/u, "src/permissions/offline-process-sandbox.ts")).toEqual(["src/observation/libreoffice-process.ts"]);
+  it("starts the document engine as an installed app, through no sandbox or holder (owner decision 2026-11-28)", () => {
+    const engine = readFileSync(resolve("src/observation/libreoffice-process.ts"), "utf8");
+    expect(engine).not.toMatch(/from "\.\.\/(permissions|sandbox)\//u);
+    expect(engine).toMatch(/\bspawnManaged\(command, \[\.\.\.args\]/u);
   });
 
   it("shares the request builder between boot verification and the POSIX shell launch", () => {
