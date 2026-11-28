@@ -369,7 +369,8 @@ const procReader: LinuxProcessReader = {
 
 /**
  * The resident set at the ready byte: outer bwrap, inner bwrap, the launcher's `sh -c` when that shell did not exec its
- * one command (dash does not), and the filter helper, each the single child of the one before. Online the helper is
+ * one command (dash does not), and the filter helper, each a child of the one before (the inner bwrap may also hold the
+ * holder's orphans, which its namespace ends with it). Online the helper is
  * the bridge and the holder is its single child; offline the helper executed the holder and is it. Anything short of
  * that is named, never filled in: a missing member would shrink what "verified" means.
  */
@@ -389,12 +390,33 @@ export function readLinuxResidentSet(outer: number, online: boolean, launcherCom
   if (typeof outerBwrap === "string") return outerBwrap;
   const innerBwrap = only(outerBwrap, "outer bwrap");
   if (typeof innerBwrap === "string") return innerBwrap;
-  const below = only(innerBwrap, "inner bwrap");
+  // The inner bwrap is its namespace's init: a holder that daemonized already has its orphans here, beside the one
+  // launcher member. The launcher's shell is recognised by its exact words, `sh -c <the request's command line>`, never
+  // by its name; without one, the helper is the child that started first (each orphan descends from it).
+  const innerChildren = reader.children(innerBwrap.pid);
+  if (innerChildren === undefined) return "the inner bwrap's children cannot be read";
+  const isShell = (pid: number): boolean => {
+    const words = reader.commandLine(pid);
+    return words !== undefined && words.length === launcherCommand.length && words.every((word, index) => word === launcherCommand[index]);
+  };
+  const shells = innerChildren.filter(isShell);
+  if (shells.length > 1) return `the inner bwrap has ${shells.length} launcher shells, not one`;
+  let below: ResidentProcess | string;
+  if (shells.length === 1) below = member(shells[0] as number, "launcher shell");
+  else if (innerChildren.length === 1) below = member(innerChildren[0] as number, "child of the inner bwrap");
+  else if (innerChildren.length === 0) return "the inner bwrap has no children";
+  else {
+    const ticks = (start: string): number => Number(start.slice(start.lastIndexOf(":") + 1));
+    const started = innerChildren.flatMap((pid) => { const start = reader.start(pid); return start === null ? [] : [{ pid, start }]; })
+      .sort((a, b) => ticks(a.start) - ticks(b.start));
+    if (started.length === 0) return "the inner bwrap's children are gone";
+    if (started.length > 1 && ticks(started[0]!.start) === ticks(started[1]!.start)) {
+      return `the inner bwrap has ${innerChildren.length} children and no single first one`;
+    }
+    below = started[0]!;
+  }
   if (typeof below === "string") return below;
-  // The launcher's shell is recognised by its exact words, `sh -c <the request's command line>`, never by its name.
-  const words = reader.commandLine(below.pid);
-  if (words === undefined) return "the inner bwrap's child cannot be read";
-  const shell = words.length === launcherCommand.length && words.every((word, index) => word === launcherCommand[index]) ? below : undefined;
+  const shell = shells.length === 1 ? below : undefined;
   const helper = shell === undefined ? below : only(shell, "launcher shell");
   if (typeof helper === "string") return helper;
   const processes = [outerBwrap, innerBwrap, ...(shell === undefined ? [] : [shell]), helper];

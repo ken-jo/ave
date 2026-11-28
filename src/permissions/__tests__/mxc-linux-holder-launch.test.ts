@@ -212,10 +212,24 @@ describe("Linux holder resident set", () => {
     expect(set).toMatchObject({ processes: [{ pid: 10 }, { pid: 11 }, { pid: 12 }, { pid: 13 }], helper: { pid: 13 }, holder: { pid: 13 } });
   });
 
+  it("keeps the launcher shell among the holder's orphans, which its namespace's init (the inner bwrap) adopted", () => {
+    const set = readLinuxResidentSet(10, true, launcher, reader({ 11: { children: [16, 12, 17], parent: 10 }, 16: { children: [], parent: 11 },
+      17: { children: [], parent: 11 } }));
+    expect(set).toMatchObject({ processes: [{ pid: 10 }, { pid: 11 }, { pid: 12 }, { pid: 13 }], helper: { pid: 13 }, holder: { pid: 14 } });
+  });
+
+  it("takes the first-started child as the helper where no shell remains, and names a tie", () => {
+    const orphans = { 11: { children: [16, 13], parent: 10 }, 12: undefined, 13: { children: [14], parent: 11 }, 16: { children: [], parent: 11 } };
+    expect(readLinuxResidentSet(10, true, launcher, reader(orphans))).toMatchObject({ helper: { pid: 13 }, holder: { pid: 14 } });
+    const tied = { ...reader(orphans), start: (pid: number) => pid === 13 || pid === 16 ? "boot:5" : `boot:${pid}` };
+    expect(readLinuxResidentSet(10, true, launcher, tied)).toBe("the inner bwrap has 2 children and no single first one");
+  });
+
   it.each([
     ["a kernel without /proc children", { 10: { children: undefined } }, "the outer bwrap's children cannot be read"],
     ["an inner bwrap that is gone", { 11: undefined }, "the child of the outer bwrap is gone"],
-    ["an inner bwrap with two children", { 11: { children: [12, 16], parent: 10 } }, "the inner bwrap has 2 children, not one"],
+    ["an inner bwrap with two launcher shells", { 11: { children: [12, 16], parent: 10 }, 16: { children: [], parent: 11, words: launcher } },
+      "the inner bwrap has 2 launcher shells, not one"],
     ["a launcher shell with no child", { 12: { children: [], parent: 11, words: launcher } }, "the launcher shell has 0 children, not one"],
     ["a bridge with no child", { 13: { children: [], parent: 12 } }, "the bridge has 0 children, not one"],
     ["a holder under another parent", { 14: { children: [], parent: 99 } }, "the holder under the bridge is gone"],
