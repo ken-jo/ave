@@ -1,4 +1,10 @@
 // Shell and plugin-worker settings have separate gates over one runtime; activating either must never confine the other scope.
+// Simulated Linux here is Linux before its holder route, the one POSIX place an extension still met the wrap these
+// cases pin; with the route on a Linux extension is a holder (mxc-linux-holder-boundary.native, adversarial-escapes).
+vi.mock("../../shared/container-platform.js", async (original) => {
+  const actual = await original<typeof import("../../shared/container-platform.js")>();
+  return { ...actual, isContainerHolderRouteEnabled: (platform: NodeJS.Platform) => platform !== "linux" && actual.isContainerHolderRouteEnabled(platform) };
+});
 import { EventEmitter } from "node:events";
 import { readdirSync, readFileSync } from "node:fs";
 import { join, relative, sep } from "node:path";

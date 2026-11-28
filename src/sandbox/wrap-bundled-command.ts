@@ -356,15 +356,16 @@ export function isMxcExtensionBackendSelected(): boolean {
   return plan?.selectedBackend === "mxc" && plan.readiness === "ready";
 }
 
-/** macOS: this app run proved the holder route. A user hook admitted under a container shell plan runs as a holder when
- * it did, whatever the extension setting: a user hook follows the shell setting. */
-function isMacHolderRouteReady(): boolean {
-  return process.platform === "darwin" && isContainerHolderRouteEnabled("darwin") && getMacHolderCapability()?.state === "ready";
+/** macOS and Linux: this app run proved the holder route. A user hook admitted under a container shell plan runs as a
+ * holder when it did, whatever the extension setting: a user hook follows the shell setting. */
+function isUserHookHolderRouteReady(): boolean {
+  if (process.platform === "darwin") return isContainerHolderRouteEnabled("darwin") && getMacHolderCapability()?.state === "ready";
+  return process.platform === "linux" && isContainerHolderRouteEnabled("linux") && provenLinuxHolderRoute() !== undefined;
 }
 
-/** Whether this holder start is routed to a container: the extension plan, or for a macOS user hook the holder route. */
+/** Whether this holder start is routed to a container: the extension plan, or for a user hook the holder route. */
 function isHolderStartRouted(owner: WorkerEgressOwner): boolean {
-  return isMxcExtensionBackendSelected() || (owner.role === "hook" && owner.pluginId === undefined && isMacHolderRouteReady());
+  return isMxcExtensionBackendSelected() || (owner.role === "hook" && owner.pluginId === undefined && isUserHookHolderRouteReady());
 }
 
 /** The container executable is inside a workspace or a holder-writable root, is not a Windows executable, or cannot be resolved. */

@@ -10,7 +10,8 @@ import { openEgressInvocation } from "../egress-invocations.js";
 import { openEgressRelay } from "../egress-relay/relay.js";
 import {
   __resetActiveSandboxCapabilityForTest, __resetMacExtensionPlanForTest, __resetSandboxRequestedAtBootForTest, setMacHolderCapability,
-  detectMxcShellCapability, getHostShellExecutionPlan, getContainerShellInfo, setActiveSandboxCapability, setContainerShellSubstrate, setShellSandboxRequestedAtBoot,
+  detectMxcShellCapability, getHostShellExecutionPlan, getContainerShellInfo, setActiveSandboxCapability, setContainerShellSubstrate, setLinuxHolderSupport,
+  setShellSandboxRequestedAtBoot,
 } from "../sandbox-capability.js";
 
 const platform = process.platform;
@@ -73,16 +74,17 @@ describe.runIf(platform === "darwin" || platform === "linux")("POSIX shell and h
     expect(getHostShellExecutionPlan().fallbackReason).toBe("requested-sandbox-unavailable");
   });
 
-  it.runIf(platform === "linux")("requires the Linux container proof for shells and keeps the hook wrap", () => {
+  it.runIf(platform === "linux")("requires the Linux container proof for shells, and the holder canary for hooks, never the wrap", () => {
     publishWrap();
     expect(isContainerShellRouteEnabled(platform)).toBe(true);
-    expect(isContainerHolderRouteEnabled(platform)).toBe(false);
+    expect(isContainerHolderRouteEnabled(platform)).toBe(true);
     setContainerShellSubstrate("linux", { state: "unavailable", reason: "tools-missing", detail: ["slirp4netns"] });
     expect(detectMxcShellCapability()).toBeUndefined();
     expect(getHostShellExecutionPlan()).toMatchObject({ substrate: "none", requiresExplicitUserApproval: true,
       fallbackReason: "active-sandbox-not-shell-contained" });
     expect(getContainerShellInfo()).toMatchObject({ state: "unavailable", reason: "tools-missing", detail: ["slirp4netns"] });
-    expect(getHostShellExecutionPlan("default", "hook").identity).toBe("host-shell-execution-plan/v4:linux:asrt");
+    // A hook is its own holder: with the holder canary unproven its plan is the no-confinement floor, never the wrap.
+    expect(getHostShellExecutionPlan("default", "hook")).toMatchObject({ mode: "plain", substrate: "none", requiresExplicitUserApproval: true });
     expect(getContainerShellInfo()?.egressProtocolCoverage).toEqual({ dns: "unknown", rawIp: "unknown" });
     setContainerShellSubstrate("linux", { state: "available" });
     expect(getHostShellExecutionPlan()).toMatchObject({ identity: "host-shell-execution-plan/v4:linux:mxc", sandboxed: true,
@@ -94,8 +96,14 @@ describe.runIf(platform === "darwin" || platform === "linux")("POSIX shell and h
       rawIpProbe: { rawIp: "blocked", reason: "blocked", evidenceKind: "arrival", reachableTargets: [], udpArrival: "absent" } });
     expect(getHostShellExecutionPlan().egressProtocolCoverage).toEqual({ dns: "unknown", rawIp: "blocked" });
     expect(getContainerShellInfo()?.egressProtocolCoverage).toEqual({ dns: "unknown", rawIp: "blocked" });
-    // The hook wrap is not the container, so it never carries the container's measurement.
-    expect(getHostShellExecutionPlan("default", "hook").egressProtocolCoverage.rawIp).toBe("unknown");
+    // A proven holder canary is the hook's substrate, with the holder canary's own raw-IP verdict, never the shells'.
+    setLinuxHolderSupport({ state: "available" });
+    try {
+      expect(getHostShellExecutionPlan("default", "hook")).toMatchObject({ identity: "host-shell-execution-plan/v4:linux:mxc", substrate: "mxc", sandboxed: true });
+      expect(getHostShellExecutionPlan("default", "hook").egressProtocolCoverage.rawIp).toBe("unknown");
+    } finally {
+      setLinuxHolderSupport(undefined);
+    }
   });
 
   it("starts the relay on enabled POSIX shell routes", async () => {

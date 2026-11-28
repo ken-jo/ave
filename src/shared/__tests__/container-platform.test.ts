@@ -5,7 +5,7 @@ describe("container platforms", () => {
   it.each([
     ["win32", "process-container", true, true, ["x64", "arm64"], "wxc-exec.exe"],
     ["darwin", "seatbelt", true, true, ["arm64"], "mxc-exec-mac"],
-    ["linux", "bubblewrap", true, false, ["x64", "arm64"], "lxc-exec"],
+    ["linux", "bubblewrap", true, true, ["x64", "arm64"], "lxc-exec"],
   ] as const)("describes the backend and current route on %s", (platform, backend, shellRoute, holderRoute, arches, launcherFile) => {
     expect(containerPlatform(platform)).toEqual({ backend, shellRoute, holderRoute, arches, launcherFile });
     expect(isContainerShellRouteEnabled(platform)).toBe(shellRoute);

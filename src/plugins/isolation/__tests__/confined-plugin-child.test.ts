@@ -4,6 +4,8 @@ import { canCreateSymlinks } from "../../../__tests__/support/symlink-capability
 import { approvedExtensionStart, FIXTURE_START_IDENTITY } from "../../../__tests__/support/approved-extension-start.js";
 import { pluginChildStartKey } from "../../../permissions/extension-start-consent.js";
 import { MAC_HOLDER_ROUTE } from "../../../__tests__/support/mac-holder-route.js";
+import { LINUX_HOLDER_ROUTE, provenLinuxHolderRouteFixture } from "../../../__tests__/support/linux-holder-route.js";
+import { prepareMxcPluginChildLaunch } from "../mxc-plugin-child-launch.js";
 /** Exercise real confined spawns: secret denial, outside-write refusal, usable own data, private temp storage, mandatory wrapping, and unavailable desktop APIs.
  * Read isolation needs a covering deny; allowed writes include the principal temp directory, and offline probes do not prove egress enforcement.
  * Native cases may opt out locally when unavailable, but required CI backends must fail rather than skip. */
@@ -101,6 +103,9 @@ import { promisify } from "node:util";
 
 useVerifiedAveHomePrivacy();
 
+vi.mock("../../../main/default-workspace-root.js", async (actual) =>
+  (await import("../../../__tests__/support/holder-test-workspace.js")).holderTestWorkspaceRoot(await actual()));
+
 vi.mock("../../../main/managed-child-processes.js", async original => {
   const actual = await original<typeof managedChildren>();
   return { ...actual, spawnGatedManagedProcess: vi.fn(actual.spawnGatedManagedProcess) };
@@ -108,10 +113,27 @@ vi.mock("../../../main/managed-child-processes.js", async original => {
 
 const execFileAsync = promisify(execFile);
 
-// Where a plugin child runs in the package wrap: Linux, and macOS before its holder route. On that route a macOS plugin
+// Where a plugin child runs in the package wrap: macOS and Linux before their holder routes. On those routes a plugin
 // child is a holder; its boundary is proven against the production factory in adversarial-escapes and natively in
-// seatbelt-holder-boundary.native, and these protocol cases keep running on Linux.
-const WRAPPED_PLUGIN_CHILD = process.platform === "linux" || (process.platform === "darwin" && !MAC_HOLDER_ROUTE);
+// seatbelt-holder-boundary.native and mxc-linux-holder-boundary.native. The wrap's own mechanics below run only where it
+// still confines a plugin child.
+const WRAPPED_PLUGIN_CHILD = (process.platform === "linux" && !LINUX_HOLDER_ROUTE) || (process.platform === "darwin" && !MAC_HOLDER_ROUTE);
+// Where the production factory confines an entry child, as the wrap or as a Linux holder: the protocol cases run on
+// either. A macOS holder's protocol is proven against the same factory in adversarial-escapes.
+const HOLDER_PLUGIN_CHILD = LINUX_HOLDER_ROUTE;
+const FACTORY_PLUGIN_CHILD = WRAPPED_PLUGIN_CHILD || HOLDER_PLUGIN_CHILD;
+let holderRoute: { release(): Promise<void> } | undefined;
+
+/** The runtime's own wiring under a selected container plan (runtime/index.ts): an entry child is a holder. The
+ * registration is the runtime's lifecycle bookkeeping, which this suite does not exercise. */
+async function holderWiring(): Promise<Pick<Parameters<typeof createOutOfProcessPluginFactory>[0], "prepareMxcChild" | "registerSandboxEnvelope">> {
+  if (!HOLDER_PLUGIN_CHILD) return {};
+  holderRoute ??= await provenLinuxHolderRouteFixture();
+  return {
+    prepareMxcChild: prepareMxcPluginChildLaunch,
+    registerSandboxEnvelope: () => ({ assertCurrent: () => {}, dispose: () => {}, quarantine: () => {}, terminating: () => {} }),
+  };
+}
 const PLUGIN_ID = "sampleassistant";
 const WIDENED_PLUGIN_ID = "local-indexer";
 const WIDENED_SANDBOX: NonNullable<PluginManifest["sandbox"]> = {
@@ -632,6 +654,8 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  await holderRoute?.release();
+  holderRoute = undefined;
   if (!retainedSandbox && isAsrtSandboxActive()) await resetAsrtSandbox();
   __resetSandboxRequestedAtBootForTest();
   if (previousAveHome === undefined) delete process.env.AVE_HOME;
@@ -1607,7 +1631,7 @@ describe("a child the host widened reaches exactly what the host widened it with
 /** The pilot's own tool, invoked out of process AND confined, through the production factory. This is the claim the two stages make together, and neither of the other suites makes it: `out-of-process-plugin.test.ts` runs the real protocol over fake pipes, the probe above
  * runs a real sandbox around a fake protocol, and only here are both real at once. It is also the only test that exercises the BUNDLED child entry; the stdout claim, the entry-module guard, and the ESM bundle boundary are all things the TypeScript source cannot prove. */
 describe("the pilot's tools, out of process and confined", () => {
-  it.runIf(WRAPPED_PLUGIN_CHILD)(
+  it.runIf(FACTORY_PLUGIN_CHILD)(
     "invokes a declared tool in a sandboxed child and returns the plugin's own value",
     async () => {
       if (!(await sandboxCasesRun())) return;
@@ -1634,7 +1658,7 @@ export const createPlugin = async (context) => ({
       );
 
       await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
-      const factory = createOutOfProcessPluginFactory({
+      const factory = createOutOfProcessPluginFactory({ ...await holderWiring(),
         manifest: {
           id: PLUGIN_ID,
           name: "Sample Assistant",
@@ -1750,7 +1774,7 @@ describe("the host protocol, spoken by a real confined child", () => {
     };
   }
 
-  it.runIf(WRAPPED_PLUGIN_CHILD)(
+  it.runIf(FACTORY_PLUGIN_CHILD)(
     "runs the meeting golden fixture and answers exactly as its recorded transcript does",
     async () => {
       if (!(await sandboxCasesRun())) return;
@@ -1770,7 +1794,7 @@ describe("the host protocol, spoken by a real confined child", () => {
       // Observed for the resource record only (decision 41): the reference runtime's cost beside the Python smoke's.
       let spawnedAt = 0;
       let tree: Promise<TreeMeasurement> | undefined;
-      const factory = createOutOfProcessPluginFactory({
+      const factory = createOutOfProcessPluginFactory({ ...await holderWiring(),
         manifest,
         launch: { kind: "entry", entryPath },
         childEntryPath,
@@ -1805,7 +1829,7 @@ describe("the host protocol, spoken by a real confined child", () => {
     120_000,
   );
 
-  it.runIf(WRAPPED_PLUGIN_CHILD)(
+  it.runIf(FACTORY_PLUGIN_CHILD)(
     "exits within five seconds of its stdin closing, with no request from the host",
     async () => {
       if (!(await sandboxCasesRun())) return;
@@ -1826,7 +1850,7 @@ describe("the host protocol, spoken by a real confined child", () => {
       await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
       let observed: ObservedPluginChild | undefined;
       // The production factory's own spawn, observed after the wrap: the case ends the child's stdin and watches it exit, and touches nothing else.
-      const factory = createOutOfProcessPluginFactory({
+      const factory = createOutOfProcessPluginFactory({ ...await holderWiring(),
         manifest,
         launch: { kind: "entry", entryPath },
         childEntryPath,
@@ -1852,7 +1876,7 @@ describe("the host protocol, spoken by a real confined child", () => {
     120_000,
   );
 
-  it.runIf(WRAPPED_PLUGIN_CHILD)(
+  it.runIf(FACTORY_PLUGIN_CHILD)(
     "puts nothing on stdout but protocol frames, whatever the plugin prints",
     async () => {
       if (!(await sandboxCasesRun())) return;
@@ -1882,7 +1906,7 @@ export const createPlugin = async () => {
       await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
       let stdout = "";
       // The production factory's own spawn, observed after the wrap and before the protocol starts, so every byte the child writes is collected.
-      const factory = createOutOfProcessPluginFactory({
+      const factory = createOutOfProcessPluginFactory({ ...await holderWiring(),
         manifest,
         launch: { kind: "entry", entryPath },
         childEntryPath,
@@ -1919,7 +1943,7 @@ export const createPlugin = async () => {
 /** The members §3.2 calls lossy or stateful, exercised by a REAL confined child. `host-api-service-members.test.ts` drives the same members across a real dispatcher and a real child runtime over an in-memory channel, which proves the marshalling and
  * proves nothing about the jail. This proves both at once, and it is the only place that can: the question "can the plugin reach the secret it was not handed" has two answers; one from the gate and one from the sandbox; and only a real process has both. */
 describe("the lossy and stateful members, across a real confined boundary", () => {
-  it.runIf(WRAPPED_PLUGIN_CHILD)(
+  it.runIf(FACTORY_PLUGIN_CHILD)(
     "hands over what the gate grants, refuses what it does not, and cannot be reached around",
     async () => {
       if (!(await sandboxCasesRun())) return;
@@ -2046,7 +2070,7 @@ export const createPlugin = async (context) => {
         },
       } as unknown as PluginHostApi;
 
-      const factory = createOutOfProcessPluginFactory({
+      const factory = createOutOfProcessPluginFactory({ ...await holderWiring(),
         manifest: {
           id: PLUGIN_ID,
           name: "Sample Assistant",
@@ -2182,7 +2206,7 @@ export const createPlugin = async (context) => {
  * Check granted secrets, refused secrets, and raw secret-file denial together, plus inherited confinement in spawned binaries.
  * An outside-root listing must precede the real rename so the case measures write refusal rather than missing fixtures. */
 describe("a refused candidate's members, out of process and confined", () => {
-  it.runIf(WRAPPED_PLUGIN_CHILD)(
+  it.runIf(FACTORY_PLUGIN_CHILD)(
     "carries the gate's verdict both ways, and refuses the window its primary tool opens",
     async () => {
       if (!(await sandboxCasesRun())) return;
@@ -2364,7 +2388,7 @@ export const createPlugin = async (context) => {
         },
       } as unknown as PluginHostApi;
 
-      const factory = createOutOfProcessPluginFactory({
+      const factory = createOutOfProcessPluginFactory({ ...await holderWiring(),
         manifest: {
           id: "meeting",
           name: "Meeting",
@@ -2519,8 +2543,10 @@ export const createPlugin = async (context) => {
           stage: { ok: boolean; code?: string };
           create: { ok: boolean; code?: string };
         };
-        // Neither the host's own temp directory nor the root ASRT was given: the plugin's directory, which the host created before the spawn.
-        expect(realpathSync(temp.tmpdir)).toBe(
+        // Neither the host's own temp directory nor the root ASRT was given: the plugin's directory, which the host created
+        // before the spawn; a holder's is the temp folder of its own staging.
+        if (HOLDER_PLUGIN_CHILD) expect(temp.tmpdir).toMatch(/\/staging\/[0-9a-f]{32}\/temp$/u);
+        else expect(realpathSync(temp.tmpdir)).toBe(
           realpathSync(join(appOwnedSandboxTempRoot(), sandboxTempPrincipalDirName({ kind: "plugin", id: "meeting" }))),
         );
         expect(temp.tmpdir).not.toBe(absentSandboxTmp);
@@ -2859,7 +2885,7 @@ describe("a confined child and a loopback TCP listener", () => {
     120_000,
   );
 
-  it.runIf(process.platform === "linux")(
+  it.runIf(process.platform === "linux" && WRAPPED_PLUGIN_CHILD)(
     "on Linux the bind succeeds into a loopback the host is not in",
     async () => {
       if (!(await sandboxCasesRun())) return;
@@ -2879,7 +2905,7 @@ describe("a confined child and a loopback TCP listener", () => {
 
 /** Verify host-injected worker settings through real confinement; child homedir must differ from userHome while context.userHome retains the user's actual home. */
 describe("the indexer's host-supplied answers, out of process and confined", () => {
-  it.runIf(WRAPPED_PLUGIN_CHILD)(
+  it.runIf(FACTORY_PLUGIN_CHILD)(
     "hands over the real home, the real Ave root, and the drive lookup it no longer spawns for",
     async () => {
       if (!(await sandboxCasesRun())) return;
@@ -2934,7 +2960,7 @@ export default async function createPlugin(context) {
         },
       } as unknown as PluginHostApi;
 
-      const factory = createOutOfProcessPluginFactory({
+      const factory = createOutOfProcessPluginFactory({ ...await holderWiring(),
         manifest: {
           id: "local-indexer",
           name: "Local Indexer",
@@ -3256,7 +3282,7 @@ ELECTRON_RUN_AS_NODE=1 exec ${JSON.stringify(process.execPath)} "$PLUGIN_ROOT/in
 
   // Linux only. On macOS, System Integrity Protection strips DYLD_* from the environment of /bin/bash, which is the
   // wrap's outer shell, so the positive control cannot run the library there and a green case would claim nothing.
-  it.runIf(process.platform === "linux")(
+  it.runIf(process.platform === "linux" && WRAPPED_PLUGIN_CHILD)(
     "runs nothing before confinement from an LD_PRELOAD library (Linux, where the control loads it)",
     async () => {
       if (!(await sandboxCasesRun())) return;

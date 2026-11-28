@@ -317,14 +317,14 @@ export async function runOneHookScript(
   // container route only when that plan's shell substrate is a container, otherwise its existing srt-win or plain route.
   // The host classifies: the hook registry sets `confinement` and `pluginOwner` on every plugin hook.
   const userHook = !confinement && runnable.pluginOwner === undefined;
-  // On macOS a user hook admitted under a container shell plan is a holder of its own, whatever the extension setting:
+  // On macOS and Linux a user hook admitted under a container shell plan is a holder of its own, whatever the extension setting:
   // a user hook follows the shell setting. It never takes the wrap: if the holder route is not proven the holder start
   // refuses and the hook is denied. A plan that confines nothing was already put to the shell card's floor.
   const containerShellPlan = admittedPlan?.mode === "asrt" && admittedPlan.substrate === "mxc";
   const containedRoute = confinement
     ? isMxcExtensionBackendSelected()
     : userHook && containerShellPlan
-      && (process.platform === "win32" ? isMxcExtensionBackendSelected() : process.platform === "darwin");
+      && (process.platform === "win32" ? isMxcExtensionBackendSelected() : process.platform === "darwin" || process.platform === "linux");
   if (containedRoute && process.platform === "win32") {
     // Git Bash cannot start in a Windows container; refuse before admission, never switch this hook to another backend.
     try {

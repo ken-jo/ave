@@ -39,7 +39,8 @@ import { installIncompatibleSecurityModule } from "../../../__tests__/support/wi
 import { createHostApiFactory } from "../../../boot/steps/plugin-runtime/host-api-factory.js";
 import { configureHostResources } from "../../../main/host-resources.js";
 import { initializeAsrtSandbox, isAsrtSandboxActive, resetAsrtSandbox } from "../../../permissions/asrt-sandbox.js";
-import { MAC_HOLDER_ROUTE, provenMacHolderRoute, type ProvenMacHolderRoute } from "../../../__tests__/support/mac-holder-route.js";
+import { MAC_HOLDER_ROUTE, provenMacHolderRoute } from "../../../__tests__/support/mac-holder-route.js";
+import { LINUX_HOLDER_ROUTE, provenLinuxHolderRouteFixture } from "../../../__tests__/support/linux-holder-route.js";
 import { MxcNativeEntryRequiredError } from "../../../permissions/mxc-extension-errors.js";
 import { prepareMxcPluginChildLaunch } from "../mxc-plugin-child-launch.js";
 import { windowsPowerShellEnv } from "../../../shared/windows-powershell-env.js";
@@ -261,7 +262,13 @@ afterAll(async () => {
   if (stagedRoot !== undefined) rmSync(stagedRoot, { recursive: true, force: true });
 });
 
-let holderRoute: ProvenMacHolderRoute | undefined;
+// Where plugin children run as holders (macOS and Linux with their holder routes on) rather than in the wrap.
+const HOLDER_ROUTE = MAC_HOLDER_ROUTE || LINUX_HOLDER_ROUTE;
+let holderRoute: { release(): Promise<void> } | undefined;
+
+async function provenHolderRoute(): Promise<{ release(): Promise<void> }> {
+  return MAC_HOLDER_ROUTE ? provenMacHolderRoute() : await provenLinuxHolderRouteFixture();
+}
 
 afterEach(async () => {
   await holderRoute?.release();
@@ -356,9 +363,9 @@ function contextFor(installed: Installed, host: ProductionHost, config: Record<s
 
 /** The runtime's own wiring under a selected macOS container plan (runtime/index.ts): an entry child is a holder. The
  * registration is the runtime's lifecycle bookkeeping, which this suite does not exercise. */
-function holderWiring(installed: Installed): Pick<Parameters<typeof createOutOfProcessPluginFactory>[0], "prepareMxcChild" | "registerSandboxEnvelope"> {
-  if (!MAC_HOLDER_ROUTE || installed.launch.kind !== "entry") return {};
-  holderRoute ??= provenMacHolderRoute();
+async function holderWiring(installed: Installed): Promise<Pick<Parameters<typeof createOutOfProcessPluginFactory>[0], "prepareMxcChild" | "registerSandboxEnvelope">> {
+  if (!HOLDER_ROUTE || installed.launch.kind !== "entry") return {};
+  holderRoute ??= await provenHolderRoute();
   return {
     prepareMxcChild: prepareMxcPluginChildLaunch,
     registerSandboxEnvelope: () => ({ assertCurrent: () => {}, dispose: () => {}, quarantine: () => {}, terminating: () => {} }),
@@ -383,7 +390,7 @@ async function spawnInstalled(
     launch: installed.launch,
     takeExtensionStart: () => unwrappedStart,
     ...(installed.launch.kind === "entry" ? { childEntryPath: pluginChildEntryPath() } : {}),
-    ...(wrapped ? holderWiring(installed) : {}),
+    ...(wrapped ? await holderWiring(installed) : {}),
     observeChild: (child) => {
       observed = child;
       child.onStdout((chunk) => {
@@ -857,7 +864,7 @@ describe("the four escapes, against the production factory under the real wrap",
         manifest: staged.fixture.manifest,
         launch: staged.fixture.launch,
         childEntryPath: pluginChildEntryPath(),
-        ...holderWiring(staged.fixture),
+        ...await holderWiring(staged.fixture),
         observeChild: () => {
           observed = true;
         },
@@ -993,8 +1000,8 @@ describe("the four escapes, against the production factory under the real wrap",
     120_000,
   );
   // Recheck filesystem and socket confinement through the non-JavaScript process fixture; process entries run only where
-  // the wrap confines them (Linux, and macOS before its holder route), and are refused where holders run plugins.
-  it.runIf(process.platform === "linux" || (process.platform === "darwin" && !MAC_HOLDER_ROUTE))(
+  // the wrap confines them (macOS and Linux before their holder routes), and are refused where holders run plugins.
+  it.runIf((process.platform === "linux" || process.platform === "darwin") && !HOLDER_ROUTE)(
     "1a and 2 from a Python child: the same reads and the same socket are refused",
     async () => {
       if (!(await sandboxCasesRun())) return;
@@ -1048,9 +1055,9 @@ describe("the four escapes, against the production factory under the real wrap",
     },
     600_000,
   );
-  // Owner card 2026-11-28, "Windows처럼 거부": macOS with its holder route on refuses a `process` plugin before anything runs.
-  // The start gate decides first, as on Windows, so the refusal is its native-entry error.
-  it.runIf(MAC_HOLDER_ROUTE)("refuses the Python process plugin on the macOS holder route before anything is spawned", async () => {
+  // Owner card 2026-11-28, "Windows처럼 거부": macOS and Linux with their holder routes on refuse a `process` plugin before
+  // anything runs. The start gate decides first, as on Windows, so the refusal is its native-entry error.
+  it.runIf(HOLDER_ROUTE)("refuses the Python process plugin on the holder route before anything is spawned", async () => {
     if (!(await sandboxCasesRun())) return;
     const pluginRoot = installPythonSmoke(join(staged.aveHome, "plugins", PYTHON_SMOKE_ID));
     const pluginDataDir = join(pluginRoot, "data");
@@ -1060,7 +1067,7 @@ describe("the four escapes, against the production factory under the real wrap",
     const launch = { kind: "process" as const, ...resolveProcessLaunch(manifest, pluginRoot, pluginDataDir) };
     let observed = false;
     await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
-    holderRoute ??= provenMacHolderRoute();
+    holderRoute ??= await provenHolderRoute();
     const factory = createOutOfProcessPluginFactory({ manifest, launch, observeChild: () => { observed = true; } });
     const installed: Installed = { pluginId: PYTHON_SMOKE_ID, pluginRoot, pluginDataDir, manifest, launch };
     await expect(factory(contextFor(installed, productionHost(installed, {}), {}))).rejects.toBeInstanceOf(MxcNativeEntryRequiredError);
