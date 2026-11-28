@@ -336,6 +336,8 @@ export interface StartLinuxHolderOptions {
 }
 
 const DIAGNOSTIC_BYTES = 4 * 1024;
+/** How much of a holder's stderr waits for a reader before the rest is dropped. */
+const UNREAD_STDERR_BYTES = 1024 * 1024;
 
 type ResidentProcess = { readonly pid: number; readonly start: string };
 
@@ -448,8 +450,10 @@ export async function startLinuxHolder(call: LinuxHolderCall, options: StartLinu
   const replay = linuxHolderReplay(call);
   let observed: ReturnType<typeof observeManagedProcessGroup> | undefined;
   let spawned: ChildProcess | undefined;
-  // The caller's copies of the holder's output, piped from the spawn on. Node drains a child's unread stdout and stderr
-  // when it exits, and a short run can exit before the start returns (it is waited for below): unpiped, its output is lost.
+  // The caller's copies of the holder's output, from the spawn on. Node drains a child's unread stdout and stderr when it
+  // exits, and a short run can exit before the start returns (it is waited for below): uncopied, its output is lost.
+  // stdout keeps its backpressure (it is the holder's protocol). stderr is diagnostics many callers never read: up to
+  // its bound it is kept for a late reader, beyond that it is dropped, so an unread stderr never stalls the holder.
   const output = { stdout: new PassThrough(), stderr: new PassThrough() };
   await options.beforeRelease?.();
   const stdio: ("pipe" | "ignore")[] = ["pipe", "pipe", "pipe", "ignore", "pipe", "pipe", "pipe", "pipe"];
@@ -458,7 +462,10 @@ export async function startLinuxHolder(call: LinuxHolderCall, options: StartLinu
     onSpawn: (started) => {
       spawned = started;
       started.stdout?.pipe(output.stdout);
-      started.stderr?.pipe(output.stderr);
+      started.stderr?.on("data", (chunk: Buffer) => {
+        if (output.stderr.readableLength + output.stderr.writableLength < UNREAD_STDERR_BYTES) output.stderr.write(chunk);
+      });
+      started.stderr?.once("end", () => output.stderr.end());
       observed = observeManagedProcessGroup(started, options.resources);
       // A write after the holder exited fails with EPIPE; the exit result stands (the caller reads `completion`).
       started.stdin?.on("error", () => {});

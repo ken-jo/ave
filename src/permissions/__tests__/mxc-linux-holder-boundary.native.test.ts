@@ -698,6 +698,12 @@ except OSError as error:
       }
     });
 
+    it("a holder whose stderr nobody reads still runs to its end: unread diagnostics never stall it", async () => {
+      const holder = await bundledHolder("head -c 1048576 /dev/zero >&2; echo done");
+      expect(await line(holder.process.stdout)).toBe("done");
+      expect(await holder.process.completion).toMatchObject({ exitCode: 0 });
+    });
+
     it("N18: a worker under a plugin child is released with it when the parent goes first, and a new one under it is refused", async () => {
       const parentData = join(root, "plugin-data");
       const workerData = join(root, "worker-data");
