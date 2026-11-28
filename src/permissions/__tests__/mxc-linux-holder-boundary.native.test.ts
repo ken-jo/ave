@@ -246,10 +246,10 @@ describe.runIf(NATIVE)("native Linux holder start and stop", () => {
   // Design 10.4 N14: an offline holder has no network but its loopback and no bridge listener on it.
   it("N14: an offline holder sees only lo and no listener on the bridge port", async () => {
     const { holder } = await start("while IFS=: read -r name rest; do case $name in *Inter*|*face*) ;; *) printf '%s ' $name ;; esac; done < /proc/net/dev; echo; if (exec 3<>/dev/tcp/127.0.0.1/3128) 2>/dev/null; then echo bridge; else echo no-bridge; fi");
-    const out: string[] = [];
-    holder.process.stdout.on("data", (chunk: Buffer) => out.push(chunk.toString()));
+    // Read to the stream's end: its last bytes may arrive after the completion settles.
+    const out = await collect(holder.process.stdout);
     await holder.process.completion;
-    expect(out.join("").trim().split("\n").map(row => row.trim())).toEqual(["lo", "no-bridge"]);
+    expect(out.trim().split("\n").map(row => row.trim())).toEqual(["lo", "no-bridge"]);
     await holder.dispose();
   });
 
@@ -820,6 +820,13 @@ except OSError as error:
         await resetAsrtSandbox();
         startEgressRelayService({ ask: async () => false });
       }
+    });
+
+    // Review #758 P3-5: the launcher's call carries each environment value as a word, and the helper's capture walks
+    // the words by arity, so a value that reads like a descriptor option is an operand, never an option.
+    it("starts a holder whose environment values read --seccomp, --file, --args and --", async () => {
+      const holder = await bundledHolder("echo \"$A|$B|$C|$D\"", { holderEnv: { A: "--seccomp", B: "--file", C: "--args", D: "--" } });
+      expect(await line(holder.process.stdout)).toBe("--seccomp|--file|--args|--");
     });
 
     it("N18: a worker under a plugin child is released with it when the parent goes first, and a new one under it is refused", async () => {
