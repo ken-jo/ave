@@ -476,6 +476,32 @@ describe.runIf(NATIVE)("macOS holder boundary (native)", () => {
     expect(() => process.kill(victim.process.id, 0)).not.toThrow();
   }, 30_000);
 
+  // Fable P3-5 on #761: the two cross-principal properties the wrapped-route suite proves on Linux, named here for the
+  // holder route. Each holder's staging HOME and temp are its own; the floor rows keep every other one out of reach.
+  it("N22: a holder cannot read another holder's temp files or its sandbox HOME; it reads its own, and the host reads both", async () => {
+    const victim = await holder("echo victim-temp > \"$TMPDIR/secret\" && echo victim-home > \"$HOME/secret\" && echo \"$HOME|$TMPDIR\"; exec /bin/cat", own("victim"));
+    const [victimHome, victimTemp] = (await line(victim.process.stdout)).split("|") as [string, string];
+    // Control: the files exist and are readable to a process outside every holder.
+    expect(readFileSync(join(victimTemp, "secret"), "utf8")).toBe("victim-temp\n");
+    expect(readFileSync(join(victimHome, "secret"), "utf8")).toBe("victim-home\n");
+    const probe = [
+      `cat ${join(victimTemp, "secret")} 2>/dev/null && echo other-temp=read || echo other-temp=denied`,
+      `cat ${join(victimHome, "secret")} 2>/dev/null && echo other-home=read || echo other-home=denied`,
+      `ls ${victimHome} >/dev/null 2>&1 && echo other-home-list=read || echo other-home-list=denied`,
+      // Control: the same reads of its own staging work.
+      'echo mine > "$TMPDIR/secret" && cat "$TMPDIR/secret" >/dev/null && echo own-temp=read || echo own-temp=denied',
+      'echo mine > "$HOME/secret" && cat "$HOME/secret" >/dev/null && echo own-home=read || echo own-home=denied',
+      "echo done",
+    ].join("\n");
+    const text = await output(await holder(probe, own("attacker")));
+    expect(text, text).toContain("other-temp=denied");
+    expect(text, text).toContain("other-home=denied");
+    expect(text, text).toContain("other-home-list=denied");
+    expect(text, text).toContain("own-temp=read");
+    expect(text, text).toContain("own-home=read");
+    expect(text, text).not.toContain("victim-");
+  }, 30_000);
+
   it("N6: a plugin hook runs as a holder through the hook runner: stdin JSON in, its verdict out, a timeout that leaves nothing", async () => {
     const { runOneHookScript } = await import("../../hooks/script-hook-runner.js");
     const generationRoot = join(root, "generation");
