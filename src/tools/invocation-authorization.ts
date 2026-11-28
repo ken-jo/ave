@@ -6,7 +6,10 @@ import { isConfinedHostShellExecution, isWindowsContainerShell } from "../permis
 import { randomUUID } from "node:crypto";
 import type { Tool } from "./base.js";
 import type { RuntimePlugin } from "../plugins/types.js";
-import type { ToolCategory, ToolSource, TrustLevel } from "./types.js";
+import type { ToolCategory, ToolExecutionContext, ToolSource, TrustLevel } from "./types.js";
+import { isCanonicalFileTool } from "./file-tools.js";
+import { caseFoldForMatch, foldCanonicalPathSeparators } from "../permissions/sensitive-paths.js";
+import { registeredUnattendedStageOf, unattendedStageOf } from "../permissions/unattended-lane-registry.js";
 import {
   isIssuedShellAllowRuleDecision,
   type PermissionCheckContext,
@@ -173,6 +176,7 @@ export interface AuthorizedInvocation {
   approvedPolicyEpoch?: string;
   permissionRecheckResult?: PermissionCheckResult;
   checkCurrentPermission?: () => PermissionCheckResult;
+  authorizeGrepCandidate?: ToolExecutionContext["authorizeGrepCandidate"];
   checkCurrentHostTerminalPermission?: () => PermissionCheckResult;
   permissionResult: PermissionCheckResult | undefined;
   /** The standing answer to the card that carried the explicit host shell binding. */
@@ -345,6 +349,7 @@ export async function authorizeToolInvocation(
   } : undefined);
   let checkCurrentHostTerminalPermission: AuthorizedInvocation["checkCurrentHostTerminalPermission"];
   let checkCurrentPermission: (() => PermissionCheckResult) | undefined;
+  let authorizeGrepCandidate: AuthorizedInvocation["authorizeGrepCandidate"];
   const needsCentralDecision = context.directoryAuthorization === undefined || context.directoryAuthorization.pendingRationale === true;
   if (needsCentralDecision || hostTerminalScope) {
     const shellDialect = isCanonicalBashTool(tool)
@@ -395,7 +400,7 @@ export async function authorizeToolInvocation(
       if (hostTerminalScope) await services.permissionManager.ensurePermissionRulesLoaded(projectRulesCwd);
       else await services.permissionManager.ensureProjectRulesLoaded(projectRulesCwd);
     }
-    const readPermission = (requireHuman?: true): PermissionCheckResult => services.permissionManager
+    const readPermission = (requireHuman?: true, candidatePaths?: PermissionDecisionRequest["paths"]): PermissionCheckResult => services.permissionManager
       ? services.permissionManager.checkDetailed(
           toolUse.name,
           source,
@@ -412,7 +417,8 @@ export async function authorizeToolInvocation(
             userOwnedBrowser: userOwnedBrowserScopeOf(tool, invocationPermissionContext.approvalMemory),
             agentBrowser: agentBrowserScopeOf(tool, invocationPermissionContext.approvalMemory),
             trustOrigin: invocationPermissionContext.trustOrigin,
-            paths: context.paths,
+            paths: candidatePaths ?? context.paths,
+            ...(candidatePaths === undefined ? {} : { reportUnattendedDenials: false as const }),
             secretRead: context.secretRead,
             shellReadOnlyProven: context.shellReadOnlyProven,
             shellEscalated: context.shellEscalated,
@@ -439,6 +445,14 @@ export async function authorizeToolInvocation(
       return context.hostTerminalReapproval && current.decision === "allow" ? readPermission(true) : current;
     });
     checkCurrentPermission = checkPermission;
+    const stage = registeredUnattendedStageOf(sessionId);
+    const canonicalGrep: boolean = isCanonicalFileTool(tool) && tool.name === "grep_files";
+    if (stage && canonicalGrep) {
+      authorizeGrepCandidate = (lexical, runtimePath) =>
+        unattendedStageOf(sessionId) === stage && readPermission(undefined, [{
+          lexical, runtimePath, canonical: caseFoldForMatch(foldCanonicalPathSeparators(runtimePath)), effect: "read",
+        }]).decision === "allow";
+    }
     if (hostTerminalScope && services.permissionManager) {
       const manager = services.permissionManager;
       checkCurrentHostTerminalPermission = () => {
@@ -1467,6 +1481,7 @@ export async function authorizeToolInvocation(
     approvedPolicyEpoch,
     permissionRecheckResult,
     checkCurrentPermission,
+    authorizeGrepCandidate,
     checkCurrentHostTerminalPermission,
     permissionResult,
     hostShellAnswer,

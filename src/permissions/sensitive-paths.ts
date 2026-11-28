@@ -716,7 +716,7 @@ export function createProjectMembership(projectRoot: string, canonicalize: (path
 export function createPermissionPathEvidence(
   projectRoot: string,
   canonicalize?: (path: string) => string,
-  options: { inspectHostFiles?: boolean; resolveNativePath?: (path: string) => string } = {},
+  options: { inspectHostFiles?: boolean; keyMaterialByName?: boolean; resolveNativePath?: (path: string) => string } = {},
 ): (path: { lexical: string; canonical: string; runtimePath?: string; effect: PathEffect }) => PermissionPathEvidence {
   const normalize = (value: string) => caseFoldForMatch(normalizePath(value)).replace(/\/+$/u, "");
   const inspectHostFiles = options.inspectHostFiles !== false;
@@ -745,7 +745,7 @@ export function createPermissionPathEvidence(
     // A spelling that names no local drive cannot be shown to avoid a protected target, so it always needs a person.
     const unmapped = [path.lexical, path.canonical].some(value => unresolved(value) && localDriveAlias(value) === undefined);
     const networked = isWindowsNetworkOrDevicePath(path.lexical) || isWindowsNetworkOrDevicePath(path.canonical);
-    const native = inspectHostFiles && !networked && (requiresInspection(path.lexical) || requiresInspection(path.canonical))
+    const native = inspectHostFiles && !options.keyMaterialByName && !networked && (requiresInspection(path.lexical) || requiresInspection(path.canonical))
       ? (options.resolveNativePath ?? resolvePathForPolicy)(path.lexical) : undefined;
     const sealedNative = native === undefined ? undefined : path.runtimePath;
     if (native !== undefined && (normalize(foldCanonicalPathSeparators(native)) !== normalize(foldCanonicalPathSeparators(path.canonical))
@@ -758,7 +758,9 @@ export function createPermissionPathEvidence(
     let matcher = matchers.get(path.effect);
     if (!matcher) {
       matcher = {
-        secret: createSensitivePathMatcher(path.effect, undefined, matchingCanonicalize, { inspectKeyMaterial: inspectHostFiles }),
+        secret: createSensitivePathMatcher(path.effect, undefined, matchingCanonicalize, {
+          inspectKeyMaterial: inspectHostFiles, keyMaterialByName: options.keyMaterialByName,
+        }),
         admission: createPathSensitivityMatcher(path.effect, undefined, matchingCanonicalize, true, "agent", undefined, 0, undefined, { inspectKeyMaterial: inspectHostFiles }),
       };
       matchers.set(path.effect, matcher);
@@ -1253,6 +1255,7 @@ function sensitivePatternIndex(insensitivePlatform: boolean, admissionOnly: bool
 interface SensitivePathMatcherOptions {
   inspectKeyMaterial?: boolean;
   includeKeyMaterial?: boolean;
+  keyMaterialByName?: boolean;
   resolveNativePath?: (path: string) => string;
 }
 
@@ -1435,7 +1438,7 @@ function createPathSensitivityMatcher(
         if (!(canReadSession && readOnly) && test(candidate)) {
           if (KEY_MATERIAL_PATTERNS.has(pattern)) {
             if (options.includeKeyMaterial === false) continue;
-            if (options.inspectKeyMaterial !== false && !mayHoldPrivateKey(spelled, state)) continue;
+            if (options.inspectKeyMaterial !== false && !options.keyMaterialByName && !mayHoldPrivateKey(spelled, state)) continue;
           }
           return pattern;
         }

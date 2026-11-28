@@ -114,9 +114,14 @@ function observePosixReadTarget(operand: string): { path: string; identity: stri
   }
 }
 
-export function sealPosixReadTargets(operands: readonly string[]): TargetSeal {
+export function sealReadTargets(operands: readonly string[]): TargetSeal {
   const { observation, seal } = sealTargetObservation(
-    () => operands.map((operand) => ({ operand, ...observePosixReadTarget(operand) })),
+    () => operands.map((operand) => {
+      if (process.platform !== "win32") return { operand, ...observePosixReadTarget(operand) };
+      const { path, ancestor, identity } = observeWindowsTarget(operand);
+      if (path !== ancestor) throw new TargetIdentityChangedError();
+      return { operand, path, identity };
+    }),
     (targets) => JSON.stringify(targets),
   );
   const paths = new Map(observation.map(({ operand, path }) => [operand, path]));
@@ -133,7 +138,7 @@ export function sealPosixReadTargets(operands: readonly string[]): TargetSeal {
 export async function openSealedReadTarget(path: string, seal?: TargetSeal): Promise<FileHandle> {
   if (!seal?.assertOpenedRead) return open(path, READ_FLAGS);
   seal.verify();
-  const route = holdPosixReadRoute(path);
+  const route = process.platform === "win32" ? { path, flags: READ_FLAGS, release() {} } : holdPosixReadRoute(path);
   try {
     const handle = await open(route.path, route.flags);
     try {

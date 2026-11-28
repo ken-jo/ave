@@ -59,6 +59,8 @@ export interface ToolExecutionContext {
   cwd: string;
   /** Host authority over the original operands of a local file operation. */
   fileTargetSeal?: TargetSeal;
+  /** Host permission decision for each candidate of a scheduled grep. */
+  authorizeGrepCandidate?: (lexical: string, runtimePath: string) => boolean;
   /** Native image path captured by the invocation's read judgment. */
   imageTargetPath?: string;
   /** Host-derived execution surface; UI-opening tools must refuse unattended calls. */

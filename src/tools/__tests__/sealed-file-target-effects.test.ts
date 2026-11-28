@@ -10,7 +10,21 @@ const hooks = vi.hoisted(() => ({
   duringOpen: undefined as ((path: string) => (() => void) | undefined) | undefined,
   unlinks: [] as string[],
   opens: [] as string[],
+  candidateRead: vi.fn(),
+  pathSearch: vi.fn(),
 }));
+vi.mock("../../main/managed-child-processes.js", async (original) => {
+  const actual = await original<typeof import("../../main/managed-child-processes.js")>();
+  return {
+    ...actual,
+    spawnManaged: (...args: Parameters<typeof actual.spawnManaged>) => {
+      if (args[3]?.label === "grep-files-ripgrep" && !args[1]?.includes("--files") && args[1]?.at(-1) !== "-") {
+        hooks.pathSearch(args[1]);
+      }
+      return Reflect.apply(actual.spawnManaged, undefined, args);
+    },
+  };
+});
 vi.mock("node:fs/promises", async (original) => {
   const actual = await original<typeof import("node:fs/promises")>();
   return {
@@ -18,7 +32,17 @@ vi.mock("node:fs/promises", async (original) => {
     open: async (...args: Parameters<typeof actual.open>) => {
       hooks.opens.push(String(args[0]));
       const restore = hooks.duringOpen?.(String(args[0]));
-      try { return await actual.open(...args); }
+      try {
+        const handle = await actual.open(...args);
+        if (restore) {
+          const read = handle.read.bind(handle);
+          handle.read = ((...readArgs: Parameters<typeof read>) => {
+            hooks.candidateRead();
+            return Reflect.apply(read, handle, readArgs);
+          }) as typeof handle.read;
+        }
+        return handle;
+      }
       finally { restore?.(); }
     },
     rename: async (source: string, target: string) => {
@@ -56,6 +80,7 @@ import { PermissionManager } from "../../permissions/permission-manager.js";
 import { endUnattendedStage, registerUnattendedStage } from "../../permissions/unattended-lane-registry.js";
 import { emptyStageEnvelope } from "../../work-board/workflow/__tests__/stage-fixtures.js";
 import { createToolEffectResolver } from "../../permissions/tool-effect-evidence.js";
+import { allowKeyMaterialInspectionUnder } from "../../permissions/sensitive-paths.js";
 import { sealTargets } from "../../permissions/target-seal.js";
 import { localFs } from "../../shared/local-path-io.js";
 import { resolvePhysicalFilesystemPath } from "../../shared/shell-filesystem-path.js";
@@ -63,7 +88,7 @@ import { setWindowsDriveQueryForTest } from "../../shared/windows-drive-locality
 import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 import { ToolExecutor } from "../executor.js";
 import { ToolRegistry } from "../registry.js";
-import { ReadFileTool, WriteFileTool } from "../file-tools.js";
+import { GrepFilesTool, ReadFileTool, WriteFileTool } from "../file-tools.js";
 
 const LOCAL_DRIVE = String.raw`\Device\HarddiskVolume1`;
 
@@ -433,6 +458,83 @@ it.skipIf(process.platform === "win32")("keeps a scheduled text read bound to it
   } finally {
     hooks.onAuthorized = undefined;
     hooks.duringOpen = undefined;
+    endUnattendedStage(sessionId);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it("reads scheduled grep candidates only after checking the opened identity", async () => {
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "ave-scheduled-grep-")));
+  const workspaceRoot = join(root, "workspace");
+  const candidate = join(workspaceRoot, "candidate.txt");
+  const held = join(root, "held.txt");
+  const replacement = join(root, "replacement.txt");
+  const sessionId = "scheduled-sealed-grep";
+  mkdirSync(workspaceRoot);
+  writeFileSync(candidate, "needle admitted fixture\n");
+  writeFileSync(replacement, "needle replacement fixture\n");
+  const protectedPath = join(workspaceRoot, ".env");
+  const keyPath = join(workspaceRoot, "candidate.pem");
+  writeFileSync(protectedPath, "needle protected fixture\n");
+  writeFileSync(keyPath, "needle possible key fixture\n");
+  const registry = new ToolRegistry();
+  registry.register(new GrepFilesTool());
+  const manager = new PermissionManager(join(root, "permissions.json"));
+  manager.setMode("allow");
+  manager.setUnattendedToolEffectResolver(createToolEffectResolver(registry));
+  const executor = new ToolExecutor(registry, undefined, manager, undefined, undefined, undefined);
+  registerUnattendedStage(sessionId, {
+    runKey: "run", stageId: "stage", workspaceRoot, isolation: { proven: false }, readOnly: true,
+    envelope: { ...emptyStageEnvelope(), tools: ["grep_files"] },
+  });
+  const grep = async (path: string, outputMode = "content") => (await executor.executeAll([{
+    id: "grep", name: "grep_files", input: { path, pattern: "needle", outputMode },
+  }], {
+    executionCwd: workspaceRoot, sessionId, permissionContext: { headless: true, trustOrigin: "llm-tool-arg" },
+  }))[0];
+  const withdrawInspection = allowKeyMaterialInspectionUnder(() => [workspaceRoot]);
+  const pathOpen = vi.spyOn(localFs, "open");
+  if (process.platform === "win32") {
+    configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false });
+    setWindowsDriveQueryForTest(() => LOCAL_DRIVE);
+  }
+  try {
+    hooks.pathSearch.mockClear();
+    hooks.opens.length = 0;
+    const stable = await grep(".");
+    expect(stable).toMatchObject({ content: expect.stringContaining("needle admitted fixture") });
+    expect(stable?.content).not.toContain("needle protected fixture");
+    expect(stable?.content).not.toContain("needle possible key fixture");
+    expect(hooks.opens).not.toContain(protectedPath);
+    expect(pathOpen.mock.calls.some(([verdict]) => verdict.path === keyPath)).toBe(false);
+    expect(await grep(".", "count")).toMatchObject({ content: expect.stringContaining(`${candidate}: 1`) });
+    expect(await grep(".", "files_with_matches")).toMatchObject({ content: expect.stringContaining(candidate) });
+    expect(await grep("candidate.txt")).toMatchObject({ content: expect.stringContaining("needle admitted fixture") });
+    expect(await grep("candidate.pem")).toMatchObject({ is_error: true });
+    expect(pathOpen.mock.calls.some(([verdict]) => verdict.path === keyPath)).toBe(false);
+    hooks.candidateRead.mockClear();
+    hooks.duringOpen = (path) => {
+      if (basename(path) !== basename(candidate)) return undefined;
+      hooks.duringOpen = undefined;
+      renameSync(candidate, held);
+      renameSync(replacement, candidate);
+      return () => {
+        renameSync(candidate, replacement);
+        renameSync(held, candidate);
+      };
+    };
+    const result = await grep(".");
+    expect(hooks.duringOpen).toBeUndefined();
+    expect(result?.content).toContain("No matches found.");
+    expect(result?.content).not.toContain("needle replacement fixture");
+    expect(hooks.pathSearch).not.toHaveBeenCalled();
+    expect(hooks.candidateRead).not.toHaveBeenCalled();
+  } finally {
+    hooks.duringOpen = undefined;
+    hooks.opens.length = 0;
+    pathOpen.mockRestore();
+    withdrawInspection();
+    if (process.platform === "win32") setWindowsDriveQueryForTest();
     endUnattendedStage(sessionId);
     rmSync(root, { recursive: true, force: true });
   }

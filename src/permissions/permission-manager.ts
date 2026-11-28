@@ -1957,6 +1957,7 @@ export class PermissionManager {
         : evidence.protectedControl === undefined && otherStageRead(evidence, target) ? { ...evidence, protectedControl: "application-home" } : evidence;
     const evidenceForPath = createPermissionPathEvidence(projectRulesCwd ?? requestedRuleSubject?.cwd ?? process.cwd(), undefined, {
       inspectHostFiles: !activeBrokerGuest,
+      keyMaterialByName: unattended !== undefined && source === "builtin" && toolName === "grep_files",
     });
     for (const path of context.paths ?? []) {
       const evidence = withoutOwnStageFloor(evidenceForPath(path), path.runtimePath);

@@ -13,7 +13,8 @@ import { isConfinedHostShellExecution, isWindowsContainerShell } from "../permis
 import { dispatchReviewerForHeadless, dispatchReviewerForInteractiveAuto } from "./pipeline/reviewer-dispatch.js";
 import { criticalDeleteTargetFor } from "../permissions/sensitive-paths.js";
 import { windowsObligationsApply } from "../permissions/admitted-obligation.js";
-import { assertWindowsTarget, fileTargetSealFailureKey, observeWindowsTarget, sealPosixReadTargets, sealsHold, TargetIdentityChangedError, type TargetSeal } from "../permissions/target-seal.js";
+import { assertWindowsTarget, fileTargetSealFailureKey, observeWindowsTarget, sealReadTargets, sealsHold, TargetIdentityChangedError, type TargetSeal } from "../permissions/target-seal.js";
+import { fileIdentityKey, type FileIdentity } from "../lib/file-identity.js";
 import { hookChainFromDispatch } from "./pipeline/audit-entries.js";
 import { runScriptHook, scriptHookRefusal } from "./invocation-services.js";
 import { HookInputMutationRequest, attachHookControlContext, hookInfluenceContext } from "../hooks/hook-influence.js";
@@ -2579,6 +2580,7 @@ async function runToolInvocationAttempt(
       ? []
       : extractTargetFilePaths(tool, finalInput, executionCwd);
     const pathEffect = requiredTier(invocationCategory);
+    const scheduledGrep = canonicalFileTool?.name === "grep_files" && registeredUnattendedStageOf(sessionId) !== undefined;
     const nativeFileWrite = isCanonicalFileTool(tool) && invocationCategory === "write" && !brokeredFileRouteSelected;
     const initialPathJudgment = () => withLocalityDecision(() => {
       const expected = targetFilePaths.map((path) => resolveFileTarget(path));
@@ -2619,6 +2621,10 @@ async function runToolInvocationAttempt(
       }
       const createFileSeal = (mutated: ReadonlySet<string>): TargetSeal => ({
         pathFor: (path) => pathsByOperand.get(targetKey(path)),
+        ...(scheduledGrep ? { assertOpenedRead: (path: string, opened: FileIdentity) => {
+          const observation = expected.find(({ target }) => target.runtimePath === path)?.observation;
+          if (observation?.ancestor !== path || observation.identity !== fileIdentityKey(opened)) throw new TargetIdentityChangedError();
+        } } : {}),
         ...(nativeFileWrite ? { entryFor: (path: string) => entries.get(targetKey(path)) } : {}),
         verify: () => withLocalityDecision(() => {
           const current = expected.map(({ target, observation }) => resolveFileTarget(target.filePath, observation !== undefined));
@@ -2652,7 +2658,7 @@ async function runToolInvocationAttempt(
       unsealedRuleSubject = scopedRuleSubjectFor(tool, finalInput, executionCwd);
       if (canonicalFileTool !== undefined && pathEffect === "read" && targetFilePaths.length > 0 &&
           registeredUnattendedStageOf(sessionId) !== undefined) {
-        try { fileTargetSeal = sealPosixReadTargets(targetFilePaths); }
+        try { fileTargetSeal = sealReadTargets(targetFilePaths); }
         catch { return await denyUnresolvedFileTargets("Cannot resolve file target"); }
       }
       for (const filePath of targetFilePaths) {
@@ -3102,6 +3108,7 @@ async function runToolInvocationAttempt(
       approvedPolicyEpoch: authorization.approvedPolicyEpoch,
       permissionRecheckResult: authorization.permissionRecheckResult,
       checkCurrentPermission: authorization.checkCurrentPermission,
+      authorizeGrepCandidate: authorization.authorizeGrepCandidate,
       replayRootBinding: opts.replayRootBinding,
       approvedInvocation: opts.approvedInvocation,
       refreshApprovedInvocation: opts.refreshApprovedInvocation,

@@ -1,13 +1,12 @@
 import type { ChildProcess } from "node:child_process";
-import { constants } from "node:fs";
-import { open, realpath, stat, type FileHandle } from "node:fs/promises";
+import { realpath, stat, type FileHandle } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import { z } from "zod";
 import type { ToolExecutionResult } from "./base.js";
 import { admissionDeniedFilePattern, createFilePathPolicy, createStageWorkspacesSkip, sensitiveFilePattern } from "./file-access-policy.js";
 import { isSensitiveContent, judgedPathNamesOpenedFile, KEY_MATERIAL_SCAN_BYTES } from "../permissions/sensitive-paths.js";
-import type { TargetSeal } from "../permissions/target-seal.js";
+import { openSealedReadTarget, sealReadTargets, type TargetSeal } from "../permissions/target-seal.js";
 import { buildSafeChildEnv } from "./safe-env.js";
 import { resolvePinnedRipgrepExecutable } from "./ripgrep-executable.js";
 import { forceKillManagedChildProcess, spawnManaged } from "../main/managed-child-processes.js";
@@ -15,9 +14,8 @@ import { errorMessage } from "../shared/error-message.js";
 import { admitLocalRoute, localFs, withLocalityDecision } from "../shared/local-path-io.js";
 
 // Use only the pinned bundled search binary under an already-authorized root.
-// The search over the tree only names the files that match. Each one is then judged on its real path and read by the host
-// through one handle bound to that path, and ripgrep matches again on exactly those bytes: no line, count or match that the
-// tree search read itself reaches the model.
+// Scheduled searches enumerate names and match only bytes read from authorized, identity-checked handles.
+// Attended searches use a tree search to shortlist names and keep only results from the subsequent handle reads.
 
 const GREP_DEFAULT_LIMIT = 200;
 const GREP_MAX_LIMIT = 1_000;
@@ -75,7 +73,8 @@ export type GrepFilesInput = z.infer<typeof GrepFilesInputSchema>;
 
 export const GREP_FILES_DESCRIPTION = [
   "Search file contents with ripgrep. Use this instead of running grep or rg through the shell.",
-  "Respects .gitignore/.ignore files, searches hidden files except .git, skips binary files and protected paths.",
+  "Searches hidden files except .git and skips protected paths. Attended runs respect .gitignore/.ignore files and filter binary files.",
+  "Scheduled runs enumerate names without loading ignore files and skip potential private-key files by name.",
   "Pattern syntax is ripgrep's Rust regex (no lookaround or backreferences).",
   "outputMode: `content` (default) shows matching lines as `line: text` grouped by file, with optional context lines",
   "(`line- text`); `files_with_matches` lists paths only — cheapest when you just need where something occurs;",
@@ -115,7 +114,7 @@ export function resolveBundledRipgrep(): string {
  * that the files listed are the ones it would count (none for a binary file it finds in a folder). Only their names are
  * used.
  */
-export function buildRipgrepArgs(root: string, input: GrepFilesInput): string[] {
+export function buildRipgrepArgs(root: string, input: GrepFilesInput, listOnly = false): string[] {
   const args = [
     // Ignore user search configuration so flags such as --pre cannot execute arbitrary programs.
     "--no-config",
@@ -128,9 +127,11 @@ export function buildRipgrepArgs(root: string, input: GrepFilesInput): string[] 
     "--null",
     "--line-buffered",
   ];
-  pushMatchArgs(args, input);
+  if (!listOnly) pushMatchArgs(args, input);
   if (input.include !== undefined) args.push(`--glob=${input.include}`);
   if (input.type !== undefined) args.push(`--type=${input.type}`);
+  // Ignore files contain data too. Scheduled traversal uses only names and caller-supplied filters.
+  if (listOnly) return [...args, "--files", "--no-ignore", "--", root];
   args.push(input.outputMode === "count" ? "--count" : "--files-with-matches");
   // Delimit patterns and paths so leading hyphens cannot become flags.
   args.push("--regexp", input.pattern, "--", root);
@@ -206,6 +207,8 @@ interface RipgrepRun {
   readonly stderr: string;
 }
 
+type CandidateAuthorization = (lexical: string, runtimePath: string) => boolean;
+
 // A grep result path is inside the admitted secret root when it equals the root
 // or sits beneath it at a separator boundary. ripgrep echoes result paths under
 // the search root in the root's own spelling, so on win32 both carry backslashes
@@ -255,14 +258,18 @@ async function runRipgrep(
   signal: AbortSignal | undefined,
   seal?: TargetSeal,
   explicitSecretRoot?: string,
+  authorizeCandidate?: CandidateAuthorization,
 ): Promise<RipgrepRun> {
   signal?.throwIfAborted();
   const wanted = input.offset + input.limit + 1;
   // Every file read lies under the real root: the tree search does not follow links, so only a path changed after it listed
   // the file can lead out. An explicitly searched secret root admits what lies beneath it, judged on real paths too.
   const realRoot = windowsRealRoot ?? seal?.pathFor?.(root) ?? await realpath(resolve(cwd, root));
+  if (authorizeCandidate !== undefined && !authorizeCandidate(root, realRoot)) {
+    return { entries: [], more: false, exitCode: 1, stderr: "" };
+  }
   const explicitRealRoot = explicitSecretRoot === undefined ? undefined : realRoot;
-  const policy = createFilePathPolicy("read");
+  const policy = createFilePathPolicy("read", { keyMaterialByName: authorizeCandidate !== undefined });
   const skip = createStageWorkspacesSkip(windowsRealRoot === undefined ? realRoot : root);
   const roots: BoundSearchRoots = windowsRealRoot === undefined
     ? { real: realRoot, explicit: explicitRealRoot, skip }
@@ -270,7 +277,9 @@ async function runRipgrep(
   const listing: ListingState = { exitCode: null, stderr: "" };
   // A few files are searched ahead of the one whose results are taken next; they are cancelled once enough are found.
   const searches = new AbortController();
-  const files = matchingFiles(executable, buildRipgrepArgs(root, input), cwd, searches.signal, listing, input.outputMode === "count");
+  const listOnly = authorizeCandidate !== undefined;
+  const files = listedFiles(executable, buildRipgrepArgs(root, input, listOnly), cwd, searches.signal, listing,
+    !listOnly && input.outputMode === "count");
   const forward = (): void => searches.abort(signal?.reason);
   signal?.addEventListener("abort", forward, { once: true });
   const ahead: Promise<GrepEntry[]>[] = [];
@@ -296,10 +305,11 @@ async function runRipgrep(
           seal?.verify();
           const explicit = windowsRealRoot === undefined
             ? explicitSecretRoot !== undefined && isWithinAdmittedRoot(path, explicitSecretRoot)
-            : isWithinAdmittedRoot(path, root) && policy.sensitive(root) !== null;
+            : !listOnly && isWithinAdmittedRoot(path, root) && policy.sensitive(root) !== null;
           return policy.admissionDenied(path) !== null || (!explicit && policy.sensitive(path) !== null) || skip(resolve(cwd, path));
         })) continue;
-        const search = searchBoundFile(executable, path, cwd, input, wanted, roots, policy, searches.signal);
+        const search = searchBoundFile(executable, path, cwd, input, wanted, roots, policy, searches.signal,
+          authorizeCandidate === undefined ? undefined : { rootSeal: seal, authorizeCandidate });
         // A search cancelled after enough results were found settles with nobody waiting for it.
         search.catch(() => {});
         ahead.push(search);
@@ -367,7 +377,7 @@ function searchExitFailure(code: number | null, endedBy: NodeJS.Signals | null, 
  * The paths the tree search lists, in its order; with `counted`, each is followed by its count, which is dropped. Stopping
  * early stops the search; its exit code and errors land in `state`.
  */
-async function* matchingFiles(
+async function* listedFiles(
   executable: string,
   args: string[],
   cwd: string,
@@ -473,13 +483,18 @@ async function searchBoundFile(
   roots: BoundSearchRoots,
   policy: ReturnType<typeof createFilePathPolicy>,
   signal: AbortSignal | undefined,
+  scheduled?: { rootSeal: TargetSeal | undefined; authorizeCandidate: CandidateAuthorization },
 ): Promise<GrepEntry[]> {
   let judged: string;
   let handle: FileHandle;
   let explicit = false;
   try {
+    const operand = resolve(cwd, path);
+    const rootSeal = scheduled?.rootSeal;
+    const candidateSeal = scheduled === undefined ? undefined
+      : rootSeal?.assertOpenedRead && rootSeal.pathFor?.(operand) !== undefined ? rootSeal : sealReadTargets([operand]);
     if (roots.lexical === undefined) {
-      judged = await realpath(resolve(cwd, path));
+      judged = candidateSeal?.pathFor?.(operand) ?? await realpath(operand);
       if (!liesUnderRealRoot(judged, roots.real)) return [];
       explicit = roots.explicit !== undefined && isWithinAdmittedRoot(judged, roots.explicit);
       if (withLocalityDecision(() => policy.admissionDenied(judged) !== null || (!explicit && policy.sensitive(judged) !== null) || roots.skip(judged))) return [];
@@ -488,7 +503,10 @@ async function searchBoundFile(
       if (accepted === undefined) return [];
       ({ candidate: judged, explicit } = accepted);
     }
-    handle = await open(judged, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+    if (scheduled !== undefined &&
+        (candidateSeal?.pathFor?.(operand) !== judged || !scheduled.authorizeCandidate(operand, judged))) return [];
+    rootSeal?.verify();
+    handle = await openSealedReadTarget(judged, candidateSeal);
   } catch {
     signal?.throwIfAborted();
     return [];
@@ -496,6 +514,7 @@ async function searchBoundFile(
   try {
     const opened = await handle.stat({ bigint: true });
     if (!opened.isFile()) return [];
+    scheduled?.rootSeal?.verify();
     const found = await searchHandle(executable, handle, cwd, input, path, needed, signal);
     if (!explicit) {
       const size = Number((await handle.stat({ bigint: true })).size);
@@ -737,6 +756,7 @@ export async function searchWithRipgrep(
   signal: AbortSignal | undefined,
   resolveExecutable: () => string = resolveBundledRipgrep,
   seal?: TargetSeal,
+  authorizeCandidate?: CandidateAuthorization,
 ): Promise<ToolExecutionResult> {
   const isWindows = process.platform === "win32";
   let cwd: string;
@@ -785,8 +805,8 @@ export async function searchWithRipgrep(
   let run: RipgrepRun;
   try {
     seal?.verify();
-    const explicitSecretRoot = !isWindows && sensitiveFilePattern(root) !== null ? root : undefined;
-    run = await runRipgrep(executable, root, cwd, windowsRealRoot, input, signal, seal, explicitSecretRoot);
+    const explicitSecretRoot = authorizeCandidate === undefined && !isWindows && sensitiveFilePattern(root) !== null ? root : undefined;
+    run = await runRipgrep(executable, root, cwd, windowsRealRoot, input, signal, seal, explicitSecretRoot, authorizeCandidate);
     seal?.verify();
   } catch (error) {
     return grepError(errorMessage(error));

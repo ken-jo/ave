@@ -34,6 +34,7 @@ import type { PathEffect } from "../permissions/allowed-directories.js";
 import { isPathAllowed } from "../permissions/allowed-directories.js";
 import { canonicalizePathForMatch, caseFoldForMatch, judgedPathNamesOpenedFile } from "../permissions/sensitive-paths.js";
 import { fileTargetSealFailureKey, openSealedReadTarget, TargetIdentityChangedError, type TargetSeal } from "../permissions/target-seal.js";
+import { registeredUnattendedStageOf } from "../permissions/unattended-lane-registry.js";
 import { resolvePhysicalFilesystemPath } from "../shared/shell-filesystem-path.js";
 import type { ApprovalMemoryScope } from "../shared/permissions-events.js";
 import { consumeExecutionGrantForBuiltinToolInvocation } from "../permissions/execution-router.js";
@@ -1086,12 +1087,16 @@ export class GrepFilesTool extends FileTool<typeof GrepFilesInputSchema> {
     input: z.infer<typeof GrepFilesInputSchema>,
     ctx: ToolExecutionContext,
   ): Promise<ToolExecutionResult> {
+    const authorizeCandidate = ctx.authorizeGrepCandidate;
+    const scheduled = registeredUnattendedStageOf(sessionIdOf(ctx)) !== undefined || authorizeCandidate !== undefined;
+    if (scheduled && authorizeCandidate === undefined) return toolError("Scheduled grep requires candidate authorization.");
     const transport = await this.executionTransport(input, ctx);
     if (transport.kind === "failure") return transport.result;
     const resolved = this.resolveExecutionPath(input.path ?? ".", ctx, transport);
     if (!resolved.ok) return resolved.error;
     const root = resolved.value;
     if (transport.kind === "broker") {
+      if (scheduled) return toolError("Scheduled grep requires a local sealed read.");
       const unsupported = grepOptionsUnsupportedByBroker(input);
       if (unsupported.length > 0) {
         return toolError(
@@ -1115,7 +1120,10 @@ export class GrepFilesTool extends FileTool<typeof GrepFilesInputSchema> {
     }
     const blocked = this.ensureAllowed(root, ctx, "read");
     if (blocked) return blocked;
-    return searchWithRipgrep(root, input, ctx.abortSignal, undefined, ctx.fileTargetSeal);
+    return searchWithRipgrep(root, input, ctx.abortSignal, undefined, ctx.fileTargetSeal,
+      authorizeCandidate === undefined ? undefined : (lexical, runtimePath) =>
+        this.ensureAllowed(lexical, ctx, "read") === null && this.ensureAllowed(runtimePath, ctx, "read") === null
+        && authorizeCandidate(lexical, runtimePath));
   }
 }
 

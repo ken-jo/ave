@@ -30,12 +30,12 @@ export function admissionDeniedFilePattern(path: string, effect: PathEffect = "r
 /**
  * Reusable file path predicates. Resolved policy anchors are shared within the current locality decision.
  */
-export function createFilePathPolicy(effect: PathEffect = "read"): {
+export function createFilePathPolicy(effect: PathEffect = "read", options: { keyMaterialByName?: boolean } = {}): {
   sensitive: (path: string) => string | null;
   admissionDenied: (path: string) => string | null;
 } {
   return {
-    sensitive: asSpelledThenResolved(createSensitivePathMatcher(effect)),
+    sensitive: asSpelledThenResolved(createSensitivePathMatcher(effect, undefined, undefined, options)),
     admissionDenied: asSpelledThenResolved(createAdmissionDeniedPathMatcher(effect)),
   };
 }
