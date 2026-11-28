@@ -65,6 +65,7 @@ import {
   type SubscriptionRuntimeId,
   type SubscriptionRuntimeModelsResult,
   type SubscriptionRuntimeStatus,
+  type SubscriptionRuntimeStatusResult,
   type SubscriptionRuntimeStatusUpdatedEvent,
 } from "../../shared/subscription-runtime.js";
 import {
@@ -467,16 +468,16 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     request: number | undefined,
     result: SubscriptionRuntimeActionResult,
     notify: boolean,
-  ): void => {
-    if (statusRequestByProvider.get(provider) !== request || mutationsByProvider.has(provider)) return;
+  ): boolean => {
+    if (statusRequestByProvider.get(provider) !== request || mutationsByProvider.has(provider)) return false;
     const connected = result.ok && result.status.connection === "connected";
     const previous = connectionByProvider.get(provider);
-    if (previous?.connected === connected) return;
+    if (previous?.connected === connected) return true;
     const observation = { connected };
     connectionByProvider.set(provider, observation);
     if (notify && previous) publishSubscriptionRuntimeStatusUpdated(provider);
     const route = settingsService.get("llm")?.activeChatRuntime;
-    if (route?.kind !== "subscription" || route.provider !== provider) return;
+    if (route?.kind !== "subscription" || route.provider !== provider) return true;
     const transition = activeChatRuntimeTransitionRevision;
     void broadcastSettingsSnapshot({
       ...deps,
@@ -486,6 +487,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
       && connectionByProvider.get(provider) === observation).catch((err) => {
       log.warn({ err }, "Could not publish subscription status");
     });
+    return true;
   };
   const runSubscriptionMutation = async (
     provider: SubscriptionRuntimeId,
@@ -1105,8 +1107,9 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
       allowCached: !refresh,
       onLiveRead: () => { request ??= startStatusRequest(provider); },
     }));
-    publishActiveSubscriptionStatus(providerValue, request, result, true);
-    return result;
+    const current = publishActiveSubscriptionStatus(providerValue, request, result, true);
+    const reply: SubscriptionRuntimeStatusResult = refresh && !current ? { ...result, superseded: true } : result;
+    return reply;
   });
   ipcMain.handle(CHANNELS.settings.subscriptionChooseRuntime, async (e, providerValue: unknown) => {
     if (!validateHostRendererSender(e)) {

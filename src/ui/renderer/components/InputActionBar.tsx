@@ -803,6 +803,10 @@ function ModelQuickPicker({
       const result = await api.subscriptionRuntimeStatus(route.provider, { refresh: true }).catch(() => null);
       opening = false;
       const latest = latestUpdate ?? settings;
+      if (result?.superseded) {
+        take(latest);
+        return;
+      }
       const current = latest.llm.activeChatRuntime;
       const connected = result?.ok === true && result.status.provider === route.provider && result.status.connection === "connected";
       take(latest, current?.kind === "subscription" && current.provider === route.provider

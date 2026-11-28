@@ -840,6 +840,34 @@ describe("model card (status-row model cell)", () => {
     expect(view.queryByTestId("model-quick-picker-option:codex")).toBeNull();
   });
 
+  it.each([
+    ["sign-out", "connected"],
+    ["reconnect", "signed-out"],
+  ] as const)("keeps the settings projection after a superseded opening reply following %s", async (_change, staleConnection) => {
+    const llm = { activeChatRuntime: { kind: "subscription", provider: "codex", model: "example-model" } } as const;
+    const connected = fakeAppSettings({ llm, activeChatModel: llm.activeChatRuntime });
+    const signedOut = fakeAppSettings({ llm, activeChatModel: { kind: "none", reason: "no-connected-provider" } });
+    const reconnecting = staleConnection === "signed-out";
+    const latest = reconnecting ? connected : signedOut;
+    const live = deferred<Awaited<ReturnType<typeof subscriptionRuntimeStatus>>>();
+    getSettings.mockResolvedValue(reconnecting ? signedOut : connected);
+    subscriptionRuntimeStatus.mockReturnValueOnce(live.promise);
+    const view = renderBar();
+    await act(async () => { fireEvent.click(view.getByTestId("iab-status-model")); });
+    expect(subscriptionRuntimeStatus).toHaveBeenLastCalledWith("codex", { refresh: true });
+    const update = onSettingsUpdated.mock.lastCall?.[0];
+    if (!update) throw new Error("Missing settings listener");
+    act(() => update(latest));
+    const reply = { ok: true, status: { provider: "codex", connection: staleConnection }, superseded: true } as const;
+    await act(async () => { live.resolve(reply); });
+
+    expect(view.getByTestId("model-quick-picker")).toBeInTheDocument();
+    const row = view.queryByTestId("model-quick-picker-option:codex");
+    expect(row?.closest("[role='option']")?.getAttribute("aria-selected") === "true")
+      .toBe(latest.activeChatModel.kind === "subscription");
+    expect(updateSettings).not.toHaveBeenCalled();
+  });
+
   it("drops a disconnected subscription from an open picker and adds it back after sign-in", async () => {
     const llm = { activeChatRuntime: { kind: "subscription", provider: "codex", model: "example-model" } } as const;
     const connected = fakeAppSettings({ llm, activeChatModel: { ...llm.activeChatRuntime } });

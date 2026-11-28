@@ -660,6 +660,50 @@ describe("common subscription runtime IPC", () => {
     expect(currentLlm().activeChatRuntime).toEqual(selection);
   });
 
+  it.each([
+    ["sign-out", "connected", "signed-out"],
+    ["reconnect", "signed-out", "connected"],
+  ] as const)("marks an opening status reply superseded after %s", async (change, before, after) => {
+    const selection = { kind: "subscription", provider: "codex", model: "example-model" } as const;
+    const { deps, currentLlm } = makeStatefulSelectionDeps({
+      provider: "openai", vendors: { openai: { model: "example-api-model", baseUrl: null } }, activeChatRuntime: selection,
+    });
+    const send = vi.fn();
+    deps.getAppWindows.mockReturnValue([{
+      isDestroyed: () => false,
+      webContents: { isDestroyed: () => false, send },
+    }]);
+    const { registerSettingsHandlers } = await import("../settings.js");
+    registerSettingsHandlers(deps as never);
+    const refresh = () => invoke(CHANNELS.settings.subscriptionRuntimeStatus, "codex", { refresh: true });
+    const oldStatus = { ...readyStatus("codex"), connection: before };
+    const newStatus = { ...oldStatus, connection: after };
+    const noModel = { kind: "none", reason: "no-connected-provider" };
+    const readModels = () => send.mock.calls.filter(([name]) => name === SETTINGS.updated).map(([, snapshot]) => snapshot.activeChatModel);
+    const expectedModels = before === "connected" ? [selection, noModel] : [noModel, selection];
+    runtime.getStatus.mockResolvedValueOnce(oldStatus);
+    await refresh();
+    await vi.waitFor(() => expect(readModels()).toEqual(expectedModels.slice(0, 1)));
+
+    const live = deferred<SubscriptionRuntimeStatus>();
+    runtime.getStatus.mockReturnValueOnce(live.promise);
+    const opening = refresh();
+    await vi.waitFor(() => expect(runtime.getStatus).toHaveBeenCalledTimes(2));
+    if (change === "sign-out") {
+      runtime.logout.mockResolvedValueOnce(newStatus);
+      await invoke(CHANNELS.settings.subscriptionLogout, "codex");
+    } else {
+      runtime.getStatus.mockResolvedValueOnce(newStatus);
+      await expect(refresh()).resolves.toEqual({ ok: true, status: newStatus });
+    }
+    await vi.waitFor(() => expect(readModels()).toEqual(expectedModels));
+    live.resolve(oldStatus);
+
+    await expect(opening).resolves.toMatchObject({ superseded: true });
+    expect(readModels()).toEqual(expectedModels);
+    expect(currentLlm().activeChatRuntime).toEqual(selection);
+  });
+
   it("publishes a live disconnect even when a later read returns cached status", async () => {
     const selection = { kind: "subscription", provider: "codex", model: "example-model" } as const;
     const { deps } = makeStatefulSelectionDeps({
