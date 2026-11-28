@@ -50,7 +50,7 @@ export function registerDocumentOpenHandlers(deps: IpcDeps): void {
   setDocumentPanelOpener(openDocumentForSession);
   ipcMain.handle(CHANNELS.preview.documentOpenAck, (event, raw: unknown) => {
     if (!validateAppWindowMainFrameSender(event, deps)) {
-      auditUnauthorized(deps.auditLogger, CHANNELS.preview.documentOpenAck, event);
+      auditUnauthorized(CHANNELS.preview.documentOpenAck);
       return { ok: false, error: "unauthorized" };
     }
     const ack = parseDocumentOpenAck(raw);
@@ -59,7 +59,7 @@ export function registerDocumentOpenHandlers(deps: IpcDeps): void {
     if (!entry) return { ok: false, error: "stale-request" };
     if (entry.acknowledged) return { ok: false, error: "stale-request" };
     if (entry.sender !== event.sender || entry.frame !== event.senderFrame || entry.sessionId !== ack.sessionId) {
-      auditUnauthorized(deps.auditLogger, CHANNELS.preview.documentOpenAck, event);
+      auditUnauthorized(CHANNELS.preview.documentOpenAck);
       return { ok: false, error: "unauthorized" };
     }
     if (Date.now() >= entry.expiresAt || visibleSession(entry.sessionId) !== entry.sender) {

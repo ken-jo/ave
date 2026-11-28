@@ -92,11 +92,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
     enabled: false,
     crashReportingEnabled: false,
   },
-  audit: {
-    auditRotationMaxBytes: 10 * 1024 * 1024, // 10 MB
-    auditRetentionDays: 30,
-  },
-  // Owner decision 2026-10-20: the sandbox egress proxy follows the environment and the OS proxy settings unless Settings says otherwise.
   upstreamProxy: { ...DEFAULT_UPSTREAM_PROXY },
   diagnostics: {
     // Raw crash-dump binaries excluded by default; metadata-only in the bundle.
@@ -165,6 +160,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     idlePreferenceRefresh: false,
     // Derived long-term overviews send eligible active notes to the configured model only on opt-in.
     idleMemoryConsolidation: false,
+    automaticSkillMemory: true,
     // Wake delivers background results through the normal parent turn and its fail-closed prompt gate; mailbox-only delivery waits for another user turn.
     subAgentAutonomousWake: true,
     // External A2A wire routes are independently opt-in and default OFF.

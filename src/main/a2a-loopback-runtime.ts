@@ -1,3 +1,4 @@
+import { logPermissionEvent, permissionLogId } from "../lib/permission-log.js";
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import type { AppServices } from "../boot.js";
@@ -54,7 +55,7 @@ export interface A2ALoopbackRuntime {
 export interface CreateA2ALoopbackRuntimeOptions {
   services: Pick<
     AppServices,
-    "agentProfileStore" | "getSubAgentRunner" | "auditLogger"
+    "agentProfileStore" | "getSubAgentRunner"
   >;
   project: Readonly<{ root: string; name?: string }>;
   appVersion: string;
@@ -195,23 +196,6 @@ function buildBinding(
   return binding;
 }
 
-function writeAudit(
-  services: CreateA2ALoopbackRuntimeOptions["services"],
-  input: string,
-  sessionId = "a2a-loopback",
-): void {
-  try {
-    services.auditLogger.log({
-      timestamp: new Date().toISOString(),
-      sessionId,
-      type: "warn",
-      input,
-    });
-  } catch {
-    // Audit failure must not alter the fail-closed wire decision.
-  }
-}
-
 export async function createA2ALoopbackRuntime(
   options: CreateA2ALoopbackRuntimeOptions,
 ): Promise<A2ALoopbackRuntime | null> {
@@ -232,6 +216,8 @@ export async function createA2ALoopbackRuntime(
   const handlerIds = new Set(snapshots.map(({ handlerId }) => handlerId));
   if (handlerIds.size !== snapshots.length) throw new Error("a2a-handler-id-collision");
 
+  const sessionId = permissionLogId(options.auditSessionId ?? "a2a-loopback");
+  const scope = permissionLogId(options.auditScope ?? "a2a");
   const store = new A2ATaskStore({
     namespace: options.namespace ?? openFeatureNamespace(A2A_TASK_FEATURE),
     maxTasks: MAX_HANDLERS * MAX_TASKS_PER_HANDLER,
@@ -239,7 +225,9 @@ export async function createA2ALoopbackRuntime(
     maxHistoryMessages: MAX_HISTORY_MESSAGES,
     activeHandlerIds: handlerIds,
     audit: (event: A2ATaskStoreAuditEvent) => {
-      writeAudit(options.services, `${options.auditScope ?? "a2a"}:task-store:${event.reason}:${event.count}`, options.auditSessionId);
+      logPermissionEvent("local_agent_delivery_refused", {
+        sessionId, scope, operation: "task-store", reasonCode: event.reason, count: event.count,
+      }, "warn");
     },
   });
 
@@ -255,11 +243,10 @@ export async function createA2ALoopbackRuntime(
 
   const handlers = snapshots.map(({ profile, handlerId }) => {
     const audit = (event: A2ATaskLifecycleAuditEvent): void => {
-      writeAudit(
-        options.services,
-        `${options.auditScope ?? "a2a"}:task-lifecycle:${event.outcome}:${event.reason}:${handlerId}${event.approvalOutcome ? `:approval=${event.approvalOutcome}` : ""}`,
-        options.auditSessionId,
-      );
+      logPermissionEvent("local_agent_delivery_refused", {
+        sessionId, scope, operation: event.operation ?? "task-lifecycle", outcome: event.outcome,
+        reasonCode: event.reason, handlerId: permissionLogId(handlerId), approvalOutcome: event.approvalOutcome,
+      }, "warn");
     };
     return new A2ASubAgentHandler({
       id: handlerId,
@@ -277,7 +264,9 @@ export async function createA2ALoopbackRuntime(
   const router = createA2AHttpRouter({
     handlers: wireHandlers,
     advertisedOrigin: options.advertisedOrigin,
-    audit: (event) => writeAudit(options.services, `${options.auditScope ?? "a2a"}:wire:${event.reason}`, options.auditSessionId),
+    audit: (event) => logPermissionEvent("local_agent_delivery_refused", {
+      sessionId, scope, operation: "wire", reasonCode: event.reason,
+    }, "warn"),
   });
   try {
     await Promise.all(handlers.map((handler) => handler.startInputRequiredExpiry()));

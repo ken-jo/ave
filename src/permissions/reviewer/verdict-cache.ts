@@ -2,7 +2,7 @@
 import { resolve as pathResolve } from "node:path";
 import type { RiskVerdict } from "./risk-classifier.js";
 import type { ToolCategory, ToolSource, ToolTrustOrigin } from "../../tools/types.js";
-import { JsonlRecordFile } from "../../audit/jsonl-reader.js";
+import { JsonlRecordFile } from "../../lib/jsonl-record-file.js";
 import { createLogger } from "../../lib/logger.js";
 import { aveHome, isInRefusedAveHome } from "../../shared/ave-home.js";
 import { readAveHomeInputSync } from "../../shared/ave-home-trust.js";

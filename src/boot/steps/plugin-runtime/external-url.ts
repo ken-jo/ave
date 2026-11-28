@@ -1,4 +1,4 @@
-import type { AuditEntry } from "../../../audit/audit-logger.js";
+import { logPermissionEvent, permissionLogId } from "../../../lib/permission-log.js";
 import type { SettingsService } from "../../../data/settings-store.js";
 import { validateExternalUrl } from "../../../shared/external-url.js";
 
@@ -10,13 +10,12 @@ export async function routeExternalUrl(input: {
   url: string;
   pluginId: string;
   settingsService: Pick<SettingsService, "get">;
-  bootAuditLogger: { log: (entry: AuditEntry) => void };
   openLinkWindowService: (
     opts: { url: string; windowTitle?: string; persistPartition?: string },
   ) => Promise<void>;
   shellOpenExternal: (url: string) => Promise<void>;
 }): Promise<void> {
-  const { url, pluginId, settingsService, bootAuditLogger, openLinkWindowService, shellOpenExternal } = input;
+  const { url, pluginId, settingsService, openLinkWindowService, shellOpenExternal } = input;
   // Delegate scheme and embedded-credential checks to the shared URL validator.
   const validated = validateExternalUrl(url);
   if (!validated.ok) {
@@ -38,17 +37,10 @@ export async function routeExternalUrl(input: {
       `[plugin:${pluginId}] openExternalUrl: only http(s) URLs are allowed (got ${validated.protocol})`,
     );
   }
-  const parsed = new URL(validated.url);
-  const safeUrlForLog = `${parsed.origin}${parsed.pathname}`;
   const flow = settingsService.get("webView")?.preferredFlow ?? "in-app";
 
   try {
-    bootAuditLogger.log({
-      timestamp: new Date().toISOString(),
-      sessionId: "plugin",
-      type: "tool_call",
-      input: `[plugin:${pluginId}] openExternalUrl flow=${flow} url=${safeUrlForLog}`,
-    });
+    logPermissionEvent("plugin_external_url_requested", { sessionId: permissionLogId("plugin"), pluginId: permissionLogId(pluginId) });
   } catch { /* audit must not break host */ }
 
   // Send only the canonical URL; raw markup characters can escape the link-window document.

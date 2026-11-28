@@ -44,8 +44,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   state.mode = "direct"; state.holder = sender; state.visible = true; state.allowed = true; state.registered = true;
   sender.removeAllListeners(); sender.send.mockReset(); state.audit.mockReset();
-  registerDocumentOpenHandlers({ settingsService: { get: () => ({ openMode: state.mode }) }, auditLogger: { log: state.audit },
-    getMainWindow: () => state.registered ? appWindow : null,
+  registerDocumentOpenHandlers({ settingsService: { get: () => ({ openMode: state.mode }) }, getMainWindow: () => state.registered ? appWindow : null,
     getAppWindows: () => state.registered ? [appWindow] : [],
   } as never);
 });

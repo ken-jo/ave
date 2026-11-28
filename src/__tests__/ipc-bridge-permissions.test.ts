@@ -119,14 +119,8 @@ function makeServices(pm: ReturnType<typeof makeMockPM>, gate = makeMockGate()) 
       unregisterByPlugin: vi.fn(),
       register: vi.fn(),
     } as any,
-    auditLogger: {
-      log: vi.fn(),
-      isPermissionAuditChainReady: vi.fn(() => true),
-      appendPermissionAuditEntry: vi.fn(async (entry: Record<string, unknown>) => entry),
-    } as any,
     idleScheduler: undefined,
     bashAstValidator: {} as any,
-    auditService: {} as any,
     postTurnHookChain: {} as any,
   };
 }

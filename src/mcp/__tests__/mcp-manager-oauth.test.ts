@@ -94,7 +94,7 @@ function manager(onDisconnected?: (serverId: string) => void) {
   return new McpManager(
     { validateServer, getApproval: () => ({ status: "approved" }), unregisterRuntimeApproval: vi.fn() } as unknown as McpGovernance,
     { unregisterByMcp } as unknown as ToolRegistry,
-    hostFetch as typeof fetch, path, undefined, undefined, onDisconnected, secrets,
+    hostFetch as typeof fetch, path, undefined, onDisconnected, secrets,
     { redirectCatchers: new AuthRedirectCatchers(), openAuthorizationUrl: async () => {}, secrets },
   );
 }

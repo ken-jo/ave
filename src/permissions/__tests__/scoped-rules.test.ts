@@ -1,8 +1,9 @@
+import { captureInvocationCorrelations, collectPermissionEvents } from "../../__tests__/support/permission-events.js";
 vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
 vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
 vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
 
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, onTestFinished } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -22,14 +23,12 @@ import { scopedRuleSubjectFor } from "../../tools/pipeline/scoped-rule-subject.j
 import { createWebFetchTool } from "../../tools/web-fetch.js";
 import { createDynamicTool } from "../../tools/base.js";
 import { bindRemoteControllerToSession } from "../../shared/chat-origin.js";
-import { AuditLogger } from "../../audit/audit-logger.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { answeredApprovalDecision, answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 
 let directory: string;
 let project: string;
 let manager: PermissionManager;
-let audit: AuditLogger;
 beforeEach(() => {
   directory = realpathSync.native(mkdtempSync(join(tmpdir(), "ave-scoped-rules-")));
   project = join(directory, "project");
@@ -39,9 +38,8 @@ beforeEach(() => {
   writeFileSync(join(project, ".git", "HEAD"), "ref: refs/heads/main\n");
   vi.stubEnv("AVE_HOME", join(directory, "ave-home"));
   manager = new PermissionManager(join(directory, "permissions.json"));
-  audit = new AuditLogger(join(directory, "audit"));
 });
-afterEach(async () => { vi.unstubAllEnvs(); await audit.close(); await cleanupTmpDir(directory); });
+afterEach(async () => { vi.unstubAllEnvs();  await cleanupTmpDir(directory); });
 
 const allow = (pattern: string): PermissionRule => ({ pattern, action: "allow" });
 const edit = (...paths: string[]): ScopedRuleSubject => ({ kind: "edit", cwd: project, paths });
@@ -107,7 +105,7 @@ describe("scoped permission rules", () => {
     writeFileSync(join(project, "src", "secret", "keep.txt"), "keep");
     writeFileSync(join(project, "src", "public.txt"), "public");
     const requestAndWait = answeringRequestAndWait(() => ({ choice: "deny-once" }));
-    const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined, audit);
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined);
     const checkDetailed = vi.spyOn(manager, "checkDetailed");
     const [result] = await runWithToolExecutionCwd(project, () => executor.executeAll([
       { id: "protected-file", name, input },
@@ -146,7 +144,7 @@ describe("scoped permission rules", () => {
     await manager.loadRulesFromFile();
     await manager.addRulePersist(allow(rule), { kind: "user" });
     const requestAndWait = answeringRequestAndWait(() => ({ choice: "deny-once" }));
-    const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined, audit);
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined);
     await runWithToolExecutionCwd(project, () => executor.executeAll([
       { id: "control-file", name: "write_file", input: { path, content: "#!/bin/sh" } },
     ], { sessionId: "control-files", permissionContext: userPermissionContext() }));
@@ -238,7 +236,7 @@ describe("scoped permission rules", () => {
     const registry = new ToolRegistry();
     registry.register(new WriteFileTool());
     const requestAndWait = vi.fn();
-    const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined, audit);
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined);
     for (const path of paths) {
       const [output] = await runWithToolExecutionCwd(project, () => executor.executeAll([
         { id: "native-separator", name: "write_file", input: { path, content: "created" } },
@@ -480,7 +478,7 @@ describe("scoped permission rules", () => {
     registry.register(new WriteFileTool());
     registry.register(new ReadFileTool());
     const requestAndWait = vi.fn();
-    const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined, audit);
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined);
     const [result] = await runWithToolExecutionCwd(project, () => executor.executeAll([
       { id: "external-file", name: "write_file", input: { path: target, content: "created" } },
     ], { sessionId: "external-file", permissionContext: userPermissionContext() }));
@@ -498,18 +496,22 @@ describe("scoped permission rules", () => {
     expect(() => readFileSync(sibling, "utf8")).toThrow();
   });
 
-  it("audits and propagates the turn grant for a session-bound remote saved Edit", async () => {
+  it("logs and propagates the turn grant for a session-bound remote saved Edit", async () => {
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
     const external = join(directory, "external");
     mkdirSync(external);
     const target = join(external, "new.txt");
     await manager.addRulePersist(allow(`Edit(${foldCanonicalPathSeparators(target)})`), { kind: "project", projectCwd: project });
-    await audit.setupPermissionAuditChain("aa".repeat(32));
+
     const registry = new ToolRegistry();
     registry.register(new WriteFileTool());
     const requestAndWait = vi.fn();
     const onTurnDirectoryGrant = vi.fn();
-    const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined, audit);
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined);
     const sessionId = "remote-edit";
+    const correlations = await captureInvocationCorrelations();
+    onTestFinished(correlations.restore);
     const remoteControllerAuthority = bindRemoteControllerToSession({
       kind: "tailnet-controller", actorId: "tailnet:alice",
       pairedShare: { pairingId: "pairing", pairingEpoch: 1, shareId: "share", shareEpoch: 1, scope: "scope" },
@@ -524,11 +526,10 @@ describe("scoped permission rules", () => {
     expect(readFileSync(target, "utf8")).toBe("created");
     expect(requestAndWait).not.toHaveBeenCalled();
     expect.soft(onTurnDirectoryGrant).toHaveBeenCalledExactlyOnceWith(target);
-    const grants = readFileSync(audit.getPermissionAuditLogFile(), "utf8").trim().split("\n")
-      .map(line => JSON.parse(line)).filter(row => row.directoryAllowed === true && row.grantLifetime === "turn");
-    expect(grants).toEqual([expect.objectContaining({
-      directory: target, grantLifetime: "turn", tool: "write_file", toolUseId: "remote-edit",
-    })]);
+    const grants = capture.events.filter((event) => event.event === "permission_directory_grant");
+    expect(correlations.get("remote-edit")).toEqual(expect.any(String));
+    expect(grants).toEqual([expect.objectContaining({ grantLifetime: "turn", tool: "write_file", correlationId: correlations.get("remote-edit"), trustOrigin: "tailnet-surface" })]);
+    expect(JSON.stringify(grants)).not.toContain(target);
   });
 
   it("does not turn a generic tool allow into an external Edit grant", async () => {
@@ -541,7 +542,7 @@ describe("scoped permission rules", () => {
     const registry = new ToolRegistry();
     registry.register(new WriteFileTool());
     const requestAndWait = answeringRequestAndWait(() => ({ choice: "deny-once" }));
-    const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined, audit);
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined);
     const [result] = await runWithToolExecutionCwd(project, () => executor.executeAll([
       { id: "generic-allow", name: "write_file", input: { path: join(directory, "external.txt"), content: "must not write" } },
     ], { sessionId: "generic-allow", permissionContext: userPermissionContext() }));
@@ -555,7 +556,7 @@ describe("scoped permission rules", () => {
     const registry = new ToolRegistry();
     registry.register(new WriteFileTool());
     const requestAndWait = vi.fn();
-    const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined, audit);
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined);
     const [result] = await runWithToolExecutionCwd(project, () => executor.executeAll([
       { id: "dangling-write", name: "write_file", input: { path: "dangling/new.ts", content: "must not write" } },
     ], { sessionId: "dangling-write", permissionContext: userPermissionContext() }));
@@ -573,7 +574,7 @@ describe("scoped permission rules", () => {
     const registry = new ToolRegistry();
     registry.register(tool);
     const requestAndWait = answeringRequestAndWait(() => ({ choice: "deny-once" }));
-    const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined, audit);
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined);
     const [result] = await runWithToolExecutionCwd(project, () => executor.executeAll([
       { id: "mcp-rule", name: tool.name, input: {} },
     ], { sessionId: "mcp-rule", permissionContext: userPermissionContext() }));
@@ -600,7 +601,7 @@ describe("scoped permission rules", () => {
     const requestAndWait = answeringRequestAndWait(() => ({ choice: "deny-once" as const }));
     const review = vi.spyOn(manager, "dispatchReviewer");
     const permission = vi.spyOn(manager, "checkDetailed");
-    const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined, audit);
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined);
     const [result] = await runWithToolExecutionCwd(project, () => executor.executeAll([
       { id: "initial-token-request", name: "web_fetch", input: { url } },
     ], { sessionId: "initial-token-request", permissionContext: userPermissionContext() }));
@@ -633,7 +634,7 @@ describe("scoped permission rules", () => {
     const registry = new ToolRegistry();
     registry.register(createWebFetchTool(transport));
     const requestAndWait = vi.fn();
-    const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined, audit);
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined);
     const [result] = await runWithToolExecutionCwd(project, () => executor.executeAll([
       { id: "redirect", name: "web_fetch", input: { url: origin } },
     ], { sessionId: "redirect", permissionContext: userPermissionContext() }));
@@ -656,7 +657,7 @@ describe("scoped permission rules", () => {
     const registry = new ToolRegistry();
     registry.register(createWebFetchTool(transport));
     const requestAndWait = answeringRequestAndWait<import("../approval-gate.js").ApprovalRequestInput>(() => ({ choice: "allow-once" }));
-    const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined, audit);
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined);
     const [result] = await runWithToolExecutionCwd(project, () => executor.executeAll([
       { id: "credential-request", name: "web_fetch", input: { url: `https://93.184.216.34/start?token=${"sk-" + "a".repeat(50)}` } },
     ], { sessionId: "credential-request", permissionContext: userPermissionContext() }));
@@ -685,7 +686,7 @@ describe("scoped permission rules", () => {
     const registry = new ToolRegistry();
     registry.register(createWebFetchTool(transport));
     const requestAndWait = answeringRequestAndWait<import("../approval-gate.js").ApprovalRequestInput>(() => ({ choice: "allow-once" }));
-    const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined, audit);
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined);
     const [result] = await runWithToolExecutionCwd(project, () => executor.executeAll([
       { id: "ask-host", name: "web_fetch", input: { url: "https://93.184.216.34/start" } },
     ], { sessionId: "ask-host", permissionContext: userPermissionContext() }));
@@ -703,7 +704,7 @@ describe("scoped permission rules", () => {
     const registry = new ToolRegistry();
     registry.register(createWebFetchTool(transport));
     const requestAndWait = answeringRequestAndWait<import("../approval-gate.js").ApprovalRequestInput>(() => ({ choice: "allow-once" as const }));
-    const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined, audit);
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined);
     const [result] = await runWithToolExecutionCwd(project, () => executor.executeAll([
       { id: "redirect-credential-denial", name: "web_fetch", input: { url: "https://93.184.216.34/start" } },
     ], { sessionId: "redirect-credential-denial", permissionContext: userPermissionContext() }));

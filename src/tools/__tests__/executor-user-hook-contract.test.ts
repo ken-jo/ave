@@ -1,9 +1,9 @@
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { collectPermissionEvents } from "../../__tests__/support/permission-events.js";
+import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { beforeAll, afterEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, afterEach, describe, expect, it, vi, onTestFinished } from "vitest";
 import { configureHostResources } from "../../main/host-resources.js";
-import { AuditLogger } from "../../audit/audit-logger.js";
 import { ToolExecutor } from "../executor.js";
 import { ToolRegistry } from "../registry.js";
 import { createDynamicTool } from "../base.js";
@@ -25,7 +25,6 @@ afterEach(async () => {
 });
 
 function setup(event: string, errored = false, denied = false, targetAsks = false, hookAction = "block", options?: {
-  audit: AuditLogger;
   command: string[];
   chooseHookAnswer: () => ApprovalChoice;
 }) {
@@ -49,7 +48,7 @@ function setup(event: string, errored = false, denied = false, targetAsks = fals
   manager.setTrustedRegistry([], parsed.entries);
   const targetRequestAndWait = answeringRequestAndWait(() => ({ choice: "deny-once" as const }));
   const gate = { requestAndWait: targetRequestAndWait } as unknown as ApprovalGate;
-  const executor = new ToolExecutor(registry, undefined, permissions, undefined, gate, manager, options?.audit);
+  const executor = new ToolExecutor(registry, undefined, permissions, undefined, gate, manager);
   return { execute, authorizeCommand, requestAndWait, targetRequestAndWait, permissions, commitStagedAllowSaves,
     run: () => executor.executeAll([{ id: "contract-tool", name: "contract_probe", input: {} }],
       { sessionId: "contract-session", permissionContext: userPermissionContext(options ? { trustOrigin: "llm-tool-arg" } : {}) }) };
@@ -63,14 +62,14 @@ describe("user hook model feedback and permission precedence", () => {
     { throws: true, trustOrigin: "unknown", reason: "Permission recheck failed during approval." },
     { throws: false, trustOrigin: "llm-tool-arg", reason: "Hook command denied by a rule." },
   ])("audits a PreToolUse command approval refusal with $trustOrigin origin", async ({ throws, trustOrigin, reason }) => {
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
     const root = mkdtempSync(join(tmpdir(), "ave-executor-hook-audit-"));
     roots.push(root);
-    const audit = new AuditLogger(join(root, "audit"));
     const marker = join(root, "hook-ran.txt");
     try {
-      await audit.setupPermissionAuditChain("aa".repeat(32));
+
       const probe = setup("PreToolUse", false, false, true, "block", {
-        audit,
         command: ["node", "-e", "require('node:fs').writeFileSync(process.argv[1], 'ran')", marker],
         chooseHookAnswer: () => {
           vi.spyOn(probe.permissions, "checkDetailed").mockImplementationOnce(() => {
@@ -82,17 +81,20 @@ describe("user hook model feedback and permission precedence", () => {
       });
       const [result] = await probe.run();
       expect(result.is_error).toBe(true);
+      expect(result.tool_use_id).toBe("contract-tool");
       expect(probe.requestAndWait).toHaveBeenCalledOnce();
       expect(probe.execute).not.toHaveBeenCalled();
       expect(probe.targetRequestAndWait).not.toHaveBeenCalled();
       expect(probe.commitStagedAllowSaves).not.toHaveBeenCalled();
       expect(existsSync(marker)).toBe(false);
-      const terminal = readFileSync(audit.getPermissionAuditLogFile(), "utf8").trim().split("\n")
-        .map(line => JSON.parse(line)).filter(row => row.toolUseId === "contract-tool" && row.decision !== "ask");
-      expect(terminal).toEqual([expect.objectContaining({ decision: "deny", trustOrigin,
-        denyReasons: [expect.objectContaining({ reason: expect.stringContaining(reason) })] })]);
+      const terminal = capture.events.filter((event) => event.event === "permission_decision" &&
+        event.sessionId === "contract-session" && event.decision !== "ask");
+      expect(terminal).toEqual([expect.objectContaining({
+        decision: "deny", trustOrigin, terminalKind: "denied",
+        correlationId: expect.stringMatching(/^[a-f0-9]{32}$/),
+      })]);
     } finally {
-      await audit.close();
+      capture.restore();
     }
   });
 

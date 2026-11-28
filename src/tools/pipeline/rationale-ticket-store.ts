@@ -1,3 +1,4 @@
+import { logPermissionEvent, permissionLogId } from "../../lib/permission-log.js";
 import { randomUUID } from "node:crypto";
 import { canonicalStringify } from "../../permissions/user-approval-store.js";
 import {
@@ -65,7 +66,7 @@ export interface RationaleTicketCasExpectation {
   readonly expectedVersion: number;
 }
 
-export type RationaleTicketStoreAuditOperation =
+type RationaleTicketOperation =
   | "created"
   | "transitioned"
   | "retired"
@@ -73,33 +74,6 @@ export type RationaleTicketStoreAuditOperation =
   | "reviewer-authorized-once-consumed"
   | "receipt-revoked"
   | "replay-rejected";
-
-/** Contains identifiers and lifecycle state only; never raw intent or tool input. */
-export interface RationaleTicketStoreAuditEvent {
-  readonly contractVersion: typeof RATIONALE_CONTROL_CONTRACT_VERSION;
-  readonly kind: "host-rationale-ticket-store-audit";
-  readonly operation: RationaleTicketStoreAuditOperation;
-  readonly sessionId: string;
-  readonly ticketId: string;
-  readonly actionDigest: string;
-  readonly invocationDigest: string;
-  readonly event: RationaleTicketEventName | null;
-  readonly previousState: RationaleTicketState | null;
-  readonly state: RationaleTicketState | null;
-  readonly previousVersion: number | null;
-  readonly version: number | null;
-  readonly terminalReason: RationaleTerminalReason | null;
-  readonly receiptId: string | null;
-  readonly at: number;
-}
-
-export type RationaleTicketStoreAuditCallback = (
-  event: RationaleTicketStoreAuditEvent,
-) => unknown;
-
-export interface InProcessRationaleTicketStoreOptions {
-  readonly onAudit: RationaleTicketStoreAuditCallback;
-}
 
 export type RationaleTicketStoreTransitionEvent = Exclude<
   RationaleTicketEventName,
@@ -185,15 +159,7 @@ export class InProcessRationaleTicketStore {
   readonly #activeBySession = new Map<string, Set<string>>();
   readonly #tombstones = new Map<string, TicketTombstone>();
   readonly #receipts = new Map<string, AuthenticReceiptEntry>();
-  readonly #onAudit: RationaleTicketStoreAuditCallback;
   #lastObservedAt = Number.NEGATIVE_INFINITY;
-
-  constructor(options: InProcessRationaleTicketStoreOptions) {
-    if (!options || typeof options.onAudit !== "function") {
-      throw new TypeError("rationale ticket store requires a synchronous audit sink");
-    }
-    this.#onAudit = options.onAudit;
-  }
 
   create(input: {
     sessionId: string;
@@ -244,13 +210,11 @@ export class InProcessRationaleTicketStore {
       createdAt: now,
       updatedAt: now,
     });
-    this.#emitAudit({
+    this.#logTransition({
       operation: "created",
       snapshot,
       previous: null,
       event: null,
-      receiptId: null,
-      at: now,
     });
     this.#entries.set(control.ticketId, snapshot);
     let sessionTickets = this.#activeBySession.get(input.sessionId);
@@ -486,7 +450,7 @@ export class InProcessRationaleTicketStore {
       }
       if (now < stored.receipt.consumedAt) return false;
       if (stored.expiresAt !== null && now >= stored.expiresAt) {
-        this.#emitReceiptRevoked(stored, "expire", now);
+        this.#logReceiptRevoked(stored, "expire");
         this.#receipts.delete(candidate.receiptId);
         return false;
       }
@@ -541,7 +505,7 @@ export class InProcessRationaleTicketStore {
     }
     for (const entry of receiptEntries) {
       try {
-        this.#emitReceiptRevoked(entry, "session-close", now);
+        this.#logReceiptRevoked(entry, "session-close");
         this.#receipts.delete(entry.receipt.receiptId);
       } catch (error) {
         firstAuditError ??= error;
@@ -641,7 +605,7 @@ export class InProcessRationaleTicketStore {
     event: RationaleTicketEventName,
     now: number,
     operation: Extract<
-      RationaleTicketStoreAuditOperation,
+      RationaleTicketOperation,
       "transitioned" | "retired" | "allow-once-consumed"
         | "reviewer-authorized-once-consumed"
     >,
@@ -671,13 +635,11 @@ export class InProcessRationaleTicketStore {
     if (isTerminal(ticket.state) && ticket.terminalReason === null) {
       throw new Error("terminal rationale ticket lacks a terminal reason");
     }
-    this.#emitAudit({
+    this.#logTransition({
       operation,
       snapshot,
       previous,
       event,
-      receiptId,
-      at: now,
     });
     if (isTerminal(ticket.state)) {
       this.#entries.delete(ticket.ticketId);
@@ -738,45 +700,24 @@ export class InProcessRationaleTicketStore {
     return effectiveNow;
   }
 
-  #dispatchAudit(event: RationaleTicketStoreAuditEvent): void {
-    const result = this.#onAudit(event);
-    if (
-      result !== null &&
-      (typeof result === "object" || typeof result === "function") &&
-      typeof (result as { then?: unknown }).then === "function"
-    ) {
-      void Promise.resolve(result).catch(() => undefined);
-      throw new TypeError(
-        "rationale ticket store audit sink must commit synchronously",
-      );
-    }
-  }
-
-  #emitAudit(input: {
-    operation: RationaleTicketStoreAuditOperation;
+  #logTransition(input: {
+    operation: RationaleTicketOperation;
     snapshot: HostRationaleTicketSnapshot;
     previous: HostRationaleTicketSnapshot | null;
     event: RationaleTicketEventName | null;
-    receiptId: string | null;
-    at: number;
   }): void {
-    this.#dispatchAudit(sealRationaleCanonicalJson({
+    logPermissionEvent("rationale_ticket", {
       contractVersion: RATIONALE_CONTROL_CONTRACT_VERSION,
-      kind: "host-rationale-ticket-store-audit" as const,
       operation: input.operation,
-      sessionId: input.snapshot.sessionId,
-      ticketId: input.snapshot.ticket.ticketId,
-      actionDigest: input.snapshot.ticket.actionDigest,
-      invocationDigest: input.snapshot.control.invocationDigest,
-      event: input.event,
-      previousState: input.previous?.ticket.state ?? null,
+      sessionId: permissionLogId(input.snapshot.sessionId),
+      ticketId: permissionLogId(input.snapshot.ticket.ticketId),
+      transition: input.event ?? undefined,
+      previousState: input.previous?.ticket.state ?? undefined,
       state: input.snapshot.ticket.state,
-      previousVersion: input.previous?.version ?? null,
+      previousVersion: input.previous?.version ?? undefined,
       version: input.snapshot.version,
-      terminalReason: input.snapshot.ticket.terminalReason,
-      receiptId: input.receiptId,
-      at: input.at,
-    }, "RationaleTicketStoreAuditEvent"));
+      terminalReason: input.snapshot.ticket.terminalReason ?? undefined,
+    });
   }
 
   #emitReplayRejected(
@@ -787,70 +728,54 @@ export class InProcessRationaleTicketStore {
       if (now < current.updatedAt) {
         throw new TypeError("ticket store time cannot move backwards");
       }
-      this.#dispatchAudit(sealRationaleCanonicalJson({
+      logPermissionEvent("rationale_ticket", {
         contractVersion: RATIONALE_CONTROL_CONTRACT_VERSION,
-        kind: "host-rationale-ticket-store-audit" as const,
         operation: "replay-rejected" as const,
-        sessionId: current.sessionId,
-        ticketId: current.ticket.ticketId,
-        actionDigest: current.ticket.actionDigest,
-        invocationDigest: current.control.invocationDigest,
-        event: "stale-replay" as const,
+        sessionId: permissionLogId(current.sessionId),
+        ticketId: permissionLogId(current.ticket.ticketId),
+        transition: "stale-replay",
         previousState: current.ticket.state,
         state: current.ticket.state,
-        previousVersion: current.version,
-        version: current.version,
-        terminalReason: current.ticket.terminalReason,
-        receiptId: null,
-        at: now,
-      }, "RationaleTicketStoreAuditEvent"));
+        previousVersion: current.version ?? undefined,
+        version: current.version ?? undefined,
+        terminalReason: current.ticket.terminalReason ?? undefined,
+      });
       return;
     }
 
     if (now < current.retiredAt) {
       throw new TypeError("ticket store time cannot move backwards");
     }
-    this.#dispatchAudit(sealRationaleCanonicalJson({
+    logPermissionEvent("rationale_ticket", {
       contractVersion: RATIONALE_CONTROL_CONTRACT_VERSION,
-      kind: "host-rationale-ticket-store-audit" as const,
       operation: "replay-rejected" as const,
-      sessionId: current.sessionId,
-      ticketId: current.ticketId,
-      actionDigest: current.actionDigest,
-      invocationDigest: current.invocationDigest,
-      event: "stale-replay" as const,
-      previousState: current.state,
-      state: current.state,
-      previousVersion: current.version,
-      version: current.version,
-      terminalReason: current.terminalReason,
-      receiptId: null,
-      at: now,
-    }, "RationaleTicketStoreAuditEvent"));
+      sessionId: permissionLogId(current.sessionId),
+      ticketId: permissionLogId(current.ticketId),
+      transition: "stale-replay",
+      previousState: current.state ?? undefined,
+      state: current.state ?? undefined,
+      previousVersion: current.version ?? undefined,
+      version: current.version ?? undefined,
+      terminalReason: current.terminalReason ?? undefined,
+    });
   }
 
-  #emitReceiptRevoked(
+  #logReceiptRevoked(
     entry: AuthenticReceiptEntry,
     event: Extract<RationaleTicketEventName, "expire" | "session-close">,
-    now: number,
   ): void {
     const tombstone = this.#tombstones.get(entry.receipt.ticketId);
-    this.#dispatchAudit(sealRationaleCanonicalJson({
+    logPermissionEvent("rationale_ticket", {
       contractVersion: RATIONALE_CONTROL_CONTRACT_VERSION,
-      kind: "host-rationale-ticket-store-audit" as const,
       operation: "receipt-revoked" as const,
-      sessionId: entry.sessionId,
-      ticketId: entry.receipt.ticketId,
-      actionDigest: entry.receipt.actionDigest,
-      invocationDigest: entry.receipt.invocationDigest,
-      event,
+      sessionId: permissionLogId(entry.sessionId),
+      ticketId: permissionLogId(entry.receipt.ticketId),
+      transition: event,
       previousState: "allowed_once" as const,
       state: "allowed_once" as const,
-      previousVersion: tombstone?.version ?? null,
-      version: tombstone?.version ?? null,
+      previousVersion: tombstone?.version ?? undefined,
+      version: tombstone?.version ?? undefined,
       terminalReason: "allowed-once" as const,
-      receiptId: entry.receipt.receiptId,
-      at: now,
-    }, "RationaleTicketStoreAuditEvent"));
+    });
   }
 }

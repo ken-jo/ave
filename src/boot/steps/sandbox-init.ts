@@ -1,3 +1,4 @@
+import { logPermissionEvent, permissionLogId } from "../../lib/permission-log.js";
 
 
 
@@ -42,7 +43,7 @@ let runtimeRootFailure: string | undefined;
 
 export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSignal): Promise<void> {
   startupSignal?.throwIfAborted();
-  const { settingsService, bootAuditLogger, buildWorkerEgressAllowlists } = ctx;
+  const { settingsService, buildWorkerEgressAllowlists } = ctx;
   // Sandbox HOMEs are made whether or not the gate activates, so their parent is established here, on every Windows start,
   // before anything can ask for a HOME; a root that cannot be proved private leaves every HOME refused.
   // The sweep is not awaited: the in-use set and live owner markers keep this process's HOMEs, and a slow probe must not hold boot.
@@ -65,8 +66,7 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
   }
   setAveHomePrivacyRefusalReporter((message) => {
     log.warn(message);
-    bootAuditLogger.log({ timestamp: new Date().toISOString(), sessionId: "extensions", type: "error",
-      output: `[ave_home_privacy_refused] ${message}` });
+    logPermissionEvent("ave_home_privacy_refused", { sessionId: permissionLogId("extensions") }, "warn");
   });
 
   // On macOS/Linux, failed explicit activation aborts; failed settings activation warns and continues without isolation.
@@ -141,12 +141,7 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
       dependencyErrors: readonly string[] = [],
       causes: readonly SandboxStartFailureCause[] = [],
     ): void => {
-      bootAuditLogger.logSandboxGate({
-        platform: process.platform,
-        onSignal: sandboxGateOnSignal,
-        outcome,
-        reason,
-      });
+      logPermissionEvent("sandbox_gate", { platform: process.platform, onSignal: sandboxGateOnSignal, outcome, reason }, outcome === "abort" || outcome === "degrade" ? "warn" : "info");
       setSandboxBootOutcome({
         action: outcome,
         reason,
@@ -253,7 +248,6 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
           `Missing: ${deps.errors.join("; ")}`;
         log.error(message);
         recordGate("abort", decision.reason, deps.errors, dependencyCauses);
-        await bootAuditLogger.flush();
         throw new Error(message);
       } else if (decision.action === "degrade") {
         // Failed settings activation warns and leaves isolation inactive; never publish a capability that did not initialize.
@@ -294,7 +288,6 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
             if (shellExplicitEnv) {
               const message = `Linux container shell unavailable (${support.reason})`;
               recordGate("abort", "abort-linux-runtime-probe-failed", [message], ["linux-runtime-probe-failed"]);
-              await bootAuditLogger.flush();
               throw new Error(message);
             }
             log.warn("boot: Linux container shell unavailable (%s)", support.reason);
@@ -365,7 +358,8 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
                 import("../../permissions/seatbelt-holder-boot.js"), import("../../main/host-resources.js"), import("../../shared/ave-home.js"),
               ]);
               publish({ state: "checking" });
-              // Boot waits for the decision (two canary starts and three helper runs, about 0.1 s): no extension start
+              // Boot waits for the decision (two canary starts, three helper runs and the boot sweep; the proof measured
+              // about 0.13 s on an M-series Mac): no extension start
               // can then meet a "checking" plan, which has no retry path. Holder starts also wait on the sequence.
               await startSeatbeltHolderBootServices({
                 resourcePath: getHostResources().resourcePath, home: aveHome(), signal: startupSignal,
@@ -383,7 +377,7 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
           {
             const [{ startEgressDenyMonitor }, { emitSandboxAudit }] = await Promise.all([
               import("../../permissions/egress-deny-monitor.js"),
-              import("../../audit/sandbox-audit-sink.js"),
+              import("../../permissions/egress-logging.js"),
             ]);
             await startEgressDenyMonitor({
               subscribe: subscribeAsrtViolations,
@@ -397,7 +391,7 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
             const [{ createUpstreamProxyRouter, upstreamProxyDeps }, { maskSensitiveData }, { emitSandboxAudit }] = await Promise.all([
               import("../../permissions/upstream-proxy.js"),
               import("../../audit/dlp-filter.js"),
-              import("../../audit/sandbox-audit-sink.js"),
+              import("../../permissions/egress-logging.js"),
             ]);
             const mask = (text: string): string => maskSensitiveData(text).masked;
             const upstream = createUpstreamProxyRouter(upstreamProxyDeps(settingsService, ctx.host.resolveProxy, (event) => {
@@ -576,7 +570,6 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
                   `Cause: ${cause}`,
               );
               recordGate("abort", failureReason, [cause], failureCauses);
-              await bootAuditLogger.flush();
               throw initErr;
             }
             // Settings activation and Windows errors warn and continue without isolation.

@@ -87,8 +87,6 @@ function installApi(
       addRule: vi.fn(async () => ({ ok: true, rule: { pattern: "x", action: "allow" } })),
       removeRule: vi.fn(async () => ({ ok: true })),
       recentlyDeniedRerun: vi.fn(async () => ({ ok: true })),
-      auditShow: vi.fn(async () => ({ ok: true as const, entries: [], total: 0, summary: { files: 0, bytes: 0 } })),
-      auditVerify: vi.fn(async () => ({ ok: true as const, intact: true, totalFiles: 0, totalEntries: 0, perDay: [] })),
       hookTrustList,
       dirDispatch: vi.fn(async () => ({
         ok: true as const,
@@ -321,35 +319,6 @@ describe("PermissionsTab hook quarantine notice", () => {
 
     await waitFor(() => expect(screen.getByTestId(TEST_IDS.openPermanentDenySettings)).toHaveFocus());
     expect(screen.queryByTestId("exact-deny-draft")).toBeNull();
-  });
-
-  it("opens the audit log inside its own settings section, in the pane", async () => {
-    installApi([[]]);
-
-    await renderPermissionsTab();
-
-    const section = document.querySelector<HTMLElement>('[data-settings-section="permissions-audit-log"]')!;
-    expect(section.querySelector('[data-testid="audit-panel"]')).toBeNull();
-
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: t("permissionsTab.auditLogOpenButton") }));
-    });
-
-    // The log is a region of THIS section: it takes the pane's width and pushes what follows down. It is not
-    // a panel fixed to the window edge, which covered the tiles beside the Settings pane and the title bar.
-    const panel = await waitFor(() => {
-      const el = section.querySelector<HTMLElement>('[data-testid="audit-panel"]');
-      expect(el).not.toBeNull();
-      return el!;
-    });
-    expect(panel.className).not.toMatch(/\b(fixed|absolute)\b/);
-    expect(screen.queryByRole("button", { name: t("permissionsTab.auditLogOpenButton") })).toBeNull();
-
-    await act(async () => {
-      fireEvent.click(screen.getByTestId("audit-panel-close"));
-    });
-    expect(section.querySelector('[data-testid="audit-panel"]')).toBeNull();
-    expect(screen.getByRole("button", { name: t("permissionsTab.auditLogOpenButton") })).toBeTruthy();
   });
 
   it("shows the four user-facing permission policy choices and their read behavior", async () => {
@@ -2441,7 +2410,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
         mainHandlers.clear();
         registerPermissionsHandlers({
           conversationLoop: { permissionManager: { getMode: () => "default" } },
-          approvalGate: {}, auditLogger: { log: vi.fn() }, toolRegistry: { setDenyRules: vi.fn() },
+          approvalGate: {}, toolRegistry: { setDenyRules: vi.fn() },
           settingsService: { get: () => ({ osToolSandbox: false }) }, getAppWindows: () => [],
         } as never);
         ipcInvoke.mockImplementation((channel: string, payload?: unknown) => mainHandlers.get(channel)!(hostFrameEvent(), payload));

@@ -1,11 +1,10 @@
 import { EventEmitter } from "node:events";
-import { randomBytes } from "node:crypto";
 import { readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { BrowserWindow, IpcMainInvokeEvent } from "electron";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { allowOnceCardAnswer } from "../../../__tests__/support/approval-card-answer.js";
-import { AuditLogger } from "../../../audit/audit-logger.js";
+
 import { createConversationLoop } from "../../../boot/conversation.js";
 import { CHANNELS, MAIN_CHAT_GROUP_ID, PERMISSIONS } from "../../../contract/app-contract.js";
 import { makeSubagentLoopDeps, patchLoopProvider } from "../../../engine/__tests__/support/subagent-loop-fixtures.js";
@@ -84,8 +83,8 @@ describe("cached primary conversation adoption", () => {
   it("delivers the next real write approval to the replacement primary and executes once", async () => {
     const root = realpathSync(resources.makeTmpDir("ave-primary-adoption-"));
     vi.stubEnv("AVE_HOME", join(root, "home"));
-    const audit = new AuditLogger(join(root, "audit"));
-    await audit.setupPermissionAuditChain(randomBytes(32).toString("hex"));
+
+
     const original = primarySurface(31);
     registerMainWindow(original.window, "primary");
     const registry = new ToolRegistry();
@@ -98,7 +97,7 @@ describe("cached primary conversation adoption", () => {
     const manager = new PermissionManager(join(root, "permissions.json"));
     manager.setMode("default");
 
-    const gate = new ApprovalGate((sessionId, tabId) => approvalSurfaceRegistry.resolve(sessionId, tabId), undefined, undefined, audit);
+    const gate = new ApprovalGate((sessionId, tabId) => approvalSurfaceRegistry.resolve(sessionId, tabId), undefined, undefined);
     const memory = new MemoryManager({ aveDir: join(root, "memory") });
     memory.load();
     const rounds: StreamEvent[][] = [
@@ -116,8 +115,7 @@ describe("cached primary conversation adoption", () => {
     patchLoopProvider(provider);
     const unavailableFetch = (async () => { throw new Error("No external transport is configured for this fixture"); }) as typeof fetch;
     const deps = makeSubagentLoopDeps(registry, {
-      memoryManager: memory, permissionManager: manager, approvalGate: gate, auditLogger: audit,
-      approvalSurface: "interactive", getAdditionalDirectories: () => [root],
+      memoryManager: memory, permissionManager: manager, approvalGate: gate, approvalSurface: "interactive", getAdditionalDirectories: () => [root],
       getDefaultProject: () => ({ projectRoot: root }), authorizeProject: (projectRoot) => ({ projectRoot }),
       llmFetch: unavailableFetch, networkFetch: unavailableFetch,
     });
@@ -129,8 +127,7 @@ describe("cached primary conversation adoption", () => {
       resolveChatGroupLoop: resolveOtherLoop, releaseChatGroupLoop: () => undefined,
     } as unknown as Parameters<typeof registerChatHandlers>[0]);
     registerPermissionsHandlers({
-      ...deps, conversationLoop: loop, approvalGate: gate, auditLogger: audit,
-      toolRegistry: registry, getMainWindow, getAppWindows: getMainWindows,
+      ...deps, conversationLoop: loop, approvalGate: gate, toolRegistry: registry, getMainWindow, getAppWindows: getMainWindows,
     } as unknown as Parameters<typeof registerPermissionsHandlers>[0]);
     let running: Promise<unknown> | undefined;
     cleanup.push(async () => {
@@ -138,7 +135,7 @@ describe("cached primary conversation adoption", () => {
       if (running) await Promise.allSettled([running]);
       updateApprovalSurface({ kind: "release", sessionId });
       memory.sessions.closeSearchIndex();
-      await audit.close();
+
     });
     expect(approvalSurfaceRegistry.resolve(sessionId)).toBe(original.contents);
 

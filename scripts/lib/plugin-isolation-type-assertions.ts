@@ -22,7 +22,6 @@ export type OutOfProcessPluginSpecKeysAreExact = Expect<
     keyof OutOfProcessPluginSpec,
     | "manifest"
     | "auditLog"
-    | "effectAudit"
     | "launch"
     | "childEntryPath"
     | "prepareMxcChild"

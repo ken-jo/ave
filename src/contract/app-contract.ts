@@ -136,6 +136,10 @@ export const CHANNELS = {
     // renderer before it mounts so both sides resolve against the same one.
     getModelCatalog: "ave:llm:get-model-catalog",
   },
+  skillMemory: {
+    list: "ave:skill-memory:list",
+    decide: "ave:skill-memory:decide",
+  },
   memoryMap: {
     get: "ave:memory-map:graph-get",
     build: "ave:memory-map:graph-build",
@@ -620,17 +624,10 @@ export const CHANNELS = {
      */
     settled: "ave:approval:settled",
   },
-  dlp: {
-    stats: "ave:dlp:stats",
-  },
-  audit: {
-    search: "ave:audit:search",
-    stats: "ave:audit:stats",
-  },
   // ── Diagnostics bundle + production log viewer + crash list ──────
   // ALL INTERNAL: deliberately absent from PUBLIC_CHANNELS / CHANNEL_GESTURE /
   // EXTERNAL_MUTATION_CHANNELS. A diagnostics bundle serializes redacted host
-  // state (settings whitelist, audit jsonl, logs, crash-dump metadata) to a
+  // state (settings whitelist, logs, crash-dump metadata) to a
   // user-chosen file — it must never be reachable from an external origin
   // (local-api / cli / plugin frame). The fail-closed default
   // (isPublicChannel === false) enforces that; each invoke additionally gates

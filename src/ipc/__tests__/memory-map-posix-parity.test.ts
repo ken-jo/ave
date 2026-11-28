@@ -1,11 +1,14 @@
-import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, expect, it, onTestFinished, vi } from 'vitest';
 import { deferred } from '../../__tests__/support/deferred.js';
+import { collectPermissionEvents } from '../../__tests__/support/permission-events.js';
 import { installNativeChatWindow, invokeNativeChatHandler, nativeChatFrameEvent } from '../../__tests__/support/native-chat-window.js';
 import { setProcessPlatform } from '../../__tests__/support/process-platform.js';
 import { CHANNELS } from '../../contract/app-contract.js';
 import { MemoryMapHostError } from '../../main/memory-map/errors.js';
+import { WindowsSessionRepository } from '../../memory/session-repository-win32.js';
 import { registerChatHandlers } from '../domains/chat.js';
 import { registerMemoryMapHandlers } from '../domains/memory-map.js';
+import { UNAUTHORIZED_FRAME } from '../gated.js';
 import type { IpcDeps } from '../types.js';
 
 const state = vi.hoisted(() => ({
@@ -58,7 +61,6 @@ const deps = {
   conversationLoop: { getSessionId: () => "fixture-session", getHistory: () => ({ length: 0, getMessages: () => [] }) },
   memoryManager: { sessions: { searchSessions: state.search, searchSessionsWithCurrentPolicy: async () => [] } },
   settingsService: { get: () => ({ source: 'provider' }), set: vi.fn() },
-  auditLogger: { log: vi.fn() },
   getMainWindow: () => null,
 } as unknown as IpcDeps;
 
@@ -149,4 +151,23 @@ it('returns session search results synchronously on POSIX', () => {
   state.search.mockReturnValueOnce(rows);
   registerChatHandlers(deps);
   expect(invokeNativeChatHandler(state.handles, CHANNELS.memory.sessionsSearch, 'search term')).toBe(rows);
+});
+
+it('refuses the Windows session search reply when its sender navigates during the search', async () => {
+  setProcessPlatform('win32');
+  const logs = collectPermissionEvents();
+  onTestFinished(logs.restore);
+  const result = deferred<Array<{ sessionId: string }>>();
+  const sessions: WindowsSessionRepository = Object.assign(Object.create(WindowsSessionRepository.prototype), {
+    searchSessionsWithCurrentPolicy: async () => result.promise,
+  });
+  const memoryManager = Object.assign({}, deps.memoryManager, { sessions });
+  registerChatHandlers({ ...deps, memoryManager });
+  const pending = invokeNativeChatHandler(state.handles, CHANNELS.memory.sessionsSearch, 'search term');
+  const frame = nativeChatFrameEvent().senderFrame as unknown as { url: string };
+  frame.url = 'https://example.test';
+  result.resolve([{ sessionId: 'fixture-session' }]);
+
+  await expect(pending).resolves.toEqual(UNAUTHORIZED_FRAME);
+  expect(logs.events).toContainEqual({ event: 'ipc_sender_refused', channel: CHANNELS.memory.sessionsSearch });
 });

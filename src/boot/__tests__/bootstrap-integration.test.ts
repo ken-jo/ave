@@ -1,10 +1,13 @@
 import { TEST_OWNER } from "../../main/__tests__/routines-fixture.js";
-import { createBootHostFixture, createDesktopHostFixture } from "../../__tests__/support/host-runtime.js";
+import { createBootHostFixture, createDesktopHostFixture, unavailableSecretEncryption } from "../../__tests__/support/host-runtime.js";
 import { deferred } from "../../__tests__/support/deferred.js";
+import { SettingsService } from "../../data/settings-store.js";
 import * as tracing from "../../engine/telemetry/tracing.js";
 /** Boot integration checks service shape and construction order with heavy dependencies mocked.
  * It does not verify the behavior of closures wired to those mocks. */
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { join, resolve } from "node:path";
+import type { BootHost } from "../host-runtime.js";
 
 // Use a hoisted recorder so mock factories can record construction order.
 const h = await vi.hoisted(async () => {
@@ -72,32 +75,20 @@ vi.mock("../../main/app-shutdown.js", () => ({
 vi.mock("../services.js", () => ({
   bootstrapCoreServices: vi.fn(async () => {
     h.rec("core");
+    const settingsService = new SettingsService({
+      userDataPath: join(h.root, "settings"),
+      encryption: unavailableSecretEncryption,
+    });
+    await settingsService.set("features", {
+      ...settingsService.get("features"),
+      osToolSandbox: false,
+      idlePreferenceRefresh: true,
+    });
     return {
       pythonPath: "/usr/bin/python3",
       pythonRuntime: { kind: "python-runtime-stub" },
       bashAstValidator: {},
-      auditService: { stop: vi.fn(async () => {}) },
-      settingsService: {
-        get: vi.fn((key: string) => {
-          switch (key) {
-            case "marketplace":
-              return {};
-            case "llm":
-              return { provider: "openai", vendors: { openai: { model: "gpt", baseUrl: undefined } },
-              };
-            case "features":
-              return { osToolSandbox: false, idlePreferenceRefresh: true,
-              };
-            default:
-              return {};
-          }
-        }),
-        onChanged: vi.fn(() => () => {}),
-        getSecret: vi.fn(() => undefined),
-        getAll: vi.fn(() => ({})),
-        deletePluginConfig: vi.fn(async () => undefined),
-        deletePluginSecrets: vi.fn(async () => 0),
-      },
+      settingsService,
       memoryManager: {},
       // The capture gateway reviewer is late-bound after the active loop exists.
       memoryCaptureService: { setMemoryReviewer: vi.fn() },
@@ -601,31 +592,8 @@ vi.mock("../../permissions/user-approval-store.js", () => ({
   setApprovalConversationRootResolver: vi.fn(),
 }));
 vi.mock("../../permissions/manifest-integrity.js", () => ({
-  bindManifestIntegrityAudit: vi.fn(),
+  bindManifestIntegrityLogging: vi.fn(),
   manifestIntegrityState: { onViolation: vi.fn() },
-}));
-
-vi.mock("../../audit/audit-logger.js", () => ({
-  AuditLogger: class {
-    setupPermissionAuditChain = vi.fn();
-    log = vi.fn();
-    logSandboxGate = vi.fn();
-    flush = vi.fn(async () => {});
-    close = vi.fn(async () => {});
-    rotateAndPrune = vi.fn(async () => {});
-    getAuditDir = vi.fn(() => `${h.root}/audit`);
-    getPermissionAuditSecret = vi.fn(() => "s".repeat(64));
-    getPermissionAuditSealStore = vi.fn(() => ({
-      read: vi.fn(() => null),
-      write: vi.fn(),
-    }));
-  },
-}));
-vi.mock("../../audit/hmac-chain.js", () => ({
-  FileSecretStore: class {},
-  SafeStorageSecretStore: class { static async open() { return { read: () => null, write: () => undefined }; } },
-  ensureAuditSecret: vi.fn(() => ({})),
-  computeLineHmac: vi.fn(() => "h".repeat(64)),
 }));
 
 // Mock the broadcaster to keep unrelated IPC implementations out of the boot graph.
@@ -633,7 +601,7 @@ vi.mock("../../ipc/domains/permissions.js", () => ({
   broadcastPermissionConfigChanged: vi.fn(),
 }));
 
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { bootstrap, type AppServices } from "../../boot.js";
 import { configureHostResources, getHostResources } from "../../main/host-resources.js";
 import { aveScratchDir, removeAveScratchDirIfEmpty } from "../../shared/ave-scratch.js";
@@ -643,6 +611,9 @@ import { wireModelCatalogRefresh } from "../steps/model-catalog-refresh.js";
 // Both boots need a scratch AVE_HOME because marketplace setup removes retired caches.
 const savedAveHome = process.env["AVE_HOME"];
 process.env["AVE_HOME"] = `${h.root}/ave-home`;
+const legacyAuditDir = `${h.root}/ave-home/audit`;
+const legacyAuditPath = `${legacyAuditDir}/2026-11-24.permission-audit.jsonl`;
+const legacySealPath = `${legacyAuditDir}/2026-11-24.permission-audit.seal.json`;
 afterAll(async () => {
   try {
     // Each full boot creates the scratch directory for this home; boot removes it on process exit, which a test worker never emits.
@@ -684,19 +655,24 @@ function assertBefore(a: string, b: string) {
   ).toBeLessThan(ib);
 }
 
+function createIntegrationHost(overrides: Partial<BootHost> = {}): BootHost {
+  // Real settings reads use the native configuration helper from the checkout's resources.
+  return createBootHostFixture({ resourcePath: resolve("resources"), ...overrides });
+}
+
 function bootWithWindow(
   window: Parameters<typeof bootstrap>[1],
   mode: Parameters<typeof bootstrap>[3],
 ) {
-  return bootstrap(`${h.root}/project`, window, () => window, mode, createBootHostFixture());
+  return bootstrap(`${h.root}/project`, window, () => window, mode, createIntegrationHost());
 }
 
 describe("bootstrap desktop identity registration", () => {
   it.each(["resourcePath", "isPackaged"] as const)("refuses a conflicting host resource %s", async (field) => {
-    const registered = createBootHostFixture();
+    const registered = createIntegrationHost();
     configureHostResources(registered);
     const resources = getHostResources();
-    const conflicting = createBootHostFixture(field === "resourcePath"
+    const conflicting = createIntegrationHost(field === "resourcePath"
       ? { resourcePath: `${h.root}/other-resources` }
       : { isPackaged: !resources.isPackaged });
     try {
@@ -715,7 +691,7 @@ describe("bootstrap desktop identity registration", () => {
     const configure = vi.spyOn(tracing, "configureTracing").mockReturnValueOnce(promise);
     const order = h.order.length;
     const window = fakeWindow();
-    const boot = bootstrap(`${h.root}/project`, window, () => window, "interactive", createBootHostFixture(), controller.signal);
+    const boot = bootstrap(`${h.root}/project`, window, () => window, "interactive", createIntegrationHost(), controller.signal);
     const stopped = expect(boot).rejects.toMatchObject({ name: "AbortError" });
     try {
       controller.abort();
@@ -735,7 +711,7 @@ describe("bootstrap desktop identity registration", () => {
     const configure = vi.spyOn(tracing, "configureTracing").mockReturnValueOnce(held);
     const initializeNotificationPresenter = vi.fn(() => supported);
     const window = fakeWindow();
-    const boot = bootstrap(`${h.root}/project`, window, () => window, "interactive", createBootHostFixture({
+    const boot = bootstrap(`${h.root}/project`, window, () => window, "interactive", createIntegrationHost({
       desktop: createDesktopHostFixture({ initializeNotificationPresenter }),
     }));
     try {
@@ -760,6 +736,9 @@ describe("bootstrap() integration lock", () => {
     // Keep OS isolation off for a deterministic boot path without native runtime initialization.
     savedSandboxEnv = process.env["AVE_SANDBOX_ENABLED"];
     delete process.env["AVE_SANDBOX_ENABLED"];
+    mkdirSync(legacyAuditDir, { recursive: true });
+    writeFileSync(legacyAuditPath, "broken audit record");
+    mkdirSync(legacySealPath, { recursive: true });
     const win = fakeWindow();
     services = await bootWithWindow(win, "interactive");
   }, 180_000);
@@ -768,6 +747,12 @@ describe("bootstrap() integration lock", () => {
     if (savedSandboxEnv === undefined)
       delete process.env["AVE_SANDBOX_ENABLED"];
     else process.env["AVE_SANDBOX_ENABLED"] = savedSandboxEnv;
+  });
+
+  it("boots with corrupt and unopenable retired audit artifacts in its home", () => {
+    expect(services.notificationService).toBeDefined();
+    expect(readFileSync(legacyAuditPath, "utf8")).toBe("broken audit record");
+    expect(existsSync(legacySealPath)).toBe(true);
   });
 
   it("reads installed routine plugins from the live registry including pending updates and disabled entries", async () => {
@@ -843,8 +828,6 @@ describe("bootstrap() integration lock", () => {
         "alertsService",
         "approvalGate",
         "askUserQuestionGate",
-        "auditLogger",
-        "auditService",
         "autoUpdaterStop",
         "bashAstValidator",
         "clearAuthPartitionService",

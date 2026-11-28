@@ -8,7 +8,7 @@ import {
   type SandboxEgressFailureAuditEntry,
   type SandboxEgressDenyAuditEntry,
   type SandboxEgressDenyInvocation,
-} from "../audit/sandbox-audit.js";
+} from "./egress-observation.js";
 import type { SandboxCapability } from "./sandbox-capability.js";
 import {
   decodeEgressAttributionKey,
@@ -142,13 +142,14 @@ function consumeCallbackDecision(attributionKey: string | undefined, host: strin
 export interface EgressDenyMonitorDeps {
   // ASRT's violation store subscription (`subscribeAsrtViolations`).
   readonly subscribe: (listener: (violations: readonly AsrtViolationRecord[]) => void) => Promise<() => void>;
-  // The audit sink (`emitSandboxAudit`).
+  // Structured application logging.
   readonly emit: (entry: SandboxEgressDenyAuditEntry | SandboxEgressDecisionAuditEntry | SandboxEgressFailureAuditEntry) => Promise<void>;
   // The active sandbox capability, recorded on every row.
   readonly capability: () => Pick<SandboxCapability, "kind" | "confidence">;
 }
 
-// Start recording proxy denials and transport failures. Returns the unsubscribe function. The store hands its whole retained tail to the listener on every change and once at subscription; a record is handled once, recognised by identity (the store keeps the same objects while it retains them). Records already in the store when the monitor starts are handled too: they were refused in this process and are not in the audit log yet. The owner is looked up synchronously inside the listener, which the store calls from `addViolation`, while the refused process is still alive and its token still live.
+// Handle each retained proxy denial or transport failure once by identity, including records present at subscription.
+// Resolve attribution in the listener while the refused invocation's token is still live.
 export async function startEgressDenyMonitor(deps: EgressDenyMonitorDeps): Promise<() => void> {
   const seen = new WeakSet<AsrtViolationRecord>();
   return deps.subscribe((violations) => {

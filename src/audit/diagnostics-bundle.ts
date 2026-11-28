@@ -3,13 +3,12 @@ import { readdirSync, statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import AdmZip from "adm-zip";
-import { redactForLLM, redactAuditPayload, redactHomePathsInText, scrubSecretsForLLM } from "./dlp-filter.js";
+import { redactForLLM, redactHomePathsInText, scrubSecretsForLLM } from "./dlp-filter.js";
 import { aveHome } from "../shared/ave-home.js";
 import { localDateKey, localDayRange, shiftLocalDateKey } from "../shared/local-date.js";
 import { parseLogFileDate } from "../lib/log-file-sink.js";
 import type { AppSettings } from "../data/settings-store.js";
 import { activeLlmRouteModel } from "../shared/llm-vendor-defaults.js";
-import type { AuditLogger, AuditEntry } from "./audit-logger.js";
 import { utcDateKey } from "../shared/local-date.js";
 import type { SandboxWindowsSubstrateInfo } from "../shared/sandbox-capability-info.js";
 
@@ -40,7 +39,6 @@ interface DiagnosticsBundleManifest {
 export interface BuildDiagnosticsBundleOptions {
   windowsSandbox?: SandboxWindowsSubstrateInfo | null;
   settings: AppSettings;
-  auditLogger: AuditLogger;
   appVersion: string;
   crashDumpsDir: string;
   /** Raw crash binaries require explicit opt-in; otherwise export metadata only. */
@@ -108,7 +106,6 @@ export function pickRedactedSettings(settings: AppSettings): Record<string, unkn
       telemetryPromptAnswered: settings.telemetry.telemetryPromptAnswered,
     };
   }
-  if (settings.audit) out.audit = settings.audit;
   if (settings.appearance) {
     out.appearance = {
       mode: settings.appearance.mode,
@@ -158,7 +155,7 @@ export function listCrashDumps(crashDumpsDir: string): CrashDumpMeta[] {
   return metas.sort((a, b) => (a.mtime < b.mtime ? 1 : -1));
 }
 
-/** Use host-local inclusive civil days because audit search interprets keys locally. */
+/** Use host-local inclusive civil days for log selection. */
 function defaultWindow(): { from: string; to: string } {
   const today = localDateKey(new Date());
   return { from: shiftLocalDateKey(today, -7), to: today };
@@ -225,28 +222,6 @@ export async function buildDiagnosticsBundle(
     if (addEntry("sandbox-status.json", JSON.stringify(snapshot, null, 2))) contents.push("sandbox-status.json");
   }
 
-  try {
-    await opts.auditLogger.flush();
-    const { entries } = await opts.auditLogger.search({
-      dateFrom: win.from,
-      dateTo: win.to,
-      limit: 100_000,
-      offset: 0,
-    });
-    if (entries.length > 0) {
-      // Reverse the complete newest-first result so exported JSONL is chronological.
-      const lines = entries
-        .slice()
-        .reverse()
-        .map((e) => JSON.stringify(redactAuditEntry(e)));
-      if (addEntry(`audit/${win.from}_${win.to}.jsonl`, lines.join("\n") + "\n")) {
-        contents.push("audit");
-      }
-    }
-  } catch {
-    /* Unreadable audit data omits this section. */
-  }
-
   const logFiles = logFilesInWindow(logsDir, win.from, win.to);
   let anyLog = false;
   for (const fname of logFiles) {
@@ -306,16 +281,7 @@ export async function buildDiagnosticsBundle(
   return zip.toBufferPromise();
 }
 
-/** Redact path fields and apply both free-text scrubbers before serialization. */
-function redactAuditEntry(entry: AuditEntry): Record<string, unknown> {
-  const base = redactAuditPayload(entry) as Record<string, unknown>;
-  const out = { ...base };
-  if (typeof out.input === "string") out.input = redactBundleText(out.input);
-  if (typeof out.output === "string") out.output = redactBundleText(out.output);
-  return out;
-}
-
-/** Every log line and audit input/output requires both PII and credential scrubbing; neither pass alone is sufficient. */
+/** Every log line requires both PII and credential scrubbing; neither pass alone is sufficient. */
 function redactBundleText(text: string): string {
   return redactHomePathsInText(scrubSecretsForLLM(redactForLLM(text).redacted));
 }

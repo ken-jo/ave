@@ -1,8 +1,8 @@
+import { logPermissionEvent, permissionLogId } from "../../lib/permission-log.js";
 // Judges cannot decide strict mode or capability grants and cannot override earlier floors/rules/matrix decisions. Run stages in order; ask, missing/low confidence and failures escalate.
 // Only a confident final allow/deny applies; unresolved or failed chains ask foreground and deny headless, never allow by fallback. Count final denials only; shadow mode audits without changing permission or writing rules.
-import { randomUUID } from "node:crypto";
+
 import { NO_APPROVER_MESSAGE } from "../decision-pipeline.js";
-import type { AuditLogger } from "../../audit/audit-logger.js";
 import { errorMessage } from "../../shared/error-message.js";
 import type { RiskVerdict } from "../reviewer/risk-classifier.js";
 import {
@@ -16,11 +16,10 @@ import {
   type JudgeRequest,
   type JudgeVerdict,
   type PermissionJudge,
-  type RedactedJudgeRequest,
 } from "./judge-contract.js";
 import type { JudgeCircuitBreaker } from "./judge-breaker.js";
-import { judgeArgsHash, redactJudgeRequest, redactJudgeText } from "./judge-redaction.js";
-import { formatJudgeModel, type JudgeMode, type JudgeSettings, type JudgeStageSettings } from "./judge-settings.js";
+import { redactJudgeRequest, redactJudgeText } from "./judge-redaction.js";
+import type { JudgeMode, JudgeSettings, JudgeStageSettings } from "./judge-settings.js";
 
 type PriorRuleDecision = "allow" | "ask" | "deny" | "undecided";
 
@@ -75,8 +74,6 @@ export interface JudgeEngineDeps {
   // Unreadable policy cannot establish off or shadow intent.
   settingsUnreadable?: boolean;
   breaker: JudgeCircuitBreaker;
-  // Shadow rows go to the plain shadow channel; active decisions go to the HMAC-chained permission audit channel and fail the call if it cannot be written.
-  audit: Pick<AuditLogger, "logShadow" | "appendPermissionAuditEntry">;
   hooks?: JudgeHooks;
   now?: () => number;
 }
@@ -92,42 +89,9 @@ type JudgeSkipReason =
 
 type JudgeOutcomeSource = "judge" | "hook" | "fallback" | "breaker";
 
-export interface JudgeAuditRecord {
-  event: "permission-judge";
-  ts: string;
-  session: string;
-  invocationId: string;
-  lane: JudgeRequest["lane"];
-  mode: JudgeMode;
-  tool: string;
-  category: string;
-  argsHash: string;
-  redactedRequest: RedactedJudgeRequest;
-  // The stage whose verdict ended the chain; null when the chain fell back.
-  judge: { id: string; version: string } | null;
-  // That stage's effective verdict (`ask` when it was still ambiguous); null on fallback.
-  verdictDecision: JudgeDecision | null;
-  // Every stage that ran, in order.
-  stages: JudgeStageRecord[];
-  // Decision after hooks, lanes and fallbacks.
-  decision: JudgeDecision;
-  applied: boolean;
-  source: JudgeOutcomeSource;
-  rationale: string;
-  latencyMs: number;
-  fallback: JudgeFailureKind | null;
-  breakerTripped: boolean;
-  pause?: "consecutive" | "total";
-  // Input keys a beforeJudge hook hid from the judge.
-  policyRedactedKeys?: string[];
-}
-
 interface JudgeStageRecord {
   id: string;
   provider: JudgeStageSettings["provider"];
-  version: string | null;
-  // `<provider>/<model>` for builtin-llm (configured, else the resolved reviewer model); null for external or unresolved.
-  model: string | null;
   decision: JudgeDecision | null;
   confidence: number | null;
   escalateBelow: number | null;
@@ -135,8 +99,6 @@ interface JudgeStageRecord {
   // decided = ended the chain; escalated = ambiguous; failed = no verdict; skipped = chain deadline already spent.
   outcome: "decided" | "escalated" | "failed" | "skipped";
   fallback: JudgeFailureKind | null;
-  // Redacted, truncated provider stderr (external command judges).
-  stderr?: string;
 }
 
 export type JudgeOutcome =
@@ -247,12 +209,6 @@ type ChainResult =
   | { kind: "verdict"; stage: JudgeChainStage; verdict: JudgeVerdict }
   | { kind: "fallback"; fallback: JudgeFailureKind; failureMessage: string };
 
-// The model a stage actually ran: the configured one, else the provider's resolved model.
-function stageModel(stage: JudgeChainStage): string | null {
-  if (stage.settings.provider !== "builtin-llm") return null;
-  return stage.settings.model ? formatJudgeModel(stage.settings.model) : stage.judge?.model ?? null;
-}
-
 // True when the verdict is final for its stage: allow/deny meeting the stage threshold.
 function isFinalVerdict(stage: JudgeStageSettings, verdict: JudgeVerdict): boolean {
   if (verdict.decision === "ask") return false;
@@ -278,8 +234,8 @@ async function runChain(
     if (remaining !== undefined && remaining <= 0) {
       for (const rest of deps.chain.slice(i)) {
         records.push({
-          id: rest.settings.id, provider: rest.settings.provider, version: rest.judge?.version ?? null,
-          model: stageModel(rest), escalateBelow: rest.settings.escalateBelow ?? null, latencyMs: 0,
+          id: rest.settings.id, provider: rest.settings.provider,
+          escalateBelow: rest.settings.escalateBelow ?? null, latencyMs: 0,
           decision: null, confidence: null, outcome: "skipped", fallback: "timeout",
         });
       }
@@ -288,15 +244,11 @@ async function runChain(
     const stageTimeout = remaining === undefined ? undefined : Math.min(deps.settings.timeoutMs, remaining);
     const run = await runJudge(stage.judge, view, stageTimeout, signal);
     const latencyMs = Math.max(0, now() - t0);
-    const stderr = run.diagnostics?.stderr ?? run.verdict?.diagnostics?.stderr;
     const base = {
       id: stage.settings.id,
       provider: stage.settings.provider,
-      version: stage.judge?.version ?? null,
-      model: stageModel(stage),
       escalateBelow: stage.settings.escalateBelow ?? null,
       latencyMs,
-      ...(stderr ? { stderr: redactJudgeText(stderr, 4_096) } : {}),
     };
     if (!run.verdict) {
       records.push({ ...base, decision: null, confidence: null, outcome: "failed", fallback: run.fallback ?? "error" });
@@ -304,8 +256,8 @@ async function runChain(
       if (run.engineTimedOut && stageTimeout !== undefined && stageTimeout < deps.settings.timeoutMs) {
         for (const rest of deps.chain.slice(i + 1)) {
           records.push({
-            id: rest.settings.id, provider: rest.settings.provider, version: rest.judge?.version ?? null,
-            model: stageModel(rest), escalateBelow: rest.settings.escalateBelow ?? null, latencyMs: 0,
+            id: rest.settings.id, provider: rest.settings.provider,
+            escalateBelow: rest.settings.escalateBelow ?? null, latencyMs: 0,
             decision: null, confidence: null, outcome: "skipped", fallback: "timeout",
           });
         }
@@ -337,29 +289,6 @@ async function runChain(
     fallback: lastFailure?.fallback ?? "error",
     failureMessage: lastFailure?.failureMessage ?? "judge failed",
   };
-}
-
-async function writeAudit(deps: JudgeEngineDeps, request: JudgeRequest, record: JudgeAuditRecord): Promise<void> {
-  if (!record.applied) {
-    deps.audit.logShadow({
-      timestamp: record.ts,
-      sessionId: record.session,
-      type: "info",
-      input: `permission-judge ${record.tool} decision=${record.decision} applied=false`,
-      output: JSON.stringify(record),
-    });
-    return;
-  }
-  await deps.audit.appendPermissionAuditEntry({
-    decision: "judge",
-    ts: record.ts,
-    auditId: randomUUID(),
-    trustOrigin: request.invocation.trustOrigin,
-    tool: request.invocation.toolName,
-    source: request.invocation.source,
-    category: request.invocation.category,
-    judgeRecord: record,
-  });
 }
 
 // Decide what the judge contributes to one tool call. Returns `judged: false` when the judge must not run; the caller then continues exactly as without a judge. Throws only for internal contract violations or a caller abort.
@@ -467,37 +396,29 @@ export async function resolveJudge(
   }
   const deniedWithoutApprover = applied && headless && decision !== "allow";
 
-  // The audit always describes the call that executes, not the judge's view.
   const redacted = redactJudgeRequest(request);
   const safeRationale = redactJudgeText(rationale, 2_000);
-  await writeAudit(deps, request, {
-    event: "permission-judge",
-    ts: new Date(started).toISOString(),
-    session: request.sessionId,
-    invocationId: request.invocationId,
-    lane: request.lane,
-    mode,
-    tool: request.invocation.toolName,
+  for (const stage of stages) {
+    logPermissionEvent("permission_judge_stage", {
+      invocationId: permissionLogId(request.invocationId),
+      stageId: permissionLogId(stage.id), provider: stage.provider, outcome: stage.outcome,
+      decision: stage.decision ?? undefined, fallback: stage.fallback ?? undefined,
+      confidence: stage.confidence ?? undefined, latencyMs: stage.latencyMs,
+    });
+  }
+  logPermissionEvent("permission_judge", {
+    sessionId: permissionLogId(request.sessionId),
+    invocationId: permissionLogId(request.invocationId),
+    tool: permissionLogId(request.invocation.toolName),
     category: request.invocation.category,
-    argsHash: judgeArgsHash(redacted),
-    redactedRequest: redacted,
-    judge: decidedBy ? { id: decidedBy.settings.id, version: decidedBy.judge?.version ?? "unknown" } : null,
-    verdictDecision: verdict?.decision ?? null,
-    stages,
-    decision,
-    applied,
-    source,
-    rationale: safeRationale,
+    lane: request.lane, mode, decision, applied, source, fallback, breakerTripped, pause,
+    stageCount: stages.length, reviewerStage: permissionLogId(decidedBy?.settings.id),
     latencyMs: Math.max(0, now() - started),
-    fallback: fallback ?? null,
-    breakerTripped,
-    ...(pause ? { pause } : {}),
-    ...(redactedKeys.length > 0 ? { policyRedactedKeys: [...redactedKeys] } : {}),
-  });
+    trustOrigin: request.invocation.trustOrigin,
+  }, fallback ? "warn" : "info");
   if (signal?.aborted) throw signal.reason;
 
-  // A sibling review can trip the shared breaker while this call awaits its
-  // audit write. Publish a recorded pause instead of a stale automatic allow.
+  // A sibling review can trip the shared breaker while evaluation is pending.
   if (applied && source === "judge" && deps.breaker.isOpen(request.sessionId)) {
     return resolveJudge(gate, request, deps, signal);
   }

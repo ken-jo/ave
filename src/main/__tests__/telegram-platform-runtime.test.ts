@@ -9,7 +9,7 @@ import {
   SafeStorageSecretStore,
   type SafeStorageLike,
   type SecretStore,
-} from "../../audit/hmac-chain.js";
+} from "../../lib/protected-secret-store.js";
 import {
   createTelegramActorDigester,
   ensureTelegramPlatformActorSecret,

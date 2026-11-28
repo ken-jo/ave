@@ -11,7 +11,6 @@ import { ToolRegistry } from "../registry.js";
 import { createDynamicTool } from "../base.js";
 import { makePermissionManager } from "./executor-reviewer-fixtures.js";
 import type { ApprovalRequestInput } from "../../permissions/approval-gate.js";
-import { AuditLogger } from "../../audit/audit-logger.js";
 import {
   __resetSessionStoreForTest,
   approvalCacheKeyIdentity,
@@ -32,7 +31,6 @@ interface Harness {
 // File-tool approvalCacheKey values use path:<resolved path>; rememberPattern comes from the approval card.
 function harness(
   dir: string,
-  auditLogger: AuditLogger,
   opts: {
     approvalCacheKey?: (input: unknown) => string;
     rememberPattern?: string;
@@ -94,7 +92,6 @@ function harness(
       undefined,
       { requestAndWait } as never,
       undefined,
-      auditLogger,
     ),
     executeSpy,
     requestAndWait,
@@ -117,18 +114,17 @@ function call(executor: ToolExecutor, id: string, path: string) {
 }
 
 function withTempDir(
-  run: (dir: string, auditLogger: AuditLogger) => Promise<void>,
+  run: (dir: string) => Promise<void>,
 ): () => Promise<void> {
   return async () => {
     const dir = mkdtempSync(join(tmpdir(), "ave-allow-always-literal-"));
     const previousAveHome = process.env.AVE_HOME;
     process.env.AVE_HOME = dir;
     __resetSessionStoreForTest();
-    const auditLogger = new AuditLogger(join(dir, "audit"));
     try {
-      await run(dir, auditLogger);
+      await run(dir);
     } finally {
-      await auditLogger.close();
+
       if (previousAveHome === undefined) delete process.env.AVE_HOME;
       else process.env.AVE_HOME = previousAveHome;
       __resetSessionStoreForTest();
@@ -138,8 +134,8 @@ function withTempDir(
 }
 
 describe("allow-always exact identity", () => {
-  it("records and recalls the exact tuple when the cache key is literal", withTempDir(async (dir, auditLogger) => {
-    const h = harness(dir, auditLogger, {
+  it("records and recalls the exact tuple when the cache key is literal", withTempDir(async (dir) => {
+    const h = harness(dir, {
       approvalCacheKey: () => "path:/work/Reports-2024/notes.md",
     });
 
@@ -153,8 +149,8 @@ describe("allow-always exact identity", () => {
     expect(h.rules().filter((rule) => rule.action === "allow")).toEqual([]);
   }));
 
-  it("treats a wildcard-bearing cache key as opaque exact data", withTempDir(async (dir, auditLogger) => {
-    const h = harness(dir, auditLogger, {
+  it("treats a wildcard-bearing cache key as opaque exact data", withTempDir(async (dir) => {
+    const h = harness(dir, {
       approvalCacheKey: () => "path:/work/Reports*2024/notes.md",
     });
 
@@ -168,8 +164,8 @@ describe("allow-always exact identity", () => {
     expect(h.rules().filter((rule) => rule.action === "allow")).toEqual([]);
   }));
 
-  it("leaves a sibling the wildcard would have matched still requiring approval", withTempDir(async (dir, auditLogger) => {
-    const h = harness(dir, auditLogger, {
+  it("leaves a sibling the wildcard would have matched still requiring approval", withTempDir(async (dir) => {
+    const h = harness(dir, {
       approvalCacheKey: (input) => `path:${(input as { path: string }).path}`,
     });
 
@@ -182,8 +178,8 @@ describe("allow-always exact identity", () => {
     expect(h.rules().filter((rule) => rule.action === "allow")).toEqual([]);
   }));
 
-  it("ignores a legacy wildcard rememberPattern instead of turning it into a glob rule", withTempDir(async (dir, auditLogger) => {
-    const h = harness(dir, auditLogger, { rememberPattern: "/work/Reports?2024" });
+  it("ignores a legacy wildcard rememberPattern instead of turning it into a glob rule", withTempDir(async (dir) => {
+    const h = harness(dir, { rememberPattern: "/work/Reports?2024" });
 
     const first = await call(h.executor, "tu-wildcard-remember-1", "/work/anything");
     const second = await call(h.executor, "tu-wildcard-remember-2", "/work/anything");
@@ -195,8 +191,8 @@ describe("allow-always exact identity", () => {
     expect(h.rules().filter((rule) => rule.action === "allow")).toEqual([]);
   }));
 
-  it("does not widen a no-cache-key approval into a tool-wide grant", withTempDir(async (dir, auditLogger) => {
-    const h = harness(dir, auditLogger, {});
+  it("does not widen a no-cache-key approval into a tool-wide grant", withTempDir(async (dir) => {
+    const h = harness(dir, {});
 
     const first = await call(h.executor, "tu-toolname-1", "/work/notes.md");
     const same = await call(h.executor, "tu-toolname-2", "/work/notes.md");

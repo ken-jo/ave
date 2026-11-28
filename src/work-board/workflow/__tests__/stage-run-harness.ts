@@ -125,7 +125,6 @@ export async function stageRunHarness(opts: {
   const activities = new Map<string, SubAgentActivityUpdate>();
   const liveChildren = new Set<FakeChild>();
   const interrupts: string[] = [];
-  const audits: Parameters<NonNullable<WorkflowDeps["audit"]>>[0][] = [];
   const unauthorised = new Set<string>();
   const workspaceCalls: string[] = [];
   const callWaits = new Set<() => void>();
@@ -314,7 +313,6 @@ export async function stageRunHarness(opts: {
       templates, attachments: templates, runs: boardRunState(store), workspace, authoriseRunSource, passConditions: createPassConditionRegistry(),
       scopeAuthorised: (scope: TemplateScope) => scope.kind === "all" || !unauthorised.has(scope.projectRoot),
       resolveProjectRoot: (root: string) => unauthorised.has(root) ? null : root,
-      audit: (event: (typeof audits)[number]) => { audits.push(event); },
       ...opts.workflow,
       ...opts.wiring?.(store, { workspace, templates, waking }),
       ...(runWork ? { _observeDetachedWorkForTest: runWork.observe } : {}),
@@ -335,8 +333,8 @@ export async function stageRunHarness(opts: {
     const current = createWorkBoardEngine({
       store,
       getRunner: () => suppliedRunner ?? engineRunner,
-      emitProgress: (event, project) => {
-        opts.onProgress?.(event, project);
+      emitProgress: (event, project, isOwnerCurrent) => {
+        opts.onProgress?.(event, project, isOwnerCurrent);
         const { itemId, phase, stageId, attempt } = event;
         if (engine === wrapped) {
           if (phase === "stage_failed") {
@@ -737,7 +735,7 @@ export async function stageRunHarness(opts: {
   }
 
   return {
-    dir, boardPath, get board() { return board; }, templates, get engine() { return engine; }, makeEngine, editRow, runOf, events, children, interrupts, audits, unauthorised, workspaceCalls, sweeps, sweptProjects,
+    dir, boardPath, get board() { return board; }, templates, get engine() { return engine; }, makeEngine, editRow, runOf, events, children, interrupts, unauthorised, workspaceCalls, sweeps, sweptProjects,
     confirm: confirmTemplate, pinOf, addItem, local, attach, detach, item, stageRun, until, untilStage, untilLive, untilSpawned, settleEvent, waitForLive, waitForProgress, untilRunFile, untilObserved, untilWorkspaceCalls, live, decide, statusOf, start,
     drainRunWork, drainAllRunWork, runThenEnd, cleanup,
     /** Child, progress, item and assertion waits still pending. */

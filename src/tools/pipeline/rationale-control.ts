@@ -38,7 +38,6 @@ export const RATIONALE_ACTIVATION_PREREQUISITES = [
   "reviewer-reevaluation-cache-isolation",
   "current-action-identity-revalidation",
   "ordered-security-suffix-resume",
-  "invocation-lifecycle-audit",
   "host-invocation-start-cas",
   "bounded-modal-ui",
 ] as const;
@@ -57,7 +56,6 @@ export const RATIONALE_GUARDED_ACTIVATION_EVIDENCE = Object.freeze({
   "reviewer-reevaluation-cache-isolation": true,
   "current-action-identity-revalidation": true,
   "ordered-security-suffix-resume": true,
-  "invocation-lifecycle-audit": true,
   "host-invocation-start-cas": true,
   "bounded-modal-ui": true,
 } satisfies Readonly<Record<RationaleActivationPrerequisite, true>>);

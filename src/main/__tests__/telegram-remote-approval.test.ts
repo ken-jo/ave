@@ -1,5 +1,6 @@
+import { collectPermissionEvents } from "../../__tests__/support/permission-events.js";
 // Resolve button presses through the real ApprovalGate chokepoint used by desktop approvals.
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi, onTestFinished } from "vitest";
 import {
   ApprovalGate,
   isHostApprovalTimeoutDecision,
@@ -9,7 +10,6 @@ import type {
   ApprovalRequest,
   ApprovalRequestInput,
 } from "../../permissions/approval-gate.js";
-import { auditRowTexts } from "../../permissions/__tests__/test-helpers.js";
 import {
   createTelegramRemoteApprovalCoordinator,
   type CreateTelegramRemoteApprovalCoordinatorOptions,
@@ -72,12 +72,11 @@ function remoteApprovalHarness(options: {
   coordinator?: Partial<CreateTelegramRemoteApprovalCoordinatorOptions>;
 } = {}) {
   const dock = deskDock();
-  const auditLogger = { log: vi.fn() };
+
   const gate = new ApprovalGate(
     dock.webContents as never,
     undefined,
     options.timeoutMs ?? 2_000,
-    auditLogger as never,
   );
   const client = fakeDecisionCardClient();
   const coordinator = createTelegramRemoteApprovalCoordinator({
@@ -88,7 +87,7 @@ function remoteApprovalHarness(options: {
     isPairedOwner: (senderId) => senderId === OWNER_ID,
     ...options.coordinator,
   });
-  return { dock, auditLogger, gate, client, coordinator };
+  return { dock, gate, client, coordinator };
 }
 
 function press(data: string, senderId: string = OWNER_ID): TelegramCallbackQueryEnvelope {
@@ -123,7 +122,9 @@ function deskEcho(dock: ReturnType<typeof deskDock>, choice: ApprovalDecision["c
 
 describe("telegram remote approval", () => {
   it("resolves the waiting turn as allow-once when the owner presses approve", async () => {
-    const { auditLogger, gate, client, coordinator } = remoteApprovalHarness();
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
+    const { gate, client, coordinator } = remoteApprovalHarness();
     const waiting = gate.requestAndWait(approvalAsk());
     const { approveToken } = await sentCardTokens(client);
 
@@ -154,9 +155,7 @@ describe("telegram remote approval", () => {
     ));
 
     // The gate's own audit chokepoint recorded the remote answerer.
-    const decided = auditRowTexts(auditLogger).find((row) => row.includes("[approval:decided]"));
-    expect(decided).toContain("answeredBy=platform-bridge");
-    expect(decided).toContain("choice=allow-once");
+    expect(capture.events).toContainEqual(expect.objectContaining({ event: "approval_decided", choice: "allow-once" }));
   });
 
   it("denies the tool when the owner presses deny", async () => {
@@ -432,6 +431,8 @@ describe("extension starts on the remote surface", () => {
   });
 
   it("keeps the first answer for a row: a later desk yes does not start what the remote surface refused, nor a later no stop what it allowed", async () => {
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
     const harness = remoteApprovalHarness();
     const { spawned, settling } = waitingStarts(harness);
     const cards = await remoteCards(harness.client, 3);
@@ -442,7 +443,7 @@ describe("extension starts on the remote surface", () => {
     expect(settled).toMatchObject({ choice: "allow-once", extensionStartChoices: { [first ?? ""]: "no", [second ?? ""]: "yes", [third ?? ""]: "yes" } });
     await settling;
     expect(spawned).toEqual(["mcp-stdio:files", "worker:notes/index"]);
-    expect(auditRowTexts(harness.auditLogger).filter((row) => row.startsWith("[approval:extension-start-row-late]"))).toHaveLength(2);
+    expect(capture.events.filter(({ event }) => event === "approval_extension_start_row_late")).toHaveLength(2);
   });
 
   it("reads a dismissed desk card as a no only for the rows nobody answered yet", async () => {

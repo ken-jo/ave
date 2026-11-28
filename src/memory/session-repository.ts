@@ -40,7 +40,7 @@ import { SessionSearchIndex, type IndexedSessionInput } from "./session-search-i
 import { isRecord } from "../shared/is-record.js";
 import { dlpSafeCandidate, isSafeStructuralId } from "../shared/dlp-safe-id.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
-import { parseJsonlLines } from "../audit/jsonl-reader.js";
+import { parseJsonlLines } from "../lib/jsonl-record-file.js";
 import {
   appendJsonlRecords,
   orderToolResultRows,

@@ -1,7 +1,9 @@
+import { collectPermissionEvents } from "../../__tests__/support/permission-events.js";
+import * as decisionProjection from "../pipeline/audit-entries.js";
 import { reviewerJudgeOutcomeForTest } from "../../__tests__/support/reviewer-judge.js";
 import { PATH_POLICY_DECISION_MISMATCH_ERROR } from "../../permissions/execution-router.js";
 import * as executionRouter from "../../permissions/execution-router.js";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { withSourceHostResources } from "../../__tests__/support/source-host-resources.js";
 import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -107,18 +109,15 @@ function makeExecutor(
   bashAstValidator?: BashAstValidator,
   scriptHookManager?: object,
   approvalGate?: ApprovalGate,
-): { executor: ToolExecutor; appendPermissionAuditEntry: ReturnType<typeof vi.fn> } {
+): { executor: ToolExecutor; executionEntries: () => unknown[]; events: ReturnType<typeof collectPermissionEvents>["events"] } {
   const registry = new ToolRegistry();
   registry.register(new BashTool());
   const permissions = new PermissionManager(join(dir, "permissions.json"));
   permissions.setMode(mode);
-  const appendPermissionAuditEntry = vi.fn();
-  const auditLogger = {
-    log: vi.fn(),
-    isPermissionAuditChainReady: () => true,
-    assertPermissionAuditWritable: vi.fn(),
-    appendPermissionAuditEntry,
-  };
+  const logs = collectPermissionEvents();
+  const projected = vi.spyOn(decisionProjection, "permissionAuditEntryFromToolCall");
+  onTestFinished(() => { logs.restore(); projected.mockRestore(); });
+
   return {
     executor: new ToolExecutor(
       registry,
@@ -127,9 +126,9 @@ function makeExecutor(
       bashAstValidator,
       approvalGate,
       scriptHookManager as never,
-      auditLogger as never,
     ),
-    appendPermissionAuditEntry,
+    executionEntries: () => projected.mock.results.map(result => result.value),
+    events: logs.events,
   };
 }
 
@@ -186,7 +185,7 @@ describe("execution route shadow metadata", () => {
     setShellSandboxRequestedAtBoot(false);
     const dir = mkdtempSync(join(tmpdir(), "ave-execution-route-shadow-"));
     try {
-      const { executor, appendPermissionAuditEntry } = makeExecutor(dir, "allow");
+      const { executor, executionEntries, events } = makeExecutor(dir, "allow");
       const onToolEnd = vi.fn<(
         name: string,
         result: string,
@@ -214,7 +213,8 @@ describe("execution route shadow metadata", () => {
       });
       expect(result.content).toContain("Shell path policy: unresolved command operand");
       expect(onToolEnd).toHaveBeenCalledOnce();
-      expect(appendPermissionAuditEntry).toHaveBeenCalledWith(expect.objectContaining({
+      expect(events).toContainEqual(expect.objectContaining({ event: "permission_decision", tool: "bash" }));
+      expect(executionEntries()).toContainEqual(expect.objectContaining({
         toolUseId: "tu-route-shadow",
         executionRoute: expect.objectContaining({
           decision: "analysis-required",
@@ -241,7 +241,7 @@ describe("execution route shadow metadata", () => {
     setShellSandboxRequestedAtBoot(false);
     const dir = mkdtempSync(join(tmpdir(), "ave-execution-route-conditions-"));
     try {
-      const { executor, appendPermissionAuditEntry } = makeExecutor(dir, "allow", new BashAstValidator({ mode: "deny" }));
+      const { executor, executionEntries, events } = makeExecutor(dir, "allow", new BashAstValidator({ mode: "deny" }));
       const conditions = Array.from({ length: 8 }, (_, index) => `if test -d branch${index}; then :; fi`).join("; ");
       const [result] = await executor.executeAll(
         [{ id: "condition-check", name: "bash", input: { command: `${conditions}; printf ok > marker` } }],
@@ -249,7 +249,8 @@ describe("execution route shadow metadata", () => {
       );
       expect(result?.is_error, result?.content).toBeFalsy();
       expect(existsSync(join(dir, "marker"))).toBe(true);
-      expect(appendPermissionAuditEntry).toHaveBeenCalledWith(expect.objectContaining({
+      expect(events).toContainEqual(expect.objectContaining({ event: "permission_decision", tool: "bash" }));
+      expect(executionEntries()).toContainEqual(expect.objectContaining({
         executionRoute: expect.objectContaining({ decision: "selected", route: "host", unresolvedRequirements: [] }),
       }));
     } finally {
@@ -377,7 +378,7 @@ describe("execution route shadow metadata", () => {
     try {
       const gate = new ApprovalGate({ isDestroyed: () => false, send: vi.fn() } as never);
       const request = vi.spyOn(gate, "requestAndWait");
-      const { executor, appendPermissionAuditEntry } = makeExecutor(dir, "allow", new BashAstValidator({ mode: "deny" }), undefined, gate);
+      const { executor, executionEntries, events } = makeExecutor(dir, "allow", new BashAstValidator({ mode: "deny" }), undefined, gate);
       const [result] = await executor.executeAll(
         [{ id: "structural-refusal", name: "bash", input: { command: 'printf "%s" "$IFS"' } }],
         { sessionId: "structural-refusal", executionCwd: dir, permissionContext: { trustOrigin: "llm-tool-arg" } },
@@ -386,7 +387,8 @@ describe("execution route shadow metadata", () => {
       expect(result?.content).toContain("ifs-command-injection");
       expect(request).not.toHaveBeenCalled();
       expect(operatorHarness.consumeCount).toBe(0);
-      expect(appendPermissionAuditEntry).toHaveBeenCalledWith(expect.objectContaining({
+      expect(events).toContainEqual(expect.objectContaining({ event: "permission_decision", tool: "bash" }));
+      expect(executionEntries()).toContainEqual(expect.objectContaining({
         executionRoute: expect.objectContaining({ route: route === "host" ? "host" : "disposable-container" }),
       }));
     } finally {
@@ -400,7 +402,7 @@ describe("execution route shadow metadata", () => {
     activateDisposableCapability();
     const dir = mkdtempSync(join(tmpdir(), "ave-execution-route-disposable-"));
     try {
-      const { executor, appendPermissionAuditEntry } = makeExecutor(dir, "allow");
+      const { executor, executionEntries, events } = makeExecutor(dir, "allow");
       const [result] = await executor.executeAll(
         [{
           id: "tu-route-disposable",
@@ -424,7 +426,8 @@ describe("execution route shadow metadata", () => {
       expect(result?.content).not.toContain("recursive-traversal");
       expect(operatorHarness.acquireCount).toBeGreaterThanOrEqual(2);
       expect(operatorHarness.consumeCount).toBe(1);
-      expect(appendPermissionAuditEntry).toHaveBeenCalledWith(expect.objectContaining({
+      expect(events).toContainEqual(expect.objectContaining({ event: "permission_decision", tool: "bash" }));
+      expect(executionEntries()).toContainEqual(expect.objectContaining({
         executionRoute: expect.objectContaining({
           decision: "selected",
           route: "disposable-container",
@@ -446,7 +449,7 @@ describe("execution route shadow metadata", () => {
     activateDisposableCapability();
     const dir = mkdtempSync(join(tmpdir(), "ave-execution-route-dynamic-"));
     try {
-      const { executor, appendPermissionAuditEntry } = makeExecutor(dir, "allow");
+      const { executor, executionEntries, events } = makeExecutor(dir, "allow");
       const [result] = await executor.executeAll(
         [{
           id: "tu-route-dynamic",
@@ -461,7 +464,8 @@ describe("execution route shadow metadata", () => {
       );
 
       expect(result?.is_error).toBeUndefined();
-      expect(appendPermissionAuditEntry).toHaveBeenCalledWith(expect.objectContaining({
+      expect(events).toContainEqual(expect.objectContaining({ event: "permission_decision", tool: "bash" }));
+      expect(executionEntries()).toContainEqual(expect.objectContaining({
         executionRoute: expect.objectContaining({
           route: "disposable-container",
           unresolvedRequirements: [expect.objectContaining({ kind: "dynamic-path" })],
@@ -480,7 +484,7 @@ describe("execution route shadow metadata", () => {
     const outside = mkdtempSync(join(tmpdir(), "ave-execution-route-outside-"));
     const marker = join(outside, "written-in-guest");
     try {
-      const { executor, appendPermissionAuditEntry } = makeExecutor(workspace, "allow");
+      const { executor, executionEntries, events } = makeExecutor(workspace, "allow");
       const [result] = await executor.executeAll(
         [{
           id: "tu-route-boundary",
@@ -499,7 +503,8 @@ describe("execution route shadow metadata", () => {
 
       expect(result?.is_error).toBeUndefined();
       expect(existsSync(marker)).toBe(true);
-      expect(appendPermissionAuditEntry).toHaveBeenCalledWith(expect.objectContaining({
+      expect(events).toContainEqual(expect.objectContaining({ event: "permission_decision", tool: "bash" }));
+      expect(executionEntries()).toContainEqual(expect.objectContaining({
         executionRoute: expect.objectContaining({
           decision: "selected",
           route: "disposable-container",
@@ -745,7 +750,7 @@ describe("execution route shadow metadata", () => {
     const dir = mkdtempSync(join(tmpdir(), "ave-execution-route-sensitive-"));
     const execute = vi.spyOn(BashTool.prototype, "execute").mockResolvedValue({ output: "unexpected shell execution", isError: false });
     try {
-      const { executor, appendPermissionAuditEntry } = makeExecutor(dir, "allow");
+      const { executor, executionEntries, events } = makeExecutor(dir, "allow");
       const [result] = await executor.executeAll(
         [{ id: "tu-route-sensitive", name: "bash", input: { command } }],
         {
@@ -757,7 +762,8 @@ describe("execution route shadow metadata", () => {
 
       expect(result).toMatchObject({ is_error: true });
       expect(result?.content).toContain(pattern);
-      expect(appendPermissionAuditEntry).toHaveBeenCalledWith(expect.objectContaining({
+      expect(events).toContainEqual(expect.objectContaining({ event: "permission_decision", tool: "bash" }));
+      expect(executionEntries()).toContainEqual(expect.objectContaining({
         decision: "deny", executionRoute: expect.objectContaining({ route: "disposable-container" }),
       }));
       expect(operatorHarness.consumeCount).toBe(0);

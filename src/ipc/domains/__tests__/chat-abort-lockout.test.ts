@@ -98,7 +98,6 @@ describe("ave:chat:abort with a turn parked on an approval", () => {
           saveSessionMetadata: vi.fn(async () => undefined),
         },
       },
-      auditLogger: { log: vi.fn() },
       getMainWindow: vi.fn(() => null),
     } as unknown as Parameters<typeof registerChatHandlers>[0]);
 

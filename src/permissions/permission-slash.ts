@@ -24,17 +24,9 @@ import {
   type HookTrustCommandOptions,
   type HookTrustCommandResult,
 } from "../hooks/hook-trust-commands.js";
-export { stripLeadingSlash } from "../shared/slash-sanitizer.js";
 import { stripLeadingSlash } from "../shared/slash-sanitizer.js";
 import { AveHomeConfigurationRefusedWriteError } from "../shared/ave-home.js";
 import { HOME_FOLDER_REFUSED } from "../shared/permissions-events.js";
-import {
-  readRecentAuditEntries,
-  summarizeAuditDir,
-  verifyAllAuditFiles,
-} from "./permission-audit-runner.js";
-import type { PermissionAuditEntryView, PermissionAuditIntegrity } from "../audit/audit-schema.js";
-import type { SecretStore } from "../audit/hmac-chain.js";
 import { EXECUTION_MODES, type ExecutionMode } from "../shared/permission-mode.js";
 import type { PermissionManager } from "./permission-manager.js";
 import { permissionModeReviewerOverride, setPermissionModeReviewerOverride } from "./permission-mode-apply.js";
@@ -380,95 +372,6 @@ export async function dispatchPermissionReviewerCommandWithRewire(
   }
 }
 
-// /permission audit
-
-export type PermissionAuditVerb = "show" | "verify";
-
-export interface PermissionAuditCommand {
-  verb: PermissionAuditVerb;
-  // For `show`: how many entries to surface (default 50, max 1000).
-  last: number;
-}
-
-// Parse `/permission audit...` (the substring AFTER the prefix). Examples: "show" "show --last=100" "verify"
-export function parsePermissionAuditCommand(
-  rawArgs: string,
-): PermissionAuditCommand | { ok: false; error: string } {
-  const args = rawArgs.trim().split(/\s+/).filter((p) => p.length > 0);
-  if (args.length === 0) {
-    return { ok: false, error: "missing subcommand — usage: /permission audit <show|verify> [--last=N]" };
-  }
-  const verb = args[0] as PermissionAuditVerb;
-  if (verb !== "show" && verb !== "verify") {
-    return { ok: false, error: `unknown subcommand '${verb}' — expected show|verify` };
-  }
-  let last = 50;
-  for (const arg of args.slice(1)) {
-    const m = arg.match(/^--last=(\d+)$/);
-    if (m) {
-      const parsed = Number(m[1]);
-      if (!Number.isFinite(parsed) || parsed < 1) {
-        return { ok: false, error: `--last must be a positive integer (got ${m[1]})` };
-      }
-      last = Math.min(parsed, 1000);
-      continue;
-    }
-    return { ok: false, error: `unknown flag '${arg}'` };
-  }
-  if (verb === "verify" && last !== 50) {
-    return { ok: false, error: "--last is only valid for 'show'" };
-  }
-  return { verb, last };
-}
-
-export type PermissionAuditResult =
-  | (PermissionAuditIntegrity & {
-      ok: true;
-      verb: "show";
-      entries: PermissionAuditEntryView[];
-      total: number;
-      summary: { files: number; bytes: number };
-    })
-  | (PermissionAuditIntegrity & {
-      ok: true;
-      verb: "verify";
-      intact: boolean;
-      totalFiles: number;
-      totalEntries: number;
-      firstBrokenFile?: string;
-    })
-  | { ok: false; error: string };
-
-export function dispatchPermissionAuditCommand(
-  cmd: PermissionAuditCommand,
-  opts: { auditDir: string; secret: string | null; sealStore?: SecretStore },
-): PermissionAuditResult {
-  if (cmd.verb === "show") {
-    const { entries, ...integrity } = readRecentAuditEntries(opts.auditDir, cmd.last);
-    return {
-      ok: true,
-      verb: "show",
-      entries,
-      total: entries.length,
-      summary: summarizeAuditDir(opts.auditDir),
-      ...integrity,
-    };
-  }
-  if (!opts.secret) {
-    return { ok: false, error: "audit-chain-not-initialized" };
-  }
-  const result = verifyAllAuditFiles(opts.auditDir, opts.secret, opts.sealStore);
-  return {
-    ok: true,
-    verb: "verify",
-    intact: result.intact,
-    totalFiles: result.totalFiles,
-    totalEntries: result.totalEntries,
-    ...(result.invalidTerminalKinds === undefined ? {} : { invalidTerminalKinds: result.invalidTerminalKinds }),
-    ...(result.firstBrokenFile ? { firstBrokenFile: result.firstBrokenFile } : {}),
-  };
-}
-
 // /permission mode
 
 export interface PermissionModeCommand {
@@ -506,7 +409,7 @@ export function parsePermissionModeCommand(
 
 // /permission rules / hooks
 
-export type PermissionRulesCommand =
+type PermissionRulesCommand =
   | { verb: "rules"; sub: "list" }
   | { verb: "rules"; sub: "add" | "remove"; action: "allow" | "deny"; pattern: string };
 export type PermissionHooksCommand =
@@ -515,7 +418,7 @@ export type PermissionHooksCommand =
   | { verb: "hooks"; sub: "disable"; name: string }
   | { verb: "hooks"; sub: "reject"; name: string };
 
-export function parsePermissionRulesCommand(
+function parsePermissionRulesCommand(
   rawArgs: string,
 ): PermissionRulesCommand | { ok: false; error: string } {
   const tokenized = tokenizePermissionArgs(rawArgs);
@@ -542,7 +445,7 @@ export function parsePermissionRulesCommand(
   return { verb: "rules", sub, action, pattern };
 }
 
-export function parsePermissionHooksCommand(
+function parsePermissionHooksCommand(
   rawArgs: string,
 ): PermissionHooksCommand | { ok: false; error: string } {
   const args = rawArgs.trim().split(/\s+/).filter((p) => p.length > 0);
@@ -611,7 +514,6 @@ export type SlashTrustOrigin = TrustOriginWithUnknown;
 export type PermissionSlashOutcome =
   | { kind: "rejected-non-user-origin"; sanitized: string }
   | { kind: "show-current"; needsModal: false }
-  | { kind: "audit"; cmd: PermissionAuditCommand; needsModal: false }
   | { kind: "dir"; cmd: PermissionDirCommand; needsModal: false }
   | { kind: "reviewer"; cmd: PermissionReviewerCommand; needsModal: false }
   | { kind: "mode"; cmd: PermissionModeCommand; needsModal: boolean }
@@ -655,13 +557,6 @@ export function dispatchPermissionSlash(
   const tail = remainder.slice(head.length).trim();
 
   switch (head) {
-    case "audit": {
-      const parsed = parsePermissionAuditCommand(tail);
-      if ("ok" in parsed && parsed.ok === false) {
-        return { kind: "parse-error", error: parsed.error };
-      }
-      return { kind: "audit", cmd: parsed as PermissionAuditCommand, needsModal: false };
-    }
     case "dir": {
       const parsed = parsePermissionDirCommand(tail);
       if ("ok" in parsed && parsed.ok === false) {
@@ -706,7 +601,7 @@ export function dispatchPermissionSlash(
     default:
       return {
         kind: "parse-error",
-        error: `unknown subcommand '${head}' — expected mode|dir|reviewer|rules|hooks|audit`,
+        error: `unknown subcommand '${head}' — expected mode|dir|reviewer|rules|hooks`,
       };
   }
 }

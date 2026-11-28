@@ -27,7 +27,7 @@ export async function fireLifecycleEvent(
         { cwd },
       );
       recordHookContext(result.results);
-      recordHookExecutionAudit(deps.auditLogger, sessionIdOverride ?? sessionId, result.results);
+      recordHookExecutionAudit(sessionIdOverride ?? sessionId, result.results);
     } catch (err) {
       log.warn(
         `lifecycle event ${event} dispatch failed (non-blocking, ignored): ${errorMessage(err)}`,
@@ -49,7 +49,7 @@ export async function fireContinuableStop(
     try {
       const result = await manager.runLifecycleEvent(event, sessionIdOverride ?? sessionId, "unknown", payload, { cwd });
       recordHookContext(result.results);
-      recordHookExecutionAudit(deps.auditLogger, sessionIdOverride ?? sessionId, result.results);
+      recordHookExecutionAudit(sessionIdOverride ?? sessionId, result.results);
       return stopHookBlockFeedback(result);
     } catch (err) {
       log.warn(`lifecycle event ${event} dispatch failed (non-blocking, ignored): ${errorMessage(err)}`);
@@ -75,7 +75,7 @@ export async function fireUserPromptSubmit(
         { cwd },
       );
       recordHookContext(result.results);
-      recordHookExecutionAudit(deps.auditLogger, sessionIdOverride ?? sessionId, result.results);
+      recordHookExecutionAudit(sessionIdOverride ?? sessionId, result.results);
       return { decision: result.decision, reason: result.reason };
     } catch (err) {
       // Blocking prompt hooks must deny on unexpected errors.

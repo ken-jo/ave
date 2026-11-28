@@ -40,7 +40,6 @@ function makeDeps(singleHopNetworkFetch: typeof fetch) {
       patch: vi.fn(async () => ({ llm: { provider: "openai", activeChatRuntime: { kind: "api" } } })),
     },
     conversationLoop: { refreshProvider: vi.fn() },
-    auditLogger: { log: vi.fn() },
     getAppWindows: vi.fn(() => []),
     singleHopNetworkFetch,
   };

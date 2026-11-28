@@ -91,7 +91,7 @@ function makeDeps(overrides: {
   const stderr = collectingStream();
   const approvalGate = "approvalGate" in overrides
     ? overrides.approvalGate
-    : new ApprovalGate(null, undefined, undefined, undefined, undefined, {
+    : new ApprovalGate(null, undefined, undefined, undefined, {
       onDenied: (requestId, toolName) => {
         stderr.stream.write(`exec: auto-denied approval ${requestId} tool=${toolName}\n`);
       },
@@ -858,5 +858,51 @@ describe("runExecTurn — --set-secret", () => {
     });
     expect(code).toBe(1);
     expect(harness.runTurn).not.toHaveBeenCalled();
+  });
+});
+
+describe("skill memory at the one-shot terminal boundary", () => {
+  it("fails an inline turn before opening a conversation if the owner-input hook is missing", async () => {
+    const harness = makeDeps();
+    const queueUnattended = vi.fn();
+    Object.assign(harness.deps.conversationLoop, { deps: { skillMemory: { queueUnattended } } });
+
+    await expect(runExecTurn(harness.deps, turnRequest())).resolves.toBe(1);
+    expect(harness.stderr.text()).toContain("skill memory owner-input hook is missing");
+    expect(harness.newConversation).not.toHaveBeenCalled();
+    expect(harness.runTurn).not.toHaveBeenCalled();
+    expect(queueUnattended).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { prompt: "Check the type report.", stopReason: "end_turn", shouldReview: true },
+    { prompt: null, stopReason: "end_turn", shouldReview: false },
+    { prompt: "Check the type report.", stopReason: "round-cap", shouldReview: false },
+  ] as const)("admission for prompt $prompt at $stopReason", async ({ prompt, stopReason, shouldReview }) => {
+    const harness = makeDeps({ stdin: "Unverified pipe input", turnResult: { ...COMPLETED_TURN, stopReason } });
+    const queueUnattended = vi.fn(async () => { expect(harness.stdout.text()).toContain('"stopReason":"end_turn"'); });
+    const runWithSkillMemoryOwnerInput = vi.fn((_prompt: string, run: () => Promise<TurnResult>) => run());
+    Object.assign(harness.deps.conversationLoop, { deps: { skillMemory: { queueUnattended } }, getSessionId: () => "host-session" });
+    await expect(runExecTurn({ ...harness.deps, runWithSkillMemoryOwnerInput }, turnRequest({ prompt, output: "json" }))).resolves.toBe(0);
+    if (prompt === null) expect(runWithSkillMemoryOwnerInput).not.toHaveBeenCalled();
+    else expect(runWithSkillMemoryOwnerInput).toHaveBeenCalledExactlyOnceWith(prompt, expect.any(Function));
+    if (shouldReview) expect(queueUnattended).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      completionId: expect.stringMatching(/^exec:/), runKind: "headless", sessionId: "host-session", flushBeforeExit: true,
+    }));
+    else expect(queueUnattended).not.toHaveBeenCalled();
+  });
+
+  it("keeps a retained session's completion IDs per turn and does not wait on its reviewer", async () => {
+    const harness = makeDeps();
+    const queueUnattended = vi.fn(async (_completion: { completionId: string; flushBeforeExit: boolean }) => {});
+    const waitForRelease = vi.fn(async () => {});
+    const runWithSkillMemoryOwnerInput = (_prompt: string, run: () => Promise<TurnResult>) => run();
+    Object.assign(harness.deps.conversationLoop, { deps: { skillMemory: { queueUnattended } }, getSessionId: () => "retained" });
+    for (const prompt of ["first", "second"]) {
+      await expect(runExecTurn({ ...harness.deps, waitForRelease, runWithSkillMemoryOwnerInput }, turnRequest({ prompt, keepAlive: true }))).resolves.toBe(0);
+    }
+    expect(queueUnattended).toHaveBeenCalledTimes(2);
+    expect(new Set(queueUnattended.mock.calls.map(([row]) => row.completionId)).size).toBe(2);
+    expect(queueUnattended.mock.calls.map(([row]) => row.flushBeforeExit)).toEqual([false, false]);
   });
 });

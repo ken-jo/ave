@@ -52,7 +52,7 @@ export function localMonthStartKey(date: Date): string {
 }
 
 /** Length of a `YYYY-MM-DD` key; the prefix every UTC-partitioned file name starts with. */
-export const UTC_DATE_KEY_LENGTH = 10;
+const UTC_DATE_KEY_LENGTH = 10;
 
 /** UTC partitions stay stable across zone changes; user-facing dates use localDateKey. */
 export function utcDateKey(instant: Date = new Date()): string {

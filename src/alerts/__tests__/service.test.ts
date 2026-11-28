@@ -1,9 +1,9 @@
 import { createAlertMigrationPorts } from "../../__tests__/support/alert-migration.js";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AuditEntry } from "../../audit/audit-logger.js";
+import { collectPermissionEvents, watchPermissionEvents } from "../../__tests__/support/permission-events.js";
 import type { PluginManifest } from "../../plugins/public-contract.js";
 import type { AlertCard, AlertSettings } from "../../shared/alerts-types.js";
 import { normalizeAlertSettings } from "../../data/settings-normalization.js";
@@ -113,7 +113,7 @@ interface Harness {
   dismissed: string[];
   fired: Array<{ title: string; body: string; bypassFocusGate?: boolean; sticky?: boolean }>;
   events: Array<{ type: string; payload: Json }>;
-  audits: AuditEntry[];
+  logs: ReturnType<typeof collectPermissionEvents>["events"];
   clock: { now: number };
   focused: { value: boolean };
   blocks: ReturnType<typeof vi.fn>;
@@ -125,12 +125,14 @@ let sharedSettings: AlertSettings;
 const services: AlertsService[] = [];
 
 async function harness(options: { installed?: string[]; beforeSettingsWrite?: () => Promise<void> } = {}): Promise<Harness> {
+  const capture = collectPermissionEvents();
+  onTestFinished(capture.restore);
   const h = {
     shown: [] as AlertCard[],
     dismissed: [] as string[],
     fired: [] as Harness["fired"],
     events: [] as Harness["events"],
-    audits: [] as AuditEntry[],
+    logs: capture.events,
     clock: { now: 1_000_000 },
     focused: { value: false },
     blocks: vi.fn(async () => false),
@@ -159,7 +161,6 @@ async function harness(options: { installed?: string[]; beforeSettingsWrite?: ()
       fire: (opts) => { h.fired.push(opts); },
     },
     emit: (type, payload) => { h.events.push({ type, payload }); },
-    audit: (entry) => { h.audits.push(entry); },
     kindsChanged: h.changed,
     now: () => h.clock.now,
   });
@@ -253,7 +254,7 @@ describe("predecessor and toggle", () => {
       .toEqual({ status: "blocked_by_predecessor", pluginId: "retiredfixture" });
     expect(h.blocks).toHaveBeenCalledWith("retiredfixture", "ave");
     expect(h.shown).toEqual([]);
-    expect(h.audits.at(-1)?.input).toContain("alert.suppressed kind=successor reason=blocked_by_predecessor");
+    expect(h.logs).toContainEqual(expect.objectContaining({ event: "alert_suppressed", alertKind: "successor", reasonCode: "blocked_by_predecessor" }));
     h.blocks.mockResolvedValue(false);
     expect((await h.service.raise("fixturemail", { kind: "successor", key: "k" })).status).toBe("raised");
   });
@@ -268,7 +269,7 @@ describe("predecessor and toggle", () => {
     const h = await registered();
     expect(await h.service.raise("fixturemail", { kind: "offbydefault", key: "a" })).toEqual({ status: "disabled_by_user" });
     expect(await h.service.raise("fixturemail", { kind: "offbydefault", key: "b" })).toEqual({ status: "disabled_by_user" });
-    const rows = h.audits.filter((row) => row.input?.includes("reason=disabled_by_user"));
+    const rows = h.logs.filter((row) => row.event === "alert_suppressed" && row.reasonCode === "disabled_by_user");
     expect(rows).toHaveLength(1);
   });
 
@@ -367,7 +368,7 @@ describe("an accepted alert", () => {
     expect(h.service.listOpen()[0]?.source.alertId).toBe(alertId);
     expect(h.fired).toHaveLength(1);
     expect(h.events).toEqual([expect.objectContaining({ type: "alert.raised", payload: expect.objectContaining({ alertId }) })]);
-    expect(h.audits.at(-1)?.input).toContain(`alert.raised kind=reply alertId=${alertId}`);
+    expect(h.logs).toContainEqual(expect.objectContaining({ event: "alert_raised", alertKind: "reply" }));
     await h.service.flush();
     expect(JSON.parse(await readFile(join(dir, "open.json"), "utf8")).open).toEqual([
       expect.objectContaining({ alertId }),
@@ -410,10 +411,10 @@ describe("an accepted alert", () => {
         raisedAt: new Date(h.clock.now).toISOString(),
       },
     }]);
-    expect(h.audits.at(-1)?.input).toContain(`alert.raised kind=reply alertId=${alertId}`);
+    expect(h.logs).toContainEqual(expect.objectContaining({ event: "alert_raised", alertKind: "reply" }));
 
     await h.service.flush();
-    const leaked = [JSON.stringify(h.events), JSON.stringify(h.audits), await readFile(join(dir, "open.json"), "utf-8")];
+    const leaked = [JSON.stringify(h.events), JSON.stringify(h.logs), await readFile(join(dir, "open.json"), "utf-8")];
     for (const text of leaked) {
       expect(text).not.toContain("secret-subject-key");
       expect(text).not.toContain("Budget");
@@ -422,7 +423,7 @@ describe("an accepted alert", () => {
 
   it("still answers when the audit log throws", async () => {
     const h = await registered();
-    const audit = vi.spyOn(h.audits, "push").mockImplementation(() => { throw new Error("audit down"); });
+    const audit = watchPermissionEvents(() => { throw new Error("Log sink unavailable"); });
     expect((await h.service.raise("fixturemail", reply())).status).toBe("raised");
     expect(await h.service.raise("fixturemail", { kind: "offbydefault", key: "o" })).toEqual({ status: "disabled_by_user" });
     audit.mockRestore();

@@ -1,3 +1,4 @@
+import { logPermissionEvent, permissionLogId } from "../../lib/permission-log.js";
 import { routeInput } from "../../core/route-input.js";
 import { markCodeCheckpointUnavailable, withCodeCheckpoint } from "../../memory/code-checkpoints.js";
 import { runWithAgentObservationTurn } from "../../tools/agent-observation-context.js";
@@ -31,8 +32,9 @@ import { projectNextTurnInputTokens } from "../request-input-projection.js";
 import { carriedPluginIds } from "./tool-scope.js";
 import { fireContinuableStop } from "./lifecycle-hooks.js";
 import { turnExtensionPolicyContext } from "../../shared/turn-extension-policy.js";
-import { normalizeAiSdkUsageForCost } from "../llm/pricing.js";
 import { stripLeadingSlash } from "../../shared/slash-sanitizer.js";
+import { approveSkillMemoryEvidence } from "../../memory/skill-memory-policy.js";
+import { claimScheduledSkillEvidence, isDirectSkillMemoryOwnerInput } from "../../memory/skill-memory-service.js";
 import { isUntaintedToolTrustOrigin, isUserKeyboardOrigin, spendUserKeyboardIntent } from "../../shared/chat-origin.js";
 import { consumeUnattendedTurnAuthority } from "../../shared/authorization-required.js";
 import { countResourceAttachmentFences } from "../../shared/mcp-resource-bounds.js";
@@ -216,9 +218,34 @@ async function runTurnInSpan(
       );
     }
     const turnSignal = ac.signal;
+    const noApprover = self.deps.headless === true || self.deps.approvalSurface === "unavailable";
+    const skillProject = self.deps.skillMemory ? self.getSessionProjectContext().projectRoot : undefined;
+    const scheduledOwnerEvidence = skillProject && !options.remoteControllerAuthority && !userKeyboardVerified
+      && self.sessionKind !== "subagent" && !turnExtensionPolicyContext.getStore()?.unattendedStage
+      ? claimScheduledSkillEvidence(effectiveSessionId, skillProject, input) : undefined;
+    const skillRunKind = scheduledOwnerEvidence ? "scheduled" : options.unattendedAuthority !== undefined ? "headless" : "attended";
+    const skillMemory = self.deps.skillMemory?.trackTurn(
+      skillProject && !options.remoteControllerAuthority && (scheduledOwnerEvidence || (
+        ((userKeyboardVerified && !noApprover) || options.unattendedAuthority !== undefined)
+        && !turnExtensionPolicyContext.getStore()?.withholdSessionAuthority))
+        && !turnExtensionPolicyContext.getStore()?.unattendedStage
+        && self.sessionKind !== "subagent"
+        ? {
+            sessionId: effectiveSessionId,
+            projectRoot: skillProject,
+            runKind: skillRunKind,
+            scheduled: scheduledOwnerEvidence,
+            activeSkills: self.deps.skillOverlay?.list
+              ? () => self.deps.skillOverlay?.list?.(effectiveSessionId) ?? [] : undefined,
+            isCurrent: () => !turnSignal.aborted && self.sessionEpoch === sessionEpoch
+              && self.getSessionProjectContext().projectRoot === skillProject,
+          }
+        : null,
+    );
+    let skillEvidenceCommitted = false;
+    let skillCommand: string | undefined;
     // Extension starts nothing confines wait for a person: a verified local turn asks one card each, a turn nobody can answer starts none.
     // Any other turn only runs the ones a backend has come to confine since.
-    const noApprover = self.deps.headless === true || self.deps.approvalSurface === "unavailable";
     const personPresent = userKeyboardVerified && !isRemoteControllerTurn && options.unattendedAuthority === undefined && !noApprover;
     void settlePendingExtensionStarts(personPresent || noApprover ? { sessionId: effectiveSessionId, attended: personPresent } : undefined);
     const runLifecycle = <T>(operation: () => Promise<T>): Promise<T> => {
@@ -302,6 +329,7 @@ async function runTurnInSpan(
         !BUILTIN_SLASH_COMMANDS.has(routeResult.command) &&
         self.deps.isSkillName?.(routeResult.command) === true
       ) {
+        if (isUserKeyboardOrigin(inputOrigin)) skillCommand = routeResult.command;
         // Skills run as model turns with visible loading; builtins and user command files win name collisions.
         routeResult = { route: "llm", input: turnInput };
       } else {
@@ -652,7 +680,7 @@ async function runTurnInSpan(
     const hostTerminalTurn = (userKeyboardVerified || isRemoteControllerTurn) && isUntaintedToolTrustOrigin(toolTrustOrigin) && memoryCaptureTaint.size === 0
       && options?.unattendedAuthority === undefined && self.sessionKind !== "subagent"
       ? { sessionId: effectiveSessionId, turnId: turnUserMessage.meta.messageId } : undefined;
-    const runQuery = () => runWithHostTerminalTurn(hostTerminalTurn, () => runWithAgentObservationTurn({ sessionId: effectiveSessionId, turnId: turnUserMessage.meta.messageId }, () => sessionContext.run({ sessionId: effectiveSessionId }, () =>
+    const runQueryWithContext = () => runWithHostTerminalTurn(hostTerminalTurn, () => runWithAgentObservationTurn({ sessionId: effectiveSessionId, turnId: turnUserMessage.meta.messageId }, () => sessionContext.run({ sessionId: effectiveSessionId }, () =>
       queryLoop(
         self,
         systemPrompt,
@@ -686,6 +714,7 @@ async function runTurnInSpan(
       ),
     )));
     if (self.sessionKind === "subagent") await markCodeCheckpointUnavailable();
+    const runQuery = () => skillMemory ? skillMemory.run(runQueryWithContext) : runQueryWithContext();
     result = self.deps.disableSessionPersistence || self.sessionKind === "subagent"
       ? await runQuery()
       : await withCodeCheckpoint({ sessionId: effectiveSessionId, messageId: turnUserMessage.meta.messageId }, runQuery);
@@ -753,6 +782,7 @@ async function runTurnInSpan(
       stopReason: result.stopReason,
       ...postTurnToolExposure,
     });
+    let terminalTranscriptCommitted = false;
     if (self.deps.postTurnHookChain) {
       const hookResult = await self.deps.postTurnHookChain.run({
         sessionId: self.sessionId,
@@ -785,6 +815,7 @@ async function runTurnInSpan(
           : {}),
       });
       // Align memory with marker-stripped output before the final summary save can overwrite clean history.
+      terminalTranscriptCommitted = hookResult.transcriptPersisted === true;
       const shouldRestoreHookHistory = hookResult.detector.cleanedText !== result.text;
       if (shouldRestoreHookHistory) {
         const beforeCount = self.history.getMessages().length;
@@ -806,45 +837,14 @@ async function runTurnInSpan(
           self.sessionId,
           self.history.getMessages(),
         );
+        terminalTranscriptCommitted = true;
       }
       // Child fallback audits use the same vendor/model route format as post-turn hooks.
       const auditRoute = subscriptionAuditRoute
         ?? (result.usage && result.vendorProvider && result.vendorModel
           ? `${result.vendorProvider}/${result.vendorModel}`
           : routeResult.route);
-      const auditVendorProvider = isSubscriptionRuntime ? undefined : result.vendorProvider;
-      const auditTokenUsage = auditVendorProvider
-        ? normalizeAiSdkUsageForCost(
-          result.usage,
-          auditVendorProvider,
-        )
-        : undefined;
-      const auditUsageByModel = isSubscriptionRuntime
-        ? undefined
-        : result.usageByModel?.map((segment) => ({
-          ...segment,
-          tokenUsage: normalizeAiSdkUsageForCost(
-            segment.tokenUsage,
-            segment.vendorProvider,
-          ),
-        }));
-      self.auditLogger.logTurn({
-        sessionId: self.sessionId,
-        input,
-        output: result.text,
-        toolCalls: result.toolCalls.map((tc) => ({
-          name: tc.name,
-          isError: false,
-        })),
-        tokenUsage: auditTokenUsage,
-        usageByModel: auditUsageByModel,
-        ...(isSubscriptionRuntime && result.subscriptionUsage.length > 0
-          ? { subscriptionUsage: result.subscriptionUsage }
-          : {}),
-        toolExposure: postTurnToolExposure,
-        route: auditRoute,
-        ...(!isSubscriptionRuntime && result.modelSettings ? { modelSettings: result.modelSettings } : {}),
-      });
+      logPermissionEvent("conversation_turn_finished", { sessionId: permissionLogId(self.sessionId), route: permissionLogId(auditRoute) });
       self.deps.idleScheduler?.signalConversation();
     }
     transcriptPersistedAfterLoop = true;
@@ -926,6 +926,7 @@ async function runTurnInSpan(
         tokensIn: turnTokensIn,
         freshInputTokens: turnFreshInput,
         tokensOut: turnTokensOut,
+        usageReported: billableTurnUsage !== undefined || billableUsageByModel.length > 0 || subscriptionTurnUsage.length > 0,
         ...(turnCacheRead > 0 ? { cacheReadTokens: turnCacheRead } : {}),
         ...(turnCacheWrite > 0 ? { cacheWriteTokens: turnCacheWrite } : {}),
         ...(singleUsageModel
@@ -1036,8 +1037,21 @@ async function runTurnInSpan(
     }
 
     retainHostInjectedMessages = commitsHostInjectedMessages(result.stopReason);
+    const succeeded = terminalTranscriptCommitted && result.stopReason === "end_turn" && !result.inputRequired && !result.authorizationRequired && !turnSignal.aborted;
+    await skillMemory?.finish(succeeded ? approveSkillMemoryEvidence({
+      id: turnUserMessage.meta.messageId,
+      input,
+      skillCommand,
+      verified: isDirectSkillMemoryOwnerInput(input) && (userKeyboardVerified || options.unattendedAuthority !== undefined)
+        || scheduledOwnerEvidence !== undefined,
+      tainted: [...memoryCaptureTaint].some(reason => !scheduledOwnerEvidence || reason !== "non-keyboard-origin")
+        || (scheduledOwnerEvidence ? initialToolTrustOrigin("user-keyboard", input) === "file-content" : !isUntaintedToolTrustOrigin(toolTrustOrigin))
+        || options.resumesInterruptedTurn === true || customCommandDisplayText !== undefined,
+    }) : null, succeeded, result.toolCalls.length > 0, skillCommand);
+    skillEvidenceCommitted = true;
     return { ...result, route: routeResult.route, endTrustOrigin: lifecycleProvenance.toolTrustOrigin };
   } finally {
+    if (!skillEvidenceCommitted) void skillMemory?.finish(null, false);
     try {
     let removedHostInjectionRows = 0;
     if (!retainHostInjectedMessages && initialGuidanceId) {

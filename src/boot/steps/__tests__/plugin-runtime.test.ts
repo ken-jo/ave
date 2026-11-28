@@ -1,3 +1,4 @@
+import { collectPermissionEvents } from "../../../__tests__/support/permission-events.js";
 import { createBootHostFixture, createDesktopHostFixture, stationaryLeaseState } from "../../../__tests__/support/host-runtime.js";
 /** Audit logger failures must not replace the original approval-origin error. */
 
@@ -193,6 +194,10 @@ function createRuntimeHost() {
   }) });
 }
 
+let permissionLogs: ReturnType<typeof collectPermissionEvents>;
+  beforeEach(() => { permissionLogs = collectPermissionEvents(); });
+  afterEach(() => permissionLogs.restore());
+
 beforeEach(() => {
   runtimeTestState.onBootShutdown.mockReset();
   runtimeTestState.appPrependOnceListener.mockReset();
@@ -376,12 +381,10 @@ describe("initPluginRuntime HostApi factory", () => {
       pluginId?: string;
       manifest?: HostFetchManifest;
       networkFetch?: typeof fetch;
-      bootAuditLogger?: { log: ReturnType<typeof vi.fn> };
     } = {},
   ): Promise<{
     api: HostFetchApi;
     networkFetch: typeof fetch;
-    bootAuditLogger: { log: ReturnType<typeof vi.fn> };
   }> {
     runtimeTestState.capturedRuntimeOptions = null;
     const pluginId = options.pluginId ?? "host-fetch-plugin";
@@ -394,7 +397,7 @@ describe("initPluginRuntime HostApi factory", () => {
     const networkFetch =
       options.networkFetch ??
       vi.fn(async () => new Response("ok", { status: 200 }));
-    const bootAuditLogger = options.bootAuditLogger ?? { log: vi.fn() };
+
 
     await initPluginRuntime({
     host: createRuntimeHost(),
@@ -403,7 +406,6 @@ describe("initPluginRuntime HostApi factory", () => {
       memoryManager: {} as never,
       toolRegistry: createRuntimeToolRegistry() as never,
       pythonPath: undefined,
-      bootAuditLogger: bootAuditLogger as never,
       mainWindow: {} as never,
       networkFetch: networkFetch as typeof fetch,
       openAuthWindowService: vi.fn(),
@@ -424,7 +426,7 @@ describe("initPluginRuntime HostApi factory", () => {
       manifest,
       pluginDataDirIn(tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-hostfetch-data-")))),
     );
-    return { api, networkFetch, bootAuditLogger };
+    return { api, networkFetch };
   }
 
   it("publishes a bounded failure category without the private diagnostic message", async () => {
@@ -442,7 +444,7 @@ describe("initPluginRuntime HostApi factory", () => {
   });
 
   it("hostFetch denies non-allowlisted hosts and emits hostname-only audit detail", async () => {
-    const { api, networkFetch, bootAuditLogger } = await buildHostFetchApi();
+    const { api, networkFetch } = await buildHostFetchApi();
 
     await expect(
       api.hostFetch("https://evil.example:9443/secrets"),
@@ -450,17 +452,11 @@ describe("initPluginRuntime HostApi factory", () => {
 
     expect(dnsTestState.lookup).not.toHaveBeenCalled();
     expect(networkFetch).not.toHaveBeenCalled();
-    expect(bootAuditLogger.log).toHaveBeenCalledWith(
-      expect.objectContaining({
-        type: "error",
-        input:
-          "[plugin:host-fetch-plugin] host_fetch_denied https://evil.example not in networkAccess.allowedDomains",
-      }),
-    );
+    expect(permissionLogs.events).toContainEqual(expect.objectContaining({ event: "plugin_host_fetch_denied" }));
   });
 
   it("hostFetch denies plugins missing external-auth-consumer before URL policy evaluation", async () => {
-    const { api, networkFetch, bootAuditLogger } = await buildHostFetchApi({
+    const { api, networkFetch } = await buildHostFetchApi({
       manifest: {
         id: "host-fetch-plugin",
         config: {},
@@ -475,13 +471,7 @@ describe("initPluginRuntime HostApi factory", () => {
 
     expect(dnsTestState.lookup).not.toHaveBeenCalled();
     expect(networkFetch).not.toHaveBeenCalled();
-    expect(bootAuditLogger.log).toHaveBeenCalledWith(
-      expect.objectContaining({
-        type: "error",
-        input:
-          "[plugin:host-fetch-plugin] host_fetch_denied capability external-auth-consumer not declared",
-      }),
-    );
+    expect(permissionLogs.events).toContainEqual(expect.objectContaining({ event: "plugin_host_fetch_denied" }));
   });
 
   it("hostFetch follows a gated redirect when the plugin asks to follow", async () => {
@@ -497,7 +487,7 @@ describe("initPluginRuntime HostApi factory", () => {
             })
           : new Response("landed", { status: 200 }),
     );
-    const { api, bootAuditLogger } = await buildHostFetchApi({
+    const { api } = await buildHostFetchApi({
       networkFetch: hoppingFetch as typeof fetch,
     });
 
@@ -518,26 +508,12 @@ describe("initPluginRuntime HostApi factory", () => {
       "https://api.example.com/v2/me",
       expect.objectContaining({ method: "GET", redirect: "manual" }),
     );
-    expect(bootAuditLogger.log).toHaveBeenCalledWith(
-      expect.objectContaining({
-        type: "tool_call",
-        input:
-          "[plugin:host-fetch-plugin] host_fetch https://api.example.com method=GET effect=read",
-      }),
-    );
+    expect(permissionLogs.events).toContainEqual(expect.objectContaining({ event: "plugin_host_fetch" }));
     // Audit each hop by origin only; URL paths must not reach logs.
-    expect(bootAuditLogger.log).toHaveBeenCalledWith(
-      expect.objectContaining({
-        type: "tool_call",
-        input:
-          "[plugin:host-fetch-plugin] host_fetch https://api.example.com method=GET effect=read hop=1",
-      }),
-    );
-    const auditInputs = bootAuditLogger.log.mock.calls
-      .map(([entry]) => entry?.input)
-      .filter((input): input is string => typeof input === "string");
-    expect(auditInputs.join("\n")).not.toContain("/v1/me");
-    expect(auditInputs.join("\n")).not.toContain("/v2/me");
+    expect(permissionLogs.events).toContainEqual(expect.objectContaining({ event: "plugin_host_fetch" }));
+    const fetches = permissionLogs.events.filter(({ event }) => event === "plugin_host_fetch");
+    expect(fetches).toHaveLength(1);
+    expect(JSON.stringify(fetches)).not.toMatch(/example\.com|\/v[12]\/me/);
   });
 
   it("hostFetch refuses a followed hop that leaves the allow-list", async () => {
@@ -583,14 +559,13 @@ describe("initPluginRuntime HostApi factory", () => {
   it("does not expose cross-plugin callTool from PluginHostApi", async () => {
     runtimeTestState.capturedRuntimeOptions = null;
 
-    const output = await initPluginRuntime({
+    await initPluginRuntime({
     host: createRuntimeHost(),
       projectRoot: fixture.path("project"),
       settingsService: createRuntimeSettings() as never,
       memoryManager: {} as never,
       toolRegistry: createRuntimeToolRegistry() as never,
       pythonPath: undefined,
-      bootAuditLogger: { log: vi.fn() } as never,
       mainWindow: {} as never,
       openAuthWindowService: vi.fn(),
       openLinkWindowService: vi.fn(),
@@ -627,14 +602,13 @@ describe("initPluginRuntime HostApi factory", () => {
 
   it("keeps a forged manifest from reintroducing a cross-plugin callTool surface", async () => {
     runtimeTestState.capturedRuntimeOptions = null;
-    const output = await initPluginRuntime({
+    await initPluginRuntime({
     host: createRuntimeHost(),
       projectRoot: fixture.path("project"),
       settingsService: createRuntimeSettings() as never,
       memoryManager: {} as never,
       toolRegistry: createRuntimeToolRegistry() as never,
       pythonPath: undefined,
-      bootAuditLogger: { log: vi.fn() } as never,
       mainWindow: {} as never,
       openAuthWindowService: vi.fn(),
       openLinkWindowService: vi.fn(),
@@ -671,7 +645,6 @@ describe("initPluginRuntime HostApi factory", () => {
 
   it("resolveApiKey denies a non-active vendor even when both keys are allowlisted", async () => {
     runtimeTestState.capturedRuntimeOptions = null;
-    const bootAuditLogger = { log: vi.fn() };
 
     // Use official pinned provenance so the test reaches the active-vendor lease check.
     const b6Manifest = {
@@ -718,7 +691,6 @@ describe("initPluginRuntime HostApi factory", () => {
       memoryManager: {} as never,
       toolRegistry: createRuntimeToolRegistry() as never,
       pythonPath: undefined,
-      bootAuditLogger: bootAuditLogger as never,
       mainWindow: {} as never,
       openAuthWindowService: vi.fn(),
       openLinkWindowService: vi.fn(),
@@ -756,19 +728,11 @@ describe("initPluginRuntime HostApi factory", () => {
     expect(await api.resolveApiKey({ purpose: "llm", vendor: "anthropic" }))
       .toEqual({ ok: false, reason: "vendor-mismatch" });
 
-    const denyAudit = bootAuditLogger.log.mock.calls.find((c) => {
-      const input = (c[0] as { input?: string }).input ?? "";
-      return (
-        input.includes("vendor-mismatch") &&
-        input.includes("vendor=claude")
-      );
-    });
-    expect(denyAudit).toBeDefined();
+    expect(permissionLogs.events).toContainEqual(expect.objectContaining({ event: "plugin_secret_access", pluginId: "meeting" }));
   });
 
   it("getSecret grants no marketplace provider preset key: the grant table lists none", async () => {
     runtimeTestState.capturedRuntimeOptions = null;
-    const bootAuditLogger = { log: vi.fn() };
     const activeKey = "llm.marketplaceProvider.future-router.apiKey";
     const idleKey = "llm.marketplaceProvider.idle-router.apiKey";
     const manifest = {
@@ -825,7 +789,6 @@ describe("initPluginRuntime HostApi factory", () => {
       memoryManager: {} as never,
       toolRegistry: createRuntimeToolRegistry() as never,
       pythonPath: undefined,
-      bootAuditLogger: bootAuditLogger as never,
       mainWindow: {} as never,
       openAuthWindowService: vi.fn(),
       openLinkWindowService: vi.fn(),
@@ -864,17 +827,11 @@ describe("initPluginRuntime HostApi factory", () => {
     expect(await api.getSecret(idleKey)).toBeNull();
     expect(getSecretMock).not.toHaveBeenCalledWith(activeKey);
     expect(getSecretMock).not.toHaveBeenCalledWith(idleKey);
-    expect(bootAuditLogger.log).toHaveBeenCalledWith(
-      expect.objectContaining({
-        type: "warn",
-        input: expect.stringContaining("not-in-grant-table"),
-      }),
-    );
+    expect(permissionLogs.events).toContainEqual(expect.objectContaining({ event: "plugin_secret_denied", reasonCode: "not-in-grant-table" }));
   });
 
   it("getSecret denies generic OpenAI-compatible host key while a marketplace preset is active", async () => {
     runtimeTestState.capturedRuntimeOptions = null;
-    const bootAuditLogger = { log: vi.fn() };
     const genericKey = "llm.apiKey.openai-compatible";
     const manifest = {
       id: "plugin-generic-compatible-secret",
@@ -925,7 +882,6 @@ describe("initPluginRuntime HostApi factory", () => {
       memoryManager: {} as never,
       toolRegistry: createRuntimeToolRegistry() as never,
       pythonPath: undefined,
-      bootAuditLogger: bootAuditLogger as never,
       mainWindow: {} as never,
       openAuthWindowService: vi.fn(),
       openLinkWindowService: vi.fn(),
@@ -961,17 +917,12 @@ describe("initPluginRuntime HostApi factory", () => {
 
     expect(await api.getSecret(genericKey)).toBeNull();
     expect(getSecretMock).not.toHaveBeenCalledWith(genericKey);
-    expect(bootAuditLogger.log).toHaveBeenCalledWith(
-      expect.objectContaining({
-        type: "warn",
-        input: expect.stringContaining("provider-key-not-exportable"),
-      }),
-    );
+    expect(permissionLogs.events).toContainEqual(expect.objectContaining({ event: "plugin_secret_denied", reasonCode: "provider-key-not-exportable" }));
   });
 
   it("denies reads for unknown secret prefixes", async () => {
     runtimeTestState.capturedRuntimeOptions = null;
-    const bootAuditLogger = { log: vi.fn() };
+
 
     await initPluginRuntime({
     host: createRuntimeHost(),
@@ -990,7 +941,6 @@ describe("initPluginRuntime HostApi factory", () => {
       memoryManager: {} as never,
       toolRegistry: createRuntimeToolRegistry() as never,
       pythonPath: undefined,
-      bootAuditLogger: bootAuditLogger as never,
       mainWindow: {} as never,
       openAuthWindowService: vi.fn(),
       openLinkWindowService: vi.fn(),
@@ -1033,7 +983,6 @@ describe("initPluginRuntime HostApi factory", () => {
 
   it("quarantines endpoint URLs stored in api-key-like own plugin secrets", async () => {
     runtimeTestState.capturedRuntimeOptions = null;
-    const bootAuditLogger = { log: vi.fn() };
 
     await initPluginRuntime({
     host: createRuntimeHost(),
@@ -1059,7 +1008,6 @@ describe("initPluginRuntime HostApi factory", () => {
       memoryManager: {} as never,
       toolRegistry: createRuntimeToolRegistry() as never,
       pythonPath: undefined,
-      bootAuditLogger: bootAuditLogger as never,
       mainWindow: {} as never,
       openAuthWindowService: vi.fn(),
       openLinkWindowService: vi.fn(),
@@ -1095,14 +1043,7 @@ describe("initPluginRuntime HostApi factory", () => {
       "https://example.com/hook",
     );
     expect(await api.getSecret("plugin.plugin-q.apiKey")).toBe("sk-valid");
-    expect(bootAuditLogger.log).toHaveBeenCalledWith(
-      expect.objectContaining({
-        type: "warn",
-        input: expect.stringContaining(
-          "pluginSecret_denied reason=endpoint-url-in-api-key-like-secret",
-        ),
-      }),
-    );
+    expect(permissionLogs.events).toContainEqual(expect.objectContaining({ event: "plugin_secret_denied", reasonCode: "endpoint-url-in-api-key-like-secret" }));
 
   });
 
@@ -1149,7 +1090,6 @@ describe("initPluginRuntime HostApi factory", () => {
       memoryManager: {} as never,
       toolRegistry: createRuntimeToolRegistry() as never,
       pythonPath: undefined,
-      bootAuditLogger: { log: vi.fn() } as never,
       mainWindow: {} as never,
       openAuthWindowService: vi.fn(),
       openLinkWindowService: vi.fn(),
@@ -1225,7 +1165,6 @@ describe("hostApi.hasRoutineBySource — prefix-scoped idempotency probe", () =>
       memoryManager: {} as never,
       toolRegistry: createRuntimeToolRegistry() as never,
       pythonPath: undefined,
-      bootAuditLogger: { log: vi.fn() } as never,
       mainWindow: {} as never,
       openAuthWindowService: vi.fn(),
       openLinkWindowService: vi.fn(),
@@ -1319,7 +1258,6 @@ describe("initPluginRuntime sandbox union ordering", () => {
       clearAuthPartitionService: vi.fn(),
       toolRegistry: createRuntimeToolRegistry() as never,
       pythonPath: undefined,
-      bootAuditLogger: { log: vi.fn() } as never,
       mainWindow: {} as never,
       openAuthWindowService: vi.fn(),
       openLinkWindowService: vi.fn(),
@@ -1369,7 +1307,6 @@ describe("initPluginRuntime background effect approvals", () => {
     clearAuthPartitionService: vi.fn(),
     toolRegistry: createRuntimeToolRegistry() as never,
     pythonPath: undefined,
-    bootAuditLogger: { log: vi.fn() } as never,
     mainWindow: {} as never,
     openAuthWindowService: vi.fn(),
     openLinkWindowService: vi.fn(),

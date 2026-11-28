@@ -65,7 +65,6 @@ function context() {
     pluginPaths: resolvePluginPaths({ pluginsRoot: join(home, "plugins") }),
     pluginMarketplace: { listInstalledPackages: vi.fn(async () => installed) },
     pluginRuntime: { listPluginIds: vi.fn(() => loaded), setConfigOverride: vi.fn(), restartPlugin: vi.fn(async () => "started") },
-    bootAuditLogger: { log: vi.fn() },
     notificationService: { isFocusGateActive: () => false, fire: vi.fn() },
     getMainWindow: () => ({ isDestroyed: () => false, webContents: { send } }),
     memoryManager: { sessions: { touchSessionTranscript } },

@@ -30,11 +30,11 @@ function normalizePromptPatch(value: unknown): {
 }
 
 export function registerPromptHandlers(deps: IpcDeps): void {
-  const { auditLogger, personaPromptStore } = deps;
+  const { personaPromptStore } = deps;
 
   ipcMain.handle(CHANNELS.prompts.list, async (event) => {
     if (!validateHostRendererSender(event)) {
-      auditUnauthorized(auditLogger, CHANNELS.prompts.list, event);
+      auditUnauthorized(CHANNELS.prompts.list);
       return UNAUTHORIZED_FRAME;
     }
     const prompts = (await personaPromptStore?.list() ?? []).map((prompt) => ({
@@ -48,7 +48,7 @@ export function registerPromptHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.prompts.listSummaries, async (event) => {
     if (!validateHostRendererSender(event)) {
-      auditUnauthorized(auditLogger, CHANNELS.prompts.listSummaries, event);
+      auditUnauthorized(CHANNELS.prompts.listSummaries);
       return UNAUTHORIZED_FRAME;
     }
     const prompts = (await personaPromptStore?.list() ?? []).map((prompt) => ({
@@ -60,7 +60,7 @@ export function registerPromptHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.prompts.save, async (event, payload: unknown) => {
     if (!validateHostRendererSender(event)) {
-      auditUnauthorized(auditLogger, CHANNELS.prompts.save, event);
+      auditUnauthorized(CHANNELS.prompts.save);
       return UNAUTHORIZED_FRAME;
     }
     const prompt = normalizePromptPatch(payload);
@@ -85,7 +85,7 @@ export function registerPromptHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.prompts.delete, async (event, id: unknown) => {
     if (!validateHostRendererSender(event)) {
-      auditUnauthorized(auditLogger, CHANNELS.prompts.delete, event);
+      auditUnauthorized(CHANNELS.prompts.delete);
       return UNAUTHORIZED_FRAME;
     }
     if (typeof id !== "string" || !personaPromptStore) {

@@ -1,7 +1,7 @@
 // Raw provider identities stay in this short-lived runtime; only the domain-specific HMAC key is durable and encrypted.
 import { createHash, createHmac, randomBytes } from "node:crypto";
-import type { SecretStore } from "../audit/hmac-chain.js";
-import { createHostSecretStore } from "../audit/host-secret-store.js";
+import type { SecretStore } from "../lib/protected-secret-store.js";
+import { createHostSecretStore } from "../lib/host-secret-store.js";
 import type { SecretEncryption } from "../data/secret-document-store.js";
 import type {
   PlatformBridgeInboundAuthorization,

@@ -2,11 +2,11 @@
 // Each non-read-only source uses automatic review before a normal approval fallback.
 import { describe, expect, it, vi } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
-import { mkdtempSync, readFileSync, readdirSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { AuditLogger, type AuditEntry } from "../../audit/audit-logger.js";
+import { collectPermissionEvents } from "../../__tests__/support/permission-events.js";
 import { createDynamicTool } from "../base.js";
 import { ToolExecutor, type ToolCallMeta, type ToolExecutorCallbacks } from "../executor.js";
 import { ToolRegistry } from "../registry.js";
@@ -18,7 +18,6 @@ const PROBE = "parity_probe";
 const SCHEMA = { type: "object", properties: { payload: { type: "string" }, url: { type: "string" } } } as const;
 // Both sources need host-visible network evidence; registration alone grants no category authority.
 const INPUT = { payload: "send release notice", url: "https://example.com/notice" } as const;
-const SECRET = "aa".repeat(32);
 
 function pluginRegistry(executeSpy: ReturnType<typeof vi.fn>): ToolRegistry {
   const registry = new ToolRegistry();
@@ -48,55 +47,9 @@ function mcpRegistry(executeSpy: ReturnType<typeof vi.fn>): ToolRegistry {
   return registry;
 }
 
-function rowsFromChannel(dir: string, suffix: string): Array<Record<string, unknown>> {
-  const rows: Array<Record<string, unknown>> = [];
-  for (const f of readdirSync(dir).filter((f) => f.endsWith(suffix))) {
-    for (const line of readFileSync(join(dir, f), "utf-8").split("\n")) {
-      if (!line.trim()) continue;
-      rows.push(JSON.parse(line) as Record<string, unknown>);
-    }
-  }
-  return rows;
-}
-
-function permissionAuditRows(dir: string): Array<Record<string, unknown>> {
-  return rowsFromChannel(dir, ".permission-audit.jsonl");
-}
-
-function toolCallTelemetry(dir: string): Array<{ name: string; source?: string; trust?: string }> {
-  const out: Array<{ name: string; source?: string; trust?: string }> = [];
-  for (const f of readdirSync(dir).filter((f) => f.endsWith(".jsonl"))) {
-    for (const line of readFileSync(join(dir, f), "utf-8").split("\n")) {
-      if (!line.trim()) continue;
-      let entry: AuditEntry;
-      try {
-        entry = JSON.parse(line) as AuditEntry;
-      } catch {
-        continue;
-      }
-      if (entry.type !== "tool_call" || !entry.toolCalls) continue;
-      for (const tc of entry.toolCalls) out.push({ name: tc.name, source: tc.source, trust: tc.trust });
-    }
-  }
-  return out;
-}
-
-function effectShadowRows(dir: string): Array<Record<string, unknown>> {
-  const rows: Array<Record<string, unknown>> = [];
-  for (const f of readdirSync(dir).filter((f) => f.endsWith(".jsonl"))) {
-    for (const line of readFileSync(join(dir, f), "utf-8").trim().split("\n")) {
-      if (!line) continue;
-      const entry = JSON.parse(line) as AuditEntry;
-      const out = entry.output ?? "";
-      if (out.includes("effect-shadow")) rows.push(JSON.parse(out) as Record<string, unknown>);
-    }
-  }
-  return rows;
-}
-
 interface ParityRun {
   dir: string;
-  auditDir: string;
+  events: ReturnType<typeof collectPermissionEvents>["events"];
   classifySpy: ReturnType<typeof vi.fn>;
   gate: { requestAndWait: ReturnType<typeof vi.fn> };
   pluginResult: { is_error?: boolean; content: string };
@@ -109,7 +62,7 @@ interface ParityRun {
 
 async function runParityPair(opts: { deny?: boolean; level?: "medium" | "high" } = {}): Promise<ParityRun> {
   const dir = mkdtempSync(join(tmpdir(), "ave-parity-"));
-  const auditDir = mkdtempSync(join(tmpdir(), "ave-parity-audit-"));
+  const capture = collectPermissionEvents();
 
   const classifySpy = vi.fn(() => ({ level: opts.level ?? "high" as const, reason: "needs confirm" }));
   const permMgr = makePermissionManager(dir, classifySpy);
@@ -119,8 +72,8 @@ async function runParityPair(opts: { deny?: boolean; level?: "medium" | "high" }
   const gate = {
     requestAndWait: answeringRequestAndWait<{ id: string }>(() => ({ choice: "allow-once" as const })),
   };
-  const auditLogger = new AuditLogger(auditDir);
-  await auditLogger.setupPermissionAuditChain(SECRET);
+
+
 
   const metas: ToolCallMeta[] = [];
   const callbacks: ToolExecutorCallbacks = {
@@ -131,10 +84,10 @@ async function runParityPair(opts: { deny?: boolean; level?: "medium" | "high" }
   const mcpExecuted = vi.fn(async () => "mcp-ok");
 
   const pluginExecutor = new ToolExecutor(
-    pluginRegistry(pluginExecuted), undefined, permMgr, undefined, gate as never, undefined, auditLogger,
+    pluginRegistry(pluginExecuted), undefined, permMgr, undefined, gate as never, undefined,
   );
   const mcpExecutor = new ToolExecutor(
-    mcpRegistry(mcpExecuted), undefined, permMgr, undefined, gate as never, undefined, auditLogger,
+    mcpRegistry(mcpExecuted), undefined, permMgr, undefined, gate as never, undefined,
   );
 
   const pluginResult = (await pluginExecutor.executeAll(
@@ -145,15 +98,15 @@ async function runParityPair(opts: { deny?: boolean; level?: "medium" | "high" }
     [{ id: "tu-mcp", name: PROBE, input: { ...INPUT } }],
     { sessionId: "sess-mcp", permissionContext: { trustOrigin: "user-keyboard" }, callbacks },
   ))[0];
-  await auditLogger.flush();
+
 
   return {
-    dir, auditDir, classifySpy, gate, pluginResult, mcpResult,
+    dir, events: capture.events, classifySpy, gate, pluginResult, mcpResult,
     pluginExecuted, mcpExecuted, metas,
     cleanup: async () => {
-      await auditLogger.close();
+
       await cleanupTmpDir(dir);
-      await cleanupTmpDir(auditDir);
+      capture.restore();
     },
   };
 }
@@ -182,7 +135,7 @@ describe("ToolExecutor MCP↔plugin permission parity (regression lock)", () => 
       expect(run.pluginResult.is_error).toBe(true);
       expect(run.mcpResult.is_error).toBe(true);
 
-      const denyRows = permissionAuditRows(run.auditDir).filter((r) => r.decision === "deny");
+      const denyRows = run.events.filter((r) => r.event === "permission_decision" && r.decision === "deny");
       expect(denyRows).toHaveLength(2);
       const bySource = (s: string) => denyRows.find((r) => r.source === s)!;
       const pluginDeny = bySource("plugin");
@@ -198,7 +151,7 @@ describe("ToolExecutor MCP↔plugin permission parity (regression lock)", () => 
       expect(run.gate.requestAndWait).not.toHaveBeenCalled();
       expect(run.pluginExecuted).not.toHaveBeenCalled();
       expect(run.mcpExecuted).not.toHaveBeenCalled();
-      expect(effectShadowRows(run.auditDir)).toHaveLength(0);
+      expect(run.events.filter((r) => r.event === "permission_effect_observed")).toHaveLength(0);
     } finally {
       await run.cleanup();
     }
@@ -279,7 +232,7 @@ describe("ToolExecutor MCP↔plugin permission parity (regression lock)", () => 
   it("audit + effect-ledger — one row per invocation, diverging only in the sanctioned host-derived fields", async () => {
     const run = await runParityPair();
     try {
-      const allowRows = permissionAuditRows(run.auditDir).filter((r) => r.decision === "allow");
+      const allowRows = run.events.filter((r) => r.event === "permission_decision" && r.decision === "allow");
       expect(allowRows).toHaveLength(2);
       const auditBySource = (s: string) => allowRows.find((r) => r.source === s)!;
       expect(auditBySource("plugin")).toBeDefined();
@@ -290,7 +243,7 @@ describe("ToolExecutor MCP↔plugin permission parity (regression lock)", () => 
       }
 
       // Audited trust differs by source: plugin=medium, mcp=low.
-      const telemetry = toolCallTelemetry(run.auditDir).filter((t) => t.name === PROBE);
+      const telemetry = allowRows.filter((t) => t.tool === PROBE);
       const pluginTel = telemetry.find((t) => t.source === "plugin")!;
       const mcpTel = telemetry.find((t) => t.source === "mcp")!;
       expect(pluginTel.trust).toBe("medium");
@@ -306,7 +259,7 @@ describe("ToolExecutor MCP↔plugin permission parity (regression lock)", () => 
       expect(mcpMeta.pluginId).toBeUndefined();
 
       // Effect rows may differ only in source, plugin identity, and host observability.
-      const shadows = effectShadowRows(run.auditDir).filter((r) => r.toolName === PROBE);
+      const shadows = run.events.filter((r) => r.event === "permission_effect_observed").filter((r) => r.tool === PROBE);
       expect(shadows).toHaveLength(2);
       const shadowBySource = (s: string) => shadows.find((r) => r.source === s)!;
       const pluginShadow = shadowBySource("plugin");
@@ -317,7 +270,7 @@ describe("ToolExecutor MCP↔plugin permission parity (regression lock)", () => 
         expect((row.correlationId as string).length).toBeGreaterThan(0);
         expect(row).not.toHaveProperty("declaredCategory");
         expect(row.hasMutatingEffect).toBe(false);
-        expect(row.effects).toEqual([]);
+        expect(row.effectCount).toBe(0);
       }
       expect(pluginShadow.hostObservable).toBe(true);
       expect(mcpShadow.hostObservable).toBe(false);

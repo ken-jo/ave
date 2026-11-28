@@ -1,3 +1,4 @@
+import { logPermissionEvent, permissionLogId } from "../../lib/permission-log.js";
 import { canonicalJsonEqual } from "../../shared/canonical-json.js";
 import type { PermissionCheckResult } from "../../permissions/permission-manager.js";
 import type { DecisionProvenance } from "../../permissions/approval-gate.js";
@@ -69,10 +70,7 @@ export interface RationaleResumeHostRuntime {
   /** Who authorized the receipt, copied when it was minted. */
   readonly loadHostResumeProvenance: (request: SealedRationaleResumeRequest) => DecisionProvenance | null;
   readonly hostInvocationStartCas?: HostInvocationStartCas;
-  /** Required durable audit boundary; runtime validation still fails closed. */
-  readonly onInvocationAudit: (
-    record: InvocationAuditRecord,
-  ) => Promise<void> | void;
+  readonly onInvocationFinished?: (ticketId: string) => void;
 }
 
 export interface PreparedRationaleResume {
@@ -89,6 +87,7 @@ export interface AuthorizedRationaleResume extends PreparedRationaleResume {
 }
 
 export interface StartedRationaleResume extends AuthorizedRationaleResume {
+  readonly correlationId: string;
   readonly authorityEntry: RationaleExecutionAuthorityEntry;
 }
 
@@ -268,21 +267,17 @@ export async function authorizeRationaleResume(
 
 export async function startRationaleResume(
   authorized: AuthorizedRationaleResume,
+  correlationId: string,
   now = Date.now(),
 ): Promise<RationaleResumeResult<StartedRationaleResume>> {
   try {
     const hostStartCas = authorized.runtime.hostInvocationStartCas;
     if (!hostStartCas) return mismatch("rationale resume host invocation-start CAS is unavailable");
-    const persistAudit = authorized.runtime.onInvocationAudit;
-    if (typeof persistAudit !== "function") {
-      return mismatch("rationale resume invocation audit sink is unavailable");
-    }
     const startCommit = await hostStartCas.commitStart({
       sessionId: authorized.request.control.anchor.sessionId,
       control: authorized.request.control,
       authorized: authorized.authorizedInvocationAudit,
       expectedInvocationVersion: 0,
-      persistAudit,
       now,
     });
     if (startCommit === null) {
@@ -299,8 +294,17 @@ export async function startRationaleResume(
       now,
     });
     authorized.runtime.consumeHumanApprovalWait?.(authorized.request);
-    // commitStart alone grants execution authority, committing started before audit publication or tool release.
-    return { ok: true, value: { ...authorized, authorityEntry } };
+    logPermissionEvent("rationale_invocation", {
+      state: "authorized",
+      ticketId: permissionLogId(authorized.request.control.ticketId),
+      correlationId,
+    });
+    logPermissionEvent("rationale_invocation", {
+      state: "started",
+      ticketId: permissionLogId(authorized.request.control.ticketId),
+      correlationId,
+    });
+    return { ok: true, value: { ...authorized, authorityEntry, correlationId } };
   } catch (error) {
     return mismatch(
       "rationale resume invocation-start failed: " +
@@ -314,9 +318,8 @@ export async function finishRationaleResume(
   succeeded: boolean,
 ): Promise<boolean> {
   try {
-    const persistAudit = started.runtime.onInvocationAudit;
     const hostStartCas = started.runtime.hostInvocationStartCas;
-    if (typeof persistAudit !== "function" || !hostStartCas) return false;
+    if (!hostStartCas) return false;
     const event = createInvocationAuditEvent(
       started.authorityEntry.startedInvocationAudit,
       succeeded ? "complete" : "fail",
@@ -328,9 +331,14 @@ export async function finishRationaleResume(
     const committed = await hostStartCas.commitTerminal({
       lease: started.authorityEntry.startLease,
       terminal,
-      persistAudit,
     });
     if (!committed) return false;
+    started.runtime.onInvocationFinished?.(terminal.ticketId);
+    logPermissionEvent("rationale_invocation", {
+      state: terminal.state,
+      ticketId: permissionLogId(terminal.ticketId),
+      correlationId: started.correlationId,
+    });
     return true;
   } catch {
     return false;

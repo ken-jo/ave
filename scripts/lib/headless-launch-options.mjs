@@ -1,6 +1,3 @@
-const PERMISSION_AUDIT_PROOF_FLAG = "--verify-permission-audit";
-const PERMISSION_AUDIT_SELF_TEST_FLAG = "--create-permission-audit-self-test";
-
 export const HEADLESS_FORBIDDEN_INHERITED_ENV = Object.freeze([
   "ELECTRON_NO_ASAR",
   "ELECTRON_RUN_AS_NODE",
@@ -17,21 +14,6 @@ export function prepareHeadlessLaunchEnv(env) {
   return env;
 }
 
-/** Reserve every proof-looking form so malformed input cannot boot the host. */
-export function isPermissionAuditProofArg(arg) {
-  return arg.startsWith(PERMISSION_AUDIT_PROOF_FLAG);
-}
-
-export function isPermissionAuditSelfTestArg(arg) {
-  return arg.startsWith(PERMISSION_AUDIT_SELF_TEST_FLAG);
-}
-
-export function permissionAuditProofFailureCode(verificationStarted) {
-  return verificationStarted
-    ? "permission-audit-proof:verification-failed"
-    : "permission-audit-proof:invalid-arguments";
-}
-
 /** Select the native command before loading or launching the desktop runtime. */
 export function headlessLaunchArgs(args) {
   const nativeCommand = args.some((arg) =>
@@ -40,8 +22,7 @@ export function headlessLaunchArgs(args) {
     arg === "--exec-workload-broker" || arg.startsWith("--exec-workload-broker=") ||
     arg === "--exec-workload-capability" || arg.startsWith("--exec-workload-capability=") ||
     arg === "--set-secret" || arg.startsWith("--set-secret=") ||
-    arg === "--serve" || arg === "--runtime-check" ||
-    isPermissionAuditProofArg(arg) || isPermissionAuditSelfTestArg(arg));
+    arg === "--serve" || arg === "--runtime-check");
   if (!nativeCommand) return null;
   // The desktop wrapper accepts its main module as the first positional arg.
   return args.filter((arg, index) => !(index === 0 && !arg.startsWith("--")));

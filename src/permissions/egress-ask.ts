@@ -15,7 +15,7 @@ import { NO_APPROVER_MESSAGE } from "./decision-pipeline.js";
 // The sandbox runtime package type stays here on purpose: this callback is still handed to the package's proxy. It goes when the package dependency goes.
 import type { SandboxAskCallback } from "@anthropic-ai/sandbox-runtime";
 import { matchesDomainPatternWithPort } from "./egress-relay/domain-pattern.js";
-import type { SandboxEgressDecisionAuditEntry, EgressDecisionBasis } from "../audit/sandbox-audit.js";
+import type { SandboxEgressDecisionAuditEntry, EgressDecisionBasis } from "./egress-observation.js";
 import { maskSensitiveData, redactHomePathsInText } from "../audit/dlp-filter.js";
 import { errorMessage } from "../shared/error-message.js";
 import { createLogger } from "../lib/logger.js";
@@ -132,7 +132,7 @@ export interface EgressAskDeps {
   readonly terminalAskTimeoutMs?: number;
 }
 
-// Fixed refusal reasons, so the model and the audit log read the same words.
+// Fixed refusal reasons for the caller.
 export const EGRESS_DENY_REASONS = {
   controllerRevoked: "remote-controller-revoked",
   unattributed: "unattributed connection",
@@ -652,7 +652,7 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
         reason: decision.reason === null ? null : maskSensitiveData(decision.reason).masked,
       });
     } catch {
-      // The audit sink reports its own failures; a row that could not be written must not turn an answer into a different one.
+      // Logging cannot change the egress decision.
     }
     if (decision.allow) return true;
     const reason = decision.reason ?? EGRESS_DENY_REASONS.failed;

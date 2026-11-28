@@ -183,7 +183,6 @@ function makeMinimalDeps(
     routineEngine: undefined,
     triggerExecutor: undefined,
     starredStore: undefined,
-    auditLogger: { log: vi.fn() } as any,
     personaPromptStore: opts.personaPromptStore,
     getSubAgentRunner: opts.getSubAgentRunner,
     askUserQuestionGate: undefined,

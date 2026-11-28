@@ -9,7 +9,6 @@ import { ToolExecutor } from "../executor.js";
 import { ToolRegistry } from "../registry.js";
 import { ApplyPatchTool, CopyPathTool, DeleteFileTool, EditFileTool, MultiEditTool, MoveFileTool, ReadFileTool, WriteFileTool } from "../file-tools.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
-import { AuditLogger } from "../../audit/audit-logger.js";
 import { markCodeCheckpointUnavailable, restoreCodeCheckpoint, trackCodeCheckpointChild, withCodeCheckpoint } from "../../memory/code-checkpoints.js";
 import { reviewerJudgeOutcomeForTest } from "../../__tests__/support/reviewer-judge.js";
 import { canonicalStringify } from "../../shared/canonical-json.js";
@@ -23,7 +22,7 @@ beforeAll(() => configureHostResources({ resourcePath: join(process.cwd(), "reso
 
 describe("checkpointed project file writes", () => {
   let root: string, project: string, sessionId: string;
-  let manager: PermissionManager, executor: ToolExecutor, audit: AuditLogger;
+  let manager: PermissionManager, executor: ToolExecutor;
   const requestAndWait = answeringRequestAndWait<{ id: string }>(() => ({ choice: "allow-once" as const }));
   beforeEach(async () => {
     root = await realpath(await mkdtemp(join(tmpdir(), "ave-project-write-")));
@@ -38,10 +37,9 @@ describe("checkpointed project file writes", () => {
     manager = new PermissionManager(join(root, "permissions.json"));
     // These checkpoint fixtures exercise Allow writes; fresh installs select Default.
     manager.setMode("default");
-    audit = new AuditLogger(join(root, "audit"));
-    executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined, audit);
+    executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined);
   });
-  afterEach(async () => { await audit.close(); vi.restoreAllMocks(); vi.unstubAllEnvs(); __resetSessionStoreForTest(); await rm(root, { recursive: true, force: true }); });
+  afterEach(async () => {  vi.restoreAllMocks(); vi.unstubAllEnvs(); __resetSessionStoreForTest(); await rm(root, { recursive: true, force: true }); });
   const run = (name: string, input: Record<string, unknown>, opts: Partial<ExecuteOptions> = {}) => executor.executeAll([{ id: randomUUID(), name, input }], {
     sessionId, executionCwd: project, permissionContext: { trustOrigin: "user-keyboard", additionalDirectories: [] }, ...opts,
   });

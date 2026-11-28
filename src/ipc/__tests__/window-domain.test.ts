@@ -88,7 +88,6 @@ describe("window domain IPC", () => {
     ({ registerWindowHandlers } = await import("../domains/window.js?t=" + Date.now()));
     mainWindow = makeWindow();
     registerWindowHandlers({
-      auditLogger: { log: vi.fn() },
       getMainWindow: () => mainWindow,
     } as never);
   });

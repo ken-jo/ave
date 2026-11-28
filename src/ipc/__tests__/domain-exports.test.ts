@@ -67,7 +67,7 @@ vi.mock("electron", () => {
 });
 
 import * as attach from "../domains/attach.js";
-import * as audit from "../domains/audit.js";
+import * as diagnostics from "../domains/diagnostics.js";
 import * as chat from "../domains/chat.js";
 import * as dev from "../domains/dev.js";
 import * as app from "../domains/app.js";
@@ -92,7 +92,7 @@ describe("IPC domain runtime named-export lock", () => {
   it("locks the sorted named-export list of every ipc domain", () => {
     const exportsByDomain = {
       attach: keys(attach),
-      audit: keys(audit),
+      diagnostics: keys(diagnostics),
       chat: keys(chat),
       dev: keys(dev),
       app: keys(app),
@@ -122,15 +122,14 @@ describe("IPC domain runtime named-export lock", () => {
           "registerAttachHandlers",
           "sweepLeftoverClipboardImages",
         ],
-        "audit": [
-          "parseIsoDate",
-          "registerAuditHandlers",
-        ],
         "chat": [
           "registerChatHandlers",
         ],
         "dev": [
           "registerDevHandlers",
+        ],
+        "diagnostics": [
+          "registerDiagnosticsHandlers",
         ],
         "permissions": [
           "broadcastPermissionConfigChanged",

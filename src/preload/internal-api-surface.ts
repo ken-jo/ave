@@ -1,3 +1,5 @@
+import type { SkillMemoryApi } from "../shared/skill-memory-types.js";
+import { consumeSkillMemoryOwnerInput } from "./skill-memory-input.js";
 import { memoryMapApiSurface } from './memory-map-api-surface.js';
 import type { MemoryDetailResult, MemorySummariesResult } from "../shared/memory-detail.js";
 import type { HookTrustListResult, HookTrustReviewRequest, HookTrustReviewResult } from "../shared/hook-trust-review.js";
@@ -414,6 +416,10 @@ export function buildInternalApiSurface() {
 
   // Plugin-owned OAuth removed host-owned provider auth IPC bridges.
 
+  skillMemory: {
+    list: () => ipcRenderer.invoke(CHANNELS.skillMemory.list),
+    decide: input => ipcRenderer.invoke(CHANNELS.skillMemory.decide, input),
+  } satisfies SkillMemoryApi,
   memoryMap: memoryMapApiSurface,
   memoryGetDetail: async (id: string, opts?: MemoryProjectOptions, contentRevision?: string): Promise<MemoryDetailResult> =>
     contentRevision !== undefined ? ipcRenderer.invoke(CHANNELS.memory.detailGet, id, opts, contentRevision)
@@ -683,7 +689,6 @@ export function buildInternalApiSurface() {
     /** Read-only: Windows srt-win install readiness (group + WFP + instructions). */
     sandboxWindowsStatus: async () => ipcRenderer.invoke(PERMISSIONS.sandboxWindowsStatus),
     /** Read-only: the ASRT proxy denies of the last 24 h, newest first. */
-    egressDenialsRecent: async () => ipcRenderer.invoke(PERMISSIONS.egressDenialsRecent),
     /** Read-only: the shell egress grants for a conversation, a terminal tab, a workspace or always. */
     egressGrantsList: async () => ipcRenderer.invoke(PERMISSIONS.egressGrantsList),
     /** MUTATING: revoke one shell egress grant (user-keyboard intent attached). */
@@ -764,12 +769,6 @@ export function buildInternalApiSurface() {
         settings: serializePermissionJudgeSettingsPatch(patch),
         intent: ipcUserKeyboardIntent(),
       }),
-    /** Permission policy; `/permission audit show`; fetch recent permission audit entries. */
-    auditShow: async (last: number) =>
-      ipcRenderer.invoke(PERMISSIONS.auditShow, { last }),
-    /** Permission policy; `/permission audit verify`; chain integrity check. */
-    auditVerify: async () =>
-      ipcRenderer.invoke(PERMISSIONS.auditVerify),
     /** Permission policy; manifest integrity violation notifier. Subscribes to `PERMISSIONS.manifestViolation` so the renderer can surface a "Plugin X disabled; reinstall?" prompt. */
     onManifestViolation: (
       handler: (payload: {
@@ -850,21 +849,6 @@ export function buildInternalApiSurface() {
     listSession: async () => ipcRenderer.invoke(PERMISSIONS.userApprovalList, { scope: "session" }),
   },
 
-  dlp: {
-    getStats: async (days: number) => ipcRenderer.invoke(CHANNELS.dlp.stats, days),
-  },
-
-  audit: {
-    search: async (filter: {
-      dateFrom?: string;
-      dateTo?: string;
-      type?: string;
-      textSearch?: string;
-      limit?: number;
-      offset?: number;
-    }) => ipcRenderer.invoke(CHANNELS.audit.search, filter),
-    getStats: async (lastDays: number) => ipcRenderer.invoke(CHANNELS.audit.stats, lastDays),
-  },
 
   // ─── Diagnostics bundle + crash list ──
   diagnostics: {
@@ -927,11 +911,11 @@ export function buildInternalApiSurface() {
   acknowledgeRoutineFailure: async (routineId: string, failureFiredAt: string) =>
     ipcRenderer.invoke(ROUTINES.acknowledgeFailure, routineId, failureFiredAt) as Promise<{ ok: true } | { ok: false; error: string }>,
   addRoutine: async (input: Omit<import("../shared/routines-types.js").AddRoutineInput, "createdBy">) =>
-    ipcRenderer.invoke(ROUTINES.add, input) as Promise<
+    ipcRenderer.invoke(ROUTINES.add, input, ...(consumeSkillMemoryOwnerInput("routine", input.prePrompt) ? [true] : [])) as Promise<
       { ok: true; routine: import("../shared/routines-types.js").RoutineRecord } | { ok: false; error: string }
     >,
   updateRoutine: async (id: string, patch: import("../shared/routines-types.js").RoutineEditPatch) =>
-    ipcRenderer.invoke(ROUTINES.update, id, patch) as Promise<
+    ipcRenderer.invoke(ROUTINES.update, id, patch, ...(consumeSkillMemoryOwnerInput("routine", patch.prePrompt) ? [true] : [])) as Promise<
       { ok: true; routine: import("../shared/routines-types.js").RoutineRecord } | { ok: false; error: string }
     >,
   pauseRoutine: async (id: string) =>

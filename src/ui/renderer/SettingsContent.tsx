@@ -32,7 +32,7 @@ import { SavedToastFloating, SavedToastProvider, useSavedNotice } from "./contex
 import type { AveApi } from "./types.js";
 import { RolesTab } from "./tabs/RolesTab.js";
 import { PermissionsTab } from "./tabs/PermissionsTab.js";
-import { AuditTab } from "./tabs/AuditTab.js";
+import { DiagnosticsTab } from "./tabs/DiagnosticsTab.js";
 import { RemoteSurfacesTab } from "./tabs/RemoteSurfacesTab.js";
 import { UsageDashboard } from "./components/UsageDashboard.js";
 import { LlmTab } from "./tabs/LlmTab.js";
@@ -110,7 +110,7 @@ const SETTINGS_NAV: { group: string; items: SettingsNavItem[] }[] = [
   {
     group: "settingsContent.groupAdvanced",
     items: [
-      { value: "audit", icon: FileSearch, labelKey: SETTINGS_TAB_LABEL_KEYS["audit"] },
+      { value: "diagnostics", icon: FileSearch, labelKey: SETTINGS_TAB_LABEL_KEYS["diagnostics"] },
     ],
   },
   // About is app/system info, not an "Advanced" setting — it sits on its own as a divider-separated footer item (empty group
@@ -616,6 +616,8 @@ export function SettingsContent({
               setIdlePreferenceRefresh={s.setIdlePreferenceRefresh}
               idleMemoryConsolidation={s.idleMemoryConsolidation}
               setIdleMemoryConsolidation={s.setIdleMemoryConsolidation}
+              automaticSkillMemory={s.automaticSkillMemory}
+              setAutomaticSkillMemory={s.setAutomaticSkillMemory}
               subAgentAutonomousWake={s.subAgentAutonomousWake}
               subAgentMaxRounds={s.subAgentMaxRounds}
               setSubAgentMaxRounds={s.setSubAgentMaxRounds}
@@ -671,7 +673,7 @@ export function SettingsContent({
               onNavigate={handleTabValueChange}
             />
           </TabsContent>
-          <TabsContent data-settings-panel="audit" forceMount={filterActive ? true : undefined} value="audit" className={tabContentCls}><AuditTab /></TabsContent>
+          <TabsContent data-settings-panel="diagnostics" forceMount={filterActive ? true : undefined} value="diagnostics" className={tabContentCls}><DiagnosticsTab /></TabsContent>
           <TabsContent data-settings-panel="mcp" forceMount={filterActive ? true : undefined} value="mcp" className={tabContentCls}><McpTab active={tab === "mcp"} onNavigate={handleTabValueChange} /></TabsContent>
           <TabsContent data-settings-panel="plugin-config" forceMount={filterActive ? true : undefined} value="plugin-config" className={tabContentCls}><PluginConfigTab api={api} initialPluginId={pluginSettingsTarget} onNavigate={handleTabValueChange} /></TabsContent>
           <TabsContent data-settings-panel="marketplace" forceMount={filterActive ? true : undefined} value="marketplace" className={tabContentCls}>

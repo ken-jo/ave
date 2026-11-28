@@ -27,7 +27,7 @@ const loops: ConversationLoop[] = [];
 afterEach(async () => {
   for (const loop of loops.splice(0)) {
     updateApprovalSurface({ kind: "release", sessionId: loop.sessionId });
-    await loop.auditLogger.close();
+
   }
   for (const dir of dirs.splice(0)) await cleanupTmpDir(dir);
 });

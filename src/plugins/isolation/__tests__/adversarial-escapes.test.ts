@@ -1,6 +1,12 @@
+import { collectPermissionEvents } from "../../../__tests__/support/permission-events.js";
 // Run each escape against the real factory, permissions, audit sink and confinement; controls must prove the probe works.
 // Required sandbox cases fail if unavailable; unmeasured controls never count as passes.
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi, beforeEach } from "vitest";
+
+let permissionEvents: ReturnType<typeof collectPermissionEvents>;
+beforeEach(() => { permissionEvents = collectPermissionEvents(); });
+afterEach(() => permissionEvents.restore());
+
 import { useVerifiedAveHomePrivacy } from "../../../__tests__/support/ave-home-privacy.js";
 
 const sessionWarnings = vi.hoisted(() => [] as unknown[][]);
@@ -28,7 +34,6 @@ import { homedir, tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { AuditLogger } from "../../../audit/audit-logger.js";
 import { createBootHostFixture, stationaryLeaseState } from "../../../__tests__/support/host-runtime.js";
 import { installIncompatibleSecurityModule } from "../../../__tests__/support/windows-powershell-fixtures.js";
 import { createHostApiFactory } from "../../../boot/steps/plugin-runtime/host-api-factory.js";
@@ -254,7 +259,6 @@ afterEach(async () => {
 
 interface ProductionHost {
   readonly api: PluginHostApi;
-  readonly audit: AuditLogger;
   readonly transportCalls: string[];
 }
 
@@ -265,7 +269,6 @@ function productionHost(installed: Installed, config: Record<string, unknown>): 
     [`plugin.${NEIGHBOUR_ID}.key`, NEIGHBOUR_SECRET],
   ]);
   const transportCalls: string[] = [];
-  const audit = new AuditLogger(mkdtempSync(join(staged.root, "audit-")));
   const scope = new HostApiGenerationScope(installed.pluginId);
   const incarnation: PluginHostApiIncarnation = {
     registerDisposer: () => undefined,
@@ -292,7 +295,6 @@ function productionHost(installed: Installed, config: Record<string, unknown>): 
       getPluginConfig: () => config,
       getSecret: (key: string) => secrets.get(key) ?? null,
     },
-    bootAuditLogger: audit,
     pluginRuntimeAuditLog: () => undefined,
     networkFetch: (async (input: unknown) => {
       transportCalls.push(String(input));
@@ -316,21 +318,7 @@ function productionHost(installed: Installed, config: Record<string, unknown>): 
   const api = factory(installed.pluginId, installed.manifest, installed.pluginDataDir, incarnation, null, undefined);
   scope.bindGeneration(admittedGenerationAccess(GENERATION_ID), GENERATION_ID);
   scope.publish();
-  return { api, audit, transportCalls };
-}
-
-async function auditTexts(audit: AuditLogger): Promise<string[]> {
-  await audit.flush();
-  const dir = audit.getAuditDir();
-  const rows: string[] = [];
-  for (const name of readdirSync(dir).filter((file) => file.endsWith(".jsonl")).sort()) {
-    for (const line of readFileSync(join(dir, name), "utf-8").split("\n")) {
-      if (line.length === 0) continue;
-      const row = JSON.parse(line) as { input?: string; output?: string };
-      rows.push(row.input ?? row.output ?? "");
-    }
-  }
-  return rows;
+  return { api, transportCalls };
 }
 
 interface Spawned {
@@ -744,12 +732,10 @@ describe("the four escapes, against the production factory under the real wrap",
         for (const bytes of [SECRETS_SENTINEL, NEIGHBOUR_SENTINEL, NEIGHBOUR_SECRET]) {
           expect(carried).not.toContain(bytes);
         }
-        const audit = await auditTexts(spawned.host.audit);
-        expect(audit).toContain(
-          `[plugin:${PLUGIN_ID}] hostSecret_denied reason=not-allowlisted key=plugin.${NEIGHBOUR_ID}.key`,
-        );
-        expect(audit).toContain(`[plugin:${PLUGIN_ID}] pluginSecret_read key=plugin.${PLUGIN_ID}.key`);
-        expect(audit.filter((row) => row.startsWith(`[plugin:${NEIGHBOUR_ID}]`))).toEqual([]);
+        const audit = permissionEvents.events;
+        expect(audit).toContainEqual(expect.objectContaining({ event: "plugin_secret_denied", pluginId: PLUGIN_ID, reasonCode: "not-allowlisted" }));
+        expect(audit).toContainEqual(expect.objectContaining({ event: "plugin_secret_read", pluginId: PLUGIN_ID, scope: "own-namespace" }));
+        expect(audit.filter((row) => row.pluginId === NEIGHBOUR_ID)).toEqual([]);
 
         // Deny the plugins root, including later installs; Windows has no equivalent neighbour deny.
         if (process.platform !== "win32") {
@@ -881,12 +867,12 @@ describe("the four escapes, against the production factory under the real wrap",
         // Child errors carry no host details; verify the reason through the audit sink.
         expect(result.hostFetch).toMatchObject({ url: DENIED_URL, ok: false });
         expect(spawned.host.transportCalls).toEqual([]);
-        const audit = await auditTexts(spawned.host.audit);
-        const denials = audit.filter((row) => row.startsWith(`[plugin:${PLUGIN_ID}] host_fetch_denied`));
+        const audit = permissionEvents.events;
+        const denials = audit.filter((row) => row.event === "plugin_host_fetch_denied" && row.pluginId === PLUGIN_ID);
         expect(denials, JSON.stringify(audit)).toHaveLength(1);
         // Assert the allowlist reason so a later DNS or SSRF refusal cannot satisfy the test.
-        expect(denials[0]).toContain("https://not-allowed.invalid not in networkAccess.allowedDomains");
-        expect(audit.some((row) => row.includes(" host_fetch ") && !row.includes("host_fetch_denied"))).toBe(false);
+        expect(denials[0]).toMatchObject({ reasonCode: "not-allowlisted" });
+        expect(audit.some((row) => row.event === "plugin_host_fetch")).toBe(false);
       } finally {
         await spawned.instance.stop?.();
       }
@@ -944,17 +930,17 @@ describe("the four escapes, against the production factory under the real wrap",
           otherPluginId: NEIGHBOUR_ID,
         });
         expect(result.patched).toEqual({ fetch: true, stdoutWrite: true });
-        const audit = await auditTexts(spawned.host.audit);
-        const denied = `[plugin:${PLUGIN_ID}] hostSecret_denied reason=not-allowlisted key=plugin.${NEIGHBOUR_ID}.key`;
+        const audit = permissionEvents.events;
+        const denied = expect.objectContaining({ event: "plugin_secret_denied", pluginId: PLUGIN_ID, reasonCode: "not-allowlisted" });
         const warnings = sessionWarnings.slice(warningsBefore);
         const lines = spawned.stdout().split("\n");
         if (process.platform === "win32") {
           expect(result.forged).toMatchObject({ key: `plugin.${NEIGHBOUR_ID}.key`, answered: false });
-          expect(audit).not.toContain(denied);
+          expect(audit).not.toContainEqual(denied);
           expect(lines).not.toContain("this line is not JSON");
         } else {
           expect(result.forged).toMatchObject({ key: `plugin.${NEIGHBOUR_ID}.key`, answered: true, result: null });
-          expect(audit).toContain(denied);
+          expect(audit).toContainEqual(denied);
           expect(
             warnings.some(([meta, message]) =>
               message === "ignored an undeclared params field"
@@ -965,7 +951,7 @@ describe("the four escapes, against the production factory under the real wrap",
           ).toBe(true);
           expect(lines).toContain("this line is not JSON");
         }
-        expect(audit.filter((row) => row.startsWith(`[plugin:${NEIGHBOUR_ID}]`))).toEqual([]);
+        expect(audit.filter((row) => row.pluginId === NEIGHBOUR_ID)).toEqual([]);
         await expect(call(spawned, "escape_electron", { expectConfined: true })).resolves.toMatchObject({
           outcome: "no-usable-api",
         });

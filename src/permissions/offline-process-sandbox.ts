@@ -1,11 +1,13 @@
 import { access, constants, lstat, mkdtemp, realpath, writeFile } from "node:fs/promises";
 import type { ChildProcess } from "node:child_process";
+import type { Readable } from "node:stream";
 import { text } from "node:stream/consumers";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { shellQuote } from "../lib/shell-resolver.js";
 import { noteConfinedProcessesMayRun } from "../lib/confined-process-phase.js";
 import { buildSafeChildEnv } from "../tools/safe-env.js";
 import { runWithCeiling } from "../tools/executor-ceiling.js";
+import { raceWithAbort } from "../shared/abortable-deadline.js";
 import {
   abandonManagedLaunch, createManagedResources, observeManagedProcessGroup, observeManagedWindowsJobExit, recordManagedCleanup,
   recordManagedPaths, releaseManagedResources, spawnManaged, type ConfirmedExit, type ManagedResources,
@@ -15,7 +17,7 @@ import { TableDocumentError } from "../tools/table-document-error.js";
 import { assertCodexExecutableLocation } from "../main/codex-executable-location.js";
 import {
   buildPerCommandSandboxCustomConfig, getDefaultSensitiveReadDenyPaths,
-  getDefaultSensitiveWriteDenyEntries, isOfflineProcessConfinementActive,
+  getDefaultSensitiveWriteDenyEntries, isOfflineHolderConfinementActive, isOfflineProcessConfinementActive,
 } from "./asrt-sandbox.js";
 import { createAveHomeBoundarySnapshot } from "./ave-home-boundary-snapshot.js";
 import { detectSandboxCapability } from "./sandbox-capability.js";
@@ -123,14 +125,8 @@ function literalLists(entries: readonly FilesystemPathEntry[] | undefined): { pa
   return { patterns, literals };
 }
 
-/** Kernel-denied IP networking has no proxy exception; private local IPC remains usable. */
-export async function wrapOfflineProcess(input: OfflineProcessInput): Promise<OfflineProcessWrap> {
-  input.signal.throwIfAborted();
-  const capability = detectSandboxCapability();
-  if (!offlineProcessConfinementImplemented() || !isOfflineProcessConfinementActive() || capability.confidence !== "verified"
-    || capability.confines?.filesystem !== true || capability.confines.process !== true || capability.confines.network !== true) {
-    throw new TableDocumentError("engine-confinement-unavailable", "Offline document engine confinement is unavailable.");
-  }
+/** The roots both offline routes admit, canonical: output holds ipc, input and runtimes stay disjoint from it. */
+async function admitOfflineProcessRoots(input: OfflineProcessInput): Promise<{ output: string; source: string; ipc: string; runtimes: string[] }> {
   const output = await canonicalDirectory(input.outputDirectory);
   const source = await canonicalDirectory(input.inputDirectory);
   const ipc = await canonicalDirectory(input.ipcDirectory);
@@ -141,6 +137,64 @@ export async function wrapOfflineProcess(input: OfflineProcessInput): Promise<Of
   }
   if (!runtimes.some(root => within(root, input.command))) throw new Error("Offline executable is outside its authenticated runtime.");
   await assertCodexExecutableLocation(input.command);
+  return { output, source, ipc, runtimes };
+}
+
+/** A started offline process in a macOS holder, with the same exit contract the managed wrap route gives. */
+export interface OfflineProcessHolder {
+  readonly stdout: Readable;
+  readonly stderr: Readable;
+  readonly exit: {
+    wait(signal?: AbortSignal): Promise<{ code: number | null; signal: NodeJS.Signals | null; error?: Error }>;
+    /** The receipt, issued on the caller's `resources`, after a verified stop; undefined when termination is unverified. */
+    confirmExit(reason?: string): Promise<ConfirmedExit | undefined>;
+  };
+}
+
+/**
+ * macOS with the holder route on (owner L-O1): the offline document engine runs in the standard holder. It reads the
+ * volume minus the sensitive floor, as srt does, and its authenticated runtime inside the floor. It writes only its
+ * output directory, has no network rule, and binds and connects Unix sockets only in its one per-session 0700 IPC
+ * directory. It starts only on the boot check's proof; there is no wrap fallback.
+ */
+export async function startOfflineProcessHolder(input: OfflineProcessInput & { readonly label: string }): Promise<OfflineProcessHolder> {
+  input.signal.throwIfAborted();
+  if (!isOfflineHolderConfinementActive()) {
+    throw new TableDocumentError("engine-confinement-unavailable", "Offline document engine confinement is unavailable.");
+  }
+  const { output, ipc, runtimes } = await admitOfflineProcessRoots(input);
+  input.signal.throwIfAborted();
+  const { spawnSeatbeltOfflineHolder } = await import("../sandbox/wrap-bundled-command.js");
+  const { MxcProcessCleanupError } = await import("./mxc-extension-errors.js");
+  const holderEnv = Object.fromEntries(Object.entries(input.env).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+  noteConfinedProcessesMayRun();
+  const holder = await spawnSeatbeltOfflineHolder({
+    label: input.label, command: input.command, args: [...input.args], baseEnv: {}, holderEnv,
+    session: { writeRoot: output, runtimeReads: runtimes, socketDirectory: ipc }, resources: input.resources,
+  });
+  const completion = holder.process.completion.then(({ exitCode }) => ({ code: exitCode, signal: null }));
+  return Object.freeze({
+    stdout: holder.process.stdout,
+    stderr: holder.process.stderr,
+    exit: {
+      wait: (signal?: AbortSignal) => raceWithAbort(completion, signal),
+      confirmExit: (_reason?: string) => holder.release().catch((error: unknown) => {
+        if (error instanceof MxcProcessCleanupError) return undefined;
+        throw error;
+      }),
+    },
+  });
+}
+
+/** Kernel-denied IP networking has no proxy exception; private local IPC remains usable. */
+export async function wrapOfflineProcess(input: OfflineProcessInput): Promise<OfflineProcessWrap> {
+  input.signal.throwIfAborted();
+  const capability = detectSandboxCapability();
+  if (!offlineProcessConfinementImplemented() || !isOfflineProcessConfinementActive() || capability.confidence !== "verified"
+    || capability.confines?.filesystem !== true || capability.confines.process !== true || capability.confines.network !== true) {
+    throw new TableDocumentError("engine-confinement-unavailable", "Offline document engine confinement is unavailable.");
+  }
+  const { output, source, ipc, runtimes } = await admitOfflineProcessRoots(input);
   const systemReads = process.platform === "darwin"
     ? ["/bin/sh", "/usr/bin/env", "/private/var/select/sh", "/usr/lib", "/System/Library", "/Library/Fonts", "/dev/null", "/dev/random", "/dev/urandom"]
     : ["/bin/sh", "/usr/bin/env", "/usr/lib", "/usr/lib64", "/lib", "/lib64", "/usr/share/fonts", "/usr/share/fontconfig", "/etc/fonts", "/etc/ld.so.cache", "/etc/localtime", "/etc/passwd", "/dev/null", "/dev/random", "/dev/urandom"];

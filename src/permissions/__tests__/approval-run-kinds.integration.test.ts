@@ -1,7 +1,7 @@
 import { NO_APPROVER_MESSAGE } from "../decision-pipeline.js";
 import { allowOnceCardAnswer } from "../../__tests__/support/approval-card-answer.js";
 import { EventEmitter } from "node:events";
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,7 +9,7 @@ import type { BrowserWindow, IpcMainInvokeEvent, WebContents } from "electron";
 import * as ts from "typescript/unstable/ast";
 import { API } from "typescript/unstable/sync";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AuditLogger } from "../../audit/audit-logger.js";
+import { collectPermissionEvents } from "../../__tests__/support/permission-events.js";
 import {
   createConversationLoop,
   createRoutineConversationLoop,
@@ -163,9 +163,10 @@ class ActionProvider implements LLMProvider {
 async function setup() {
   const root = realpathSync(resources.makeTmpDir("ave-approval-run-kind-"));
   vi.stubEnv("AVE_HOME", join(root, "home"));
-  const audit = new AuditLogger(join(root, "audit"));
-  await audit.setupPermissionAuditChain(randomBytes(32).toString("hex"));
-  const auditLog = vi.spyOn(audit, "log");
+
+  const capture = collectPermissionEvents();
+  const events = capture.events;
+  closers.push(async () => capture.restore());
   const owner = surface(1);
   const foreign = surface(2);
   const ownerWindow = { id: 101, webContents: owner, isDestroyed: () => false } as unknown as BrowserWindow;
@@ -173,7 +174,7 @@ async function setup() {
   registerMainWindow(ownerWindow, "primary");
   registerMainWindow(foreignWindow, "secondary");
   const ownerEvent = { sender: owner, senderFrame: owner.mainFrame } as unknown as IpcMainInvokeEvent;
-  const gate = new ApprovalGate(approvalSurfaceRegistry.resolve.bind(approvalSurfaceRegistry), undefined, undefined, audit);
+  const gate = new ApprovalGate(approvalSurfaceRegistry.resolve.bind(approvalSurfaceRegistry), undefined, undefined);
   const manager = new PermissionManager(join(root, "permissions.json"));
   manager.setMode("default");
 
@@ -188,8 +189,7 @@ async function setup() {
   const memory = new MemoryManager({ aveDir: join(root, "memory") });
   memory.load();
   const deps = makeSubagentLoopDeps(registry, {
-    memoryManager: memory, permissionManager: manager, approvalGate: gate, auditLogger: audit,
-    approvalSurface: "interactive", getAdditionalDirectories: () => [root],
+    memoryManager: memory, permissionManager: manager, approvalGate: gate, approvalSurface: "interactive", getAdditionalDirectories: () => [root],
     getDefaultProject: () => ({ projectRoot: root }),
     authorizeProject: (projectRoot) => ({ projectRoot }),
   });
@@ -199,7 +199,7 @@ async function setup() {
     gate.disposeAll();
     await Promise.allSettled(pending);
     for (const session of sessions) updateApprovalSurface({ kind: "release", sessionId: session });
-    await audit.close();
+
   });
   const start = (loop: ConversationLoop) => {
     sessions.add(loop.sessionId);
@@ -222,7 +222,7 @@ async function setup() {
     gate.resolveFromDesktopRenderer(card.id, allowOnceCardAnswer(card), foreign as unknown as WebContents);
     expect(gate.pendingCount).toBe(1);
     expect(execute).not.toHaveBeenCalled();
-    expect(auditLog.mock.calls.some(([entry]) => entry.type === "approval" && entry.output?.includes("surface-owner-required"))).toBe(true);
+    expect(events.some(({ event, reasonCode }) => event === "approval_response_rejected" && reasonCode === "surface-owner-required")).toBe(true);
     gate.resolveFromDesktopRenderer(card.id, allowOnceCardAnswer(card), owner as unknown as WebContents);
     await running;
     expect(execute).toHaveBeenCalledOnce();
@@ -264,7 +264,7 @@ async function setup() {
     expect(await handler(ownerEvent, ...(pane ? [{ tabId, reason: "new" }] : []))).toMatchObject({ ok: true });
     expect(approvalSurfaceRegistry.resolve(loop.sessionId)).toBe(owner);
   };
-  return { root, auditLog, owner, foreign, gate, registry, memory, deps, execute, pending, sessions, start, proveOwnerApproval, bindMainHost, bindSideHost };
+  return { root, events, owner, foreign, gate, registry, memory, deps, execute, pending, sessions, start, proveOwnerApproval, bindMainHost, bindSideHost };
 }
 
 afterEach(async () => {
@@ -467,7 +467,7 @@ describe("production run construction approval ownership", () => {
       expect(f.owner.send).not.toHaveBeenCalled();
       expect(f.foreign.send).not.toHaveBeenCalled();
       expect(f.gate.pendingCount).toBe(0);
-      expect(f.auditLog.mock.calls.some(([entry]) => entry.output?.includes(NO_APPROVER_MESSAGE))).toBe(true);
+      expect(f.events.some(({ event }) => event === "approval_surface_unavailable")).toBe(true);
     }
   });
 });

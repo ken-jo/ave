@@ -6,7 +6,7 @@ import { expect, it, vi } from "vitest";
 import { afterQueuedCallbacks, deferred } from "../../../__tests__/support/deferred.js";
 import { unusedNetworkFetch } from "../../../__tests__/support/network-fetch-stubs.js";
 import { within } from "../../../__tests__/support/signal-wait.js";
-import { AuditLogger } from "../../../audit/audit-logger.js";
+
 import { makeConversationLoopSettings } from "../../../engine/__tests__/conversation-loop-test-helpers.js";
 import { makeSubagentLoopDeps, patchLoopProvider } from "../../../engine/__tests__/support/subagent-loop-fixtures.js";
 import { exactToolScope, SubAgentRunner, type SubAgentSpawnResult } from "../../../engine/subagent-runner.js";
@@ -462,7 +462,7 @@ it("a grandchild's rounds and denials count against its stage", async () => {
         runner = new SubAgentRunner({
           parentDeps: makeSubagentLoopDeps(registry, {
             networkFetch: unusedNetworkFetch, settingsService: makeConversationLoopSettings(false),
-            auditLogger: new AuditLogger(), permissionManager: new PermissionManager(join(dir, "permissions.json")),
+            permissionManager: new PermissionManager(join(dir, "permissions.json")),
           }),
           toolRegistry: registry,
           subAgentMemoryManager: new MemoryManager({ aveDir: join(dir, "children") }),

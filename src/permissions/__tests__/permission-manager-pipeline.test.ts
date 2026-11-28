@@ -373,7 +373,7 @@ describe("permission manager pipeline integration", () => {
 
   it("disabled review blocks a previously approving custom judge before cached authority can run", async () => {
     manager.setMode("auto");
-    const { judgeSettings, scriptedStage, collectingAudit } = await import("../judge/__tests__/judge-request-fixture.js");
+    const { judgeSettings, scriptedStage } = await import("../judge/__tests__/judge-request-fixture.js");
     const stage = scriptedStage("custom-reviewer");
     const judge = vi.fn(async () => ({ decision: "allow" as const, rationale: "Custom reviewer approved" }));
     const classifier = { classify: vi.fn(() => ({ level: "low" as const, reason: "Classifier approved" })) };
@@ -396,7 +396,7 @@ describe("permission manager pipeline integration", () => {
       classifier.classify.mockClear();
     manager.setJudge({ settings: judgeSettings({ chain: [stage], categories: { shell: true, write: true, network: true } }),
       chain: [{ settings: stage, judge: { id: "custom-reviewer", version: "fixture", judge } }],
-      breaker: manager.getJudgeBreaker(), audit: collectingAudit().logger });
+      breaker: manager.getJudgeBreaker() });
       expect((await dispatch(false)).result.decision).toBe("allow");
       expect(judge).toHaveBeenCalledOnce();
       manager.setReviewer({ classifier: new UnavailableRiskClassifier(), cache });

@@ -58,7 +58,6 @@ async function loadModule() {
 function makeDeps(windows: FakeWindow[], onboardingCompleted = false) {
   return {
     settingsService: { get: vi.fn(() => ({ onboardingCompleted })) },
-    auditLogger: { log: vi.fn() },
     getMainWindow: () => windows[0] ?? null,
     getAppWindows: () => windows,
   };

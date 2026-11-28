@@ -1,6 +1,6 @@
 /** Route append-only activity through feature storage, never raw filesystem or fallback paths. */
 import type { WorkBoardStorage } from "./storage.js";
-import { parseJsonlLines } from "../audit/jsonl-reader.js";
+import { parseJsonlLines } from "../lib/jsonl-record-file.js";
 
 const ACTIVITY_FILE = "activity.jsonl";
 

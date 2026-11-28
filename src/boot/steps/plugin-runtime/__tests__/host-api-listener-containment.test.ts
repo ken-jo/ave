@@ -53,7 +53,6 @@ function hostApiUnderTest(pluginDataDir: string): {
     readAppPreference: () => undefined,
     settingsService: {
         ...stationaryLeaseState, getPluginConfig: () => ({}) },
-    bootAuditLogger: { log: () => undefined },
     pluginRuntimeAuditLog: () => undefined,
     networkFetch: (() => { throw new Error("not used"); }) as unknown as typeof fetch,
     mainWindow: {},

@@ -55,7 +55,6 @@ export async function handleSetPermissionMode(
   const result = await applyPermissionModeCommand(parsed, {
     permissionManager: pm,
     approvalGate: deps.approvalGate,
-    auditLogger: deps.auditLogger,
     approvalBypass,
     rewireReviewerAgent: deps.rewireReviewerAgent,
   });

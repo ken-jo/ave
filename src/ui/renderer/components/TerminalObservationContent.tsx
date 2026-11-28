@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "../../../lib/utils.js";
 import { useTranslation } from "../../../i18n/react.js";
-import type { EgressDecisionBasis } from "../../../audit/sandbox-audit.js";
+import type { EgressDecisionBasis } from "../../../permissions/egress-observation.js";
 import { isEgressGrantScope, type EgressGrantScope } from "../../../shared/egress-grant-scopes.js";
 import {
   OBSERVATION_LIMITS,

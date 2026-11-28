@@ -1,3 +1,4 @@
+import { logPermissionEvent, permissionLogId } from "../lib/permission-log.js";
 import { attachWorkflowSchedule } from "../main/workflow-schedule-attachment.js";
 import { parseScheduleAttachmentRequest } from "../work-board/schedule-attachment-input.js";
 import { parseTemplateConfirmInput } from "../work-board/work-decision-input.js";
@@ -44,7 +45,7 @@ export function registerWorkflowTemplateHandlers(
   };
   const handle = <T>(channel: string, action: (store: NonNullable<IpcDeps["workflowTemplateStore"]>, event: IpcMainInvokeEvent, ...args: unknown[]) => Promise<T>) => {
     ipcMain.handle(channel, async (event, ...args: unknown[]): Promise<WorkflowTemplateIpcResult<T>> => {
-      if (!validateHostRendererSender(event)) { auditUnauthorized(deps.auditLogger, channel, event); return { ...UNAUTHORIZED_FRAME, ok: false }; }
+      if (!validateHostRendererSender(event)) { auditUnauthorized(channel); return { ...UNAUTHORIZED_FRAME, ok: false }; }
       if (!store) return { ok: false, error: "no-store" };
       try { return { ok: true, value: await action(store, event, ...args) }; }
       catch (error) { return { ok: false, ...(error instanceof WorkflowTemplateError && error.refusals ? { refusals: error.refusals } : {}), error: error instanceof WorkflowTemplateError || error instanceof TemplateGestureError || error instanceof TemplateFrameError || error instanceof TemplateStoreUnavailableError ? error.code : "storage-error" }; }
@@ -71,7 +72,7 @@ export function registerWorkflowTemplateHandlers(
   });
   const requireOwnerFrame = (event: IpcMainInvokeEvent, channel: string) => {
     if (!isBoardOwnerFrame(event)) {
-      auditUnauthorized(deps.auditLogger, channel, event);
+      auditUnauthorized(channel);
       throw new TemplateFrameError();
     }
   };
@@ -84,8 +85,8 @@ export function registerWorkflowTemplateHandlers(
     }
     const routines = deps.routinesStore;
     if (!routines) throw new TemplateStoreUnavailableError();
-    const { attachment: result, auditId } = await attachWorkflowSchedule(store, routines, request, () => mintHostDecisionProof("local-desktop"), deps.auditLogger);
-    deps.auditLogger.log({ timestamp: result.at, sessionId: `work-board:${result.templateId}`, type: "approval", output: JSON.stringify({ event: "template_schedule_attached", ...result, auditId }) });
+    const { attachment: result } = await attachWorkflowSchedule(store, routines, request, () => mintHostDecisionProof("local-desktop"));
+    logPermissionEvent("template_schedule_attached", { sessionId: permissionLogId(`work-board:${result.templateId}`) });
     return result;
   });
   handle(WORK_BOARD.templateDetachSchedule, async (store, event, id, ...args) => {
@@ -98,7 +99,7 @@ export function registerWorkflowTemplateHandlers(
     if (!routines) throw new TemplateStoreUnavailableError();
     return routines.withTemplateSchedule(attachment.scheduleId, async (remove) => {
       if (!await store.detachSchedule(id, proof)) return false;
-      deps.auditLogger.log({ timestamp: proof.decidedAt, sessionId: `work-board:${attachment.templateId}`, type: "approval", output: JSON.stringify({ event: "template_schedule_detached", attachmentId: id, ...proof }) });
+      logPermissionEvent("template_schedule_detached", { sessionId: permissionLogId(`work-board:${attachment.templateId}`), attachmentId: permissionLogId(id) });
       await remove();
       return true;
     });
@@ -116,7 +117,8 @@ export function registerWorkflowTemplateHandlers(
     }
     const result = await store.confirmDraft(id, input, { who: "user", origin: "local-desktop" }, createToolEffectResolver(deps.toolRegistry));
     const { version } = result;
-    deps.auditLogger.log({ timestamp: version.confirmedAt, sessionId: `work-board:${version.templateId}`, type: "approval", output: JSON.stringify({ event: "template_confirmed", proposalId, templateId: version.templateId, version: version.version, graphHash: version.graphHash, origin: "local-desktop" }) });
+    logPermissionEvent("template_confirmed", { proposalId: permissionLogId(proposalId), templateId: permissionLogId(version.templateId),
+      version: version.version, graphHash: permissionLogId(version.graphHash), origin: "local-desktop", });
     return result;
   });
   handle(WORK_BOARD.templateArchive, async (store, _event, id, ...args) => { requireTemplate(args.length === 0); const record = await load(id); await store.archive(record.template.id); return null; });

@@ -2,24 +2,12 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 const runPreHooks = vi.fn(async () => ({ action: "allow" as const, feedback: "" }));
 const runPostHooks = vi.fn(async () => "");
-const auditLog = vi.fn();
 
 vi.mock("../hooks/hook-runner.js", () => ({
   HookRunner: vi.fn().mockImplementation(function () {
     return {
     runPreHooks,
     runPostHooks,
-    };
-  }),
-}));
-
-vi.mock("../audit/audit-logger.js", () => ({
-  AuditLogger: vi.fn().mockImplementation(function () {
-    return {
-    log: auditLog,
-    logTurn: vi.fn(),
-    isPermissionAuditChainReady: vi.fn(() => false),
-    assertPermissionAuditWritable: vi.fn(),
     };
   }),
 }));

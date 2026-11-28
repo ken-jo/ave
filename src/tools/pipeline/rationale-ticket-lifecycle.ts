@@ -445,10 +445,6 @@ export interface HostInvocationStartLease {
   startedAt: number;
 }
 
-export type InvocationAuditSink = (
-  record: InvocationAuditRecord,
-) => Promise<void> | void;
-
 export interface HostInvocationStartCommit {
   readonly lease: HostInvocationStartLease;
   readonly startedInvocationAudit: InvocationAuditRecord;
@@ -461,13 +457,11 @@ export interface HostInvocationStartCas {
     control: RationaleRequiredControl;
     authorized: InvocationAuditRecord;
     expectedInvocationVersion: 0;
-    persistAudit: InvocationAuditSink;
     now?: number;
   }): Promise<HostInvocationStartCommit | null>;
   commitTerminal(input: {
     lease: HostInvocationStartLease;
     terminal: InvocationAuditRecord;
-    persistAudit: InvocationAuditSink;
   }): Promise<boolean>;
 }
 
@@ -476,7 +470,6 @@ export function validateHostInvocationStartAuthorization(input: {
   control: RationaleRequiredControl;
   authorized: InvocationAuditRecord;
   expectedInvocationVersion: 0;
-  persistAudit: InvocationAuditSink;
   now: number;
 }): void {
   validateInvocationAuditRecord(input.authorized);
@@ -487,7 +480,6 @@ export function validateHostInvocationStartAuthorization(input: {
     !Number.isFinite(input.now) ||
     input.now < 0 ||
     input.expectedInvocationVersion !== 0 ||
-    typeof input.persistAudit !== "function" ||
     !verifyRationaleExecutionControl(input.control, { now: input.now }) ||
     input.sessionId !== input.control.anchor.sessionId ||
     input.authorized.state !== "authorized" ||
@@ -623,7 +615,6 @@ export class InMemoryHostInvocationStartCasStore implements HostInvocationStartC
     lease: HostInvocationStartLease;
     startedInvocationAudit: InvocationAuditRecord;
     terminal: InvocationAuditRecord | null;
-    terminalAuditDelivered: boolean;
   }>();
 
   async commitStart(input: {
@@ -631,7 +622,6 @@ export class InMemoryHostInvocationStartCasStore implements HostInvocationStartC
     control: RationaleRequiredControl;
     authorized: InvocationAuditRecord;
     expectedInvocationVersion: 0;
-    persistAudit: InvocationAuditSink;
     now?: number;
   }): Promise<HostInvocationStartCommit | null> {
     const now = input.now ?? Date.now();
@@ -647,32 +637,21 @@ export class InMemoryHostInvocationStartCasStore implements HostInvocationStartC
       now,
     });
     this.#states.set(input.authorized.invocationDigest, {
-      lease, startedInvocationAudit, terminal: null, terminalAuditDelivered: false,
+      lease, startedInvocationAudit, terminal: null,
     });
-    await input.persistAudit(input.authorized);
-    await input.persistAudit(startedInvocationAudit);
     return { lease, startedInvocationAudit };
   }
 
   async commitTerminal(input: {
     lease: HostInvocationStartLease;
     terminal: InvocationAuditRecord;
-    persistAudit: InvocationAuditSink;
   }): Promise<boolean> {
     try {
-      if (typeof input.persistAudit !== "function") return false;
       validateInvocationTerminalForLease(input.terminal, input.lease);
       const current = this.#states.get(input.lease.invocationDigest);
       if (!current || !canonicalJsonEqual(current.lease, input.lease)) return false;
       if (current.terminal && !canonicalJsonEqual(current.terminal, input.terminal)) return false;
       current.terminal ??= input.terminal;
-      if (current.terminalAuditDelivered) return true;
-      try {
-        await input.persistAudit(input.terminal);
-      } catch {
-        return false;
-      }
-      current.terminalAuditDelivered = true;
       return true;
     } catch {
       return false;

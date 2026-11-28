@@ -1,15 +1,6 @@
+import { collectPermissionEvents } from "../../../__tests__/support/permission-events.js";
 import { randomUUID } from "node:crypto";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-
-const { emitSandboxAuditMock } = vi.hoisted(() => ({
-  emitSandboxAuditMock: vi.fn(async () => {}),
-}));
-
-vi.mock("../../../audit/sandbox-audit-sink.js", async () => {
-  const actual: typeof import("../../../audit/sandbox-audit-sink.js") =
-    await vi.importActual("../../../audit/sandbox-audit-sink.js");
-  return { ...actual, emitSandboxAudit: emitSandboxAuditMock };
-});
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { tryUserApprovalMemorySkip } from "../approval-memory-skip.js";
 import { buildHostShellExecutionPlan } from "../../../permissions/host-shell-execution-plan.js";
@@ -25,13 +16,16 @@ import {
 } from "../../../permissions/user-approval-store.js";
 
 describe("foreground approval memory — sealed host shell plan", () => {
+  let logs: ReturnType<typeof collectPermissionEvents>;
+
   beforeEach(() => {
     __resetActiveSandboxCapabilityForTest();
     __resetSessionStoreForTest();
-    emitSandboxAuditMock.mockClear();
+    logs = collectPermissionEvents();
   });
 
   afterEach(() => {
+    logs.restore();
     __resetActiveSandboxCapabilityForTest();
     __resetSessionStoreForTest();
   });
@@ -90,11 +84,8 @@ describe("foreground approval memory — sealed host shell plan", () => {
       decision: "allow",
     });
     // No live capability was published in this test. An accidental recompute would report `none`; the audit proves the same invocation plan was used.
-    expect(emitSandboxAuditMock).toHaveBeenCalledWith(expect.objectContaining({
-      sandbox: expect.objectContaining({
-        kind: "asrt",
-        confidence: "verified",
-      }),
+    expect(logs.events).toContainEqual(expect.objectContaining({
+      event: "permission_approval_memory_hit", tool: "bash", sandboxKind: "asrt", sandboxConfidence: "verified",
     }));
   });
 

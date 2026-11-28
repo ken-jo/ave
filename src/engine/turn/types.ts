@@ -32,7 +32,6 @@ import type { RoutineEngine } from "../../routines/routine-engine.js";
 import type { IdleSchedulerService } from "../../main/idle-scheduler.js";
 import type { PostTurnHookChain } from "../../hooks/post-turn-hook-chain.js";
 import type { HookRunner } from "../../hooks/hook-runner.js";
-import type { AuditLogger } from "../../audit/audit-logger.js";
 import type { HookTrustCommandOptions } from "../../hooks/hook-trust-commands.js";
 import type { RationaleCoordinatorFactory } from "./rationale-conversation-orchestration.js";
 import type { ExecutionMode } from "../../shared/permission-mode.js";
@@ -329,15 +328,16 @@ export interface ConversationLoopDeps {
   disableSessionPersistence?: boolean;
   // Skill registry authorizes reads but holds no bodies; clear it only when replacing the conversation.
   skillOverlay?: {
+    list?(sessionId: string): readonly { name: string; filePath: string }[];
     clear(sessionId: string): void;
     checkAdmission?(sessionId: string | undefined, toolName: string, input: Record<string, unknown>, visibleSkillResults?: readonly string[]): string | undefined;
   };
+  skillMemory?: import("../../memory/skill-memory-service.js").SkillMemoryService;
   // Indexed non-builtin slash names run as model skill requests rather than unknown commands.
   isSkillName?: (name: string) => boolean;
   // Omit notifications for background loops to avoid turn-end spam.
   notificationService?: import("../../main/notification-service.js").NotificationService;
   // Tool audits append to the shared authenticated chain.
-  auditLogger?: AuditLogger;
   rewireReviewerAgent?: () => Promise<void>;
   llmFetch?: typeof fetch;
   // Require host outbound transport so guarded calls honor machine proxy and trust-store configuration.

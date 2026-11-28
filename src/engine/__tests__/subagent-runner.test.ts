@@ -2803,7 +2803,6 @@ describe("SubAgentRunner A2A bus facade", () => {
     const parentSessionId = "a1bdc27a-c758-4a74-8955-5e9188412366";
     const namespace = createInMemoryMailboxNamespace();
     const mailbox = new SubAgentMessageMailbox(namespace.handle);
-    const audit = vi.fn();
     const toolRegistry = new ToolRegistry();
     const sessionMemory = fakeSubAgentMemoryManager();
     const subAgentMemoryManager = {
@@ -2829,7 +2828,6 @@ describe("SubAgentRunner A2A bus facade", () => {
       settingsService: {
         get: () => ({ subAgentAutonomousWake: false }),
       } as never,
-      auditLogger: { log: audit } as never,
       resolveChildAddress: (parentId, childId, messageId) =>
         runner.resolveSubAgentAddress(parentId, childId, messageId),
       releaseEphemeralChildAddress: (parentId, childId, messageId) =>
@@ -3394,7 +3392,6 @@ describe("SubAgentRunner completion mailbox single-shot", () => {
       settingsService: {
         get: () => ({ subAgentAutonomousWake: false }),
       } as never,
-      auditLogger: { log: vi.fn() } as never,
       resolveChildAddress: (parentId, childId, messageId) =>
         runner.resolveSubAgentAddress(parentId, childId, messageId),
     });

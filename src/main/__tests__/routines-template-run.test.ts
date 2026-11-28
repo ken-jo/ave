@@ -1,7 +1,8 @@
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { expect, it, vi } from "vitest";
+import { expect, it, vi, onTestFinished } from "vitest";
+import { collectPermissionEvents } from "../../__tests__/support/permission-events.js";
 import { workflowEngineExtensions } from "../../boot/steps/workflow-engine-extensions.js";
 import { createToolEffectResolver } from "../../permissions/tool-effect-evidence.js";
 import type { TemplateScope, TemplateVersion } from "../../shared/workflow-template-types.js";
@@ -31,6 +32,8 @@ async function fixture(body: (f: Awaited<ReturnType<typeof setup>>) => Promise<v
 }
 
 async function setup(h: Awaited<ReturnType<typeof stageRunHarness>>) {
+  const capture = collectPermissionEvents();
+  onTestFinished(capture.restore);
   const path = join(h.dir, "routines.json");
   const store = new RoutinesStore(path);
   store.bindTemplateAttachments(h.templates);
@@ -62,7 +65,7 @@ async function setup(h: Awaited<ReturnType<typeof stageRunHarness>>) {
     if (listed.status !== "ok") throw new Error("Board list refused");
     return listed.items;
   };
-  return { h, path, store, add, attach, dispatch, poll, rows };
+  return { h, path, store, add, attach, dispatch, poll, rows, events: capture.events };
 }
 
 it("the store refuses the kind without the attach proof", async () => {
@@ -388,8 +391,9 @@ it.each(["unattended-not-read-only", "tool-effect-unknown"] as const)("Q6 rechec
     available = false;
     expect(await f.h.decide(row.id, "first", "approve")).toMatchObject({ ok: true });
     await f.h.until(row.id, item => item.runStatus === "cancelled");
-    await f.h.waitForProgress(event => event.itemId === row.id && event.phase === "cancelled", "authority refusal");
-    expect(f.h.audits.at(-1)).toMatchObject({ code, ...(code === "tool-effect-unknown" ? { tool } : {}) });
+    const refusal = await f.h.waitForProgress(event => event.itemId === row.id && event.phase === "cancelled", "authority refusal");
+    expect(refusal).toMatchObject({ reasonCode: code, ...(code === "tool-effect-unknown" ? { reasonTool: tool } : {}) });
+    expect(f.events).toContainEqual({ event: "workflow_authority_refused", itemId: row.id, runId: row.runId, reasonCode: code });
     expect(f.h.children).toHaveLength(1);
     expect(f.h.interrupts).toEqual([]);
   }, { workflow: { unattendedAllowed: () => available ? { ok: true } : code === "tool-effect-unknown" ? { ok: false, code, tool } : { ok: false, code } } });
@@ -421,7 +425,7 @@ it("a confirmation during the final spawn check refuses the old scope without li
     expect(confirmDuringCheck).toHaveBeenCalledOnce();
     expect(f.h.children).toHaveLength(1);
     await f.h.until(row.id, item => item.runStatus === "cancelled");
-    expect(f.h.audits.at(-1)).toMatchObject({ code: "scope-changed" });
+    expect(f.events).toContainEqual({ event: "workflow_authority_refused", itemId: row.id, runId: row.runId, reasonCode: "scope-changed" });
   } finally {
     get.mockRestore();
   }
@@ -515,7 +519,7 @@ it.each(["scope-not-authorised", "scope-changed", "attachment-detached"] as cons
         expect(await f.rows()).toEqual([]);
         expect(await f.h.board.runs.list()).toEqual({ status: "found", runs: [] });
         expect(f.h.children).toEqual([]);
-        expect(f.h.audits.at(-1)).toMatchObject({ code });
+        expect(f.events).toContainEqual(expect.objectContaining({ event: "workflow_authority_refused", reasonCode: code, runId: expect.any(String) }));
         expect(f.store.list()[0].pausedAt).toBeUndefined();
         if (!runRoot) throw new Error("Expected a prepared workspace");
         await expect(access(runRoot)).rejects.toMatchObject({ code: "ENOENT" });

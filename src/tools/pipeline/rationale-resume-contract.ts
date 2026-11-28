@@ -420,7 +420,6 @@ export const RATIONALE_SECURITY_SUFFIX = Object.freeze([
   "permission-ask-audit",
   "approval-allow-once-cas-consume",
   "rate-limit",
-  "permission-audit-writable-fail-closed",
   "host-invocation-start-cas",
   "tool-start-emit-boundary",
   "during-execute-effect-gate-context",

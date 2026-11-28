@@ -99,7 +99,6 @@ beforeEach(() => {
   currentTracker = undefined;
   fromWebContents.mockImplementation((sender: { windowId: number }) => (sender.windowId === 1 ? windowOne : windowTwo));
   registerTerminalHandlers({
-    auditLogger: { log: vi.fn() },
     getMainWindow: () => windowOne,
     getAppWindows: () => [windowOne, windowTwo],
     settingsService,

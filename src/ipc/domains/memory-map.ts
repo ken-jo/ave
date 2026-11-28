@@ -24,7 +24,7 @@ export function registerMemoryMapHandlers(deps: IpcDeps, resolveScope: MemoryMap
   };
   function handle<T>(channel: string, schema: z.ZodType<T>, action: (current: MemoryMapRuntime, value: T, event: IpcMainInvokeEvent) => unknown) {
     ipcMain.handle(channel, async (event, raw: unknown, ...extra: unknown[]) => {
-      if (!validateHostRendererSender(event)) { auditUnauthorized(deps.auditLogger, channel, event); return UNAUTHORIZED_FRAME; }
+      if (!validateHostRendererSender(event)) { auditUnauthorized(channel); return UNAUTHORIZED_FRAME; }
       const parsed = schema.safeParse(raw);
       if (!parsed.success || extra.length) return { ok: false, error: 'invalid-input' };
       const scope = channel === CHANNELS.memoryMap.retrieve ? (parsed.data as { scope?: MemoryMapScope }).scope : parsed.data;

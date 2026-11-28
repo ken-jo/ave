@@ -178,10 +178,6 @@ interface Classified {
 }
 
 const CLASSIFIED: Record<string, Classified> = {
-  "audit/permission-audit-proof.ts": {
-    sites: { userKeyboardLiteral: 1 },
-    classification: "the audit-chain self-test row; not a turn origin",
-  },
   "boot/node-host-runtime.ts": {
     sites: { computedCall: 1 },
     classification: "computed: a Reflect.get forwarding proxy over a host runtime object; no turn entry",
@@ -219,8 +215,8 @@ const CLASSIFIED: Record<string, Classified> = {
     classification: "marks a drained guidance batch as the user's only when every entry came through queueUserGuidance",
   },
   "engine/turn/run-turn.ts": {
-    sites: { runTurn: 1, userKeyboardLiteral: 2 },
-    classification: "runTurn spends the verified intent, refuses an unsigned keyboard origin, and records original user text only after that verification. An admitted, session-bound remote controller turn is the user's (owner decision 2026-11-02): its permission, tool-trust and request-anchor origin is user-keyboard, while the verified-keyboard-intent checks still read the transport origin, so a remote turn never spends or forges a keyboard intent",
+    sites: { runTurn: 1, userKeyboardLiteral: 3 },
+    classification: "runTurn spends the verified intent, refuses an unsigned keyboard origin, and records original user text only after that verification. An admitted, session-bound remote controller turn is the user's (owner decision 2026-11-02): its permission, tool-trust and request-anchor origin is user-keyboard, while the verified-keyboard-intent checks still read the transport origin, so a remote turn never spends or forges a keyboard intent. The scheduled turn's literal only checks verified stored owner text for file-content taint before staging skill memory; the turn itself remains unattended",
   },
   "ipc/domains/chat.ts": {
     sites: { mintUserKeyboardIntent: 5, runStreamedTurn: 5, userKeyboardLiteral: 3, runTurn: 1, queueUserGuidance: 1, queueGuidance: 1 },
@@ -261,6 +257,10 @@ const CLASSIFIED: Record<string, Classified> = {
   "main/session-goal-revival.ts": {
     sites: { runTurn: 2 },
     classification: "session goal revival: delegates to the chat domain's agent-message turn",
+  },
+  "lib/permission-log.ts": {
+    sites: { computedCall: 1 },
+    classification: "computed: a logger method chosen by level; no turn entry",
   },
   "marketplace/log.ts": {
     sites: { computedCall: 2 },

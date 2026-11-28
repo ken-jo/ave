@@ -1,4 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { collectPermissionEvents } from "../../../__tests__/support/permission-events.js";
+import { describe, it, expect, vi, beforeEach, onTestFinished } from "vitest";
 import { makeAppIpcInvoker } from "./test-helpers.js";
 import { USER_PROMPT_RATE_LIMIT_MAX_CALLS } from "../../../boot/steps/plugin-runtime/trigger-gate.js";
 
@@ -44,7 +45,6 @@ async function setup(getPrompt?: ReturnType<typeof vi.fn>) {
     toolRegistry: { size: 0, findByName: vi.fn() },
     getPluginToolInvoker: () => vi.fn(),
     settingsService: { get: vi.fn(() => ({})) },
-    auditLogger: { log: vi.fn() },
     pluginMarketplace: { list: vi.fn(async () => []) },
     conversationLoop: { getSessionId: vi.fn(() => "session-live"), queueGuidance: vi.fn() },
     notificationService: { fire: vi.fn() },
@@ -168,7 +168,9 @@ describe("ave:mcp:get-prompt — outcome", () => {
   });
 
   // Server errors reach only audit storage, where credentials must be redacted and message length bounded.
-  it("scrubs and bounds the server error it writes to the audit log", async () => {
+  it("reports prompt failure without logging server error text", async () => {
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
     const leak = `Authorization: Bearer sk-live-abcdef0123456789 ${"x".repeat(400)}`;
     const boom = await setup(vi.fn(async () => { throw new Error(leak); }));
 
@@ -177,14 +179,9 @@ describe("ave:mcp:get-prompt — outcome", () => {
       error: "prompt-failed",
     });
 
-    const row = boom.deps.auditLogger.log.mock.calls
-      .map((c) => (c[0] as { input?: string }).input ?? "")
-      .find((input) => input.includes("prompts/get"));
-    expect(row).toBeDefined();
-    expect(row).not.toContain("sk-live-abcdef0123456789");
-    expect(row).toContain("[REDACTED:TOKEN]");
-    expect(row).toContain("failed");
-    expect(row!.length).toBeLessThan(300);
+    expect(capture.events).toContainEqual(expect.objectContaining({ event: "mcp_prompt_decision" }));
+    expect(JSON.stringify(capture.events)).not.toContain("sk-live-abcdef0123456789");
+    expect(JSON.stringify(capture.events).length).toBeLessThan(300);
   });
 
   it("rate limits repeated prompt fetches for one server", async () => {

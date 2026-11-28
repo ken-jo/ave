@@ -51,7 +51,6 @@ function evaluate(input: {
     capabilities: ["host:overlay"],
     dedupe: new TriggerConversationDedupe(),
     rateLimiter: input.rateLimiter ?? new TriggerConversationRateLimiter(),
-    auditLogger: { log: vi.fn() },
     now: () => input.now ?? NOW,
     suggestions: input.declared === null || input.ledger === undefined
       ? undefined

@@ -7,7 +7,7 @@ import { pathToFileURL } from "node:url";
 import sharp from "sharp";
 import { buildImagePreparationEntry, imageFixturePath } from "../../__tests__/support/image-preparation-runtime.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
-import { AuditLogger } from "../../audit/audit-logger.js";
+
 import { buildMainBoundaryBundle, childBundleDir, repositoryRoot } from "../../plugins/isolation/__tests__/child-entry-bundle.js";
 import { IMAGE_PREPARATION_POLICY, ImagePreparationOptionsSchema, ImagePreparationRequestSchema, type ImagePreparationOptions } from "../../shared/image-preparation-policy.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
@@ -50,9 +50,9 @@ async function executeSealedImage(path: string, abortSignal?: AbortSignal) {
   registry.register(tool);
   const permissions = new PermissionManager(join(directory, "image-permissions.json"));
   permissions.setMode("allow");
-  const audit = new AuditLogger(join(directory, "image-audit"));
+
   try {
-    const executor = new ToolExecutor(registry, undefined, permissions, undefined, undefined, undefined, audit);
+    const executor = new ToolExecutor(registry, undefined, permissions, undefined, undefined, undefined);
     const [result] = await executor.executeAll([{ id: "sealed-image", name: tool.name, input: { path } }], {
       executionCwd: dirname(path),
       sessionId: "sealed-image",
@@ -61,7 +61,7 @@ async function executeSealedImage(path: string, abortSignal?: AbortSignal) {
     });
     return result;
   } finally {
-    await audit.close();
+
   }
 }
 

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildSandboxAuditEntry, type SandboxAuditEntry } from "../sandbox-audit.js";
+import { buildSandboxAuditEntry, type SandboxAuditEntry } from "../../permissions/egress-observation.js";
 
 const VALID_TOOL: SandboxAuditEntry["tool"] = {
   name: "bash_run",

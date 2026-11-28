@@ -108,7 +108,7 @@ beforeEach(() => {
   fixture.collectFiles.mockClear();
   fixture.assertReadableFilePath.mockClear();
   clearWorkspaceFileSearchCache();
-  registerWorkspaceHandlers({ auditLogger: { log: vi.fn() } } as never);
+  registerWorkspaceHandlers({  } as never);
 });
 
 afterEach(() => {
@@ -165,7 +165,6 @@ describe("workspace roots with native drive spelling", () => {
     const revoke = vi.fn(() => ({ sessionDirectoriesRemoved: 0, turnDirectoriesRemoved: 0 }));
     const detach = vi.fn(async () => 1);
     registerWorkspaceHandlers({
-      auditLogger: { log: vi.fn() },
       pluginRuntime: { retireSandboxGrantsOutsideCeiling: vi.fn(async () => []) },
       memoryManager: { sessions: { detachSessionsFromProject: detach } },
       conversationLoop: { permissionManager: { prunePathGrantsUnderRoot: pruneGrants }, revokeWorkspaceRoot: revoke },

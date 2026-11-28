@@ -216,4 +216,32 @@ describe.runIf(NATIVE)("macOS holder start and stop", () => {
     await expect(start(launchOf("true"), { helper: copied })).rejects.toMatchObject({ reason: "integrity" });
     expect(HOLDER_CONTROL_LABEL).toBe("dev.ave.holder.ctl");
   });
+
+  it("keeps the holder's stderr written right after the ready byte until its consumer reads it", async () => {
+    const holder = await start(launchOf("echo early-diagnostic >&2; exec /bin/cat"));
+    // The consumer attaches late, as an adapter does after its own setup.
+    await new Promise(done => setTimeout(done, 300));
+    const text = await new Promise<string>(done => {
+      setTimeout(() => done("lost"), 2_000).unref();
+      holder.process.stderr.once("data", (chunk: Buffer) => done(chunk.toString().trim()));
+    });
+    expect(text).toBe("early-diagnostic");
+    await expect(holder.dispose()).resolves.toBeDefined();
+  });
+
+  it("stops a holder whose admission is revoked between the launch gate and its ready byte", async () => {
+    helper = verifyHolderSweepHelper(RESOURCES);
+    const revoked = new AbortController();
+    // The revocation lands after the gate's recheck passed, inside the window before the ready byte is read.
+    const holder = start(launchOf("exec /bin/cat"), { revoked: revoked.signal, assertStillValid: () => { revoked.abort(); } });
+    // A verified stop: the refusal is the contract error, not an unverified cleanup.
+    await expect(holder).rejects.toThrow("revoked during its start");
+    await expect(holder).rejects.toBeInstanceOf(MxcProcessContractError);
+  });
+
+  it("reports a helper that cannot even be spawned as unverified instead of throwing", async () => {
+    // A label with a NUL byte makes spawn() throw synchronously, before any timer exists.
+    await expect(runHolderSweep(helper, "sweep", "dev.ave.holder.bad\0label", 2_000))
+      .resolves.toMatchObject({ verified: false, reason: expect.stringContaining("the helper did not start") });
+  });
 });

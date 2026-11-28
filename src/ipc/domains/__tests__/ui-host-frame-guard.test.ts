@@ -59,7 +59,7 @@ async function setup() {
   registeredUiContents.clear();
   vi.clearAllMocks();
   const { registerUiHandlers } = await import("../ui.js");
-  registerUiHandlers({ auditLogger: { log: vi.fn() } } as never);
+  registerUiHandlers({  } as never);
 }
 
 type Reply = { ok: boolean; error?: string };

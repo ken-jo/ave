@@ -1,3 +1,4 @@
+import { trackPermissionEvents } from "../../__tests__/support/permission-events.js";
 import { describe, expect, it, vi } from "vitest";
 import {
   createInMemoryFeatureNamespace as createInMemoryNamespace,
@@ -34,6 +35,8 @@ function childContext() {
   };
 }
 
+
+const permissionEvents = trackPermissionEvents();
 
 describe("agent_spawn background routing", () => {
   it("delivers both concurrent child page results and an explicit failure to the parent", async () => {
@@ -304,11 +307,9 @@ describe("agent_spawn background routing", () => {
       messageId: input.message.messageId,
       };
     });
-    const audit = vi.fn();
     const bus = new A2AAgentMessageBus({
       parentBus: { deliverToParent: parentDeliver } as never,
       mailbox,
-      auditLogger: { log: audit } as never,
       resolveSender: vi.fn(async () => ({
         originSessionId: "parent-session",
         childSessionId: "sub-question",
@@ -410,8 +411,8 @@ describe("agent_spawn background routing", () => {
       originSessionId: "parent-session",
       messageCount: 1,
     }]);
-    const deliveredEdges = audit.mock.calls.filter(([entry]) =>
-      String(entry.input).includes("delivered:parent"));
+    const deliveredEdges = permissionEvents().filter((entry) => entry.event === "agent_message_delivery"
+      && entry.sessionId === "parent-session" && entry.outcome === "delivered" && entry.reasonCode === "parent");
     expect(deliveredEdges).toHaveLength(1);
   });
 });

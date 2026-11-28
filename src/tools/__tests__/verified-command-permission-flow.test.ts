@@ -11,7 +11,6 @@ import { setProcessPlatform } from "../../__tests__/support/process-platform.js"
 import * as verifiedCommands from "../../permissions/verified-shell-command.js";
 import { VerdictCache } from "../../permissions/reviewer/verdict-cache.js";
 import { makeRecentlyDeniedStore } from "../../__tests__/support/recently-denied.js";
-import { AuditLogger } from "../../audit/audit-logger.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { ApprovalGate, IPC_APPROVAL_REQUEST } from "../../permissions/approval-gate.js";
 import { saveApprovalCardRule } from "../../permissions/approval-rule-save.js";
@@ -37,7 +36,6 @@ const COMMAND = "bash --noprofile --norc -p -c 'printf ready'";
 const EXACT_RULE = "Bash(bash --noprofile --norc -p -c 'printf ready')";
 let cwd: string;
 let manager: PermissionManager;
-let auditLogger: AuditLogger;
 let gate: ApprovalGate;
 beforeEach(() => {
   vi.clearAllMocks();
@@ -49,7 +47,6 @@ beforeEach(() => {
   writeFileSync(join(cwd, ".git", "HEAD"), "ref: refs/heads/main\n");
   writeFileSync(join(cwd, ".git", "config"), "[core]\n\trepositoryformatversion = 0\n\tbare = false\n");
   vi.stubEnv("AVE_HOME", join(cwd, "state"));
-  auditLogger = new AuditLogger(join(cwd, "audit"));
   manager = new PermissionManager(join(cwd, "permissions.json"));
   manager.setMode("default");
   __resetActiveSandboxCapabilityForTest();
@@ -69,8 +66,7 @@ beforeEach(() => {
 });
 afterEach(async () => {
   gate?.disposeAll();
-  await auditLogger.close();
-  expect(auditLogger.getWriterStats()).toMatchObject({ pendingWrites: 0, pendingBytes: 0, acceptingWrites: false });
+
   setProcessPlatform(originalPlatform);
   __resetActiveSandboxCapabilityForTest();
   __resetSandboxRequestedAtBootForTest();
@@ -99,7 +95,7 @@ function fixture(command = COMMAND) {
     return { output: "bound native output", isError: false };
   });
   registry.register(tool);
-  const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, undefined, auditLogger);
+  const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, undefined);
   let serial = 0;
   const run = (headless: boolean, inputCommand = command, abortSignal?: AbortSignal) => runWithToolExecutionCwd(cwd, () => executor.executeAll(
     [{ id: `native-flow-${++serial}`, name: "bash", input: { command: inputCommand } }],

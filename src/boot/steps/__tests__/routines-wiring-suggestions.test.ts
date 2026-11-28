@@ -21,6 +21,11 @@ import { EgressGrantStore } from "../../../permissions/egress-grants.js";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { sha256Hex } from "../../../lib/hex-digest-equal.js";
+import { claimScheduledSkillEvidence, type SkillMemoryService } from "../../../memory/skill-memory-service.js";
+import { isSensitivePath } from "../../../permissions/sensitive-paths.js";
+import { aveHome } from "../../../shared/ave-home.js";
+import { requiredFixture } from "../../../__tests__/support/required-fixture.js";
 import { ChangeSignal } from "../../../lib/change-signal.js";
 import { mintHostDecisionProof } from "../../../main/workflow-template-decision.js";
 
@@ -30,6 +35,7 @@ function wire(
   runRoutine: (input: Record<string, unknown>) => Promise<{ summary: string; sessionId?: string; skipped?: "chat-busy" }>,
   chats: Record<string, { projectRoot?: string; noTranscript?: true }> = {},
   persistedStore?: BootContext["routinesStore"],
+  skillMemory?: Pick<SkillMemoryService, "queueUnattended">,
 ) {
   const handlers: { llm?: Handler; notification?: Handler } = {};
   const routinesStore = {
@@ -52,6 +58,7 @@ function wire(
   const ctx = {
     routinesScheduler,
     routineEngine: { runRoutine: vi.fn(runRoutine) },
+    conversationLoop: { deps: { skillMemory } },
     routinesStore: persistedStore ?? routinesStore,
     getMainWindow: () => window,
     host: { desktop: { getAppWindows: () => [window] } },
@@ -121,6 +128,43 @@ describe("routine cards and the Suggestions conversation", () => {
 });
 
 describe("routine run outcome persistence", () => {
+  it("delivers the card before staging review with a protected owner digest and clears it on non-owner edits", withRoutinesStore(async ({ store }) => {
+    const text = "Verify the build output.";
+    const item = await store.add({ ...TEST_OWNER, trigger: "schedule", execution: "llm-session", prePrompt: text,
+      schedule: { at: futureIso(), repeat: { kind: "daily" } } }, undefined, true);
+    expect(item.skillMemoryOwnerPromptDigest).toBe(sha256Hex(text));
+    expect(isSensitivePath(join(aveHome(), "routine", "routines.json"), "write")).not.toBeNull();
+    const release = deferred<void>();
+    const queueUnattended = vi.fn<SkillMemoryService["queueUnattended"]>(() => release.promise);
+    const run = vi.fn(async (input: Record<string, unknown>) => {
+      const proof = claimScheduledSkillEvidence("routine-session", TEST_OWNER.projectRoot, String(input.prePrompt));
+      if (proof) proof.finished = true;
+      return { summary: "Done", sessionId: "routine-session" };
+    });
+    const { handlers, send } = wire(run, {}, store, { queueUnattended });
+    const fired = await store.markFired(item.id);
+    if (!fired) throw new Error("Routine fire was not recorded");
+    try {
+      requiredFixture(handlers.llm)({ routine: { ...fired } });
+      await vi.waitFor(() => expect(queueUnattended).toHaveBeenCalledOnce());
+      const delivered = send.mock.calls.findIndex(([channel]) => channel === ROUTINES.fired);
+      expect(delivered).toBeGreaterThanOrEqual(0);
+      expect(send.mock.invocationCallOrder[delivered]).toBeLessThan(requiredFixture(queueUnattended.mock.invocationCallOrder[0]));
+      expect(queueUnattended).toHaveBeenCalledWith(expect.objectContaining({ routineId: item.id, runKind: "scheduled",
+        routineDigest: item.skillMemoryOwnerPromptDigest }));
+      const edited = await store.edit(item.id, { prePrompt: "Unverified prompt." });
+      expect(edited?.skillMemoryOwnerPromptDigest).toBeUndefined();
+      const next = await store.markFired(item.id);
+      if (!next) throw new Error("Edited routine fire was not recorded");
+      send.mockClear();
+      requiredFixture(handlers.llm)({ routine: { ...next } });
+      await vi.waitFor(() => expect(send).toHaveBeenCalledWith(ROUTINES.fired, expect.anything()));
+      expect(queueUnattended).toHaveBeenCalledOnce();
+    } finally {
+      release.resolve();
+    }
+  }));
+
   it("records a thrown run as a failure of that fire", async () => {
     const { handlers, send, routinesStore } = wire(async () => { throw new Error("boom"); });
     handlers.llm!({ routine });

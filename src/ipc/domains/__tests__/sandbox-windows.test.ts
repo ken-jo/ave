@@ -1,8 +1,9 @@
+import { collectPermissionEvents } from "../../../__tests__/support/permission-events.js";
 vi.mock("../../../shared/windows-path-facts.js", async original => (await import("../../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
 vi.mock("../../../shared/windows-configuration-handles.js", async original => (await import("../../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
 vi.mock("node:fs", async original => (await import("../../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
 
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from "vitest";
 import { PERMISSIONS } from "../../../shared/ipc-channels.js";
 import { UNAUTHORIZED_FRAME } from "../../gated.js";
 import { setProcessPlatform } from "../../../__tests__/support/process-platform.js";
@@ -117,7 +118,6 @@ function makeDeps(features: FeatureFixture) {
   return {
     conversationLoop: { permissionManager: { getMode: () => "default", setDeferredEntryAsk: vi.fn() } },
     approvalGate: {},
-    auditLogger: { log: vi.fn() },
     toolRegistry: { setDenyRules: vi.fn() },
     settingsService: { get: vi.fn(() => features) },
     getAppWindows: vi.fn(() => []),
@@ -632,6 +632,8 @@ describe("sandboxCapability shell status (the permission card's checkbox)", () =
   });
 
   it("reports a boot/plan contradiction as an error on the shell row, logged and audited, not a failed snapshot", async () => {
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
     setProcessPlatform("darwin");
     const capability = await import("../../../permissions/sandbox-capability.js");
     // Requested shell isolation with no published capability must not produce a plain execution plan.
@@ -653,10 +655,7 @@ describe("sandboxCapability shell status (the permission card's checkbox)", () =
     expect(result.shell).toEqual({ state: "error", setting: true, envForced: false, causes: [] });
     expect(result.platform).toBe("darwin");
     expect(result.available).toBe(true);
-    expect(deps.auditLogger.log).toHaveBeenCalledWith(expect.objectContaining({
-      type: "error",
-      output: expect.stringContaining("[sandbox-status:contract-violation]"),
-    }));
+    expect(capture.events).toContainEqual({ event: "sandbox_status_contract_violation" });
   });
 });
 

@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi, onTestFinished } from "vitest";
+import { collectPermissionEvents } from "../../__tests__/support/permission-events.js";
 import type { IpcMainInvokeEvent } from "electron";
 import { hostFrameEvent, isolatedAppFrameEvent } from "../../__tests__/test-helpers.js";
 import { PERMISSIONS } from "../../shared/ipc-channels.js";
@@ -17,14 +18,12 @@ const event = hostFrameEvent();
 Object.assign(event.sender, { isDestroyed: () => false, mainFrame: event.senderFrame });
 const request = { sourceId: "user", fileName: "pre-review.sh", expectedSha256: "a".repeat(64), action: "accept" };
 const intent = { inputOrigin: "user-keyboard", userActivation: true };
-const audit = { log: vi.fn() };
 
 beforeEach(() => {
   handlers.clear(); vi.clearAllMocks();
   review.mockResolvedValue({ ok: true, verb: "accept" });
   list.mockReturnValue({ ok: true, verb: "list", active: [], disabled: [] });
-  registerPermissionsHandlers({ conversationLoop: { getSessionProjectRoot: () => "/workspace/project" }, auditLogger: audit,
-    scriptHookManager: manager, getAppWindows: () => [{ isDestroyed: () => false, webContents: event.sender }] } as never);
+  registerPermissionsHandlers({ conversationLoop: { getSessionProjectRoot: () => "/workspace/project" }, scriptHookManager: manager, getAppWindows: () => [{ isDestroyed: () => false, webContents: event.sender }] } as never);
 });
 
 function handler(channel: string) {
@@ -36,6 +35,8 @@ const invoke = (sender: IpcMainInvokeEvent, payload: unknown) => handler(PERMISS
 
 describe("hook trust review IPC", () => {
   it("requires a registered native host frame and active user gesture", async () => {
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
     expect(CHANNEL_GESTURE[PERMISSIONS.hookTrustReview]).toBe("required");
     expect(await invoke(isolatedAppFrameEvent(), { ...request, intent })).toMatchObject({ error: "unauthorized-frame" });
     const unregistered = hostFrameEvent();
@@ -46,7 +47,14 @@ describe("hook trust review IPC", () => {
     expect(review).not.toHaveBeenCalled();
     expect(await invoke(event, { ...request, intent })).toEqual({ ok: true });
     expect(review).toHaveBeenCalledWith(manager, request, "/workspace/project");
-    expect(audit.log).toHaveBeenCalledWith(expect.objectContaining({ output: expect.stringContaining("hook_trust_reviewed") }));
+    expect(capture.events.filter(({ event }) => event === "hook_trust_reviewed")).toEqual([{ event: "hook_trust_reviewed", action: "accept" }]);
+  });
+
+  it("logs the validated disable action", async () => {
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
+    expect(await invoke(event, { ...request, action: "disable", intent })).toEqual({ ok: true });
+    expect(capture.events).toContainEqual({ event: "hook_trust_reviewed", action: "disable" });
   });
 
   it("rejects malformed hashes and actions before accessing trust state", async () => {

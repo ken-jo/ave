@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MemorySecretStore } from "../../audit/hmac-chain.js";
+import { MemorySecretStore } from "../../lib/protected-secret-store.js";
 import type { FeatureNamespaceHandle } from "../storage/feature-namespace.js";
 import { createTailnetPairedSharingRuntime } from "../tailnet-paired-sharing-runtime.js";
 import { createTailnetSharingOwnerService } from "../tailnet-sharing-owner-service.js";

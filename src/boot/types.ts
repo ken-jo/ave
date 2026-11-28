@@ -17,8 +17,6 @@ import type { McpManager } from "../mcp/mcp-manager.js";
 import type { PluginLoopbackManager } from "../mcp/plugin-loopback-manager.js";
 import type { IdleSchedulerService } from "../main/idle-scheduler.js";
 import type { BashAstValidator } from "../main/bash-ast-validator.js";
-import type { AuditService } from "../main/audit-service.js";
-import type { AuditLogger } from "../audit/audit-logger.js";
 import type { PostTurnHookChain } from "../hooks/post-turn-hook-chain.js";
 import type { ApprovalGate } from "../permissions/approval-gate.js";
 import type { ApprovalSentenceSelector } from "../permissions/reviewer/approval-sentence-selector.js";
@@ -148,9 +146,6 @@ export interface AppServices {
   memoryConsolidationService?: MemoryConsolidationService;
   memoryMaintenanceCoordinator?: MemoryMaintenanceCoordinator;
   bashAstValidator: BashAstValidator;
-  auditService: AuditService;
-  /** A3; structured audit logger (JSONL, ~/.ave/audit/) */
-  auditLogger: AuditLogger;
   postTurnHookChain: PostTurnHookChain;
   /** B1: approval gate, created after mainWindow is ready. */
   approvalGate?: ApprovalGate;

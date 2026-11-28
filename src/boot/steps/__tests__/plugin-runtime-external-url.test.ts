@@ -1,4 +1,5 @@
-import { describe, it, expect, vi } from "vitest";
+import { collectPermissionEvents } from "../../../__tests__/support/permission-events.js";
+import { describe, it, expect, vi, onTestFinished } from "vitest";
 import { EXTERNAL_LINK_PARTITION, routeExternalUrl } from "../plugin-runtime.js";
 import type { SettingsService } from "../../../data/settings-store.js";
 
@@ -7,12 +8,11 @@ function makeStub(initial: "in-app" | "system-browser" = "in-app") {
   const settingsService = {
     get: vi.fn((section: string) => (section === "webView" ? webView : undefined)),
   } as unknown as SettingsService;
-  const bootAuditLogger = { log: vi.fn() };
-  const openLinkWindowService = vi.fn(async () => {});
+
+  const openLinkWindowService = vi.fn(async (_options: { persistPartition?: string }) => {});
   const shellOpenExternal = vi.fn(async () => {});
   return {
     settingsService,
-    bootAuditLogger,
     openLinkWindowService,
     shellOpenExternal,
     setFlow(next: "in-app" | "system-browser") {
@@ -99,7 +99,7 @@ describe("routeExternalUrl (§B3)", () => {
 
   it("falls back to in-app when settings has no webView block", async () => {
     const settingsService = { get: vi.fn(() => undefined) } as unknown as SettingsService;
-    const bootAuditLogger = { log: vi.fn() };
+
     const openLinkWindowService = vi.fn(async () => {});
     const shellOpenExternal = vi.fn(async () => {});
 
@@ -107,7 +107,6 @@ describe("routeExternalUrl (§B3)", () => {
       url: "https://example.com",
       pluginId: "p",
       settingsService,
-      bootAuditLogger,
       openLinkWindowService,
       shellOpenExternal,
     });
@@ -159,6 +158,8 @@ describe("routeExternalUrl (§B3)", () => {
   });
 
   it("audit log records origin+path but NOT query/hash (secret-bearing)", async () => {
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
     const stub = makeStub("in-app");
     await routeExternalUrl({
       url: "https://example.com/path?token=secret&code=abcdef#frag",
@@ -166,21 +167,14 @@ describe("routeExternalUrl (§B3)", () => {
       ...stub,
     });
 
-    expect(stub.bootAuditLogger.log).toHaveBeenCalledOnce();
-    const entry = stub.bootAuditLogger.log.mock.calls[0][0] as { input: string };
-    expect(entry.input).toContain("https://example.com/path");
-    expect(entry.input).not.toContain("token=secret");
-    expect(entry.input).not.toContain("code=abcdef");
-    expect(entry.input).not.toContain("frag");
-    expect(entry.input).toContain("flow=in-app");
-    expect(entry.input).toContain("plugin:p-x");
+    expect(capture.events).toEqual([expect.objectContaining({ event: "plugin_external_url_requested", pluginId: "p-x" })]);
+    expect(JSON.stringify(capture.events)).not.toMatch(/example\.com|secret|abcdef|frag/);
   });
 
-  it("survives audit-logger crash (audit must not break host)", async () => {
+  it("still opens the link when the log sink throws", async () => {
     const stub = makeStub("system-browser");
-    stub.bootAuditLogger.log.mockImplementation(() => {
-      throw new Error("audit broken");
-    });
+    const log = vi.spyOn(console, "log").mockImplementation(() => { throw new Error("sink unavailable"); });
+    onTestFinished(() => log.mockRestore());
 
     await expect(
       routeExternalUrl({ url: "https://example.com", pluginId: "p", ...stub }),

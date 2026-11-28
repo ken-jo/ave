@@ -1,4 +1,5 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, onTestFinished } from "vitest";
+import { collectPermissionEvents } from "../../__tests__/support/permission-events.js";
 import { A2AJsonRpcMethod } from "../../shared/a2a-wire.js";
 import { A2ARemoteClient } from "../a2a-remote-client.js";
 import { A2A_EXACT_SEND_REPLAY_URI, A2A_SPECIFICATION_URI, a2aRemoteLineageDigestSha256, type A2ARouteSnapshot } from "../a2a-remote-contracts.js";
@@ -93,6 +94,8 @@ describe("A2A remote exact initial replay", () => {
     const resolve = vi.fn();
     const invoke = vi.fn();
     const audit = vi.fn();
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
     const raw = `private-approval-${mode}-detail`;
     const store = new A2ARemoteDurableStore({
       namespace: {
@@ -133,6 +136,7 @@ describe("A2A remote exact initial replay", () => {
     const approvalOutcome = mode === "deny" ? "denied" : "rejected";
     expect(result).toEqual({ ok: false, outcome: "not-sent", approvalOutcome });
     expect(JSON.stringify(result)).not.toContain(raw);
+    expect(capture.events).toEqual([{ event: "remote_agent_operation", operation: "initial-send", outcome: "approval-denied", reasonCode: `foreground-approval-${approvalOutcome}` }]);
     expect(disk).toBeUndefined();
     expect(prepareSecret).not.toHaveBeenCalled();
     expect(resolve).not.toHaveBeenCalled();
@@ -165,8 +169,12 @@ describe("A2A remote exact initial replay", () => {
     const replay = await client.execute({ operationId: "op", attemptId: "replay", operation: "replay", authorization, lineage, intendedCredentialRevisionId: 12, predecessorCredentialRevisionId: 11, request: { id: 999, method: A2AJsonRpcMethod.SEND_MESSAGE, params: { message: { messageId: "message-1", role: "ROLE_USER", parts: [{ text: "must-not-serialize" }] } } }, messageId: "message-1" });
     expect(replay).toMatchObject({ ok: false, outcome: "unknown-manual-reconciliation-required" });
     expect((disk as { payloads: unknown[] }).payloads).toHaveLength(1);
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
     const replayAgain = await client.execute({ operationId: "op", attemptId: "replay-again", operation: "replay", authorization, lineage, intendedCredentialRevisionId: 13, predecessorCredentialRevisionId: 12, request: { id: 1_000, method: A2AJsonRpcMethod.SEND_MESSAGE, params: { message: { messageId: "message-1", role: "ROLE_USER", parts: [{ text: "also-must-not-serialize" }] } } }, messageId: "message-1" });
     expect(replayAgain).toMatchObject({ ok: true });
+    expect(capture.events).toContainEqual({ event: "remote_agent_operation", operation: "replay", outcome: "settled", reasonCode: "success" });
+    expect(JSON.stringify(capture.events)).not.toContain("must-not-serialize");
     expect((disk as { payloads: unknown[] }).payloads).toHaveLength(0);
     expect((disk as { attempts: Array<{ prepared: Record<string, unknown> }> }).attempts
       .find((entry) => entry.prepared.attemptId === "first")?.prepared)

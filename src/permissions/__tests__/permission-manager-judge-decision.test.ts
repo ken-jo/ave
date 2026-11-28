@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { join } from "node:path";
+import { collectPermissionEvents } from "../../__tests__/support/permission-events.js";
 import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 import { PermissionManager } from "../permission-manager.js";
 import { makeRecentlyDeniedStore } from "../../__tests__/support/recently-denied.js";
@@ -8,7 +9,7 @@ import type { RiskVerdict } from "../reviewer/risk-classifier.js";
 import { PermissionTestResources } from "./test-resources.js";
 
 const resources = new PermissionTestResources();
-afterEach(() => resources.cleanup());
+afterEach(() => { vi.restoreAllMocks(); return resources.cleanup(); });
 
 type DecisionCase = {
   name: string;
@@ -29,13 +30,14 @@ const CASES: DecisionCase[] = [
 ];
 
 describe("PermissionManager builtin judge decisions", () => {
-  it.each(CASES)("$name with preserved verdict and audit evidence", async ({ lane, verdict, decision }) => {
+  it.each(CASES)("$name with preserved verdict and decision event", async ({ lane, verdict, decision }) => {
     const root = resources.makeTmpDir("ave-manager-judge-decision-");
     const manager = new PermissionManager(join(root, "permissions.json"));
     manager.setMode("auto");
 
     const queue = makeRecentlyDeniedStore(join(root, "deferred.jsonl"));
-    const audit = setReviewerForTest(manager, {
+    const capture = collectPermissionEvents();
+    setReviewerForTest(manager, {
       classifier: { classify: () => verdict },
       cache: resources.makeVerdictCache(join(root, "verdicts.jsonl")), recentlyDenied: queue,
     });
@@ -53,11 +55,10 @@ describe("PermissionManager builtin judge decisions", () => {
       expect(result.outcome).toBe(expectedOutcome);
       expect(result.judge).toMatchObject({ judged: true, decision, applied: true, source: "judge" });
     }
-    expect(audit.active).toHaveLength(2);
-    expect(audit.active).toEqual(expect.arrayContaining([expect.objectContaining({
-      decision: "judge", judgeRecord: expect.objectContaining({ decision, lane }),
-    })]));
-    expect(audit.shadow).toHaveLength(0);
+    expect(capture.events.filter((event) => event.event === "permission_judge")).toEqual([
+      expect.objectContaining({ decision, lane, applied: true }),
+      expect.objectContaining({ decision, lane, applied: true }),
+    ]);
     expect(await queue.list()).toHaveLength(0);
   });
 });

@@ -1,6 +1,6 @@
 import { abortRunningTurnsForExit } from "../engine/turn/turn-journal.js";
 import { HostExitAbortError } from "../shared/host-exit-abort.js";
-import { sealToolInvocations, closeToolInvocationAudit } from "../tools/invocation-ledger.js";
+import { sealToolInvocations, closeToolInvocations } from "../tools/invocation-ledger.js";
 import { requireDesktopHost } from "./host-runtime.js";
 /** Lifecycle closures share mutable boot context so timers and event disposers survive window recreation. */
 import {
@@ -65,8 +65,6 @@ export function assembleAppServices(ctx: ReadyBootContext): AppServices {
     memoryConsolidationService: ctx.memoryConsolidationService,
     memoryMaintenanceCoordinator: ctx.memoryMaintenanceCoordinator,
     bashAstValidator: ctx.bashAstValidator,
-    auditService: ctx.auditService,
-    auditLogger: ctx.bootAuditLogger,
     postTurnHookChain: ctx.postTurnHookChain,
     approvalGate: ctx.approvalGate,
     rewireReviewerAgent: ctx.rewireReviewerAgent,
@@ -79,7 +77,7 @@ export function assembleAppServices(ctx: ReadyBootContext): AppServices {
     workBoardStore: ctx.workBoardStore,
     alertsService: ctx.alertsService,
     workBoardEngine: ctx.workBoardEngine,
-    tailnetWorkDecisions: createTailnetWorkDecisions({ ...ctx, auditLogger: ctx.bootAuditLogger }),
+    tailnetWorkDecisions: createTailnetWorkDecisions(ctx),
     workBoardReport: ctx.workBoardReporter,
     sessionTasksStore: ctx.sessionTasksStore,
     sessionGoalStore: ctx.sessionGoalStore,
@@ -150,8 +148,7 @@ export function assembleAppServices(ctx: ReadyBootContext): AppServices {
         attempt(() => ctx.askUserQuestionGate.disposeAll());
         attempt(() => ctx.mcpGovernance.stopPolicyRefresh());
         await attemptAsync(() => ctx.mcpManager.disconnectAll());
-        await attemptAsync(async () => { await closeToolInvocationAudit(() => ctx.bootAuditLogger.close()); });
-        await attemptAsync(() => ctx.auditService.stop());
+        await attemptAsync(async () => { await closeToolInvocations(); });
         await attemptAsync(() => ctx.tracing.shutdown());
 
         if (errors.length > 0) {

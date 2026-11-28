@@ -40,7 +40,7 @@ function isValidUserIntent(value: unknown): value is string {
 export function registerRemoteA2AHandlers(deps: IpcDeps): void {
   ipcMain.handle(CHANNELS.remoteA2a.targets, (event) => {
     if (!validateHostRendererSender(event)) {
-      auditUnauthorized(deps.auditLogger, CHANNELS.remoteA2a.targets, event);
+      auditUnauthorized(CHANNELS.remoteA2a.targets);
       return UNAUTHORIZED_FRAME;
     }
     const controller = deps.remoteA2AActionController;
@@ -54,7 +54,7 @@ export function registerRemoteA2AHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.remoteA2a.status, (event) => {
     if (!validateHostRendererSender(event)) {
-      auditUnauthorized(deps.auditLogger, CHANNELS.remoteA2a.status, event);
+      auditUnauthorized(CHANNELS.remoteA2a.status);
       return UNAUTHORIZED_FRAME;
     }
     const controller = deps.remoteA2AActionController;
@@ -70,7 +70,7 @@ export function registerRemoteA2AHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.remoteA2a.tasks, (event) => {
     if (!validateHostRendererSender(event)) {
-      auditUnauthorized(deps.auditLogger, CHANNELS.remoteA2a.tasks, event);
+      auditUnauthorized(CHANNELS.remoteA2a.tasks);
       return UNAUTHORIZED_FRAME;
     }
     const controller = deps.remoteA2AActionController;
@@ -84,7 +84,7 @@ export function registerRemoteA2AHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.remoteA2a.send, async (event, payload: unknown) => {
     if (!validateHostRendererSender(event)) {
-      auditUnauthorized(deps.auditLogger, CHANNELS.remoteA2a.send, event);
+      auditUnauthorized(CHANNELS.remoteA2a.send);
       return UNAUTHORIZED_FRAME;
     }
     const controller = deps.remoteA2AActionController;
@@ -111,7 +111,7 @@ export function registerRemoteA2AHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.remoteA2a.task, async (event, payload: unknown) => {
     if (!validateHostRendererSender(event)) {
-      auditUnauthorized(deps.auditLogger, CHANNELS.remoteA2a.task, event);
+      auditUnauthorized(CHANNELS.remoteA2a.task);
       return UNAUTHORIZED_FRAME;
     }
     const controller = deps.remoteA2AActionController;
@@ -132,7 +132,7 @@ export function registerRemoteA2AHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.remoteA2a.action, async (event, payload: unknown) => {
     if (!validateHostRendererSender(event)) {
-      auditUnauthorized(deps.auditLogger, CHANNELS.remoteA2a.action, event);
+      auditUnauthorized(CHANNELS.remoteA2a.action);
       return UNAUTHORIZED_FRAME;
     }
     const controller = deps.remoteA2AActionController;

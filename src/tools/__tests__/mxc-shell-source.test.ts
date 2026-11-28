@@ -39,6 +39,8 @@ describe("stage workspace session contract", () => {
     expect(posixRunner.match(/createAveHomeBoundarySnapshot\(/gu)).toEqual(["createAveHomeBoundarySnapshot("]);
     expect(posixRunner).toContain("const boundary = createAveHomeBoundarySnapshot(input.sessionId);");
     expect(posixRunner).toContain("const launch = await boundary.run(() => prepareMxcPosixShellLaunch({");
+    // An over-cap profile is named to the user with its remedy, not as a raw builder error.
+    expect(posixRunner).toContain('isSeatbeltProfileTooLarge(error) ? { output: t("sandboxPolicy.containerShellProfileTooLarge")');
     for (const [start, end] of [["export async function spawnWithSandbox(", "async function spawnWithTimeout("], ["async function spawnPowerShellWithSandbox(", "async function spawnPowerShellInMxc("]] as const) {
       const route = shellTools.slice(shellTools.indexOf(start), shellTools.indexOf(end));
       const call = route.indexOf("return await runPosixContainerShell({");

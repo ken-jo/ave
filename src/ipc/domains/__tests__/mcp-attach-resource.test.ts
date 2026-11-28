@@ -63,7 +63,6 @@ async function setup(
     toolRegistry: { size: 0, findByName: vi.fn() },
     getPluginToolInvoker: () => vi.fn(),
     settingsService: { get: vi.fn(() => ({})) },
-    auditLogger: { log: vi.fn() },
     pluginMarketplace: { list: vi.fn(async () => []) },
     conversationLoop: { getSessionId: vi.fn(() => "session-live"), queueGuidance: vi.fn() },
     notificationService: { fire: vi.fn() },

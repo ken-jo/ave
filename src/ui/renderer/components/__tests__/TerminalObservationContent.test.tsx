@@ -9,7 +9,7 @@ import { TerminalObservationCommands, useTerminalObservation } from "../Terminal
 import { OBSERVATION_LIMITS, type AgentObservationEvent, type TerminalObservedCommand, type ObservationResponse } from "../../../../shared/agent-observation.js";
 import { en } from "../../../../i18n/messages/en.js";
 import type { EgressGrantScope } from "../../../../shared/egress-grant-scopes.js";
-import type { EgressDecisionBasis } from "../../../../audit/sandbox-audit.js";
+import type { EgressDecisionBasis } from "../../../../permissions/egress-observation.js";
 import { ko } from "../../../../i18n/messages/ko.js";
 
 function TerminalObservationHarness({ sessionId, observe, retryKey }: { sessionId?: string; observe: boolean; retryKey?: number }) {

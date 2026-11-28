@@ -2,6 +2,7 @@ import "../../../../../test/renderer/setup.js";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ChatTab } from "../ChatTab.js";
+import { getLocale, setLocale } from "../../../../i18n/runtime.js";
 import { makeMockAveApi } from "../../../../../test/renderer/mock-ave-api.js";
 
 beforeEach(() => {
@@ -128,5 +129,25 @@ describe('sub-agent round budget validation', () => {
     fireEvent.blur(input); expect(save).not.toHaveBeenCalled();
     fireEvent.change(input, { target: { value: '1000' } }); fireEvent.blur(input);
     expect(save).toHaveBeenCalledExactlyOnceWith(1000); expect(input).toHaveValue(1000);
+  });
+});
+
+describe("ChatTab automatic skill memory", () => {
+  it.each([
+    ["en", "Automatically improve skill memory"],
+    ["ko", "스킬 메모리 자동 개선"],
+  ] as const)("starts enabled and can be turned off in %s", (locale, name) => {
+    const previous = getLocale();
+    setLocale(locale);
+    try {
+      const setAutomaticSkillMemory = vi.fn();
+      renderChatTab({ setAutomaticSkillMemory });
+      const toggle = screen.getByRole("switch", { name });
+      expect(toggle).toHaveAttribute("aria-checked", "true");
+      fireEvent.click(toggle);
+      expect(setAutomaticSkillMemory).toHaveBeenCalledExactlyOnceWith(false);
+    } finally {
+      setLocale(previous);
+    }
   });
 });

@@ -1,5 +1,6 @@
+import { collectPermissionEvents } from "../../__tests__/support/permission-events.js";
 // Audit notification metadata, never the body, which may contain PII.
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from "vitest";
 import {
   NotificationService,
   IPC_NOTIFICATION_TOAST,
@@ -7,7 +8,6 @@ import {
   NOTIFICATION_KINDS,
   __test,
 } from "../notification-service.js";
-import type { AuditLogger } from "../../audit/audit-logger.js";
 
 interface MockWindow {
   isDestroyed: () => boolean;
@@ -18,6 +18,10 @@ interface MockWindow {
   restore: () => void;
   webContents: { send: (channel: string, payload: unknown) => void; isDestroyed: () => boolean; on: (...args: unknown[]) => void; once: (...args: unknown[]) => void };
 }
+
+let notificationLogs: ReturnType<typeof collectPermissionEvents>;
+beforeEach(() => { notificationLogs = collectPermissionEvents(); });
+afterEach(() => notificationLogs.restore());
 
 function makeMockWindow(opts: {
   destroyed?: boolean;
@@ -54,12 +58,6 @@ function createService(
   });
   if (win && !win.isDestroyed()) service.setHistorySubscriber(win.webContents as unknown as Electron.WebContents, true);
   return service;
-}
-
-function makeMockAuditLogger(): AuditLogger {
-  // Only `log` is used by NotificationService; cast through unknown so we don't have to stub the full AuditLogger surface.
-  const logger = { log: vi.fn() };
-  return logger as unknown as AuditLogger;
 }
 
 interface FactoryCall {
@@ -151,18 +149,15 @@ describe("NotificationService — body truncation", () => {
 });
 
 describe("NotificationService — routing decision", () => {
-  let auditLogger: AuditLogger;
   let factoryStub: ReturnType<typeof makeNotificationFactoryStub>;
 
   beforeEach(() => {
-    auditLogger = makeMockAuditLogger();
     factoryStub = makeNotificationFactoryStub();
   });
 
   it("focused, non-minimized system notification → in-app toast IPC", () => {
     const win = makeMockWindow({ focused: true, minimized: false });
     const svc = createService(win, factoryStub.factory, {
-      auditLogger,
       isAnyWindowFocused: () => true, // multi-window probe: main is focused
     });
     svc.fire({
@@ -182,12 +177,8 @@ describe("NotificationService — routing decision", () => {
     );
     expect(factoryStub.calls.length).toBe(0);
     // Audit: gate=in-app
-    const log = (auditLogger.log as unknown as ReturnType<typeof vi.fn>).mock.calls[0][0];
-    expect(log.input).toContain('"gate":"in-app"');
-    expect(log.input).toContain('"kind":"system"');
-    expect(log.input).toContain('"title":"동기화 완료"');
-    // Body MUST NOT appear in audit (PII).
-    expect(log.input).not.toContain("hello world");
+    expect(notificationLogs.events[0]).toMatchObject({ event: "notification_created", gate: "in-app", kind: "system" });
+    expect(JSON.stringify(notificationLogs.events)).not.toMatch(/hello world|동기화 완료/);
   });
 
   describe.each([
@@ -197,7 +188,7 @@ describe("NotificationService — routing decision", () => {
   ])("$label history delivery", ({ focused, minimized, osCount }) => {
     it.each(["system", "routine", "plugin", "alert", "turn-end"] as const)("records %s exactly once with the existing payload", (kind) => {
       const win = makeMockWindow({ focused, minimized });
-      const svc = createService(win, factoryStub.factory, { auditLogger, isAnyWindowFocused: () => focused });
+      const svc = createService(win, factoryStub.factory, { isAnyWindowFocused: () => focused });
       const contextRef = { sessionId: "history-session" };
       expect(svc.deliver({ kind, title: "Event", body: "Record body", contextRef, sticky: true }))
         .toEqual({ accepted: true, toast: win.webContents });
@@ -206,41 +197,41 @@ describe("NotificationService — routing decision", () => {
       });
       expect(factoryStub.calls).toHaveLength(osCount);
       if (osCount > 0) expect(factoryStub.calls[0].show).toHaveBeenCalledOnce();
-      const fired = vi.mocked(auditLogger.log).mock.calls.map(([entry]) => JSON.parse(String(entry.input)))
-        .filter((entry) => entry.event === "notification.fired");
+      const fired = notificationLogs.events
+        .filter((entry) => entry.event === "notification_created");
       expect(fired).toEqual([expect.objectContaining({ kind, gate: osCount > 0 ? "os" : "in-app" })]);
-      expect(vi.mocked(auditLogger.log).mock.calls.every(([entry]) => !String(entry.input).includes("Record body"))).toBe(true);
+      expect(notificationLogs.events.every((entry) => !JSON.stringify(entry).includes("Record body"))).toBe(true);
     });
   });
 
   it("retains an unfocused history recipient without accepting a failed OS delivery", () => {
     const win = makeMockWindow({ focused: false });
-    const svc = createService(win, () => { throw new Error("notification backend unavailable"); }, { auditLogger });
+    const svc = createService(win, () => { throw new Error("notification backend unavailable"); }, {  });
     // Renderer receipt cannot prove visibility; callers must not acknowledge a pending notice after its OS delivery failed.
     expect(svc.deliver({ kind: "system", title: "Event", body: "History survives" }))
       .toEqual({ accepted: false, toast: win.webContents });
     expect(win.webContents.send).toHaveBeenCalledExactlyOnceWith(IPC_NOTIFICATION_TOAST, expect.objectContaining({ body: "History survives" }));
-    expect(JSON.parse(String(vi.mocked(auditLogger.log).mock.calls[0][0].input)))
-      .toMatchObject({ event: "notification.fired", gate: "in-app" });
+    expect(notificationLogs.events[0])
+      .toMatchObject({ event: "notification_created", gate: "in-app" });
   });
 
   it("does not acknowledge a forced OS notice merely because the alive renderer accepted its record", () => {
     const win = makeMockWindow({ focused: true });
     const osFactory = vi.fn(() => { throw new Error("notification backend unavailable"); });
-    const svc = createService(win, osFactory, { auditLogger, isAnyWindowFocused: () => true });
+    const svc = createService(win, osFactory, { isAnyWindowFocused: () => true });
     expect(svc.deliver({ kind: "system", title: "Boundary repaired", body: "Review the repaired boundary", bypassFocusGate: true }))
       .toEqual({ accepted: false, toast: win.webContents });
     expect(osFactory).toHaveBeenCalledOnce();
     expect(win.webContents.send).toHaveBeenCalledExactlyOnceWith(IPC_NOTIFICATION_TOAST,
       expect.objectContaining({ kind: "system", title: "Boundary repaired" }));
-    expect(JSON.parse(String(vi.mocked(auditLogger.log).mock.calls[0][0].input)))
-      .toMatchObject({ event: "notification.fired", gate: "in-app" });
+    expect(notificationLogs.events[0])
+      .toMatchObject({ event: "notification_created", gate: "in-app" });
   });
 
   it("still delivers an OS notification when a background history send fails", () => {
     const win = makeMockWindow({ focused: false });
     win.webContents.send.mockImplementation(() => { throw new Error("window destroyed during delivery"); });
-    const svc = createService(win, factoryStub.factory, { auditLogger });
+    const svc = createService(win, factoryStub.factory, {  });
     expect(svc.deliver({ kind: "system", title: "Event", body: "OS survives" })).toEqual({ accepted: true });
     expect(factoryStub.calls).toHaveLength(1);
     expect(factoryStub.calls[0].show).toHaveBeenCalledOnce();
@@ -251,20 +242,20 @@ describe("NotificationService — routing decision", () => {
     let focused = true;
     const clock = vi.spyOn(performance, "now").mockReturnValue(100_000);
     try {
-      const svc = createService(win, factoryStub.factory, { auditLogger, isAnyWindowFocused: () => focused });
+      const svc = createService(win, factoryStub.factory, { isAnyWindowFocused: () => focused });
       const notice = { kind, title: "Request", body: "private request body" };
       expect(svc.deliver(notice)).toEqual({ accepted: true });
       expect(win.webContents.send).not.toHaveBeenCalled();
       expect(factoryStub.calls).toHaveLength(0);
-      const logs = vi.mocked(auditLogger.log).mock.calls;
-      expect(JSON.parse(String(logs[0][0].input))).toMatchObject({
-        event: "notification.handled", kind, gate: "in-app", surface: "card",
+      const logs = notificationLogs.events;
+      expect(logs[0]).toMatchObject({
+        event: "notification_created", kind, gate: "in-app", surface: "card",
       });
-      expect(logs[0][0].input).not.toContain(notice.body);
+      expect(JSON.stringify(logs[0])).not.toContain(notice.body);
       if (kind === "approval") {
         // Card handling still consumes the existing approval cooldown.
         expect(svc.deliver(notice)).toEqual({ accepted: false });
-        expect(JSON.parse(String(logs[1][0].input))).toMatchObject({ event: "notification.suppressed", reason: "cooldown" });
+        expect(logs[1]).toMatchObject({ event: "notification_suppressed", reasonCode: "cooldown" });
       }
       focused = false;
       clock.mockReturnValue(103_000);
@@ -272,14 +263,14 @@ describe("NotificationService — routing decision", () => {
       expect(factoryStub.calls).toHaveLength(1);
       expect(factoryStub.calls[0].show).toHaveBeenCalledOnce();
       expect(win.webContents.send).not.toHaveBeenCalled();
-      expect(JSON.parse(String(logs.at(-1)?.[0].input))).toMatchObject({ event: "notification.fired", kind, gate: "os" });
+      expect(logs.at(-1)).toMatchObject({ event: "notification_created", kind, gate: "os" });
     } finally { clock.mockRestore(); }
   });
 
   it("records a focused completion without an OS cue or OS cooldown consumption", () => {
     const win = makeMockWindow({ focused: true, minimized: false });
     let anyFocused = true;
-    const svc = createService(win, factoryStub.factory, { auditLogger, isAnyWindowFocused: () => anyFocused });
+    const svc = createService(win, factoryStub.factory, { isAnyWindowFocused: () => anyFocused });
     const perfBase = performance.now();
     vi.spyOn(performance, "now").mockImplementation(() => perfBase);
 
@@ -292,14 +283,14 @@ describe("NotificationService — routing decision", () => {
 
     expect(win.webContents.send).toHaveBeenCalledWith(IPC_NOTIFICATION_TOAST, expect.objectContaining({ kind: "turn-end", body: "hello world" }));
     expect(factoryStub.calls.length).toBe(0);
-    const suppressedLog = (auditLogger.log as unknown as ReturnType<typeof vi.fn>).mock.calls[0][0];
-    const suppressed = JSON.parse(suppressedLog.input);
+    const suppressedLog = notificationLogs.events[0];
+    const suppressed = suppressedLog;
     expect(suppressed).toMatchObject({
-      event: "notification.suppressed",
+      event: "notification_suppressed",
       kind: "turn-end",
-      reason: "foreground",
+      reasonCode: "foreground",
     });
-    expect(suppressedLog.input).not.toContain("hello world");
+    expect(JSON.stringify(suppressedLog)).not.toContain("hello world");
 
     anyFocused = false;
     vi.spyOn(performance, "now").mockImplementation(() => perfBase + 1_000);
@@ -317,7 +308,7 @@ describe("NotificationService — routing decision", () => {
 
   it("system notifications route through the same in-app toast path", () => {
     const win = makeMockWindow({ focused: true, minimized: false });
-    const svc = createService(win, factoryStub.factory, { auditLogger, isAnyWindowFocused: () => true });
+    const svc = createService(win, factoryStub.factory, { isAnyWindowFocused: () => true });
 
     svc.fire({
       kind: "system",
@@ -332,13 +323,13 @@ describe("NotificationService — routing decision", () => {
         title: "Ave reference 업데이트 사용 가능",
       }),
     );
-    const log = (auditLogger.log as unknown as ReturnType<typeof vi.fn>).mock.calls[0][0];
-    expect(JSON.parse(log.input).kind).toBe("system");
+    const log = notificationLogs.events[0];
+    expect(log.kind).toBe("system");
   });
 
   it("minimized window → OS notification path", () => {
     const win = makeMockWindow({ focused: false, minimized: true });
-    const svc = createService(win, factoryStub.factory, { auditLogger });
+    const svc = createService(win, factoryStub.factory, {  });
     svc.fire({
       kind: "approval",
       title: "승인 필요",
@@ -358,15 +349,15 @@ describe("NotificationService — routing decision", () => {
     // body capped
     expect(call.body.length).toBe(81);
     // Audit: gate=os (parsed JSON, not substring — see critic iter 1 finding).
-    const log = (auditLogger.log as unknown as ReturnType<typeof vi.fn>).mock.calls[0][0];
-    const parsed = JSON.parse(log.input);
+    const log = notificationLogs.events[0];
+    const parsed = log;
     expect(parsed.gate).toBe("os");
     expect(parsed.kind).toBe("approval");
   });
 
   it("blurred (non-focused) window → OS path", () => {
     const win = makeMockWindow({ focused: false, minimized: false });
-    const svc = createService(win, factoryStub.factory, { auditLogger });
+    const svc = createService(win, factoryStub.factory, {  });
     svc.fire({
       kind: "ask-user",
       title: "질문 도착",
@@ -379,7 +370,7 @@ describe("NotificationService — routing decision", () => {
 
   it("destroyed window → falls through to OS path (focused returns false)", () => {
     const win = makeMockWindow({ destroyed: true, focused: true });
-    const svc = createService(win, factoryStub.factory, { auditLogger });
+    const svc = createService(win, factoryStub.factory, {  });
     svc.fire({ kind: "routine", title: "wakeup 완료", body: "morning briefing" });
     expect(win.webContents.send).not.toHaveBeenCalled();
     expect(factoryStub.calls.length).toBe(1);
@@ -387,7 +378,7 @@ describe("NotificationService — routing decision", () => {
 
   it("approval kind defaults urgent=true (urgency=critical) and leaves its sound to the approval-needed signal", () => {
     const win = makeMockWindow({ focused: false });
-    const svc = createService(win, factoryStub.factory, { auditLogger });
+    const svc = createService(win, factoryStub.factory, {  });
     svc.fire({ kind: "approval", title: "승인 필요", body: "do thing?" });
     expect(factoryStub.calls[0].silent).toBe(true);
     expect(factoryStub.calls[0].urgency).toBe("critical");
@@ -397,13 +388,12 @@ describe("NotificationService — routing decision", () => {
 describe("NotificationService — quiet flags", () => {
   it("isTestEnv true → no-op (no audit, no IPC, no factory call)", () => {
     const win = makeMockWindow({ focused: true });
-    const auditLogger = makeMockAuditLogger();
     const factoryStub = makeNotificationFactoryStub();
-    const svc = createService(win, factoryStub.factory, { auditLogger, isTestEnv: () => true });
+    const svc = createService(win, factoryStub.factory, { isTestEnv: () => true });
     svc.fire({ kind: "turn-end", title: "x", body: "y" });
     expect(win.webContents.send).not.toHaveBeenCalled();
     expect(factoryStub.calls.length).toBe(0);
-    expect((auditLogger.log as unknown as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0);
+    expect(notificationLogs.events.length).toBe(0);
   });
 
   it("isReady false → no-op", () => {
@@ -461,9 +451,8 @@ describe("NotificationService — click handler", () => {
 describe("NotificationService — per-kind rate limit (M4)", () => {
   it("turn-end: 3 rapid fires within cooldown → only 1 fires; suppressions audited", () => {
     const win = makeMockWindow({ focused: false, minimized: false });
-    const auditLogger = makeMockAuditLogger();
     const factoryStub = makeNotificationFactoryStub();
-    const svc = createService(win, factoryStub.factory, { auditLogger });
+    const svc = createService(win, factoryStub.factory, {  });
     // Fire 3 within 1s — cooldown is 30s for turn-end, so only the first fires. Cooldown now uses performance.now() (monotonic) — stub it to control timing.
     const perfBase = performance.now();
     vi.spyOn(performance, "now").mockImplementation(() => perfBase);
@@ -474,20 +463,18 @@ describe("NotificationService — per-kind rate limit (M4)", () => {
     svc.fire({ kind: "turn-end", title: "응답", body: "c" });
     expect(factoryStub.calls.length).toBe(1);
     // Audit: 1 fired + 2 suppressed.
-    const logs = (auditLogger.log as unknown as ReturnType<typeof vi.fn>).mock.calls.map(
-      (c) => c[0].input as string,
-    );
-    expect(logs.filter((l) => l.includes('"event":"notification.fired"')).length).toBe(1);
-    expect(logs.filter((l) => l.includes('"event":"notification.suppressed"')).length).toBe(2);
-    expect(logs.filter((l) => l.includes('"reason":"cooldown"')).length).toBe(2);
+    const logs = notificationLogs.events.map((entry) => JSON.stringify(entry));
+    expect(logs.filter((l) => l.includes('"event":"notification_created"')).length).toBe(1);
+    expect(logs.filter((l) => l.includes('"event":"notification_suppressed"')).length).toBe(2);
+    expect(logs.filter((l) => l.includes('"reasonCode":"cooldown"')).length).toBe(2);
     vi.restoreAllMocks();
   });
 
   it("turn-end: 4th fire after cooldown elapses succeeds", () => {
     const win = makeMockWindow({ focused: false, minimized: false });
-    const auditLogger = makeMockAuditLogger();
+
     const factoryStub = makeNotificationFactoryStub();
-    const svc = createService(win, factoryStub.factory, { auditLogger });
+    const svc = createService(win, factoryStub.factory, {  });
     const perfBase = performance.now();
     vi.spyOn(performance, "now").mockImplementation(() => perfBase);
     svc.fire({ kind: "turn-end", title: "응답", body: "a" });
@@ -561,9 +548,9 @@ describe("NotificationService — per-kind rate limit (M4)", () => {
 describe("NotificationService — title sanitization (M1)", () => {
   it("strips control chars from title before send", () => {
     const win = makeMockWindow({ focused: true });
-    const auditLogger = makeMockAuditLogger();
+
     const factoryStub = makeNotificationFactoryStub();
-    const svc = createService(win, factoryStub.factory, { auditLogger, isAnyWindowFocused: () => true });
+    const svc = createService(win, factoryStub.factory, { isAnyWindowFocused: () => true });
     svc.fire({
       kind: "routine",
       title: "wake\nup\r\x1b[1m완료",
@@ -617,8 +604,7 @@ describe("NotificationService — bypassFocusGate (#843)", () => {
   it("bypassFocusGate=true + focused window → OS path fires (critical notification)", () => {
     const win = makeMockWindow({ focused: true, minimized: false });
     const factoryStub = makeNotificationFactoryStub();
-    const auditLogger = makeMockAuditLogger();
-    const svc = createService(win, factoryStub.factory, { auditLogger, isAnyWindowFocused: () => true });
+    const svc = createService(win, factoryStub.factory, { isAnyWindowFocused: () => true });
     svc.fire({
       kind: "plugin",
       title: "meeting.starting-soon",
@@ -632,8 +618,8 @@ describe("NotificationService — bypassFocusGate (#843)", () => {
       expect.anything(),
     );
     // Audit reflects gate=os (parsed JSON property, not substring).
-    const log = (auditLogger.log as unknown as ReturnType<typeof vi.fn>).mock.calls[0][0];
-    const parsed = JSON.parse(log.input);
+    const log = notificationLogs.events[0];
+    const parsed = log;
     expect(parsed.gate).toBe("os");
   });
 
@@ -650,9 +636,8 @@ describe("NotificationService — bypassFocusGate (#843)", () => {
 describe("NotificationService — plugin kind cooldown (#841)", () => {
   it("plugin: 5s cooldown coalesces back-to-back fires", () => {
     const win = makeMockWindow({ focused: false, minimized: false });
-    const auditLogger = makeMockAuditLogger();
     const factoryStub = makeNotificationFactoryStub();
-    const svc = createService(win, factoryStub.factory, { auditLogger, isAnyWindowFocused: () => false });
+    const svc = createService(win, factoryStub.factory, { isAnyWindowFocused: () => false });
     const perfBase = performance.now();
     vi.spyOn(performance, "now").mockImplementation(() => perfBase);
     svc.fire({ kind: "plugin", title: "a", body: "1" });
@@ -661,10 +646,8 @@ describe("NotificationService — plugin kind cooldown (#841)", () => {
     vi.spyOn(performance, "now").mockImplementation(() => perfBase + 5_500);
     svc.fire({ kind: "plugin", title: "c", body: "3" }); // succeeds
     expect(factoryStub.calls.length).toBe(2);
-    const logs = (auditLogger.log as unknown as ReturnType<typeof vi.fn>).mock.calls.map(
-      (c) => c[0].input as string,
-    );
-    expect(logs.filter((l) => l.includes('"event":"notification.suppressed"')).length).toBe(1);
+    const logs = notificationLogs.events.map((entry) => JSON.stringify(entry));
+    expect(logs.filter((l) => l.includes('"event":"notification_suppressed"')).length).toBe(1);
     vi.restoreAllMocks();
   });
 });
@@ -675,7 +658,7 @@ describe("NotificationService — alert kind", () => {
     expect(__test.COOLDOWN_MS_BY_KIND.alert).toBe(5_000);
     const win = makeMockWindow({ focused: false, minimized: false });
     const factoryStub = makeNotificationFactoryStub();
-    const svc = createService(win, factoryStub.factory, { auditLogger: makeMockAuditLogger(), isAnyWindowFocused: () => false });
+    const svc = createService(win, factoryStub.factory, { isAnyWindowFocused: () => false });
     const perfBase = performance.now();
     vi.spyOn(performance, "now").mockImplementation(() => perfBase);
     svc.fire({ kind: "alert", title: "Mail needing a reply", body: "A mail that needs your reply arrived." });
@@ -690,7 +673,6 @@ describe("NotificationService — alert kind", () => {
 
   function alertService(win: ReturnType<typeof makeMockWindow> | null, focused: boolean | (() => boolean)) {
     return createService(win, makeNotificationFactoryStub().factory, {
-      auditLogger: makeMockAuditLogger(),
       isAnyWindowFocused: typeof focused === "function" ? focused : () => focused,
     });
   }
@@ -722,9 +704,8 @@ describe("NotificationService — alert kind", () => {
 describe("NotificationService — bypassFocusGate × cooldown intersection (#843 regression)", () => {
   it("bypass=true fires even when a prior plugin emit is within cooldown window", () => {
     const win = makeMockWindow({ focused: false, minimized: false });
-    const auditLogger = makeMockAuditLogger();
     const factoryStub = makeNotificationFactoryStub();
-    const svc = createService(win, factoryStub.factory, { auditLogger, isAnyWindowFocused: () => false });
+    const svc = createService(win, factoryStub.factory, { isAnyWindowFocused: () => false });
     const perfBase = performance.now();
     vi.spyOn(performance, "now").mockImplementation(() => perfBase);
     // Routine plugin emit consumes the cooldown slot.
@@ -741,11 +722,9 @@ describe("NotificationService — bypassFocusGate × cooldown intersection (#843
     // Both fires reach the OS path.
     expect(factoryStub.calls.length).toBe(2);
     // No suppressed audit entries.
-    const logs = (auditLogger.log as unknown as ReturnType<typeof vi.fn>).mock.calls.map(
-      (c) => c[0].input as string,
-    );
+    const logs = notificationLogs.events.map((entry) => JSON.stringify(entry));
     expect(
-      logs.filter((l) => l.includes('"event":"notification.suppressed"')).length,
+      logs.filter((l) => l.includes('"event":"notification_suppressed"')).length,
     ).toBe(0);
     vi.restoreAllMocks();
   });
@@ -754,9 +733,8 @@ describe("NotificationService — bypassFocusGate × cooldown intersection (#843
     // bypass=true fires CONSUME the cooldown slot — the next non-bypass fire within cooldownMs is suppressed as normal. This guards against the alternate
     // bug: bypass treated as "didn't happen at all", which would let a turn-loop spam non-bypass fires without cooldown.
     const win = makeMockWindow({ focused: false, minimized: false });
-    const auditLogger = makeMockAuditLogger();
     const factoryStub = makeNotificationFactoryStub();
-    const svc = createService(win, factoryStub.factory, { auditLogger, isAnyWindowFocused: () => false });
+    const svc = createService(win, factoryStub.factory, { isAnyWindowFocused: () => false });
     const perfBase = performance.now();
     vi.spyOn(performance, "now").mockImplementation(() => perfBase);
     // Bypass fire consumes the slot.
@@ -771,11 +749,9 @@ describe("NotificationService — bypassFocusGate × cooldown intersection (#843
     // Non-bypass plugin fire — must be suppressed.
     svc.fire({ kind: "plugin", title: "routine", body: "1" });
     expect(factoryStub.calls.length).toBe(1);
-    const logs = (auditLogger.log as unknown as ReturnType<typeof vi.fn>).mock.calls.map(
-      (c) => c[0].input as string,
-    );
+    const logs = notificationLogs.events.map((entry) => JSON.stringify(entry));
     expect(
-      logs.filter((l) => l.includes('"reason":"cooldown"')).length,
+      logs.filter((l) => l.includes('"reasonCode":"cooldown"')).length,
     ).toBe(1);
     vi.restoreAllMocks();
   });
@@ -862,15 +838,13 @@ describe("NotificationService — never-throw contract (#2103)", () => {
     expect(() => svc2.fire({ kind: "system", title: "x", body: "y" })).not.toThrow();
   });
 
-  it("fire() does not throw when the audit logger throws", () => {
+  it("fire() still delivers when the log sink throws", () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => { throw new Error("sink unavailable"); });
+    onTestFinished(() => log.mockRestore());
     const win = makeMockWindow({ focused: false });
     const factoryStub = makeNotificationFactoryStub();
-    const auditLogger = {
-      log: vi.fn(() => {
-        throw new Error("audit disk full");
-      }),
-    } as unknown as AuditLogger;
-    const svc = createService(win, factoryStub.factory, { auditLogger, isAnyWindowFocused: () => false });
+
+    const svc = createService(win, factoryStub.factory, { isAnyWindowFocused: () => false });
     expect(() => svc.fire({ kind: "routine", title: "x", body: "y" })).not.toThrow();
     expect(factoryStub.calls.length).toBe(1);
   });
@@ -899,20 +873,18 @@ describe("NotificationService — never-throw contract (#2103)", () => {
 describe("turn completion notification", () => {
   it("reads the master live and suppresses without consuming cooldown even for a focus bypass", () => {
     const factory = makeNotificationFactoryStub();
-    const log = vi.fn();
     let enabled = false;
     const service = new NotificationService({
       getMainWindow: () => null,
       notificationFactory: factory.factory,
-      auditLogger: { log } as unknown as AuditLogger,
       isReady: () => true,
       isTestEnv: () => false,
       isOsNotificationsEnabled: () => enabled,
     });
     service.fire({ kind: "turn-end", title: "Done", body: "Complete", bypassFocusGate: true });
     expect(factory.calls).toHaveLength(0);
-    expect(JSON.parse(log.mock.calls[0][0].input)).toMatchObject({
-      event: "notification.suppressed", reason: "os-notifications-disabled",
+    expect(notificationLogs.events[0]).toMatchObject({
+      event: "notification_suppressed", reasonCode: "os-notifications-disabled",
     });
     enabled = true;
     service.fire({ kind: "turn-end", title: "Done", body: "Complete" });
@@ -926,9 +898,8 @@ describe("turn completion notification", () => {
   it("records completions while OS notifications are disabled without consuming the next OS cooldown", () => {
     const win = makeMockWindow({ focused: false, minimized: true });
     const factory = makeNotificationFactoryStub();
-    const auditLogger = makeMockAuditLogger();
     let enabled = false;
-    const service = createService(win, factory.factory, { auditLogger, isOsNotificationsEnabled: () => enabled });
+    const service = createService(win, factory.factory, { isOsNotificationsEnabled: () => enabled });
     const clock = vi.spyOn(performance, "now").mockReturnValue(100_000);
     try {
       expect(service.deliver({ kind: "turn-end", title: "Done", body: "First" }))
@@ -944,12 +915,12 @@ describe("turn completion notification", () => {
       service.fire({ kind: "turn-end", title: "Done", body: "Duplicate" });
       expect(factory.calls).toHaveLength(1);
       expect(win.webContents.send).toHaveBeenCalledTimes(2);
-      const logs = vi.mocked(auditLogger.log).mock.calls.map(([entry]) => JSON.parse(String(entry.input)));
-      expect(logs.map((entry) => [entry.event, entry.gate ?? entry.reason])).toEqual([
-        ["notification.suppressed", "os-notifications-disabled"],
-        ["notification.fired", "in-app"],
-        ["notification.fired", "os"],
-        ["notification.suppressed", "cooldown"],
+      const logs = notificationLogs.events;
+      expect(logs.map((entry) => [entry.event, entry.gate ?? entry.reasonCode])).toEqual([
+        ["notification_suppressed", "os-notifications-disabled"],
+        ["notification_created", "in-app"],
+        ["notification_created", "os"],
+        ["notification_suppressed", "cooldown"],
       ]);
     } finally { clock.mockRestore(); }
   });
@@ -1013,10 +984,12 @@ describe("NotificationService — fire() names the history record's window", () 
     expect(factoryStub.calls.length).toBe(1);
   });
 
-  it("keeps the toast's window when the audit logger fails after the toast", () => {
+  it("keeps the toast's window when the log sink fails after the toast", () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => { throw new Error("sink unavailable"); });
+    onTestFinished(() => log.mockRestore());
     const win = makeMockWindow({ focused: true });
-    const auditLogger = { log: vi.fn(() => { throw new Error("audit disk full"); }) } as unknown as AuditLogger;
-    const svc = createService(win, makeNotificationFactoryStub().factory, { auditLogger, isAnyWindowFocused: () => true });
+
+    const svc = createService(win, makeNotificationFactoryStub().factory, { isAnyWindowFocused: () => true });
     expect(svc.fire(notice)).toBe(win.webContents);
     expect(win.webContents.send).toHaveBeenCalledWith(IPC_NOTIFICATION_TOAST, expect.anything());
   });
@@ -1027,25 +1000,25 @@ describe("notification history subscriber readiness", () => {
   function waitingService() {
     const win = makeMockWindow({ focused: true });
     const factory = makeNotificationFactoryStub();
-    const auditLogger = makeMockAuditLogger();
+
     const service = new NotificationService({ getMainWindow: () => win as unknown as Electron.BrowserWindow,
-      notificationFactory: factory.factory, auditLogger, isReady: () => true, isTestEnv: () => false, isAnyWindowFocused: () => true });
-    return { win, factory, auditLogger, service, target: win.webContents as unknown as Electron.WebContents };
+      notificationFactory: factory.factory, isReady: () => true, isTestEnv: () => false, isAnyWindowFocused: () => true });
+    return { win, factory, service, target: win.webContents as unknown as Electron.WebContents };
   }
 
   it("retains the newest fifty session records and restores stable identities without new delivery effects", () => {
-    const { service, win, target, factory, auditLogger } = waitingService();
+    const { service, win, target, factory } = waitingService();
     for (let index = 0; index < 75; index++) service.fire({ kind: "system", title: "Boot", body: String(index) });
     service.fire({ kind: "approval", title: "Request", body: "Card" });
     service.fire({ kind: "ask-user", title: "Question", body: "Card" });
     expect(win.webContents.send).not.toHaveBeenCalled();
-    const audited = vi.mocked(auditLogger.log).mock.calls.length;
+    const audited = notificationLogs.events.length;
     expect(service.setHistorySubscriber(target, true)).toBe(true);
     expect(win.webContents.send.mock.calls.map(([, record]) => record.body)).toEqual(Array.from({ length: 50 }, (_, index) => String(index + 25)));
     service.setHistorySubscriber(target, true);
     expect(win.webContents.send).toHaveBeenCalledTimes(100);
     expect(win.webContents.send.mock.calls.slice(0, 50)).toEqual(win.webContents.send.mock.calls.slice(50));
-    expect(vi.mocked(auditLogger.log)).toHaveBeenCalledTimes(audited);
+    expect(notificationLogs.events).toHaveLength(audited);
     expect(factory.calls).toHaveLength(0);
     service.fire({ kind: "system", title: "Live", body: "Ready" });
     expect(win.webContents.send).toHaveBeenCalledTimes(101);

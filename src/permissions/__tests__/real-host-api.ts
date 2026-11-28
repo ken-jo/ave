@@ -50,7 +50,7 @@ export async function buildRealHostApi(
   pluginDataPrefix: string,
 ): Promise<PluginHostApi> {
   harness.capturedRuntimeOptions = null;
-  const bootAuditLogger = { log: vi.fn() };
+
   // A real alerts service over a temp directory, `raiseAlert` must return a genuine envelope, and the probe's kind is undeclared so it refuses before anything is rendered or stored.
   const alertsDir = resources.makeTmpDir("ave-probe-alerts-");
   let alertSettings: AlertSettings = { osNotificationsEnabled: true, kinds: {} };
@@ -66,7 +66,7 @@ export async function buildRealHostApi(
     overlay: { show: vi.fn(), dismiss: vi.fn() },
     notifications: { isFocusGateActive: () => false, fire: vi.fn() },
     emit: vi.fn(),
-    audit: vi.fn(),
+
   }));
   await alertsService.load();
   await initPluginRuntime({
@@ -94,7 +94,6 @@ export async function buildRealHostApi(
       replacePluginTools: vi.fn(),
     } as never,
     pythonPath: undefined,
-    bootAuditLogger: bootAuditLogger as never,
     mainWindow: { isDestroyed: () => false } as never,
     networkFetch: vi.fn(async () => new Response("")) as never,
     openAuthWindowService: vi.fn(),

@@ -115,11 +115,11 @@ function invalidRoutineView(invalid: InvalidRoutine): RoutineAttentionApprovalVi
 }
 
 export function registerWorkApprovalsHandlers(deps: IpcDeps): void {
-  const { workBoardStore, workBoardEngine, routinesStore, auditLogger } = deps;
+  const { workBoardStore, workBoardEngine, routinesStore } = deps;
 
   ipcMain.handle(WORK_APPROVALS.list, async (e, raw?: unknown): Promise<WorkApprovalListResult | typeof UNAUTHORIZED_FRAME> => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, WORK_APPROVALS.list, e);
+      auditUnauthorized(WORK_APPROVALS.list);
       return UNAUTHORIZED_FRAME;
     }
     const request = parseListRequest(raw);

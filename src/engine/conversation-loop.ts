@@ -28,7 +28,6 @@ import type { ReadableToolResult } from "../tools/tool-result-chunk.js";
 import type { SessionKind } from "../shared/session-lookup.js";
 import type { ActiveRolePrompt } from "../data/role-presets.js";
 import type { TurnMemoryUse } from "../prompts/system-prompt-builder.js";
-import { AuditLogger } from "../audit/audit-logger.js";
 import type { ChatInputOrigin } from "../shared/chat-origin.js";
 
 import {
@@ -128,7 +127,7 @@ export class ConversationLoop {
   private readonly constructedModelOverride: string | undefined;
   readonly history: ConversationHistory;
   readonly toolExecutor: ToolExecutor;
-  readonly auditLogger: AuditLogger;
+
   #provider: LLMProvider | null = null;
   // Bumped by every assignment, so a slower rebuild never overwrites a newer provider.
   #providerGeneration = 0;
@@ -242,8 +241,6 @@ export class ConversationLoop {
       deps.bashAstValidator,
       deps.approvalGate,
       deps.scriptHookManager,
-      deps.auditLogger,
-      // Read relaxation requires this exact worker's active filesystem confinement.
       isActiveSandboxFilesystemContainedForPluginEffects,
       // Resolve the shared workspace authority lazily so all loop instances see current directory grants.
       getWorkspaceRootLifecycle,
@@ -254,7 +251,6 @@ export class ConversationLoop {
     this.toolExecutor.setSkillAdmissionCheck((sessionId, toolName, input) =>
       deps.skillOverlay?.checkAdmission?.(sessionId, toolName, input, this.history.getMessages().flatMap((message) =>
         message.role === "tool_result" && message.toolName === "skill_load" && !message.isError ? [message.content] : [])));
-    this.auditLogger = deps.auditLogger ?? new AuditLogger();
     // Credentials decrypt asynchronously; `whenProviderReady` settles this first build.
     void this.refreshProvider().catch(() => undefined);
     registerWorkspaceDirectorySource(this);

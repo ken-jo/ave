@@ -19,8 +19,8 @@
       "src/mcp/__tests__/mcp-stdio-sandbox-wrap.test.ts"
     ],
     "security": [
-      "src/audit/__tests__/hmac-chain.test.ts",
-      "src/audit/__tests__/rationale-audit-adapter.test.ts",
+      "src/tools/__tests__/executor-permission-logging.test.ts",
+      "src/tools/__tests__/executor-rationale-resume.test.ts",
       "src/audit/__tests__/dlp-mask-sensitive.test.ts",
       "src/data/__tests__/secret-document-store.test.ts",
       "src/plugins/__tests__/trust-boundary.test.ts",
@@ -59,8 +59,8 @@
       "src/__tests__/packaging-discipline-source.test.ts",
       "src/__tests__/tsx-child-env.test.ts",
       "src/audit/__tests__/dlp-performance.test.ts",
-      "src/audit/__tests__/hmac-chain.test.ts",
-      "src/audit/__tests__/permission-audit-proof.test.ts",
+      "src/tools/__tests__/executor-permission-logging.test.ts",
+      "src/tools/__tests__/invocation-ledger.test.ts",
       "src/boot/steps/__tests__/desktop-network-fetch-lease.test.ts",
       "src/core/model-catalog/__tests__/cache-concurrency.test.ts",
       "src/data/__tests__/secret-document-store.test.ts",

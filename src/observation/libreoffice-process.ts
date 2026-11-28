@@ -12,7 +12,9 @@ import {
   abandonManagedLaunch, createManagedResources, forceKillManagedChildProcess, ManagedExitUnconfirmedError, observeManagedProcessGroup,
   recordManagedPaths, releaseManagedResources, spawnManaged, stopOrphanedManagedProcesses, type ConfirmedExit, type ManagedResources,
 } from "../main/managed-child-processes.js";
-import { OfflineScanExitUnconfirmedError, wrapOfflineProcess } from "../permissions/offline-process-sandbox.js";
+import { OfflineScanExitUnconfirmedError, startOfflineProcessHolder, wrapOfflineProcess, type OfflineProcessHolder } from "../permissions/offline-process-sandbox.js";
+import { isOfflineHolderConfinementActive } from "../permissions/asrt-sandbox.js";
+import { MxcProcessCleanupError } from "../permissions/mxc-extension-errors.js";
 import { buildSandboxedChildEnv } from "../tools/safe-env.js";
 import { PREVIEW_DOCUMENT_LIMITS } from "../shared/preview-document.js";
 import { readPreviewDocumentInput } from "../tools/preview-document-input.js";
@@ -172,7 +174,8 @@ export async function sweepStaleDocumentEngineRuntimes(root = runtimeTempRoot())
 }
 
 interface RunningProcess {
-  exit: ReturnType<typeof observeManagedProcessGroup>;
+  /** The managed wrap's group observer, or a macOS holder's: the same wait and receipt contract. */
+  exit: OfflineProcessHolder["exit"];
   ended: boolean;
   /** Diagnostic text since the last job boundary; the resident's window restarts for each forwarded job. */
   output: string;
@@ -554,9 +557,43 @@ export class LibreOfficeSessionPool {
       runtime.lastExit = receipt;
     };
     let running: RunningProcess | undefined;
+    const track = (exit: RunningProcess["exit"], kill: (reason: string) => void): { process: RunningProcess; collect: (chunk: Buffer) => void } => {
+      const process: RunningProcess = { exit, ended: false, output: "", diagnosticBytes: 0, resources, noteExit };
+      running = process;
+      runtime.children.add(process);
+      const collect = (chunk: Buffer): void => {
+        process.diagnosticBytes += chunk.length;
+        if (process.diagnosticBytes > ENGINE_PROCESS_LIMITS.diagnosticBytes) {
+          process.failure = failure("Document engine diagnostic output exceeds its limit.");
+          kill("document engine diagnostic limit");
+          return;
+        }
+        process.output += chunk.toString("utf8");
+      };
+      return { process, collect };
+    };
+    const ended = (process: RunningProcess, code: number | null, childSignal: NodeJS.Signals | null): void => {
+      process.ended = true;
+      if (runtime.resident === process && !session.controller.signal.aborted) {
+        session.failure ??= process.failure ?? failure(`Document engine resident process exited unexpectedly (code=${String(code)}, signal=${String(childSignal)}).`);
+        session.controller.abort(session.failure);
+      }
+    };
     try {
       aborted(signal);
       await session.installation.verifyBeforeSpawn(signal);
+      if (isOfflineHolderConfinementActive()) {
+        // macOS with the holder route on: the standard holder plus the session's one socket directory (owner L-O1).
+        session.installation.assertCurrent();
+        const holder = await startOfflineProcessHolder({ label: "document-engine", command, args, inputDirectory: runtime.input,
+          outputDirectory: runtime.output, ipcDirectory: runtime.ipc, runtimeDirectories: runtime.runtimeDirectories, env: runtime.env,
+          signal, resources });
+        const { process, collect } = track(holder.exit, (reason) => { void holder.exit.confirmExit(reason); });
+        holder.stdout.on("data", collect);
+        holder.stderr.on("data", collect);
+        void holder.exit.wait().then(({ code, signal: childSignal }) => ended(process, code, childSignal), () => ended(process, null, null));
+        return process;
+      }
       const wrap = await wrapOfflineProcess({ command, args, inputDirectory: runtime.input, outputDirectory: runtime.output,
         ipcDirectory: runtime.ipc, runtimeDirectories: runtime.runtimeDirectories, env: runtime.env, signal, resources,
         noteExit: receipt => { scanExit = receipt; noteExit(receipt); } });
@@ -565,37 +602,20 @@ export class LibreOfficeSessionPool {
       spawnManaged(wrap.argv[0], wrap.argv.slice(1), {
         env: wrap.env, cwd: runtime.output, stdio: ["ignore", "pipe", "pipe"], detached: true, shell: false,
       }, { label: "document-engine", killProcessGroup: true }, child => {
-        const process: RunningProcess = {
-          exit: observeManagedProcessGroup(child, resources), ended: false, output: "", diagnosticBytes: 0, resources, noteExit,
-        };
-        running = process;
-        runtime.children.add(process);
-        const collect = (chunk: Buffer): void => {
-          process.diagnosticBytes += chunk.length;
-          if (process.diagnosticBytes > ENGINE_PROCESS_LIMITS.diagnosticBytes) {
-            process.failure = failure("Document engine diagnostic output exceeds its limit.");
-            void forceKillManagedChildProcess(child, "document engine diagnostic limit");
-            return;
-          }
-          process.output += chunk.toString("utf8");
-        };
+        const { process, collect } = track(observeManagedProcessGroup(child, resources), (reason) => { void forceKillManagedChildProcess(child, reason); });
         child.stdout?.on("data", collect);
         child.stderr?.on("data", collect);
         child.once("error", () => {
           process.failure = failure("Document engine process failed to start.");
           if (child.pid === undefined) process.ended = true;
         });
-        child.once("close", (code, childSignal) => {
-          process.ended = true;
-          if (runtime.resident === process && !session.controller.signal.aborted) {
-            session.failure ??= process.failure ?? failure(`Document engine resident process exited unexpectedly (code=${String(code)}, signal=${String(childSignal)}).`);
-            session.controller.abort(session.failure);
-          }
-        });
+        child.once("close", (code, childSignal) => ended(process, code, childSignal));
       });
     } catch (error) {
       if (running) await this.finishProcess(runtime, running, "document engine launch failed");
       else if (error instanceof OfflineScanExitUnconfirmedError) runtime.unconfirmedExit = error;
+      // A holder start refused with an unverified stop may have left a process: its resources stay owned.
+      else if (error instanceof MxcProcessCleanupError) runtime.unconfirmedExit = terminationUnconfirmed();
       else await (scanExit ? releaseManagedResources(resources, scanExit) : abandonManagedLaunch(resources));
       throw runtime.unconfirmedExit ?? error;
     }

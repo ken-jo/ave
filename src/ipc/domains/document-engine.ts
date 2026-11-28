@@ -1,3 +1,4 @@
+import { logPermissionEvent, permissionLogId } from "../../lib/permission-log.js";
 import { ipcMain, type IpcMainInvokeEvent } from "electron";
 import { CHANNELS } from "../../contract/app-contract.js";
 import {
@@ -36,7 +37,7 @@ export function registerDocumentEngineHandlers(deps: IpcDeps): void {
 
   const authorize = (event: IpcMainInvokeEvent, channel: string, args: readonly unknown[]): DocumentEngineActionResult | undefined => {
     if (!validateAppWindowMainFrameSender(event, deps)) {
-      auditUnauthorized(deps.auditLogger, channel, event);
+      auditUnauthorized(channel);
       return { ok: false, error: "unauthorized" };
     }
     if (args.length !== 0) return { ok: false, error: "bad-request" };
@@ -44,8 +45,7 @@ export function registerDocumentEngineHandlers(deps: IpcDeps): void {
   };
   const failure = (error: unknown): DocumentEngineInstallationError => {
     const code = error instanceof DocumentEngineInstallError ? error.code : "install-failed";
-    deps.auditLogger.log({ timestamp: new Date().toISOString(), sessionId: "document-engine-installation",
-      type: "error", output: errorMessage(error) });
+    logPermissionEvent("document_engine_install_failed", { sessionId: permissionLogId("document-engine-installation"), reasonCode: code }, "warn");
     return code;
   };
   const refresh = async (): Promise<DocumentEngineInstallationState> => {

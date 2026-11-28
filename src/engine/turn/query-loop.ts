@@ -1,3 +1,4 @@
+import { logPermissionEvent, permissionLogId } from "../../lib/permission-log.js";
 import { observeRoutineTurnUsage } from "../routine-run-metrics.js";
 import {
   DEFAULT_SUBSCRIPTION_REASONING_SPEED,
@@ -735,6 +736,8 @@ export async function queryLoop(
         if (rows[rows.length - 1]?.role === "user") appendedUserText.push(turnContextForRound());
         if (nudgeTextForRound !== undefined) appendedUserText.push(nudgeTextForRound);
         if (progressNudgeText !== undefined) appendedUserText.push(progressNudgeText);
+        const skillMemory = self.deps.skillMemory?.recallForCurrentTurn();
+        if (skillMemory) appendedUserText.push(skillMemory);
         return appendRequestOnlyText(rows, appendedUserText);
       };
       const projectRound = (
@@ -1481,12 +1484,7 @@ export async function queryLoop(
           // Publish session activation before dispatching remaining tools so delegate checks see it.
           // Use the same effective session ID as async context; never persist enabled state.
           self.deps.pluginRuntime?.setSessionActivated?.(effectiveSessionId, activated);
-          self.auditLogger.log({
-            timestamp: new Date().toISOString(),
-            sessionId: effectiveSessionId,
-            type: "info",
-            input: `session_activated_disabled_plugin pluginId=${activated} (non-persistent; registry stays enabled:false)`,
-          });
+          logPermissionEvent("session_disabled_plugin_used", { sessionId: permissionLogId(effectiveSessionId) });
         }
       }
 
@@ -1778,12 +1776,7 @@ export async function queryLoop(
                       effectiveSessionId,
                       activated,
                     );
-                    self.auditLogger.log({
-                      timestamp: new Date().toISOString(),
-                      sessionId: effectiveSessionId,
-                      type: "info",
-                      input: `session_activated_disabled_plugin pluginId=${activated} (non-persistent; registry stays enabled:false)`,
-                    });
+                    logPermissionEvent("session_disabled_plugin_used", { sessionId: permissionLogId(effectiveSessionId) });
                   }
                 }
 
@@ -2746,12 +2739,7 @@ export async function gateCrossAgentInterceptedMetaTools(
       const content =
         "Authorization required: this cross-agent meta operation requires local approval, "
         + "but this host has no approval surface. The turn has stopped and will not retry automatically.";
-      self.auditLogger.log({
-        timestamp: new Date().toISOString(),
-        sessionId,
-        type: "error",
-        input: `cross-agent-meta-authorization-required:${toolUse.name}`,
-      });
+      logPermissionEvent("cross_agent_authorization_required", { sessionId: permissionLogId(sessionId) }, "warn");
       denied.push({
         toolUseId: toolUse.id,
         toolName: toolUse.name,
@@ -2803,13 +2791,7 @@ export async function gateCrossAgentInterceptedMetaTools(
     if (failure === undefined) {
       approved.push(toolUse);
     } else {
-      self.auditLogger.log({
-        timestamp: new Date().toISOString(),
-        sessionId,
-        type: "error",
-        input: `cross-agent-meta-approval-${failure}:${toolUse.name}`,
-        ...(detail === undefined ? {} : { output: detail }),
-      });
+      logPermissionEvent("cross_agent_approval_failed", { sessionId: permissionLogId(sessionId), tool: toolUse.name, outcome: failure }, "warn");
       denied.push({
         toolUseId: toolUse.id,
         toolName: toolUse.name,

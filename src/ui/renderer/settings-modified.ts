@@ -39,7 +39,7 @@ export const SECTION_SETTING_CONTROLS: Readonly<Record<string, readonly SettingC
   ],
   "chat-stream-smoothing": [{ path: "llm.streamSmoothing", label: "chatTab.streamSmoothingTitle" }],
   "chat-processing-display": [{ path: "chat.processingDisplayLevel", label: "chatTab.processingDisplayTitle" }],
-  "chat-experimental": [{ path: "features.idlePreferenceRefresh", label: "chatTab.idleRefreshLabel" }, { path: "features.idleMemoryConsolidation", label: "chatTab.idleMemoryConsolidationLabel" }, { path: "features.subAgentAutonomousWake", label: "chatTab.subAgentWakeLabel" }, { path: "chat.subAgentMaxRounds", label: "chatTab.subAgentMaxRoundsLabel" }],
+  "chat-experimental": [{ path: "features.idlePreferenceRefresh", label: "chatTab.idleRefreshLabel" }, { path: "features.idleMemoryConsolidation", label: "chatTab.idleMemoryConsolidationLabel" }, { path: "features.automaticSkillMemory", label: "chatTab.automaticSkillMemoryLabel" }, { path: "features.subAgentAutonomousWake", label: "chatTab.subAgentWakeLabel" }, { path: "chat.subAgentMaxRounds", label: "chatTab.subAgentMaxRoundsLabel" }],
   "chat-privacy": [{ path: "privacy.piiRedactEnabled", label: "privacyTab.piiRedactToggleLabel" }],
   "chat-signals": [{ path: "system.signalTurnFinished", label: "accessibilitySignals.turnFinished" }, { path: "system.signalApprovalNeeded", label: "accessibilitySignals.approvalNeeded" }, { path: "system.signalTurnFailed", label: "accessibilitySignals.turnFailed" }],
   "notifications-delivery": [{ path: "alerts.osNotificationsEnabled", label: "alerts.osMaster" }],
@@ -57,7 +57,7 @@ export const SECTION_SETTING_CONTROLS: Readonly<Record<string, readonly SettingC
   "permissions-work-board-approvals": [{ path: "workBoard.toolApprovalSurface", label: "workBoard.approvalSurfaceTitle" }],
   "remote-local-api": [{ path: "system.localApiServer", label: "localApiSurfaces.localApiLabel" }, { path: "features.a2aLoopbackServer", label: "localApiSurfaces.a2aLoopbackLabel" }, { path: "features.a2aRemoteRouting", label: "localApiSurfaces.a2aRemoteRoutingLabel" }, { path: "features.a2aRemoteReceiver", label: "localApiSurfaces.a2aRemoteReceiverLabel" }],
   "roles-agents": [{ path: "homeDocs.keepLatest", label: "rolesTab.keepLatestLabel" }],
-  "audit-telemetry": [{ path: "telemetry.level", label: "auditTab.telemetryLevelLabel" }],
+  "diagnostics-telemetry": [{ path: "telemetry.level", label: "diagnosticsTab.telemetryLevelLabel" }],
   "marketplace-maintenance": [{ path: "marketplace.updateCheckEnabled", label: "gitMarketplace.maintenance.updateCheck" }, { path: "marketplace.offlineCacheEnabled", label: "gitMarketplace.maintenance.offlineCache" }],
   "about-updates": [{ path: "updates.autoCheckEnabled", label: "aboutUpdates.autoCheck" }],
 };

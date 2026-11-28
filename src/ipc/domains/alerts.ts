@@ -14,12 +14,12 @@ function isClosedReason(value: unknown): value is AlertCardClosedReason {
 }
 
 export function registerAlertsHandlers(deps: IpcDeps, marketplace: () => Promise<Pick<GitMarketplacePort, "catalog" | "getRetirementEntry" | "uninstallInstalled" | "asOneOperation">>): void {
-  const { alertsService, auditLogger } = deps;
+  const { alertsService } = deps;
   const predecessors = new AlertPredecessorAccess(deps, marketplace);
 
   ipcMain.handle(ALERTS.removePredecessor, (e, kindKey: unknown, ...extra: unknown[]) => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, ALERTS.removePredecessor, e);
+      auditUnauthorized(ALERTS.removePredecessor);
       return { ...UNAUTHORIZED_FRAME, ok: false };
     }
     if (extra.length > 0) return { ok: false, error: "invalid-arguments" };
@@ -28,7 +28,7 @@ export function registerAlertsHandlers(deps: IpcDeps, marketplace: () => Promise
 
   ipcMain.handle(ALERTS.listKinds, async (e): Promise<AlertKindRow[] | typeof UNAUTHORIZED_FRAME> => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, ALERTS.listKinds, e);
+      auditUnauthorized(ALERTS.listKinds);
       return UNAUTHORIZED_FRAME;
     }
     return predecessors.present(await alertsService?.listKinds() ?? []);
@@ -36,7 +36,7 @@ export function registerAlertsHandlers(deps: IpcDeps, marketplace: () => Promise
 
   ipcMain.handle(ALERTS.setKind, async (e, kindKey: unknown, patch: unknown): Promise<SetAlertKindResult> => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, ALERTS.setKind, e);
+      auditUnauthorized(ALERTS.setKind);
       return { ...UNAUTHORIZED_FRAME, ok: false };
     }
     if (!alertsService) return { ok: false, error: "no-alerts-service" };
@@ -46,7 +46,7 @@ export function registerAlertsHandlers(deps: IpcDeps, marketplace: () => Promise
 
   ipcMain.handle(ALERTS.setOsNotificationsEnabled, async (e, enabled: unknown): Promise<SetAlertOsNotificationsResult> => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, ALERTS.setOsNotificationsEnabled, e);
+      auditUnauthorized(ALERTS.setOsNotificationsEnabled);
       return { ...UNAUTHORIZED_FRAME, ok: false };
     }
     if (!alertsService) return { ok: false, error: "no-alerts-service" };
@@ -55,7 +55,7 @@ export function registerAlertsHandlers(deps: IpcDeps, marketplace: () => Promise
 
   ipcMain.handle(ALERTS.cardClosed, (e, alertId: unknown, reason: unknown) => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, ALERTS.cardClosed, e);
+      auditUnauthorized(ALERTS.cardClosed);
       return UNAUTHORIZED_FRAME;
     }
     if (typeof alertId !== "string" || !isClosedReason(reason)) return { ok: false, error: "invalid-arguments" };
@@ -65,7 +65,7 @@ export function registerAlertsHandlers(deps: IpcDeps, marketplace: () => Promise
 
   ipcMain.handle(ALERTS.listOpen, (e): AlertCard[] | typeof UNAUTHORIZED_FRAME => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, ALERTS.listOpen, e);
+      auditUnauthorized(ALERTS.listOpen);
       return UNAUTHORIZED_FRAME;
     }
     const cards = alertsService?.listOpen() ?? [];

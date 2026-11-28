@@ -67,14 +67,12 @@ describe("local-api dispatch — public read routing", () => {
     expect(result).toEqual({ ok: true, data: { mode: "plan" } });
   });
 
-  it("flushes audit writes before routing external usage reads", async () => {
-    const flush = vi.fn(async () => undefined);
-    const api = createLocalApi(makeDeps({ auditLogger: { flush } }));
+  it("serves external Usage from persisted session summaries", async () => {
+    const api = createLocalApi(makeDeps());
 
     const result = await api.dispatch({ channel: CHANNELS.usage.summary, origin: "local-api" });
 
     expect(result.ok).toBe(true);
-    expect(flush).toHaveBeenCalledTimes(1);
   });
 
   it("routes chat sessions (read) to its handler", async () => {
@@ -190,7 +188,7 @@ function makeMutationDeps(
     mode = next;
   });
   const gateRequestAndWait = answeringRequestAndWait(() => ({ requestId: "x", choice: "allow-once" }));
-  const appendPermissionAuditEntry = vi.fn(async () => undefined);
+
   const ipc = {
     conversationLoop: {
       getSessionId: () => "s",
@@ -203,11 +201,6 @@ function makeMutationDeps(
       },
     },
     approvalGate: { requestAndWait: gateRequestAndWait },
-    auditLogger: {
-      isPermissionAuditChainReady: () => true,
-      appendPermissionAuditEntry,
-      log: vi.fn(),
-    },
     getMainWindow: () => fakeWin.win,
   } as unknown as IpcDeps;
   return { ipc, conversationCommandPort, externalMutationApprover: approver };
@@ -319,10 +312,6 @@ function makeDurabilityDeps(fakeWin: ReturnType<typeof makeFakeWindow>) {
     },
     approvalGate: {
       requestAndWait: answeringRequestAndWait(() => ({ requestId: "x", choice: "allow-once" })),
-    },
-    auditLogger: {
-      isPermissionAuditChainReady: () => true,
-      appendPermissionAuditEntry: vi.fn(async () => undefined),
     },
     getMainWindow: () => fakeWin.win,
   } as unknown as IpcDeps;

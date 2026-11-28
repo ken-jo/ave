@@ -2,7 +2,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { AuditLogger } from "../../audit/audit-logger.js";
 import { ScriptHookManager } from "../../hooks/script-hook-manager.js";
 import { HookRunner } from "../../hooks/hook-runner.js";
 import { ApprovalGate, IPC_APPROVAL_REQUEST, type ApprovalRequest } from "../../permissions/approval-gate.js";
@@ -33,12 +32,12 @@ describe("executor human re-adjudication card production", () => {
   let root: string | undefined;
   let runtime: TestPluginRuntime | undefined;
   let gate: ApprovalGate | undefined;
-  let audit: AuditLogger | undefined;
+
 
   afterEach(async () => {
     gate?.disposeAll();
     await runtime?.stopAll();
-    await audit?.close();
+
     vi.unstubAllEnvs();
     if (root) {
       await makeTestTreeWritable(root);
@@ -83,12 +82,11 @@ describe("executor human re-adjudication card production", () => {
     tools.register(tool);
     const manager = new PermissionManager(join(root, "permissions.json"));
     manager.setMode("strict");
-    audit = new AuditLogger(join(root, "audit"));
-    await audit.setupPermissionAuditChain("a".repeat(64));
+
     const cards: ApprovalRequest[] = [];
     const snapshots: Array<ReturnType<ApprovalGate["getRequestSnapshot"]>> = [];
     const surface = { send: vi.fn(), isDestroyed: () => false };
-    const approvalGate = new ApprovalGate(() => surface as never, undefined, undefined, audit);
+    const approvalGate = new ApprovalGate(() => surface as never, undefined, undefined);
     gate = approvalGate;
     surface.send.mockImplementation((channel: string, request: ApprovalRequest) => {
       if (channel !== IPC_APPROVAL_REQUEST) return;
@@ -101,10 +99,10 @@ describe("executor human re-adjudication card production", () => {
     const admission = admitToolInvocation(TOOL_NAME);
     const services = {
       invocationTerminal: admission.terminal, toolRegistry: tools, hookRunner: new HookRunner(), permissionManager: manager,
-      approvalGate, scriptHookManager: hooks, auditLogger: audit, requirePermissionAuditChain: true,
+      approvalGate, scriptHookManager: hooks,
       hostClassifiesRiskProvider: () => true, sandboxFsContainedProvider: () => false,
       workspaceRootLifecycleProvider: () => undefined,
-      auditWriter: new AuditWriter(audit, tools, hooks, true), rateLimiter: new RateLimiter(),
+      auditWriter: new AuditWriter(hooks), rateLimiter: new RateLimiter(),
       executeReplay: vi.fn(), tryUserApprovalMemorySkip, pluginOperationGrants: new PluginOperationGrantCoordinator(),
       pluginGenerationAccessProvider: () => generations, pluginOperationIdentityProvider: () => undefined,
     };

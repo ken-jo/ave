@@ -79,6 +79,7 @@ import {
   runExecTurn,
   waitForExecRelease,
 } from "./main/exec-mode.js";
+import { runWithSkillMemoryOwnerInput } from "./memory/skill-memory-service.js";
 import { isAuthorizedWorkspaceProjectRoot } from "./main/project-root-authorization.js";
 import {
   initializeWorkloadBroker,
@@ -269,6 +270,7 @@ async function main() {
     process.exitCode = await runExecTurn(
       {
         conversationLoop: services.conversationLoop,
+        runWithSkillMemoryOwnerInput,
         permissionManager: services.conversationLoop.permissionManager,
         approvalGate: services.approvalGate,
         settingsService: services.settingsService,
@@ -477,7 +479,6 @@ async function main() {
       isConversationBusy: () => conversationSurfaceRuntime.activity.isBusy(),
       // An own-device pairing the owner never clicked to approve is still a
       // grant, so it lands in the same audit log every other one does.
-      auditLogger: services.auditLogger,
       log: (message) => log.info(message),
     });
     if (observer) {

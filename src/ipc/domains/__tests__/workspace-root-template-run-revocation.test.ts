@@ -70,7 +70,6 @@ beforeAll(async () => {
   other = mkdtempSync(join(tmpdir(), "ave-template-run-keep-"));
   h = await stageRunHarness();
   registerWorkspaceHandlers({
-    auditLogger: { log: vi.fn() },
     pluginRuntime: { retireSandboxGrantsOutsideCeiling: vi.fn(async () => [] as string[]) },
     getMainWindow: () => null,
     memoryManager: { sessions: { allowProjectRoot: vi.fn(), detachSessionsFromProject: vi.fn(async () => 0) } },

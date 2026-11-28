@@ -64,7 +64,7 @@ function buildCsvRows(summary: UsageSummaryShape): Array<Record<string, string |
     cacheReadTokens: usage.cacheReadTokens ?? 0,
     cacheWriteTokens: usage.cacheWriteTokens ?? 0,
     totalTokens: usage.totalTokens,
-    cost: summary.auditIncomplete || usage.unknownCostTurns || !Number.isFinite(usage.cost) ? "" : usage.cost,
+    cost: Number.isFinite(usage.cost) && (usage.hasPricedCost || !usage.unknownCostTurns || usage.cost > 0) ? usage.cost : "",
     ...(summary.auditIncomplete ? { auditIncomplete: 1 } : {}),
     unknownCostTurns: usage.unknownCostTurns ?? 0,
     endpointPriceUnavailableTurns: usage.endpointPriceUnavailableTurns ?? 0,
@@ -199,13 +199,14 @@ export function UsageDashboard({
   const unpricedRequests = summary.trend.reduce((total, point) => total + (point.unknownCostTurns ?? 0), 0);
   const dailyCost = summary.auditIncomplete ? undefined : averageDailyCost(summary.trend);
   const displayCost = (usage: Parameters<typeof formatUsageCost>[0]) =>
-    summary.auditIncomplete ? t("be_costEstimator.costUnknown") : formatUsageCost(usage, t);
+    formatUsageCost(usage, t);
 
   return (
     <div className="space-y-5" data-testid="usage-dashboard">
       {header}
       {workspaceStats}
       {periodPicker}
+      {summary.auditIncomplete && <p className="text-xs text-muted-foreground">{t("usageDashboard.savedSessionsCoverage")}</p>}
       {exportError && <p role="alert" className="text-sm text-destructive">{exportError}</p>}
 
       <div className="grid grid-cols-3 gap-2">

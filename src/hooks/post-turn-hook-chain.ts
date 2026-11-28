@@ -1,16 +1,17 @@
+import { logPermissionEvent, permissionLogId } from "../lib/permission-log.js";
 
-
+import { loadBundledModelCatalog } from "../core/model-catalog/bundled.js";
 import type { RunModelSettings } from "../shared/run-model-settings.js";
 import { detectFromStream, type DetectorResult } from "../engine/checkpoint-detector.js";
-import { isLLMVendor, type GenericMessage, type TokenUsage, type TokenUsageByModel } from "../engine/llm/types.js";
-import { normalizeAiSdkUsageForCost } from "../engine/llm/pricing.js";
+import type { GenericMessage, TokenUsage, TokenUsageByModel } from "../engine/llm/types.js";
 import type { MemoryManager } from "../memory/memory-manager.js";
-import type { AuditLogger } from "../audit/audit-logger.js";
 import type { IdleSchedulerService } from "../main/idle-scheduler.js";
 import type { SettingsService } from "../data/settings-store.js";
 import { createLogger } from "../lib/logger.js";
 import { EMPTY_ASSISTANT_RESPONSE_TEXT } from "../lib/chat-stream-state.js";
-import { activeLlmRouteModel } from "../shared/llm-vendor-defaults.js";
+import { maskSensitiveData } from "../shared/dlp.js";
+import { activeLlmRouteModel, isLLMVendor } from "../shared/llm-vendor-defaults.js";
+import { catalogChatModelIds, vendorHasCatalogProvider } from "../shared/model-catalog/vendor-models.js";
 import type { SubscriptionUsageTelemetry } from "../shared/subscription-runtime.js";
 import type { ChatInputOrigin } from "../shared/chat-origin.js";
 import type {
@@ -33,7 +34,7 @@ export interface PostTurnHookContext {
   memoryCaptureTaint?: readonly MemoryCaptureTaintReason[];
   output: string;
   toolCalls: Array<{ name: string; isError: boolean }>;
-  // Provider input tokens include cache; audit normalizes them to the cost contract before persisting.
+  // Provider input token totals can include cached tokens.
   tokenUsage?: TokenUsage;
   usageByModel?: TokenUsageByModel[];
   // Separate non-billable subscription telemetry; never enters price normalization.
@@ -64,7 +65,6 @@ export interface PostTurnHookContext {
 
 export interface PostTurnHookChainDeps {
   memoryManager?: MemoryManager;
-  auditLogger?: AuditLogger;
   idleScheduler?: IdleSchedulerService;
   settingsService?: SettingsService;
   memoryCaptureService?: AutomaticMemoryCaptureSubmitter;
@@ -76,6 +76,7 @@ export interface PostTurnHookResult {
   detector: DetectorResult;
   // Canonical message array that this hook persisted for transcript replay. It carries the marker-stripped assistant output.
   messagesForPersistence: GenericMessage[];
+  transcriptPersisted?: true;
 }
 
 export class PostTurnHookChain {
@@ -83,6 +84,7 @@ export class PostTurnHookChain {
 
   async run(ctx: PostTurnHookContext): Promise<PostTurnHookResult> {
     let messagesForPersistence = ctx.messages;
+    let transcriptPersisted: true | undefined;
 
     // Stub old results only during compaction; post-turn rewriting changes the next request's prefix and defeats cache reuse.
 
@@ -116,7 +118,10 @@ export class PostTurnHookChain {
           ? replaceLastAssistantOutput(baseMessages, ctx.output, outputForPersistence)
           : baseMessages;
       // saveSession owns JSONL stubbing and file-backed tool results; preserve the engine's in-memory verbatim messages.
-      await this.deps.memoryManager?.sessions.saveSession(ctx.sessionId, messagesForPersistence);
+      if (this.deps.memoryManager) {
+        await this.deps.memoryManager.sessions.saveSession(ctx.sessionId, messagesForPersistence);
+        transcriptPersisted = true;
+      }
     } catch (err) {
       log.warn("saveSession failed: %s", err);
     }
@@ -154,38 +159,23 @@ export class PostTurnHookChain {
       log.warn("update-title failed: %s", err);
     }
 
-    // Audit token-bearing routes as provider/model; use the captured model rather than live settings.
+    // Use the captured route for token-bearing turns, with only validated model identifiers.
     try {
       const llmSettings = this.deps.settingsService?.get("llm");
       const provider = ctx.vendorProvider ?? llmSettings?.provider;
       const model =
         ctx.vendorModel ??
         (llmSettings ? activeLlmRouteModel(llmSettings) : undefined);
-      const auditTokenUsage = provider && isLLMVendor(provider)
-        ? normalizeAiSdkUsageForCost(ctx.tokenUsage, provider)
-        : ctx.tokenUsage;
-      const auditUsageByModel = ctx.usageByModel?.map((segment) => ({
-        ...segment,
-        tokenUsage: normalizeAiSdkUsageForCost(segment.tokenUsage, segment.vendorProvider),
-      }));
-      const auditRoute =
-        ctx.tokenUsage && provider && model
-          ? `${provider}/${model}`
-          : ctx.route;
-      this.deps.auditLogger?.logTurn({
-        sessionId: ctx.sessionId,
-        input: ctx.input,
-        output: outputForHooks,
-        toolCalls: ctx.toolCalls,
-        tokenUsage: auditTokenUsage,
-        usageByModel: auditUsageByModel,
-        subscriptionUsage: ctx.subscriptionUsage,
-        toolExposure: ctx.toolExposure,
-        route: auditRoute,
-        ...(ctx.modelSettings ? { modelSettings: ctx.modelSettings } : {}),
-      });
+      const providerId = permissionLogId(provider);
+      const route = ctx.tokenUsage && providerId && model && isLLMVendor(provider)
+        && vendorHasCatalogProvider(provider)
+        && catalogChatModelIds(provider, await loadBundledModelCatalog()).includes(model)
+        && maskSensitiveData(model).detections.length === 0
+        ? `${providerId}/${model}`
+        : permissionLogId(ctx.route);
+      logPermissionEvent("post_turn_hook_finished", { sessionId: permissionLogId(ctx.sessionId), route });
     } catch (err) {
-      log.warn("audit failed: %s", err);
+      log.warn("turn completion logging failed: %s", err);
     }
 
     try {
@@ -194,7 +184,7 @@ export class PostTurnHookChain {
       log.warn("idle poke failed: %s", err);
     }
 
-    return { detector, messagesForPersistence };
+    return { detector, messagesForPersistence, ...(transcriptPersisted ? { transcriptPersisted } : {}) };
   }
 }
 

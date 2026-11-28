@@ -52,7 +52,7 @@ beforeAll(async () => {
   script = join(root, "build.txt");
   writeFileSync(notes, "hello");
   writeFileSync(script, "#!/bin/sh\n");
-  registerAttachHandlers({ auditLogger: { log: vi.fn() }, getMainWindow: () => null,
+  registerAttachHandlers({ getMainWindow: () => null,
     getAppWindows: () => [{ webContents: sender, isDestroyed: () => false }] } as never);
   // Picker authority comes from a redeemed drop, as in the composer.
   const registered = await call(CHANNELS.attach.registerDrop, [notes, script]) as { token: string };

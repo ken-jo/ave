@@ -34,7 +34,6 @@ function makeFixture() {
   const deps = {
     conversationLoop: { getSessionId: () => "session-pscope", getSessionKind: () => "subagent", runTurn },
     settingsService: { get: () => undefined },
-    auditLogger: { log: vi.fn() },
     personaPromptStore: { listTemplates: () => [EXTENSION_TEMPLATE, OTHER_EXTENSION_TEMPLATE, PACKAGE_TEMPLATE] },
   } as unknown as IpcDeps;
   const activity = createConversationActivityCoordinator();

@@ -12,10 +12,10 @@ import type { ChildProcess } from "node:child_process";
 import {
   abandonManagedLaunch, assertManagedChildProcessAdmissionOpen, createManagedRelayResources, createManagedResources, ManagedExitUnconfirmedError,
   observeManagedWindowsRelayExit, observeManagedWindowsRelayTreeExit, recordManagedCleanup,
-  releaseManagedResources, type ManagedResources, type RelayBestEffortExit,
+  releaseManagedResources, type ConfirmedExit, type ManagedResources, type RelayBestEffortExit,
 } from "../main/managed-child-processes.js";
 import { randomBytes } from "node:crypto";
-import { chmodSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, rmdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join, posix as posixPath, win32 as winPath } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import { t } from "../i18n/index.js";
@@ -45,7 +45,7 @@ import { newHolderLabels } from "../permissions/holder-label-sweep.js";
 import { provenSeatbeltHolderRoute } from "../permissions/seatbelt-holder-boot.js";
 import { withLocalityDecision } from "../shared/local-path-io.js";
 import { isFullyQualifiedWindowsPath } from "../shared/windows-path-spelling.js";
-import { getExtensionBackendPlan, getMacHolderCapability } from "../permissions/sandbox-capability.js";
+import { getExtensionBackendPlan, getMacHolderCapability, onSandboxStatusChanged } from "../permissions/sandbox-capability.js";
 import { listAuthorizedWorkspaceRoots } from "../permissions/workspace-authorized-roots.js";
 import type { SandboxWindowsExtensionPlan } from "../shared/sandbox-capability-info.js";
 import { createSandboxProcessHome, resolvedHostProcessOwner } from "../permissions/sandbox-process-home.js";
@@ -529,6 +529,60 @@ function resolvePosixHolderExecutable(command: string, env: NodeJS.ProcessEnv): 
   throw new MxcExecutableNotAdmissibleError(t("be_wrapBundledCommand.executableNotFound", { command }));
 }
 
+/** What the kernel runs for a macOS holder command. */
+export interface PosixHolderLaunch {
+  /** The program exec'd: the resolved file, or a script's interpreter. Row 2 measures this one. */
+  readonly command: string;
+  /** Arguments before the caller's: a script's interpreter arguments, then the script itself. */
+  readonly prefix: readonly string[];
+  /** Every file the launch runs or interprets; each takes the executable rule. */
+  readonly files: readonly string[];
+}
+
+const SHEBANG_BYTES = 512;
+
+/**
+ * macOS: a `#!` script runs its interpreter, which an `env` line would look up on the holder's PATH at run time. The
+ * interpreter is resolved here instead, by the same rule as the command and on the same PATH, and exec'd directly with
+ * the script as its argument. So the program that runs is the one row 2 measures, and both files take the executable
+ * rule. An interpreter that is itself a script, or an `env` line with options or assignments, is refused.
+ * @internal exported for its tests.
+ */
+export function resolvePosixHolderLaunch(command: string, env: NodeJS.ProcessEnv): PosixHolderLaunch {
+  const file = resolvePosixHolderExecutable(command, env);
+  const line = shebangOf(file);
+  if (line === undefined) return Object.freeze({ command: file, prefix: Object.freeze([]), files: Object.freeze([file]) });
+  const refuse = (): never => {
+    throw new MxcExecutableNotAdmissibleError(t("be_wrapBundledCommand.interpreterNotAdmissible", { path: file, line: `#!${line}` }));
+  };
+  const [interpreter, ...interpreterArgs] = line.trim().split(/[ \t]+/u);
+  if (interpreter === undefined || !posixPath.isAbsolute(interpreter)) return refuse();
+  let program: string;
+  let programArgs: readonly string[];
+  if (interpreter === "/usr/bin/env") {
+    const [name, ...rest] = interpreterArgs;
+    if (name === undefined || rest.length > 0 || name.startsWith("-") || name.includes("=") || name.includes("/")) return refuse();
+    program = resolvePosixHolderExecutable(name, env);
+    programArgs = [];
+  } else {
+    program = resolvePosixHolderExecutable(interpreter, env);
+    programArgs = interpreterArgs;
+  }
+  if (shebangOf(program) !== undefined) return refuse();
+  return Object.freeze({ command: program, prefix: Object.freeze([...programArgs, file]), files: Object.freeze([file, program]) });
+}
+
+function shebangOf(file: string): string | undefined {
+  const head = Buffer.alloc(SHEBANG_BYTES);
+  const fd = openSync(file, "r");
+  let read: number;
+  try { read = readSync(fd, head, 0, SHEBANG_BYTES, 0); } finally { closeSync(fd); }
+  if (read < 2 || head[0] !== 0x23 || head[1] !== 0x21) return undefined;
+  const end = head.subarray(0, read).indexOf(0x0a);
+  if (end < 0) throw new MxcExecutableNotAdmissibleError(t("be_wrapBundledCommand.interpreterNotAdmissible", { path: file, line: "#!" }));
+  return head.subarray(2, end).toString("utf8");
+}
+
 /** Contract rule: never an executable from a workspace or any holder-writable root, this holder's own included. */
 function assertExecutableAdmissible(executable: string, ownWriteRoots: readonly string[], workspaceRoots: readonly string[]): void {
   const forbidden = [
@@ -842,15 +896,16 @@ export async function spawnMxcBundledHolder(input: MxcBundledHolderInput): Promi
   assertHolderEnvironmentAdmissible(input.baseEnv, input.holderEnv);
   // Before any staging: row 2 checks it again when it mints the receipt. macOS has no build-time record (L2).
   if (windowsHost()) assertMxcReleaseGateEvidence();
-  const executable = resolveHolderExecutable(input.command, input.baseEnv);
+  const posixLaunch = windowsHost() ? undefined : resolvePosixHolderLaunch(input.command, input.baseEnv);
+  const executable = posixLaunch?.command ?? resolveHolderExecutable(input.command, input.baseEnv);
   if (windowsHost()) assertMxcHolderNotBashForm(executable);
   const workspaceRoots = input.workspaceRoots ?? [];
-  assertExecutableAdmissible(executable, input.allowWrite, workspaceRoots);
+  for (const file of posixLaunch?.files ?? [executable]) assertExecutableAdmissible(file, input.allowWrite, workspaceRoots);
   assertNoLiveWorkspaceWriter(input.allowWrite, workspaceRoots);
   assertWriteGrantsOutsideConfinementState(input.allowWrite, declaredConfinementStatePaths());
   const staging = createHolderStaging();
   const allowWrite = [...new Set([...input.allowWrite, staging.root])];
-  const allowRead = [...new Set([...input.allowRead, hostPath().dirname(executable)])];
+  const allowRead = [...new Set([...input.allowRead, ...(posixLaunch?.files ?? [executable]).map(file => hostPath().dirname(file))])];
   const cwd = input.cwd ?? staging.home;
   let spawned: Awaited<ReturnType<typeof spawnMxcConfinedChild>>;
   try {
@@ -860,7 +915,7 @@ export async function spawnMxcBundledHolder(input: MxcBundledHolderInput): Promi
     spawned = await spawnMxcConfinedChild({
       label: input.label,
       command: executable,
-      args: [...input.args],
+      args: [...(posixLaunch?.prefix ?? []), ...input.args],
       egressOwner: input.egressOwner,
       allowRead,
       allowWrite,
@@ -901,8 +956,29 @@ export async function spawnMxcBundledHolder(input: MxcBundledHolderInput): Promi
 /** A started host-owned offline holder: its pipes, and the one hand on its lifetime. */
 export interface SeatbeltOfflineHolder {
   readonly process: MxcHolderProcess;
-  /** Idempotent. Rejects when termination is unverified; that label then starts nothing more this app run. */
-  release(): Promise<void>;
+  /** Idempotent. Resolves with the exit receipt (issued on the caller's `resources`, when given) after a verified stop;
+   * rejects when termination is unverified, and that label then starts nothing more this app run. */
+  release(): Promise<ConfirmedExit>;
+}
+
+/**
+ * A host session an offline holder runs in instead of its own staging (owner L-O1, the document engine): the caller's
+ * one private write root, which is also its HOME, temp and cwd; reads of its authenticated runtime inside the read floor;
+ * and the one per-session 0700 Unix-socket directory inside that root. Nothing else is written or connected.
+ */
+export interface SeatbeltOfflineHolderSession {
+  readonly writeRoot: string;
+  readonly runtimeReads: readonly string[];
+  readonly socketDirectory: string;
+}
+
+function assertPrivateSocketDirectory(path: string, writeRoot: string): void {
+  const entry = lstatSync(path, { throwIfNoEntry: false });
+  const uid = process.getuid?.();
+  if (entry === undefined || !entry.isDirectory() || entry.isSymbolicLink() || (entry.mode & 0o777) !== 0o700 || entry.uid !== uid
+    || realpathSync.native(path) !== path || !posixHolderPaths.strictlyUnder(path, writeRoot)) {
+    throw new MxcProcessContractError("An offline holder's socket directory must be a private 0700 directory of this user, canonical and inside its write root");
+  }
 }
 
 const quarantinedOfflineHolders = new Set<string>();
@@ -919,6 +995,9 @@ export async function spawnSeatbeltOfflineHolder(input: {
   readonly args: readonly string[];
   readonly baseEnv: Readonly<NodeJS.ProcessEnv>;
   readonly holderEnv?: Readonly<Record<string, string>>;
+  readonly session?: SeatbeltOfflineHolderSession;
+  /** The caller's process handle: the stop's exit receipt is issued on it. */
+  readonly resources?: ManagedResources;
 }): Promise<SeatbeltOfflineHolder> {
   const route = provenSeatbeltHolderRoute();
   if (process.platform !== "darwin" || route === undefined || getMacHolderCapability()?.state !== "ready") {
@@ -926,38 +1005,57 @@ export async function spawnSeatbeltOfflineHolder(input: {
   }
   if (quarantinedOfflineHolders.has(input.label)) throw new MxcHolderQuarantinedError(input.label);
   assertManagedChildProcessAdmissionOpen(input.label);
-  const staging = createHolderStaging();
+  const { session } = input;
+  if (session !== undefined) assertPrivateSocketDirectory(session.socketDirectory, session.writeRoot);
+  // A session holder writes only the caller's root, so it has no staging tree of its own.
+  const staging = session === undefined ? createHolderStaging() : undefined;
+  const removeStaging = async (): Promise<void> => { if (staging !== undefined) await removeHolderStaging(staging.root); };
   let holder: Awaited<ReturnType<typeof startSeatbeltHolder>>;
   try {
-    const writeRoots = [staging.root];
+    const writeRoot = session?.writeRoot ?? (staging as HolderStaging).root;
+    const home = session?.writeRoot ?? (staging as HolderStaging).home;
+    const temp = session?.writeRoot ?? (staging as HolderStaging).temp;
+    const writeRoots = [writeRoot];
     const boundary = createAveHomeBoundarySnapshot();
-    const floors = await boundary.run(() => captureSeatbeltHolderFloors({ cwd: staging.home, writeRoots }));
+    const floors = await boundary.run(() => captureSeatbeltHolderFloors({ cwd: home, writeRoots }));
     const launchInput: SeatbeltHolderLaunchInput = {
-      command: input.command, args: [...input.args], cwd: staging.home,
-      env: seatbeltHolderEnvironment({ baseEnv: input.baseEnv, holderEnv: input.holderEnv, home: staging.home, temp: staging.temp, cwd: staging.home }),
-      readRoots: [], writeRoots, floorPierces: [], network: "offline", labels: newHolderLabels(),
+      command: input.command, args: [...input.args], cwd: home,
+      env: seatbeltHolderEnvironment({ baseEnv: input.baseEnv, holderEnv: input.holderEnv, home, temp, cwd: home }),
+      readRoots: [], writeRoots, floorPierces: [...(session?.runtimeReads ?? [])], network: "offline", labels: newHolderLabels(),
+      ...(session === undefined ? {} : { unixSocketDirectory: session.socketDirectory }),
     };
     const { launch, identity } = boundary.run(() => withLocalityDecision(() => ({
       launch: composeSeatbeltHolderLaunch(launchInput, floors), identity: measurePosixExecutableIdentity(input.command),
     })));
-    holder = await startSeatbeltHolder(launch, {
-      label: input.label, helper: route.helper, launchers: route.launchers, admittedDigest: launch.digest,
-      assertStillValid: () => {
-        assertManagedChildProcessAdmissionOpen(input.label);
-        if (getMacHolderCapability()?.state !== "ready") throw new MxcProcessContractError(`${input.label}: the macOS holder route is no longer proven`);
-        if (measurePosixExecutableIdentity(input.command) !== identity) throw new MxcProcessContractError("Container executable changed after admission");
-      },
+    // A capability lost between the gate and the ready byte stops the holder at once.
+    const revoked = new AbortController();
+    const unsubscribe = onSandboxStatusChanged(() => {
+      if (getMacHolderCapability()?.state !== "ready") revoked.abort();
     });
+    try {
+      holder = await startSeatbeltHolder(launch, {
+        label: input.label, helper: route.helper, launchers: route.launchers, admittedDigest: launch.digest,
+        assertStillValid: () => {
+          assertManagedChildProcessAdmissionOpen(input.label);
+          if (getMacHolderCapability()?.state !== "ready") throw new MxcProcessContractError(`${input.label}: the macOS holder route is no longer proven`);
+          if (measurePosixExecutableIdentity(input.command) !== identity) throw new MxcProcessContractError("Container executable changed after admission");
+        },
+        revoked: revoked.signal,
+        ...(input.resources === undefined ? {} : { resources: input.resources }),
+      });
+    } finally {
+      unsubscribe();
+    }
   } catch (error) {
     // An unverified refused start may have left a process: its staging stays, and so does the quarantine.
     if (error instanceof MxcProcessCleanupError) quarantinedOfflineHolders.add(input.label);
-    else await removeHolderStaging(staging.root);
+    else await removeStaging();
     throw error;
   }
-  let releasing: Promise<void> | undefined;
+  let releasing: Promise<ConfirmedExit> | undefined;
   return Object.freeze({
     process: seatbeltHolderProcess(holder),
-    release: () => releasing ??= holder.dispose().then(() => removeHolderStaging(staging.root), (error: unknown) => {
+    release: () => releasing ??= holder.dispose().then(async (receipt) => { await removeStaging(); return receipt; }, (error: unknown) => {
       quarantinedOfflineHolders.add(input.label);
       throw new MxcProcessCleanupError(`${input.label}: offline holder termination is unverified`, { cause: error });
     }),

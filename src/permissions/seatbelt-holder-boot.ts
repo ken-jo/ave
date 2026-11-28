@@ -24,7 +24,9 @@ const log = createLogger("seatbelt-holder-boot");
 
 /** A canary: a background job in its own process group (job control on), the setpgid escape a group stop misses. */
 // The jobs end on their own within a minute (59 s, an unusual bound the tests can look for), so a canary that outlives a failed check is not left for long.
-const CANARY_SCRIPT = "set -m; /bin/sleep 59 & echo $!; set +m; exec /bin/sleep 59";
+// The job's stdio is /dev/null: holding the holder's pipes would make every canary exit wait out the output drain and
+// the stop's grace (measured: 4.2 s of boot, against about 0.13 s without).
+const CANARY_SCRIPT = "set -m; /bin/sleep 59 </dev/null >/dev/null 2>&1 & echo $!; set +m; exec /bin/sleep 59";
 
 export type SeatbeltHolderRouteProof =
   | { readonly state: "proven"; readonly helper: HolderSweepHelper; readonly launchers: SeatbeltHolderLaunchers }

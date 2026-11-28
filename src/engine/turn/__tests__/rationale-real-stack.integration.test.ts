@@ -7,9 +7,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
-import { AuditLogger } from "../../../audit/audit-logger.js";
-import { MemorySecretStore } from "../../../audit/hmac-chain.js";
-import type { RationaleAuditSink } from "../../../audit/rationale-audit-adapter.js";
+import { MemorySecretStore } from "../../../lib/protected-secret-store.js";
+import { watchPermissionEvents } from "../../../__tests__/support/permission-events.js";
 import {
   ApprovalGate,
   IPC_APPROVAL_REQUEST,
@@ -25,7 +24,6 @@ import { DurableHostInvocationStartCasStore } from "../../../tools/pipeline/rati
 import {
   RATIONALE_RESPONSE_TOOL } from "../../../tools/pipeline/rationale-control.js";
 import { RationaleHostService } from "../../../tools/pipeline/rationale-host-service.js";
-import type { InvocationAuditRecord } from "../../../tools/pipeline/rationale-ticket-lifecycle.js";
 import { ToolRegistry } from "../../../tools/registry.js";
 import { ConversationLoop } from "../../conversation-loop.js";
 import type {
@@ -161,7 +159,7 @@ const createPermissionManager = (directory: string): PermissionManager =>
 describe("foreground rationale real-stack integration", () => {
   it.each([
     ["once", false], ["session", false], ["persistent", false], ["session", true], ["persistent", true],
-  ] as const)("runs query, native %s approval, sealed resume, and audit with a real policy snapshot (competing rule save: %s)", async (scope, competing) => {
+  ] as const)("runs query, native %s approval, sealed resume, and decision logging with a real policy snapshot (competing rule save: %s)", async (scope, competing) => {
     const directory = mkdtempSync(join(tmpdir(), "ave-rationale-real-stack-"));
     vi.stubEnv("AVE_HOME", join(directory, "profile"));
     __resetSessionStoreForTest();
@@ -188,9 +186,7 @@ describe("foreground rationale real-stack integration", () => {
 
     const modalRequests: ApprovalRequest[] = [];
     const rationaleLifecycleOrder: string[] = [];
-    const projectionRecords: Array<Parameters<
-      RationaleAuditSink["appendProjection"]
-    >[1]> = [];
+    const projectionRecords: Record<string, unknown>[] = [];
     let approvalGate!: ApprovalGate;
     const webContents = {
       isDestroyed: () => false,
@@ -228,39 +224,25 @@ describe("foreground rationale real-stack integration", () => {
         });
       },
     };
-    const auditLogger = new AuditLogger(join(directory, "audit"));
-    await auditLogger.setupPermissionAuditChain("cd".repeat(32));
     approvalGate = new ApprovalGate(
       webContents as never,
       undefined,
       5_000,
-      auditLogger,
     );
 
-    const ticketEvents: unknown[] = [];
-    const invocationRecords: InvocationAuditRecord[] = [];
-    const auditSink = {
-      assertWritable: vi.fn(),
-      appendTicket: vi.fn((event) => {
-        rationaleLifecycleOrder.push("ticket:" + event.operation);
-        ticketEvents.push(event);
-        return event as never;
-      }),
-      appendInvocation: vi.fn((_sessionId, record) => {
-        rationaleLifecycleOrder.push("invocation:" + record.state);
-        invocationRecords.push(record);
-        return record as never;
-      }),
-      appendProjection: vi.fn((_sessionId, projection) => {
-        rationaleLifecycleOrder.push(
-          projection.terminalReason === null
-            ? "projection:user-pending"
-            : "projection:" + projection.terminalReason,
-        );
-        projectionRecords.push(projection);
-        return projection as never;
-      }),
-    } satisfies RationaleAuditSink;
+    const permissionRows: Record<string, unknown>[] = [];
+    const invocationRecords: Record<string, unknown>[] = [];
+    const eventLog = watchPermissionEvents((event) => {
+      if (event.event === "permission_decision" && event.tool === "write_fixture") permissionRows.push(event);
+      if (event.event === "rationale_invocation") {
+        rationaleLifecycleOrder.push("invocation:" + event.state);
+        invocationRecords.push(event);
+      }
+      if (event.event === "rationale_projection") {
+        rationaleLifecycleOrder.push("projection:" + (event.terminalReason ?? "user-pending"));
+        projectionRecords.push(event);
+      }
+    });
 
     const scopeReviewerPrompts: string[] = [];
     const scopeReviewer = new LlmRationaleScopeReviewer({
@@ -284,8 +266,8 @@ describe("foreground rationale real-stack integration", () => {
     );
     const invocationStartCas = new DurableHostInvocationStartCasStore({
       filePath: join(directory, "invocation-journal.json"),
-      auditSecret: "rationale-real-stack-journal-secret-v1",
-      sealStore: new MemorySecretStore(),
+      executionKey: "rationale-real-stack-journal-secret-v1",
+      checkpointStore: new MemorySecretStore(),
     });
     const hostService = new RationaleHostService({
       approvalGate,
@@ -293,7 +275,6 @@ describe("foreground rationale real-stack integration", () => {
       getRegistryGeneration: () => registry.getGeneration(),
       getSandboxGeneration: () => "sandbox-generation-test",
       invocationStartCas,
-      auditSink,
     });
 
     let loop!: ConversationLoop;
@@ -319,7 +300,6 @@ describe("foreground rationale real-stack integration", () => {
       permissionManager,
       hookRunner,
       approvalGate,
-      auditLogger,
       memoryManager: { sessions: { saveSession: () => {}, listSessions: () => [] } },
       disableSessionPersistence: true,
       rationaleCoordinatorFactory: coordinatorFactory,
@@ -338,8 +318,6 @@ describe("foreground rationale real-stack integration", () => {
             "perform the approved action for " + RAW_ANCHOR_SECRET,
         },
       );
-      const permissionRows = readFileSync(auditLogger.getPermissionAuditLogFile(), "utf8").split("\n").filter(Boolean)
-        .map((line) => JSON.parse(line) as Record<string, unknown>).filter((row) => row.tool === "write_fixture");
       const terminalRows = permissionRows.filter((row) => row.decision !== "ask");
       expect(permissionRows.filter((row) => row.decision === "ask").map((row) => row.trustOrigin)).not.toContain("user-keyboard");
       if (competing) {
@@ -347,9 +325,9 @@ describe("foreground rationale real-stack integration", () => {
         expect(write).not.toHaveBeenCalled();
         expect(terminalRows).toEqual([expect.objectContaining({
           decision: "deny", trustOrigin: "llm-tool-arg",
-          denyReasons: [expect.objectContaining({ reason: "Permission policy changed while approval was pending" })],
+          terminalKind: "denied",
         })]);
-        expect(projectionRecords.map((projection) => projection.terminalReason)).toEqual([null, "host-denied"]);
+        expect(projectionRecords.map((projection) => projection.terminalReason ?? null)).toEqual([null, "host-denied"]);
         expect(invocationRecords).toEqual([]);
         return;
       }
@@ -396,7 +374,7 @@ describe("foreground rationale real-stack integration", () => {
         "started",
         "completed",
       ]);
-      expect(projectionRecords.map((projection) => projection.terminalReason),
+      expect(projectionRecords.map((projection) => projection.terminalReason ?? null),
       ).toEqual([
         null,
         "allowed-once"]);
@@ -410,16 +388,15 @@ describe("foreground rationale real-stack integration", () => {
       const protectedSurfaces = JSON.stringify({
         providerRequests: provider.requests,
         modalRequests,
-        ticketEvents,
         projectionRecords,
         invocationRecords,
         scopeReviewerPrompts,
       });
       expect(protectedSurfaces).not.toContain(RAW_ANCHOR_SECRET);
-      expect(auditSink.assertWritable).toHaveBeenCalledTimes(1);
     } finally {
+      eventLog.mockRestore();
       hostService.shutdown();
-      await auditLogger.close();
+
       __resetSessionStoreForTest();
       vi.unstubAllEnvs();
       await cleanupTmpDir(directory);
@@ -458,9 +435,7 @@ describe("foreground rationale real-stack integration", () => {
 
     const modalRequests: ApprovalRequest[] = [];
     const rationaleLifecycleOrder: string[] = [];
-    const projectionRecords: Array<Parameters<
-      RationaleAuditSink["appendProjection"]
-    >[1]> = [];
+    const projectionRecords: Record<string, unknown>[] = [];
     let approvalGate!: ApprovalGate;
     const webContents = {
       isDestroyed: () => false,
@@ -470,37 +445,25 @@ describe("foreground rationale real-stack integration", () => {
         modalRequests.push(request);
       },
     };
-    const auditLogger = new AuditLogger(join(directory, "audit"));
+
     approvalGate = new ApprovalGate(
       webContents as never,
       undefined,
       5_000,
-      auditLogger,
     );
     const requestAndWait = vi.spyOn(approvalGate, "requestAndWait");
 
-    const invocationRecords: InvocationAuditRecord[] = [];
-    const auditSink = {
-      assertWritable: vi.fn(),
-      appendTicket: vi.fn((event) => {
-        rationaleLifecycleOrder.push("ticket:" + event.operation);
-        return event as never;
-      }),
-      appendInvocation: vi.fn((_sessionId, record) => {
-        rationaleLifecycleOrder.push("invocation:" + record.state);
-        invocationRecords.push(record);
-        return record as never;
-      }),
-      appendProjection: vi.fn((_sessionId, projection) => {
-        rationaleLifecycleOrder.push(
-          projection.terminalReason === null
-            ? "projection:user-pending"
-            : "projection:" + projection.terminalReason,
-        );
-        projectionRecords.push(projection);
-        return projection as never;
-      }),
-    } satisfies RationaleAuditSink;
+    const invocationRecords: Record<string, unknown>[] = [];
+    const eventLog = watchPermissionEvents((event) => {
+      if (event.event === "rationale_invocation") {
+        rationaleLifecycleOrder.push("invocation:" + event.state);
+        invocationRecords.push(event);
+      }
+      if (event.event === "rationale_projection") {
+        rationaleLifecycleOrder.push("projection:" + (event.terminalReason ?? "user-pending"));
+        projectionRecords.push(event);
+      }
+    });
 
     const scopeReviewer = new LlmRationaleScopeReviewer({
       complete: async () => ({
@@ -518,8 +481,8 @@ describe("foreground rationale real-stack integration", () => {
     );
     const invocationStartCas = new DurableHostInvocationStartCasStore({
       filePath: join(directory, "invocation-journal.json"),
-      auditSecret: "rationale-auto-approve-journal-secret-v1",
-      sealStore: new MemorySecretStore(),
+      executionKey: "rationale-auto-approve-journal-secret-v1",
+      checkpointStore: new MemorySecretStore(),
     });
     const hostService = new RationaleHostService({
       approvalGate,
@@ -527,7 +490,6 @@ describe("foreground rationale real-stack integration", () => {
       getRegistryGeneration: () => registry.getGeneration(),
       getSandboxGeneration: () => "sandbox-generation-test",
       invocationStartCas,
-      auditSink,
     });
 
     let loop!: ConversationLoop;
@@ -559,7 +521,6 @@ describe("foreground rationale real-stack integration", () => {
       toolRegistry: registry,
       permissionManager,
       approvalGate,
-      auditLogger,
       memoryManager: { sessions: { saveSession: () => {}, listSessions: () => [] } },
       disableSessionPersistence: true,
       headless,
@@ -651,8 +612,9 @@ describe("foreground rationale real-stack integration", () => {
       });
       expect(protectedSurfaces).not.toContain(RAW_ANCHOR_SECRET);
     } finally {
+      eventLog.mockRestore();
       hostService.shutdown();
-      await auditLogger.close();
+
       await cleanupTmpDir(directory);
     }
   });
@@ -697,12 +659,10 @@ describe("foreground rationale real-stack integration", () => {
         });
       },
     };
-    const approvalAuditLogger = new AuditLogger(join(directory, "audit"));
     approvalGate = new ApprovalGate(
       webContents as never,
       undefined,
       5_000,
-      approvalAuditLogger,
     );
     const materializeRationaleControl = vi.fn(() => null);
     const rationaleCoordinatorFactory = vi.fn((input) => ({
@@ -711,8 +671,6 @@ describe("foreground rationale real-stack integration", () => {
       materializeRationaleControl,
     }));
     const provider = new AttachmentDirectModalProvider();
-    const executorAuditLogger = new AuditLogger(join(directory, "executor-audit"),
-    );
     const loop = new ConversationLoop({
       settingsService: {
         get: () => fakeLlmSettings(),
@@ -725,7 +683,6 @@ describe("foreground rationale real-stack integration", () => {
       toolRegistry: registry,
       permissionManager: createPermissionManager(directory),
       approvalGate,
-      auditLogger: executorAuditLogger,
       memoryManager: { sessions: { saveSession: () => {}, listSessions: () => [] } },
       disableSessionPersistence: true,
       rationaleCoordinatorFactory,
@@ -769,10 +726,6 @@ describe("foreground rationale real-stack integration", () => {
         toolCategory: "write",
       });
     } finally {
-      await Promise.all([
-        approvalAuditLogger.close(),
-        executorAuditLogger.close(),
-      ]);
       await cleanupTmpDir(directory);
     }
   });

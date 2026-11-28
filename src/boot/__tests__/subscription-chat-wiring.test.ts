@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import { collectPermissionEvents } from "../../__tests__/support/permission-events.js";
 import type { LLMProvider, StreamEvent, StreamTurnParams } from "../../engine/llm/types.js";
 import type { SubscriptionRuntimeAuditEvent } from "../../main/subscription-runtime-service.js";
 import type { SubscriptionChatRuntimeSelection } from "../../shared/subscription-runtime.js";
@@ -107,9 +108,7 @@ describe("subscription chat boot wiring", () => {
   });
 
   it("injects the subscription runtime into main, side, and routine loops", async () => {
-    const bindings = createSubscriptionChatLoopBindings({
-      auditLogger: { log: vi.fn() },
-    });
+    const bindings = createSubscriptionChatLoopBindings();
     const shared = sharedLoopDeps();
 
     const main = createConversationLoop({
@@ -153,8 +152,9 @@ describe("subscription chat boot wiring", () => {
   });
 
   it("rejects unsafe login URLs and keeps audit metadata redacted", async () => {
-    const auditLogger = { log: vi.fn() };
-    const bindings = createSubscriptionChatLoopBindings({ auditLogger });
+    const logs = collectPermissionEvents();
+    onTestFinished(logs.restore);
+    const bindings = createSubscriptionChatLoopBindings();
 
     bindings.subscriptionProviderFactory(selection);
     const options = h.createSubscriptionLlmProvider.mock.calls[0]?.[0] as SubscriptionProviderFactoryOptions;
@@ -182,22 +182,21 @@ describe("subscription chat boot wiring", () => {
       requestKind: "bad\nmetadata",
     });
 
-    expect(auditLogger.log).toHaveBeenNthCalledWith(1, {
-      timestamp: expect.any(String),
-      sessionId: "subscription-runtime",
-      type: "warn",
-      input: JSON.stringify({
+    expect(logs.events).toEqual([
+      {
+        event: "subscription_runtime_warning",
+        sessionId: "subscription-runtime",
         provider: "codex",
         outcome: "host-request-rejected",
         requestKind: "command-approval",
-      }),
-    });
-    expect(auditLogger.log).toHaveBeenNthCalledWith(2, {
-      timestamp: expect.any(String),
-      sessionId: "subscription-runtime",
-      type: "warn",
-      input: JSON.stringify({ provider: "codex", outcome: "session-failed" }),
-    });
-    expect(JSON.stringify(auditLogger.log.mock.calls)).not.toContain("one-time-secret");
+      },
+      {
+        event: "subscription_runtime_warning",
+        sessionId: "subscription-runtime",
+        provider: "codex",
+        outcome: "session-failed",
+        requestKind: undefined,
+      },
+    ]);
   });
 });

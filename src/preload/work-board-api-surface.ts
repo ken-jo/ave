@@ -3,6 +3,7 @@ import { WORK_APPROVALS, WORK_BOARD } from "../contract/app-contract.js";
 import type { OpenJoinIpcResult } from "../shared/work-board-types.js";
 import type { ScheduleAttachmentRequest, ScheduleAttachment, WorkflowTemplateIpcResult, WorkflowTemplate, WorkflowTemplateRecord, WorkflowTemplateProposal, WorkflowTemplateDraftInput, WorkflowTemplateConfirmInput, WorkflowTemplateConfirmResult } from "../shared/workflow-template-types.js";
 import { invokeWorkBoardDecision } from "./work-board-decision-intent.js";
+import { consumeSkillMemoryOwnerInput } from "./skill-memory-input.js";
 
 export const workBoardApiSurface = {
   // Personal board CRUD + lifecycle. Each method maps 1:1 to a WORK_BOARD.* channel; the main-process store returns discriminated `status` envelopes (or `{ ok:false, error }` for
@@ -30,11 +31,15 @@ export const workBoardApiSurface = {
       | import("../shared/work-board-types.js").WorkItemGetResult
       | { ok: false; error: string }
     >,
-  addWorkBoardItem: async (input: import("../shared/work-board-types.js").WorkItemCreateInput, launch?: import("../shared/work-board-types.js").TemplateRunRequest) =>
-    (launch === undefined ? ipcRenderer.invoke(WORK_BOARD.add, input) : invokeWorkBoardDecision(WORK_BOARD.add, input, launch)) as Promise<
+  addWorkBoardItem: async (input: import("../shared/work-board-types.js").WorkItemCreateInput, launch?: import("../shared/work-board-types.js").TemplateRunRequest) => {
+    const evidence = consumeSkillMemoryOwnerInput("work-board", input.detail) ? [true] : [];
+    return (launch === undefined
+      ? (evidence.length ? ipcRenderer.invoke(WORK_BOARD.add, input, undefined, undefined, ...evidence) : ipcRenderer.invoke(WORK_BOARD.add, input))
+      : invokeWorkBoardDecision(WORK_BOARD.add, input, launch, ...evidence)) as Promise<
       | import("../shared/work-board-types.js").WorkItemCreateResult
       | { ok: false; error: string }
-    >,
+    >;
+  },
   updateWorkBoardItem: async (id: number, patch: import("../shared/work-board-types.js").WorkItemUpdateInput) =>
     ipcRenderer.invoke(WORK_BOARD.update, id, patch) as Promise<
       | import("../shared/work-board-types.js").WorkItemUpdateResult

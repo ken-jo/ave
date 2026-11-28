@@ -1,12 +1,12 @@
+import { trackInvocationCorrelations, collectPermissionEvents } from "../../__tests__/support/permission-events.js";
 import type { UserOwnedSurfaceChoice } from "../../shared/permissions-events.js";
 import { NO_APPROVER_MESSAGE, SHELL_ANALYSIS_LIMIT_REASON } from "../../permissions/decision-pipeline.js";
-import { randomBytes, randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, realpathSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
-import { beforeAll, afterEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { t } from "../../i18n/index.js";
 import { configureHostResources } from "../../main/host-resources.js";
-import { AuditLogger } from "../../audit/audit-logger.js";
 import { answeredApprovalDecision } from "../../__tests__/support/answering-approval-gate.js";
 import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 import { makeRecentlyDeniedStore } from "../../__tests__/support/recently-denied.js";
@@ -28,8 +28,9 @@ import { userPermissionContext } from "./tool-context-fixture.js";
 import { shellQuote } from "../../lib/shell-resolver.js";
 import { HostExitAbortError } from "../../shared/host-exit-abort.js";
 
+const invocationCorrelationId = trackInvocationCorrelations();
+
 const resources = new PermissionTestResources();
-const loggers: AuditLogger[] = [];
 const SESSION_ID = "late-host-terminal";
 const TAB_ID = "terminal:0000c0de-2";
 const WINDOW_ID = 8;
@@ -40,7 +41,6 @@ const CARD_WAIT = { timeout: 30_000 };
 afterEach(async () => {
   vi.restoreAllMocks();
   __resetTerminalBlocksForTest();
-  for (const logger of loggers.splice(0)) await logger.close();
   await resources.cleanup();
 });
 
@@ -68,9 +68,7 @@ async function fixture(options: { outside?: boolean; mode?: "default" | "strict"
     });
     expect(manager.isAutomatedApprovalPaused(SESSION_ID)).toBe(true);
   };
-  const audit = new AuditLogger(join(root, "audit"));
-  loggers.push(audit);
-  await audit.setupPermissionAuditChain(randomBytes(32).toString("hex"));
+
   const tracker = new TerminalBlockTracker({ nonce: TERMINAL_TEST_NONCE, marksPromptEnd: true });
   tracker.recordOutput(`${terminalMarker("D;0")}${terminalMarker(`P;Cwd=${root};Keys=emacs;Paste=1`)}${terminalMarker("A")}% ${terminalMarker("B")}`);
   const terminal = terminalSessionFixture(TAB_ID, "manual");
@@ -127,12 +125,14 @@ async function fixture(options: { outside?: boolean; mode?: "default" | "strict"
       return context.finalizeExecutionRouteGrant?.();
     },
   }));
-  const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, undefined, audit);
+  const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, undefined);
   const run = (abortSignal?: AbortSignal) => executor.executeAll([{ id: "late-terminal-command", name: "terminal_run", input: { command, waitSeconds: 0 } }], {
     ...(abortSignal ? { abortSignal } : {}),
     sessionId: SESSION_ID, executionCwd: root, permissionContext: userPermissionContext({ trustOrigin: "llm-tool-arg", userIntent: "Print ready in the selected terminal.", currentTaskStep: "Run the requested terminal status command.", ...(options.headless ? { headless: true } : {}), ...(options.turnGrant ? { onTurnDirectoryGrant: vi.fn() } : {}) }),
   });
-  return { manager, pause, typed, cards, request, approve, deny, gate, reached, release, run, command, audit };
+  const capture = collectPermissionEvents();
+  onTestFinished(capture.restore);
+  return { manager, pause, typed, cards, request, approve, deny, gate, reached, release, run, command, events: capture.events };
 }
 
 // Windows path admission pins through the shipped path-kind helper; boot configures its resources first.
@@ -472,9 +472,8 @@ describe("host terminal late native approval", () => {
 
 // Each terminal path writes exactly one terminal row, attributed by the provenance of the decision that ended it.
 describe("one terminal row per surface invocation", () => {
-  const terminalRows = (audit: AuditLogger) => readFileSync(audit.getPermissionAuditLogFile(), "utf8").split("\n").filter(Boolean)
-    .map(line => JSON.parse(line) as Record<string, unknown>)
-    .filter(row => row.toolUseId === "late-terminal-command" && (row.decision === "allow" || row.decision === "deny") && row.grantLifetime === undefined);
+  const terminalRows = (events: ReturnType<typeof collectPermissionEvents>["events"]) => events.filter((row) =>
+    row.event === "permission_decision" && row.correlationId === invocationCorrelationId("late-terminal-command") && row.decision !== "ask");
   const inconsistent = async () => ({ consistent: false, reason: "The command does not follow the current task." });
 
   it.each([false, true])("records a deny on the second card as the desk's (outside directory: %s)", async outside => {
@@ -489,7 +488,7 @@ describe("one terminal row per surface invocation", () => {
       const [result] = await pending;
       expect(result.is_error).toBe(true);
       expect(f.typed).toEqual([]);
-      expect(terminalRows(f.audit)).toEqual([expect.objectContaining({ decision: "deny", trustOrigin: "user-keyboard" })]);
+      expect(terminalRows(f.events)).toEqual([expect.objectContaining({ decision: "deny", trustOrigin: "user-keyboard" })]);
     });
   });
 
@@ -505,11 +504,10 @@ describe("one terminal row per surface invocation", () => {
       const [result] = await pending;
       expect(result.is_error).toBe(true);
       expect(f.typed).toEqual([]);
-      expect(terminalRows(f.audit)).toEqual([expect.objectContaining({
+      expect(terminalRows(f.events)).toEqual([expect.objectContaining({
         decision: "deny",
         terminalKind: "cancelled",
         trustOrigin: "unknown",
-        denyReasons: [expect.objectContaining({ reason: "host-shutdown" })],
       })]);
     });
   });
@@ -530,8 +528,8 @@ describe("one terminal row per surface invocation", () => {
       expect(Array.isArray(settled) ? settled : [settled instanceof Error]).toEqual([true]);
       expect(f.typed).toEqual([]);
       // A stop is the invocation's own refusal; a quit is the host's. Neither is the desk's allow.
-      expect(terminalRows(f.audit)).toEqual([expect.objectContaining(end === "quit"
-        ? { decision: "deny", trustOrigin: "unknown", denyReasons: [expect.objectContaining({ reason: "host-shutdown" })] }
+      expect(terminalRows(f.events)).toEqual([expect.objectContaining(end === "quit"
+        ? { decision: "deny", trustOrigin: "unknown", terminalKind: "cancelled" }
         : { decision: "deny", trustOrigin: "llm-tool-arg" })]);
     });
   });
@@ -547,7 +545,7 @@ describe("one terminal row per surface invocation", () => {
       const [result] = await pending;
       expect(result.is_error).toBe(true);
       expect(f.typed).toEqual([]);
-      expect(terminalRows(f.audit)).toEqual([expect.objectContaining({ decision: "deny", trustOrigin: "unknown" })]);
+      expect(terminalRows(f.events)).toEqual([expect.objectContaining({ decision: "deny", trustOrigin: "unknown" })]);
     });
   });
 
@@ -564,7 +562,7 @@ describe("one terminal row per surface invocation", () => {
       expect(f.cards[1].userOwnedSurfaceReviewFallback).toBe(true);
       expect(result.is_error).toBe(true);
       expect(f.typed).toEqual([]);
-      expect(terminalRows(f.audit)).toEqual([expect.objectContaining({ decision: "deny", trustOrigin: "unknown", denyReasons: [expect.objectContaining({ reason: expect.stringContaining("expired") })] })]);
+      expect(terminalRows(f.events)).toEqual([expect.objectContaining({ decision: "deny", trustOrigin: "unknown", terminalKind: "denied" })]);
     });
   });
 
@@ -578,7 +576,7 @@ describe("one terminal row per surface invocation", () => {
       const [result] = await pending;
       expect(result.is_error).toBe(true);
       expect(f.typed).toEqual([]);
-      expect(terminalRows(f.audit)).toEqual([expect.objectContaining({ decision: "deny", trustOrigin: "llm-tool-arg" })]);
+      expect(terminalRows(f.events)).toEqual([expect.objectContaining({ decision: "deny", trustOrigin: "llm-tool-arg" })]);
     });
   });
 
@@ -595,10 +593,9 @@ describe("one terminal row per surface invocation", () => {
       const [result] = await pending;
       expect(result.is_error, result.content).toBeFalsy();
       expect(logical).toHaveBeenCalledTimes(choice === "auto" ? 1 : 0);
-      const grants = readFileSync(f.audit.getPermissionAuditLogFile(), "utf8").split("\n").filter(Boolean).map(line => JSON.parse(line) as Record<string, unknown>)
-        .filter(row => row.grantLifetime !== undefined);
+      const grants = f.events.filter((row) => row.event === "permission_directory_grant");
       expect(grants).toEqual([expect.objectContaining({ grantLifetime: "turn", trustOrigin: origin })]);
-      expect(terminalRows(f.audit)).toEqual([expect.objectContaining({ decision: "allow", trustOrigin: origin })]);
+      expect(terminalRows(f.events)).toEqual([expect.objectContaining({ decision: "allow", trustOrigin: origin })]);
     });
   });
 
@@ -618,7 +615,7 @@ describe("one terminal row per surface invocation", () => {
       const [result] = await pending;
       expect(result.is_error).toBe(true);
       expect(f.typed).toEqual([]);
-      expect(terminalRows(f.audit)).toEqual([expect.objectContaining({ decision: "deny", trustOrigin: "user-keyboard" })]);
+      expect(terminalRows(f.events)).toEqual([expect.objectContaining({ decision: "deny", trustOrigin: "user-keyboard" })]);
     });
   });
 
@@ -639,7 +636,7 @@ describe("one terminal row per surface invocation", () => {
       expect(result).toMatchObject({ is_error: true, content: cancelled ? t("be_executor.toolExecutionCancelled")
         : t("be_executor.approvalRejectedByHost", { name: "terminal_run", reason: t("be_executor.approvalHostRejectedReason") }) });
       expect(f.typed).toEqual([]);
-      expect(terminalRows(f.audit)).toEqual([expect.objectContaining({
+      expect(terminalRows(f.events)).toEqual([expect.objectContaining({
         decision: "deny", trustOrigin: "unknown", terminalKind: cancelled ? "cancelled" : "denied",
       })]);
     });
@@ -659,7 +656,7 @@ describe("one terminal row per surface invocation", () => {
       const [result] = await pending;
       expect(result.is_error).toBe(true);
       expect(f.typed).toEqual([]);
-      expect(terminalRows(f.audit)).toEqual([expect.objectContaining({ decision: "deny", trustOrigin: "user-keyboard" })]);
+      expect(terminalRows(f.events)).toEqual([expect.objectContaining({ decision: "deny", trustOrigin: "user-keyboard" })]);
     });
   });
 
@@ -679,7 +676,7 @@ describe("one terminal row per surface invocation", () => {
       const [result] = await pending;
       expect(result.is_error).toBe(true);
       expect(f.typed).toEqual([]);
-      expect(terminalRows(f.audit)).toEqual([expect.objectContaining({ decision: "deny", trustOrigin: "user-keyboard" })]);
+      expect(terminalRows(f.events)).toEqual([expect.objectContaining({ decision: "deny", trustOrigin: "user-keyboard" })]);
     });
   });
 
@@ -694,7 +691,7 @@ describe("one terminal row per surface invocation", () => {
       const [result] = await pending;
       expect(result.is_error).toBe(true);
       expect(f.typed).toEqual([]);
-      expect(terminalRows(f.audit)).toEqual([expect.objectContaining({ decision: "deny", trustOrigin: "user-keyboard" })]);
+      expect(terminalRows(f.events)).toEqual([expect.objectContaining({ decision: "deny", trustOrigin: "user-keyboard" })]);
     });
   });
 
@@ -713,14 +710,14 @@ describe("one terminal row per surface invocation", () => {
       const [result] = await pending;
       expect(result.is_error).toBe(true);
       expect(f.typed).toEqual([]);
-      expect(terminalRows(f.audit)).toEqual([expect.objectContaining({ decision: "deny", trustOrigin: "user-keyboard" })]);
+      expect(terminalRows(f.events)).toEqual([expect.objectContaining({ decision: "deny", trustOrigin: "user-keyboard" })]);
     });
   });
 
   // The gate's own record for this very call, of an answer to a card it never raised for it.
   const foreignAnswer = (choice: "allow-once" | "deny-once") => () => answeredApprovalDecision({ choice }, "desk", "terminal_run", "late-terminal-command");
   const hostIntegrityRow = [expect.objectContaining({ decision: "deny", trustOrigin: "unknown",
-    denyReasons: [expect.objectContaining({ reason: expect.stringContaining("Approval answer does not match the pending request") })] })];
+    terminalKind: "denied" })];
 
   it.each(["allow-once", "deny-once"] as const)("refuses a review fallback %s the gate settled for another card as the host's", async choice => {
     const f = await fixture({ exactRule: false, holdFinalizer: false, surfaceChoice: "auto", logicalReview: inconsistent });
@@ -733,7 +730,7 @@ describe("one terminal row per surface invocation", () => {
       expect(result.is_error).toBe(true);
       expect(f.typed).toEqual([]);
       expect(f.cards).toHaveLength(1);
-      expect(terminalRows(f.audit)).toEqual(hostIntegrityRow);
+      expect(terminalRows(f.events)).toEqual(hostIntegrityRow);
     });
   });
 
@@ -750,7 +747,7 @@ describe("one terminal row per surface invocation", () => {
       expect(result.is_error).toBe(true);
       expect(f.typed).toEqual([]);
       expect(f.cards).toEqual([]);
-      expect(terminalRows(f.audit)).toEqual(hostIntegrityRow);
+      expect(terminalRows(f.events)).toEqual(hostIntegrityRow);
     });
   });
 
@@ -774,7 +771,7 @@ describe("one terminal row per surface invocation", () => {
       const [result] = await pending;
       expect(result.is_error).toBe(true);
       expect(f.typed).toEqual([]);
-      expect(terminalRows(f.audit)).toEqual([expect.objectContaining({ decision: "deny", trustOrigin: origin })]);
+      expect(terminalRows(f.events)).toEqual([expect.objectContaining({ decision: "deny", trustOrigin: origin })]);
     });
   });
 
@@ -794,7 +791,7 @@ describe("one terminal row per surface invocation", () => {
       const [result] = await pending;
       expect(result.is_error).toBe(true);
       expect(f.typed).toEqual([]);
-      expect(terminalRows(f.audit)).toEqual([expect.objectContaining({ decision: "deny", trustOrigin: origin })]);
+      expect(terminalRows(f.events)).toEqual([expect.objectContaining({ decision: "deny", trustOrigin: origin })]);
     });
   });
 });

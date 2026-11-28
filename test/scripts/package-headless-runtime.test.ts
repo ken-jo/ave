@@ -17,7 +17,7 @@ const packager = pathToFileURL(resolve("scripts/package-headless-runtime.mjs")).
 const selectedBinding = "node_modules/better-sqlite3/prebuilds/linux-x64.node";
 const foreignBinding = "node_modules/better-sqlite3/prebuilds/win32-x64.node";
 
-it("advertises the packaged permission-audit contracts", async () => {
+it("advertises live standalone runtime contracts", async () => {
   const module = await import(packager) as {
     HEADLESS_RUNTIME_CONTRACTS: Record<string, string>;
     HEADLESS_FORBIDDEN_INHERITED_ENV: readonly string[];
@@ -25,8 +25,6 @@ it("advertises the packaged permission-audit contracts", async () => {
   };
   expect(module.HEADLESS_RUNTIME_CONTRACTS).toEqual({
     workloadBrokerCorrelation: "ave-workload-correlation/v1",
-    permissionAuditProof: "ave-permission-audit-proof/v1",
-    permissionAuditSelfTest: "ave-permission-audit-self-test/v1",
     launcherEnvironment: "ave-headless-launch-environment/v1",
   });
   expect(module.HEADLESS_FORBIDDEN_INHERITED_ENV).toEqual([
@@ -84,8 +82,7 @@ process.stdout.write(JSON.stringify({ args: process.argv.slice(2) }) + "\\n");
   mkdirSync(join(root, "bin"));
   symlinkSync(node, join(root, "bin/node"));
   for (const command of [
-    `--verify-permission-audit=${"a".repeat(64)}`,
-    `--create-permission-audit-self-test=${"b".repeat(64)}`,
+    "--serve",
     "--runtime-check",
   ]) {
     const result = spawnSync(join(root, "ave"), [command], {

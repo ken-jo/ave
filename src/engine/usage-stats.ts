@@ -1,10 +1,7 @@
-import { readdir, stat } from "node:fs/promises";
-import { join } from "node:path";
-import { iterateJsonlLines, withAuditSnapshotLock } from "../audit/jsonl-reader.js";
-import type { AuditTokenUsage, AuditUsageByModelSegment } from "../audit/audit-logger.js";
-
+import type { SessionRepository } from "../memory/session-repository.js";
+import { isRecord } from "../shared/is-record.js";
+import type { ModelUsageSegment } from "../shared/model-pricing.js";
 import { localDateKey, localMonthStartKey, localMondayWeekStartKey, shiftLocalDateKey } from "../shared/local-date.js";
-import { aveHome } from "../shared/ave-home.js";
 import {
   normalizeSubscriptionUsageTelemetry,
   type SubscriptionRuntimeId,
@@ -15,15 +12,14 @@ import { isLLMVendor, type LLMVendor } from "./llm/types.js";
 import { normalizeAiSdkUsageForCost } from "./llm/pricing.js";
 import { LEGACY_ROUTE_UNRECORDED, parseResolvedModelPricing, recordedUsageSegmentPricing, type RecordedModelPricing, type UnknownModelPricingReason } from "../shared/model-pricing.js";
 import { averageDailyCost, computeCost } from "../shared/pricing-data.js";
-import type { RunModelSettings } from "../shared/run-model-settings.js";
 
-export interface AuditTurnEntry {
+export interface UsageTurnEntry {
   timestamp: string;
   sessionId: string;
   type: string;
-  tokenUsage?: AuditTokenUsage;
-  usageByModel?: AuditUsageByModelSegment[];
-  modelSettings?: Pick<RunModelSettings, "pricing">;
+  tokenUsage?: ModelUsageSegment["tokenUsage"];
+  usageByModel?: ModelUsageSegment[];
+  modelSettings?: { pricing?: unknown };
   /** Untrusted persisted subscription telemetry; normalize before use. */
   subscriptionUsage?: unknown;
   route?: string;
@@ -38,6 +34,8 @@ export interface UsageTotals {
   totalTokens: number;
   /** Subtotal of priced requests. Unknown requests contribute no amount. */
   cost: number;
+  /** A known price can contribute a zero subtotal. */
+  hasPricedCost?: true;
   unknownCostTurns?: number;
   endpointPriceUnavailableTurns?: number;
   legacyRouteUnrecordedTurns?: number;
@@ -91,7 +89,7 @@ interface SubscriptionUsageSummary {
 }
 
 export interface UsageSummary {
-  /** At least one audit file could not be read completely or the snapshot was unstable. */
+  /** Coverage can omit unsaved sessions or turns without persisted summaries. */
   auditIncomplete?: true;
   today: UsageTotals;
   thisWeek: UsageTotals;
@@ -153,11 +151,11 @@ function parseRoute(route: string | undefined): { vendor: UsageVendor; model: st
 type UsageSegment = {
   vendor: UsageVendor;
   model: string;
-  tokenUsage: NonNullable<AuditTurnEntry["tokenUsage"]>;
+  tokenUsage: NonNullable<UsageTurnEntry["tokenUsage"]>;
   pricing?: RecordedModelPricing;
 };
 
-function parseSubscriptionUsageSegments(entry: AuditTurnEntry): SubscriptionUsageTelemetry[] {
+function parseSubscriptionUsageSegments(entry: UsageTurnEntry): SubscriptionUsageTelemetry[] {
   if (!Array.isArray(entry.subscriptionUsage)) return [];
   const segments: SubscriptionUsageTelemetry[] = [];
   for (const raw of entry.subscriptionUsage) {
@@ -167,7 +165,7 @@ function parseSubscriptionUsageSegments(entry: AuditTurnEntry): SubscriptionUsag
   return segments;
 }
 
-function parseUsageSegments(entry: AuditTurnEntry): UsageSegment[] {
+function parseUsageSegments(entry: UsageTurnEntry): UsageSegment[] {
   const recordedRoute = parseRoute(entry.route);
   const recordedPricing = parseResolvedModelPricing(entry.modelSettings?.pricing);
   if (entry.usageByModel?.length) {
@@ -212,8 +210,12 @@ function addTo(
       ? input + output + cacheRead + cacheWrite
       : input + output;
   const subtotal = cost === undefined ? undefined : target.cost + cost;
-  if (subtotal !== undefined && Number.isFinite(subtotal)) target.cost = subtotal;
-  else target.unknownCostTurns = (target.unknownCostTurns ?? 0) + 1;
+  if (subtotal !== undefined && Number.isFinite(subtotal)) {
+    target.cost = subtotal;
+    target.hasPricedCost = true;
+  } else {
+    target.unknownCostTurns = (target.unknownCostTurns ?? 0) + 1;
+  }
   if (unknownPricingReason === "endpoint-price-unavailable") {
     target.endpointPriceUnavailableTurns = (target.endpointPriceUnavailableTurns ?? 0) + 1;
   } else if (unknownPricingReason === "legacy-route-unrecorded") {
@@ -235,182 +237,8 @@ function addSubscriptionTo(
   target.segments += 1;
 }
 
-interface UsageAuditFile {
-  name: string;
-  date: string;
-  archiveOrder: string;
-}
-
-interface UsageAuditFileManifest {
-  name: string;
-  size: number;
-  mtimeMs: number;
-  ctimeMs: number;
-}
-
-interface UsageAuditFileSnapshot {
-  file: UsageAuditFile;
-  manifest: UsageAuditFileManifest;
-}
-
-interface UsageAuditSnapshot {
-  files: UsageAuditFile[];
-  manifest: UsageAuditFileManifest[];
-  complete: boolean;
-}
-
-const RAW_USAGE_AUDIT_FILE = /^(\d{4}-\d{2}-\d{2})\.jsonl$/;
-const LEGACY_USAGE_AUDIT_ARCHIVE = /^(\d{4}-\d{2}-\d{2})\.jsonl\.(\d{8})\.gz$/;
-const UNIQUE_USAGE_AUDIT_ARCHIVE = /^(\d{4}-\d{2}-\d{2})\.jsonl\.(\d{17})\.[0-9a-f-]{36}\.gz$/i;
-
-function parseUsageAuditFile(name: string): UsageAuditFile | undefined {
-  const raw = RAW_USAGE_AUDIT_FILE.exec(name);
-  if (raw) return { name, date: raw[1], archiveOrder: "~" };
-
-  const legacy = LEGACY_USAGE_AUDIT_ARCHIVE.exec(name);
-  if (legacy) return { name, date: legacy[1], archiveOrder: `${legacy[2]}000000000` };
-
-  const unique = UNIQUE_USAGE_AUDIT_ARCHIVE.exec(name);
-  if (unique) return { name, date: unique[1], archiveOrder: unique[2] };
-
-  return undefined;
-}
-
-async function tryListUsageAuditFiles(auditDir: string): Promise<UsageAuditFile[] | undefined> {
-  let names: string[];
-  try {
-    names = await readdir(auditDir);
-  } catch {
-    return undefined;
-  }
-  return names
-    .map(parseUsageAuditFile)
-    .filter((file): file is UsageAuditFile => file !== undefined)
-    .sort((a, b) => (
-      a.date.localeCompare(b.date)
-      || a.archiveOrder.localeCompare(b.archiveOrder)
-      || a.name.localeCompare(b.name)
-    ));
-}
-
-async function listUsageAuditFiles(auditDir: string): Promise<UsageAuditFile[]> {
-  return (await tryListUsageAuditFiles(auditDir)) ?? [];
-}
-
-async function snapshotUsageAuditFiles(
-  auditDir: string,
-  matchesFile: (file: UsageAuditFile) => boolean,
-): Promise<UsageAuditSnapshot> {
-  const listed = await tryListUsageAuditFiles(auditDir);
-  if (!listed) return { files: [], manifest: [], complete: false };
-  const files = listed.filter(matchesFile);
-  const snapshots: Array<UsageAuditFileSnapshot | undefined> = await Promise.all(
-    files.map(async (file) => {
-      try {
-        const metadata = await stat(join(auditDir, file.name));
-        if (!metadata.isFile()) return undefined;
-        return {
-          file,
-          manifest: {
-            name: file.name,
-            size: metadata.size,
-            mtimeMs: metadata.mtimeMs,
-            ctimeMs: metadata.ctimeMs,
-          },
-        };
-      } catch {
-        return undefined;
-      }
-    }),
-  );
-  const present = snapshots.filter((snapshot): snapshot is UsageAuditFileSnapshot => (
-    snapshot !== undefined
-  ));
-  return {
-    files,
-    manifest: present.map((snapshot) => snapshot.manifest),
-    complete: present.length === files.length,
-  };
-}
-
-interface UsageAuditEntryRead {
-  entries: AuditTurnEntry[];
-  complete: boolean;
-}
-
-async function readUsageAuditEntriesWithStatus(
-  auditDir: string,
-  files: readonly UsageAuditFile[],
-  matchesEntry: (entry: AuditTurnEntry) => boolean = () => true,
-): Promise<UsageAuditEntryRead> {
-  const entries: AuditTurnEntry[] = [];
-  let complete = true;
-
-  for (const file of files) {
-    // Commit streamed rows only after completion; corrupt gzip prefixes must not become partial totals.
-    const rows: AuditTurnEntry[] = [];
-    try {
-      for await (const line of iterateJsonlLines(join(auditDir, file.name))) {
-        if (!line.trim()) continue;
-        try {
-          const entry = JSON.parse(line) as AuditTurnEntry;
-          if (entry.type === "turn" && matchesEntry(entry)) rows.push(entry);
-        } catch {
-          complete = false;
-        }
-      }
-      entries.push(...rows);
-    } catch {
-      // A bad or disappearing file must not hide usage from other audit files.
-      complete = false;
-    }
-  }
-
-  return { entries, complete };
-}
-
-async function readUsageAuditEntriesFromFiles(
-  auditDir: string,
-  files: readonly UsageAuditFile[],
-  matchesEntry: (entry: AuditTurnEntry) => boolean = () => true,
-): Promise<AuditTurnEntry[]> {
-  return (await readUsageAuditEntriesWithStatus(auditDir, files, matchesEntry)).entries;
-}
-
-async function readUsageAuditEntries(
-  auditDir: string,
-  matchesFile: (file: UsageAuditFile) => boolean,
-  matchesEntry: (entry: AuditTurnEntry) => boolean = () => true,
-): Promise<AuditTurnEntry[]> {
-  return withAuditSnapshotLock(
-    auditDir,
-    async () => {
-      const files = (await listUsageAuditFiles(auditDir)).filter(matchesFile);
-      return readUsageAuditEntriesFromFiles(auditDir, files, matchesEntry);
-    },
-  );
-}
-
-export async function readAuditEntries(
-  auditDir: string,
-  days: number = 60,
-  now: Date = new Date(),
-): Promise<AuditTurnEntry[]> {
-  const cutoffDateKey = shiftLocalDateKey(localDateKey(now), -days);
-  const cutoffFileKey = shiftLocalDateKey(cutoffDateKey, -1);
-  return readUsageAuditEntries(
-    auditDir,
-    (file) => file.date >= cutoffFileKey,
-    (entry) => {
-      const timestamp = new Date(entry.timestamp);
-      return !Number.isNaN(timestamp.getTime()) && localDateKey(timestamp) >= cutoffDateKey;
-    },
-  );
-}
-
-/** Accept caller-resolved pricing overrides so aggregation agrees with its cache key. */
 export function computeUsageSummary(
-  entries: AuditTurnEntry[],
+  entries: UsageTurnEntry[],
   now: Date = new Date(),
 ): UsageSummary {
   const todayKey = localDateKey(now);
@@ -570,264 +398,85 @@ export function computeUsageSummary(
   };
 }
 
-const DEFAULT_USAGE_SUMMARY_CACHE_ENTRIES = 24;
-
-type CachedUsageSummary = Omit<UsageSummary, "generatedAt">;
-
-interface UsageSummaryCacheLoad {
-  summary: UsageSummary;
-  // Do not cache a summary when its audit snapshot changed during the read.
-  cacheable: boolean;
-  // Retry only if the audit revision moved during this read.
-  retryable?: boolean;
-}
-
-export interface UsageSummaryCache {
-  get(key: string, now: Date): UsageSummary | undefined;
-  store(key: string, summary: UsageSummary, now: Date): UsageSummary;
-  getOrCompute(params: {
-    key: string;
-    now: Date;
-    compute: () => Promise<UsageSummaryCacheLoad>;
-  }): Promise<UsageSummary>;
-}
-
-function toCachedUsageSummary(summary: UsageSummary): CachedUsageSummary {
-  const { generatedAt: _generatedAt, ...payload } = summary;
-  return structuredClone(payload);
-}
-
-function cloneCachedUsageSummary(
-  summary: CachedUsageSummary,
-  now: Date,
-): UsageSummary {
-  return {
-    ...structuredClone(summary),
-    generatedAt: now.toISOString(),
-  };
-}
-
-/** Revision keys include audit, calendar, and pricing changes so cached aggregates cannot go stale. */
-export function createUsageSummaryCache(
-  options: { maxEntries?: number } = {},
-): UsageSummaryCache {
-  const maxEntries = options.maxEntries ?? DEFAULT_USAGE_SUMMARY_CACHE_ENTRIES;
-  if (!Number.isSafeInteger(maxEntries) || maxEntries < 1) {
-    throw new RangeError("Usage summary cache maxEntries must be a positive integer");
-  }
-
-  const entries = new Map<string, CachedUsageSummary>();
-  const get = (key: string, now: Date): UsageSummary | undefined => {
-    const cached = entries.get(key);
-    if (!cached) return undefined;
-    entries.delete(key);
-    entries.set(key, cached);
-    return cloneCachedUsageSummary(cached, now);
-  };
-  const store = (
-    key: string,
-    summary: UsageSummary,
-    now: Date,
-  ): UsageSummary => {
-    const cachedSummary = toCachedUsageSummary(summary);
-    entries.set(key, cachedSummary);
-    while (entries.size > maxEntries) {
-      const leastRecentlyUsed = entries.keys().next().value;
-      if (leastRecentlyUsed === undefined) break;
-      entries.delete(leastRecentlyUsed);
-    }
-    // Clone retained summaries so callers cannot mutate the cache.
-    return cloneCachedUsageSummary(cachedSummary, now);
-  };
-
-  return {
-    get,
-    store,
-    async getOrCompute({ key, now, compute }): Promise<UsageSummary> {
-      const cached = get(key, now);
-      if (cached) return cached;
-
-      const loaded = await compute();
-      if (loaded.cacheable) return store(key, loaded.summary, now);
-      return cloneCachedUsageSummary(
-        toCachedUsageSummary(loaded.summary),
-        now,
-      );
-    },
-  };
-}
-
-const usageSummaryCache = createUsageSummaryCache();
-
-type UsageSummaryCacheQuery =
-  | { kind: "range"; dateFrom: string; dateTo: string }
-  | { kind: "rolling"; days: number };
-
-function createUsageSummaryCacheKey(params: {
-  auditDir: string;
-  query: UsageSummaryCacheQuery;
-  now: Date;
-  manifest: readonly UsageAuditFileManifest[];
-}): string {
-  return JSON.stringify({
-    version: 1,
-    auditDir: params.auditDir,
-    query: params.query,
-    localDate: localDateKey(params.now),
-    manifest: params.manifest,
-  });
-}
-
-function manifestsMatch(
-  left: readonly UsageAuditFileManifest[],
-  right: readonly UsageAuditFileManifest[],
-): boolean {
-  return left.length === right.length && left.every((file, index) => {
-    const other = right[index];
-    return (
-      file.name === other.name
-      && file.size === other.size
-      && file.mtimeMs === other.mtimeMs
-      && file.ctimeMs === other.ctimeMs
-    );
-  });
-}
-
-interface CachedUsageSummaryRequest {
-  auditDir: string;
-  query: UsageSummaryCacheQuery;
-  now: Date;
-  matchesFile: (file: UsageAuditFile) => boolean;
-  matchesEntry: (entry: AuditTurnEntry) => boolean;
-}
-
-async function loadUsageSummaryFromSnapshot(
-  request: CachedUsageSummaryRequest,
-  before: UsageAuditSnapshot,
-): Promise<UsageSummaryCacheLoad> {
-  const read = await readUsageAuditEntriesWithStatus(
-    request.auditDir,
-    before.files,
-    request.matchesEntry,
-  );
-  const after = await snapshotUsageAuditFiles(
-    request.auditDir,
-    request.matchesFile,
-  );
-  const manifestStable = (
-    before.complete
-    && after.complete
-    && manifestsMatch(before.manifest, after.manifest)
-  );
-  const complete = manifestStable && read.complete;
-  return {
-    summary: {
-      ...computeUsageSummary(read.entries, request.now),
-      ...(!complete ? { auditIncomplete: true as const } : {}),
-    },
-    cacheable: complete,
-    // Leave stable corrupt files uncached without immediately repeating the same failing read.
-    retryable: !manifestStable,
-  };
-}
-
-async function getCachedUsageSummary(
-  request: CachedUsageSummaryRequest,
-): Promise<UsageSummary> {
-  return withAuditSnapshotLock(
-    request.auditDir,
-    async () => {
-      // Rotation shares this lock; validate the manifest again for appends protected by per-file locks.
-      for (let attempt = 0; attempt < 2; attempt += 1) {
-        const before = await snapshotUsageAuditFiles(
-          request.auditDir,
-          request.matchesFile,
-        );
-        const compute = () => loadUsageSummaryFromSnapshot(request, before);
-
-        if (!before.complete) {
-          const loaded = await compute();
-          return cloneCachedUsageSummary(
-            toCachedUsageSummary(loaded.summary),
-            request.now,
-          );
-        }
-
-        const key = createUsageSummaryCacheKey({
-          auditDir: request.auditDir,
-          query: request.query,
-          now: request.now,
-          manifest: before.manifest,
-        });
-        const cached = usageSummaryCache.get(key, request.now);
-        if (cached) {
-          const after = await snapshotUsageAuditFiles(
-            request.auditDir,
-            request.matchesFile,
-          );
-          if (after.complete && manifestsMatch(before.manifest, after.manifest)) {
-            return cached;
-          }
-          continue;
-        }
-
-        const loaded = await compute();
-        if (loaded.cacheable) {
-          return usageSummaryCache.store(key, loaded.summary, request.now);
-        }
-        if (!loaded.retryable) {
-          return cloneCachedUsageSummary(
-            toCachedUsageSummary(loaded.summary),
-            request.now,
-          );
-        }
-      }
-
-      // Return a best-effort view for continuous writes but never cache an unstable revision.
-      const before = await snapshotUsageAuditFiles(
-        request.auditDir,
-        request.matchesFile,
-      );
-      const loaded = await loadUsageSummaryFromSnapshot(request, before);
-      return cloneCachedUsageSummary(
-        toCachedUsageSummary(loaded.summary),
-        request.now,
-      );
-    },
-  );
-}
-
 export interface UsageRangeOptions {
-  dateFrom: string; // YYYY-MM-DD inclusive
-  dateTo: string;   // YYYY-MM-DD inclusive
+  dateFrom: string;
+  dateTo: string;
+}
+
+export type UsageSessionSource = Pick<SessionRepository, "listSessions" | "loadSession">;
+
+function validTokens(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 0;
+}
+
+function toUsageTurn(sessionId: string, timestamp: string, summary: Record<string, unknown>): UsageTurnEntry {
+  const route = typeof summary.vendorProvider === "string" && typeof summary.vendorModel === "string"
+    ? `${summary.vendorProvider}/${summary.vendorModel}`
+    : undefined;
+  const segments = Array.isArray(summary.usageByModel) ? summary.usageByModel.filter(
+    (item): item is ModelUsageSegment => isRecord(item) && typeof item.vendorProvider === "string"
+      && typeof item.vendorModel === "string" && isRecord(item.tokenUsage)
+      && validTokens(item.tokenUsage.inputTokens) && validTokens(item.tokenUsage.outputTokens),
+  ) : [];
+  const cacheReadTokens = validTokens(summary.cacheReadTokens) ? summary.cacheReadTokens : 0;
+  const cacheWriteTokens = validTokens(summary.cacheWriteTokens) ? summary.cacheWriteTokens : 0;
+  const tokenUsage = !segments.length && !Array.isArray(summary.subscriptionUsage)
+    && validTokens(summary.freshInputTokens) && validTokens(summary.tokensOut)
+    && (summary.usageReported === true || (summary.usageReported === undefined
+      && summary.freshInputTokens + summary.tokensOut + cacheReadTokens + cacheWriteTokens > 0))
+    ? { inputTokens: summary.freshInputTokens + cacheReadTokens + cacheWriteTokens,
+        outputTokens: summary.tokensOut, cacheReadTokens, cacheWriteTokens }
+    : undefined;
+  const pricing = isRecord(summary.modelSettings) ? parseResolvedModelPricing(summary.modelSettings.pricing) : undefined;
+  return {
+    timestamp, sessionId, type: "turn", route, tokenUsage, usageByModel: segments.map((segment) => ({
+      ...segment,
+      tokenUsage: normalizeAiSdkUsageForCost(segment.tokenUsage, segment.vendorProvider),
+    })),
+    ...(pricing ? { modelSettings: { pricing } } : {}),
+    subscriptionUsage: summary.subscriptionUsage,
+  };
 }
 
 export async function getUsageRange(
+  sessions: UsageSessionSource,
   opts: UsageRangeOptions,
   now: Date = new Date(),
 ): Promise<UsageSummary> {
-  const auditDir = join(aveHome(), "audit");
-  const fileDateFrom = shiftLocalDateKey(opts.dateFrom, -1);
-  const fileDateTo = shiftLocalDateKey(opts.dateTo, 1);
-
-  return getCachedUsageSummary({
-    auditDir,
-    query: {
-      kind: "range",
-      dateFrom: opts.dateFrom,
-      dateTo: opts.dateTo,
-    },
-    now,
-    matchesFile: (file) => (
-      file.date >= fileDateFrom && file.date <= fileDateTo
-    ),
-    matchesEntry: (entry) => {
-      const timestamp = new Date(entry.timestamp);
-      if (Number.isNaN(timestamp.getTime())) return false;
-      const date = localDateKey(timestamp);
-      return date >= opts.dateFrom && date <= opts.dateTo;
-    },
-  });
+  const entries: UsageTurnEntry[] = [];
+  const counted = new Set<string>();
+  // Sessions outside this repository and turns without summaries have no measurable usage.
+  const incomplete = { auditIncomplete: true as const };
+  let listed: ReturnType<UsageSessionSource["listSessions"]>;
+  try {
+    listed = sessions.listSessions({ kind: "all" });
+  } catch {
+    return { ...computeUsageSummary(entries, now), ...incomplete };
+  }
+  for (const { id } of listed) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    let messages: unknown[] | null;
+    try {
+      messages = sessions.loadSession(id);
+    } catch {
+      continue;
+    }
+    for (const message of messages ?? []) {
+      if (!isRecord(message) || message.role !== "assistant" || !isRecord(message.meta)) continue;
+      const { createdAt, messageId, turnSummary } = message.meta;
+      if (!validTokens(createdAt) || !isRecord(turnSummary)) continue;
+      const ts = new Date(createdAt);
+      if (!Number.isFinite(ts.getTime())) continue;
+      const date = localDateKey(ts);
+      if (date < opts.dateFrom || date > opts.dateTo) continue;
+      if (typeof messageId === "string" && messageId.length > 0) {
+        if (counted.has(messageId)) continue;
+        counted.add(messageId);
+      }
+      entries.push(toUsageTurn(id, ts.toISOString(), turnSummary));
+    }
+  }
+  return { ...computeUsageSummary(entries, now), ...incomplete };
 }
 
 export function computeMonthlyProjection(trend: UsageTrendPoint[]): number | undefined {
@@ -837,22 +486,11 @@ export function computeMonthlyProjection(trend: UsageTrendPoint[]): number | und
   return Number.isFinite(projection) ? projection : undefined;
 }
 
-export async function getUsageSummary(
+export function getUsageSummary(
+  sessions: UsageSessionSource,
   days: number = 60,
   now: Date = new Date(),
 ): Promise<UsageSummary> {
-  const auditDir = join(aveHome(), "audit");
-  const cutoffDateKey = shiftLocalDateKey(localDateKey(now), -days);
-  const cutoffFileKey = shiftLocalDateKey(cutoffDateKey, -1);
-
-  return getCachedUsageSummary({
-    auditDir,
-    query: { kind: "rolling", days },
-    now,
-    matchesFile: (file) => file.date >= cutoffFileKey,
-    matchesEntry: (entry) => {
-      const timestamp = new Date(entry.timestamp);
-      return !Number.isNaN(timestamp.getTime()) && localDateKey(timestamp) >= cutoffDateKey;
-    },
-  });
+  const today = localDateKey(now);
+  return getUsageRange(sessions, { dateFrom: shiftLocalDateKey(today, -days), dateTo: today }, now);
 }

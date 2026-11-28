@@ -1,11 +1,12 @@
+import { watchPermissionEvents } from "../../../__tests__/support/permission-events.js";
 import { RULE_PROVENANCE } from "../../../permissions/decision-provenance.js";
 import { captureApprovalWorkingDirectory } from "../../../permissions/user-approval-store.js";
 import { createRationaleApprovalCallback } from "../../../__tests__/support/rationale-approval-callback.js";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { answeredApprovalDecision } from "../../../__tests__/support/answering-approval-gate.js";
 import { HookRunner } from "../../../hooks/hook-runner.js";
 import { captureRationalePolicySnapshot, type RationalePolicySnapshot } from "../rationale-policy-epoch.js";
-import { answeredProvenanceRecord, ApprovalGate, isHostApprovalCancelledDecision } from "../../../permissions/approval-gate.js";
+import { answeredProvenanceRecord, ApprovalGate, } from "../../../permissions/approval-gate.js";
 import type {
   ApprovalChoice,
   ApprovalDecision,
@@ -29,7 +30,6 @@ import {
   verifyRationaleExecutionControl,
   createRequestAnchor,
   createTriggeringBatchDisposition,
-  type ActionIdentity,
   type RationaleRequiredControl,
   type RequestAnchor,
 } from "../rationale-control.js";
@@ -42,12 +42,9 @@ import type { RationaleControlCandidate } from "../rationale-orchestrator.js";
 import { createReviewerScopeReevaluation } from "../rationale-pr1-contract.js";
 import {
   InMemoryHostInvocationStartCasStore,
-  type InvocationAuditRecord,
 } from "../rationale-ticket-lifecycle.js";
-import type { RationaleUiAuditProjection } from "../rationale-resume-contract.js";
 import {
   InProcessRationaleTicketStore,
-  type RationaleTicketStoreAuditEvent,
 } from "../rationale-ticket-store.js";
 
 const NOW = 1_900_000_000_000;
@@ -93,12 +90,7 @@ interface SetupOptions {
     ApprovalGate,
     "requestAndWait" | "cancelPendingRequest"
   >;
-  readonly onTicketAudit?: (event: RationaleTicketStoreAuditEvent) => void;
-  readonly onProjectionAudit?: (
-    sessionId: string,
-    projection: RationaleUiAuditProjection,
-    at: number,
-  ) => unknown;
+
 }
 
 function createAnchor(
@@ -164,6 +156,8 @@ function createCandidate(
 const responseFor = (control: RationaleRequiredControl) =>
   rationaleResponseFor(control, "Remove the sealed build target.");
 
+afterEach(() => vi.restoreAllMocks());
+
 function setup(options: SetupOptions = {}) {
   const anchor = createAnchor(options.sessionId);
   const baseCandidate = createCandidate(anchor, options.platform ?? "linux");
@@ -171,17 +165,17 @@ function setup(options: SetupOptions = {}) {
     requestHumanApproval: options.requestHumanApproval,
     recordTerminalDenial: options.recordTerminalDenial,
     eligibilityContext: { ...baseCandidate.eligibilityContext, headless: options.headless ?? false } };
-  const ticketStore = new InProcessRationaleTicketStore({
-    onAudit: options.onTicketAudit ?? (() => {}),
-  });
+  const ticketStore = new InProcessRationaleTicketStore();
   const anchorRoundCas = new InMemoryHostAnchorRoundCasStore();
   const hostInvocationStartCas = new InMemoryHostInvocationStartCasStore();
-  const invocationAudits: InvocationAuditRecord[] = [];
-  const projectionAudits: Array<{
-    readonly sessionId: string;
-    readonly projection: RationaleUiAuditProjection;
-    readonly at: number;
-  }> = [];
+  const invocationAudits: Record<string, unknown>[] = [];
+  const projectionAudits: Record<string, unknown>[] = [];
+  const ticketAudits: Record<string, unknown>[] = [];
+  watchPermissionEvents((event) => {
+    if (event.event === "rationale_invocation") invocationAudits.push(event);
+    if (event.event === "rationale_projection") projectionAudits.push(event);
+    if (event.event === "rationale_ticket") ticketAudits.push(event);
+  });
   const approvalRequests: ApprovalRequestInput[] = [];
   // Modal tests use a high re-evaluation; allow cases supply a low/medium reviewer.
   const reviewer = options.reviewer ?? {
@@ -263,12 +257,6 @@ function setup(options: SetupOptions = {}) {
     getSandboxGeneration: () => generations.sandbox,
     anchorRoundCas,
     hostInvocationStartCas,
-    onInvocationAudit: (record) => invocationAudits.push(record),
-    onProjectionAudit: (sessionId, projection, at) => {
-      const result = options.onProjectionAudit?.(sessionId, projection, at);
-      projectionAudits.push({ sessionId, projection, at });
-      return result;
-    },
     now: options.now ?? (() => NOW),
   });
   return {
@@ -280,6 +268,7 @@ function setup(options: SetupOptions = {}) {
     hostInvocationStartCas,
     invocationAudits,
     projectionAudits,
+    ticketAudits,
     approvalGate,
     approvalRequests,
     pendingApprovals,
@@ -338,10 +327,6 @@ describe("RationaleHostCoordinator", () => {
       getSandboxGeneration: () => state.generations.sandbox,
       anchorRoundCas: state.anchorRoundCas,
       hostInvocationStartCas: state.hostInvocationStartCas,
-      onInvocationAudit: (record) => state.invocationAudits.push(record),
-      onProjectionAudit: (sessionId, projection, at) => {
-        state.projectionAudits.push({ sessionId, projection, at });
-      },
       now: () => NOW,
     });
 
@@ -396,8 +381,7 @@ describe("RationaleHostCoordinator", () => {
     expect(state.projectionAudits).toEqual([
       expect.objectContaining({
         sessionId: materialized.control.anchor.sessionId,
-        at: NOW + 1,
-        projection: expect.objectContaining({ terminalReason: null }),
+        terminalReason: undefined,
       }),
     ]);
     expect(state.approvalGate.requestAndWait).not.toHaveBeenCalled();
@@ -411,7 +395,7 @@ describe("RationaleHostCoordinator", () => {
       ticket: { state: "allowed_once", terminalReason: "allowed-once" },
     });
     expect(state.approvalGate.requestAndWait).toHaveBeenCalledTimes(1);
-    expect(state.projectionAudits.map(({ projection }) => projection.terminalReason)).toEqual([
+    expect(state.projectionAudits.map((projection) => projection.terminalReason ?? null)).toEqual([
       null,
       "allowed-once",
     ]);
@@ -429,10 +413,8 @@ describe("RationaleHostCoordinator", () => {
     expect(modalArgs).not.toHaveProperty("ticketId");
     expect(modalArgs).not.toHaveProperty("anchorId");
     expect(modalArgs).not.toHaveProperty("actionDigest");
-    expect(state.projectionAudits[0]?.projection).toMatchObject({
+    expect(state.projectionAudits[0]).toMatchObject({
       ticketId: materialized.control.ticketId,
-      anchorId: materialized.control.anchor.anchorId,
-      actionDigest: materialized.action.actionDigest,
     });
     expect(await state.coordinator.promptForApproval(
       materialized.control.ticketId,
@@ -707,209 +689,8 @@ describe("RationaleHostCoordinator", () => {
     expect(closedState.coordinator.abort(closed.control.ticketId, NOW + 1)).toBeNull();
   });
 
-  it("blocks the modal when the pre-modal projection audit cannot commit", async () => {
-    let failProjection = true;
-    const state = setup({
-      onProjectionAudit: () => {
-        if (failProjection) throw new Error("projection audit unavailable");
-      },
-    });
-    const materialized = materialize(state);
-
-    await expect(state.coordinator.handleRationaleRoundResult({
-      ticketId: materialized.control.ticketId,
-      result: {
-        kind: "generation-failure",
-        generationOutcome: "generation-error",
-      },
-      now: NOW + 1,
-    })).rejects.toThrow(/projection audit unavailable/);
-    expect(await state.coordinator.promptForApproval(
-      materialized.control.ticketId,
-      { now: NOW + 2 },
-    )).toBeNull();
-    expect(state.approvalGate.requestAndWait).not.toHaveBeenCalled();
-
-    failProjection = false;
-    expect(state.coordinator.abort(
-      materialized.control.ticketId,
-      NOW + 3,
-    )).toMatchObject({
-      state: "cancelled",
-      terminalReason: "caller-abort",
-    });
-  });
-
-  it("rejects an asynchronous projection audit sink before modal publication", async () => {
-    const state = setup({
-      onProjectionAudit: async () => {},
-    });
-    const materialized = materialize(state);
-
-    await expect(state.coordinator.handleRationaleRoundResult({
-      ticketId: materialized.control.ticketId,
-      result: {
-        kind: "generation-failure",
-        generationOutcome: "generation-error",
-      },
-      now: NOW + 1,
-    })).rejects.toThrow(/must complete synchronously/);
-    expect(await state.coordinator.promptForApproval(
-      materialized.control.ticketId,
-      { now: NOW + 2 },
-    )).toBeNull();
-    expect(state.approvalGate.requestAndWait).not.toHaveBeenCalled();
-  });
-
-  it("does not expose an allow receipt when terminal projection audit fails", async () => {
-    let projectionAttempt = 0;
-    const state = setup({
-      onProjectionAudit: () => {
-        projectionAttempt += 1;
-        if (projectionAttempt === 2) {
-          throw new Error("terminal projection audit unavailable");
-        }
-      },
-    });
-    const materialized = materialize(state);
-    await runReadyRound(state, materialized);
-
-    await expect(state.coordinator.promptForApproval(
-      materialized.control.ticketId,
-      { now: NOW + 2 },
-    )).rejects.toThrow(/terminal projection audit unavailable/);
-    expect(state.approvalGate.requestAndWait).toHaveBeenCalledOnce();
-    expect(state.projectionAudits).toHaveLength(1);
-    expect(await state.coordinator.createSealedResume({
-      ticketId: materialized.control.ticketId,
-      currentEligibilityContext: eligibilityContext,
-      now: NOW + 3,
-    })).toBeNull();
-  });
-
-  it("quarantines an abort until its required ticket audit can be retried", async () => {
-    let failAbortAudit = false;
-    const state = setup({
-      onTicketAudit: (event) => {
-        if (failAbortAudit && event.event === "abort") {
-          throw new Error("abort audit unavailable");
-        }
-      },
-    });
-    const materialized = materialize(state);
-    await state.coordinator.handleRationaleRoundResult({
-      ticketId: materialized.control.ticketId,
-      result: {
-        kind: "generation-failure",
-        generationOutcome: "generation-error",
-      },
-      now: NOW + 1,
-    });
-    failAbortAudit = true;
-
-    expect(() => state.coordinator.abort(
-      materialized.control.ticketId,
-      NOW + 2,
-    )).toThrow(AggregateError);
-    expect(await state.coordinator.promptForApproval(
-      materialized.control.ticketId,
-      { now: NOW + 2 },
-    )).toBeNull();
-    expect(state.ticketStore.get({
-      sessionId: materialized.control.anchor.sessionId,
-      ticketId: materialized.control.ticketId,
-      now: NOW + 2,
-    })?.ticket.state).toBe("user_pending");
-
-    failAbortAudit = false;
-    expect(state.coordinator.abort(
-      materialized.control.ticketId,
-      NOW + 3,
-    )).toMatchObject({
-      state: "cancelled",
-      terminalReason: "caller-abort",
-    });
-  });
-
-  it("surfaces abort-listener audit failure through the prompt promise", async () => {
-    let failAbortAudit = false;
-    const state = setup({
-      deferApproval: true,
-      onTicketAudit: (event) => {
-        if (failAbortAudit && event.event === "abort") {
-          throw new Error("listener abort audit unavailable");
-        }
-      },
-    });
-    const materialized = materialize(state);
-    await state.coordinator.handleRationaleRoundResult({
-      ticketId: materialized.control.ticketId,
-      result: {
-        kind: "generation-failure",
-        generationOutcome: "generation-error",
-      },
-      now: NOW + 1,
-    });
-    failAbortAudit = true;
-    const caller = new AbortController();
-    const pending = state.coordinator.promptForApproval(
-      materialized.control.ticketId,
-      { abortSignal: caller.signal, now: NOW + 2 },
-    );
-    await vi.waitFor(() => {
-      expect(state.approvalGate.requestAndWait).toHaveBeenCalledOnce();
-    });
-
-    expect(() => caller.abort(new Error("caller cancelled"))).not.toThrow();
-    await expect(pending).rejects.toThrow(AggregateError);
-    expect(state.ticketStore.get({
-      sessionId: materialized.control.anchor.sessionId,
-      ticketId: materialized.control.ticketId,
-      now: NOW + 2,
-    })?.ticket.state).toBe("user_pending");
-
-    failAbortAudit = false;
-    expect(state.coordinator.abort(
-      materialized.control.ticketId,
-      NOW + 3,
-    )).toMatchObject({
-      state: "cancelled",
-      terminalReason: "caller-abort",
-    });
-  });
-
-  it("marks the pending card when the rationale coordinator's abort listener settles it first", async () => {
-    const nativeWebContents = { send: vi.fn(), isDestroyed: () => false };
-    const gate = new ApprovalGate(nativeWebContents as never);
-    const cancel = vi.spyOn(gate, "cancelPendingRequest");
-    const settled = vi.fn();
-    gate.observePendingApprovals({ onPending: () => {}, onSettled: settled });
-    const state = setup({ approvalGate: gate, executionCwd: process.cwd() });
-    const { control } = materialize(state);
-    await state.coordinator.handleRationaleRoundResult({
-      ticketId: control.ticketId,
-      result: { kind: "generation-failure", generationOutcome: "generation-error" },
-      now: NOW + 1,
-    });
-    const caller = new AbortController();
-    const pending = state.coordinator.promptForApproval(control.ticketId, { abortSignal: caller.signal, now: NOW + 2 });
-    try {
-      await vi.waitFor(() => expect(gate.pendingCount).toBe(1));
-      caller.abort();
-      await expect(pending).resolves.toBeNull();
-      expect(cancel).toHaveBeenCalledWith(control.ticketId, control.anchor.sessionId, "caller-abort");
-      expect(settled).toHaveBeenCalledExactlyOnceWith(control.ticketId, expect.objectContaining({
-        choice: "deny-once", rememberPattern: "approval cancelled: caller-abort",
-      }));
-      expect(isHostApprovalCancelledDecision(settled.mock.calls[0]?.[1] as ApprovalDecision)).toBe(true);
-    } finally {
-      gate.disposeAll();
-    }
-  });
-
   it("settles an abort when gate cancellation throws and approval never settles", async () => {
     let failCancellation = true;
-    const ticketAudits: RationaleTicketStoreAuditEvent[] = [];
     const approvalGate = {
       requestAndWait: vi.fn((_request: Omit<ApprovalRequest, "requireExplicit">) =>
         new Promise<ApprovalDecision>(() => {})),
@@ -920,7 +701,6 @@ describe("RationaleHostCoordinator", () => {
     } satisfies Pick<ApprovalGate, "requestAndWait" | "cancelPendingRequest">;
     const state = setup({
       approvalGate,
-      onTicketAudit: (event) => ticketAudits.push(event),
     });
     const materialized = materialize(state);
     await state.coordinator.handleRationaleRoundResult({
@@ -947,7 +727,7 @@ describe("RationaleHostCoordinator", () => {
       ticketId: materialized.control.ticketId,
       now: NOW + 2,
     })).toBeNull();
-    expect(ticketAudits.filter((event) => event.event === "abort")).toHaveLength(1);
+    expect(state.ticketAudits.filter((event) => event.transition === "abort")).toHaveLength(1);
 
     failCancellation = false;
     expect(state.coordinator.abort(
@@ -958,56 +738,8 @@ describe("RationaleHostCoordinator", () => {
       terminalReason: "caller-abort",
     });
     expect(approvalGate.cancelPendingRequest).toHaveBeenCalledTimes(2);
-    expect(ticketAudits.some((event) => event.operation === "replay-rejected"))
+    expect(state.ticketAudits.some((event) => event.operation === "replay-rejected"))
       .toBe(false);
-  });
-
-  it("quarantines session close contexts until ticket audit recovery", async () => {
-    let failCloseAudit = false;
-    const state = setup({
-      onTicketAudit: (event) => {
-        if (failCloseAudit && event.event === "session-close") {
-          throw new Error("session close audit unavailable");
-        }
-      },
-    });
-    const materialized = materialize(state);
-    await state.coordinator.handleRationaleRoundResult({
-      ticketId: materialized.control.ticketId,
-      result: {
-        kind: "generation-failure",
-        generationOutcome: "generation-error",
-      },
-      now: NOW + 1,
-    });
-    failCloseAudit = true;
-
-    expect(() => state.coordinator.closeSession(
-      materialized.control.anchor.sessionId,
-      NOW + 2,
-    )).toThrow(AggregateError);
-    expect(await state.coordinator.promptForApproval(
-      materialized.control.ticketId,
-      { now: NOW + 2 },
-    )).toBeNull();
-    expect(state.ticketStore.get({
-      sessionId: materialized.control.anchor.sessionId,
-      ticketId: materialized.control.ticketId,
-      now: NOW + 2,
-    })?.ticket.state).toBe("user_pending");
-
-    failCloseAudit = false;
-    expect(state.coordinator.closeSession(
-      materialized.control.anchor.sessionId,
-      NOW + 3,
-    )).toEqual([
-      expect.objectContaining({
-        ticket: expect.objectContaining({
-          state: "cancelled",
-          terminalReason: "session-close",
-        }),
-      }),
-    ]);
   });
 
   it("retains session-close context until gate cancellation can be retried", async () => {
@@ -1097,6 +829,24 @@ describe("RationaleHostCoordinator", () => {
     });
   }
 
+
+  it("does not mint an automatic receipt for a replayed reevaluation", async () => {
+    const liveReviewer = reviewerReturning("aligned", "low");
+    const state = setup({ reviewer: {
+      async reevaluate(input) {
+        return { ...await liveReviewer.reevaluate(input), outcome: "cache" } as unknown as Awaited<ReturnType<RationaleScopeReviewer["reevaluate"]>>;
+      },
+    } });
+    const mint = vi.spyOn(state.ticketStore, "consumeReviewerAuthorizedOnce");
+    const round = await runReadyRound(state, materialize(state));
+
+    expect(round).toMatchObject({
+      status: "failed",
+      reevaluation: { outcome: "malformed", modalFallbackRequired: true },
+    });
+    expect(mint).not.toHaveBeenCalled();
+  });
+
   it("auto-approves a fresh low/medium reviewer terminal without a modal", async () => {
     const state = setup({ reviewer: reviewerReturning("aligned", "medium") });
     const materialized = materialize(state);
@@ -1117,8 +867,8 @@ describe("RationaleHostCoordinator", () => {
       },
     });
     expect(state.approvalGate.requestAndWait).not.toHaveBeenCalled();
-    expect(state.projectionAudits.map(({ projection }) => [
-      projection.terminalReason,
+    expect(state.projectionAudits.map((projection) => [
+      projection.terminalReason ?? null,
       projection.autoApproved,
     ])).toEqual([["allowed-once", true]]);
     expect(state.ticketStore.get({
@@ -1197,31 +947,13 @@ describe("RationaleHostCoordinator", () => {
       });
       expect(state.approvalGate.requestAndWait).toHaveBeenCalledTimes(1);
       // Preserve provenance differences between user allow-once and reviewer auto-approval.
-      expect(state.projectionAudits.map(({ projection }) => [
-        projection.terminalReason,
+      expect(state.projectionAudits.map((projection) => [
+        projection.terminalReason ?? null,
         projection.autoApproved,
       ])).toEqual([[null, false], ["allowed-once", false]]);
     },
   );
 
-  it("fails closed and exposes no receipt when the auto-approve audit cannot commit", async () => {
-    const state = setup({
-      reviewer: reviewerReturning("aligned", "medium"),
-      onProjectionAudit: () => {
-        throw new Error("auto-approve projection audit unavailable");
-      },
-    });
-    const materialized = materialize(state);
-
-    await expect(runReadyRound(state, materialized))
-      .rejects.toThrow(/auto-approve projection audit unavailable/);
-    expect(state.approvalGate.requestAndWait).not.toHaveBeenCalled();
-    expect(await state.coordinator.createSealedResume({
-      ticketId: materialized.control.ticketId,
-      currentEligibilityContext: eligibilityContext,
-      now: NOW + 3,
-    })).toBeNull();
-  });
 });
 
 describe("reviewer denial model choices", () => {

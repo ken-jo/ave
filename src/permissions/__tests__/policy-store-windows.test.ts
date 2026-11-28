@@ -1,3 +1,4 @@
+import { collectPermissionEvents } from "../../__tests__/support/permission-events.js";
 vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
 vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
 vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
@@ -6,7 +7,7 @@ import { useConfigurationOwner } from "../../__tests__/support/configuration-own
 
 useConfigurationOwner();
 
-import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi, onTestFinished } from "vitest";
 import { existsSync } from "node:fs";
 import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
@@ -19,7 +20,6 @@ import { FilePolicySource, loadMarketplacePolicy } from "../../marketplace/sourc
 import { readPolicyServiceBase } from "../../marketplace/service/client.js";
 import { readModelCatalogRefreshPolicy } from "../../core/model-catalog/refresh-policy.js";
 import { readWindowsDirectoryDacls, win32SystemBinary, type WindowsDirectoryDacl } from "../../shared/ave-home.js";
-import { initAdminPolicyAudit } from "../../lib/admin-policy-file.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import * as sensitivePaths from "../sensitive-paths.js";
 import { setFixtureOwner } from "../../__tests__/support/fixture-owner.js";
@@ -236,14 +236,14 @@ describe.skipIf(process.platform !== "win32")("Windows administrative policy tru
   });
 
   it("rejects a user-owned policy and surfaces its owner reason", async () => {
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
     await writeUserPolicy('{"version":1,"requireExplicitApproval":false}');
-    const log = vi.fn();
-    initAdminPolicyAudit({ log });
     const policy = await loadPolicy(user, admin);
     expect(policy).toMatchObject({ requireExplicitApproval: true, managed: true, adminStatus: "invalid" });
     expect(policy.adminReason).toContain(`untrusted policy file at ${admin}`);
     expect(policy.adminReason).toContain("owner S-1-5-");
-    expect(log).toHaveBeenCalledWith(expect.objectContaining({ type: "error", output: expect.stringContaining(`untrusted policy file at ${admin}`) }));
+    expect(capture.events).toContainEqual({ event: "admin_policy_refused", sessionId: "policy" });
   });
 
   it("blocks marketplace policy from the same user-owned file", async () => {

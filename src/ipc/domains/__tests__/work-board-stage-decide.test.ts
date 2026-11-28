@@ -1,3 +1,4 @@
+import { watchPermissionEvents } from "../../../__tests__/support/permission-events.js";
 import { createHostGit } from "../../../work-board/workflow/host-git.js";
 import { acceptRequestedOutput, requestedOutputHash } from "../../../work-board/workflow/requested-outputs.js";
 import { ApprovalGate, IPC_APPROVAL_REQUEST } from "../../../permissions/approval-gate.js";
@@ -14,7 +15,7 @@ import { captureWorkBoardTestGesture, pressWorkBoardTestKey, workBoardTestSender
 import { deferred } from "../../../__tests__/support/deferred.js";
 import { registerPermissionsHandlers } from "../permissions.js";
 import { registerWorkApprovalsHandlers } from "../work-approvals.js";
-import { AuditLogger } from "../../../audit/audit-logger.js";
+
 // A stage gate, a join decision, a stage retry and the start of a template run are work approvals: a sender-validated board-window main
 // frame with a consumed keyboard gesture. The renderer names hashes and ids; it never mints the run source.
 import { beforeEach, expect, it, vi } from "vitest";
@@ -80,6 +81,8 @@ function setup(privacy: { piiRedactEnabled: boolean } = { piiRedactEnabled: fals
     adoptParkedTemplateRuns: vi.fn(async () => {}),
   };
   const log = vi.fn();
+  watchPermissionEvents((entry) => { if (entry.event.startsWith("work_board_")) log(entry); });
+  const recordWorkBoardOwnerInput = vi.fn(async () => {});
   const base = { title: "t", status: "in_progress", status_resolved: "in_progress", priority: "medium", created_at: "x", updated_at: "x" };
   const create = vi.fn(async (input: { title: string; projectRoot: string }) =>
     ({ status: "created", itemId: 7, item: { ...base, ...input, id: 7 } }));
@@ -91,13 +94,13 @@ function setup(privacy: { piiRedactEnabled: boolean } = { piiRedactEnabled: fals
         : { status: "not_found", itemId: id },
     },
     workBoardEngine: engine,
+    conversationLoop: { deps: { skillMemory: { recordWorkBoardOwnerInput } } },
     settingsService: { get: (key: string) => (key === "privacy" ? privacy : undefined) },
-    auditLogger: { log },
     getMainWindow: () => window,
     getAppWindows: () => [window],
   } as unknown as IpcDeps);
   const event = { sender: owner, senderFrame: owner.mainFrame };
-  return { event, engine, log, create };
+  return { event, engine, log, create, recordWorkBoardOwnerInput };
 }
 
 const decisions = [
@@ -140,13 +143,11 @@ it("forwards a gesture-carrying decision with the host's approval surface and au
   expect(engine.decideStageJoin).toHaveBeenCalledWith(7, joinInput);
   await expect(decide(WORK_BOARD.retryStage, event, 7, retryInput)).resolves.toEqual({ ok: true });
   expect(engine.retryStage).toHaveBeenCalledWith(7, retryInput);
-  expect(log).toHaveBeenCalledTimes(3);
-  const logged = log.mock.calls.map(call => (call[0] as { output: string; type: string; sessionId: string }));
-  for (const entry of logged) {
-    expect(entry).toMatchObject({ type: "approval", sessionId: "work-board:7" });
-    expect(JSON.parse(entry.output)).toMatchObject({ event: "work-approval:stage-decided", origin: "local-desktop", runId: RUN });
-    expect(entry.output).not.toContain("tighten");
-  }
+  expect(log.mock.calls).toEqual([
+    [{ event: "work_board_decision", itemId: 7, operation: "decide-stage", decision: "request_changes", outcome: "approved" }],
+    [{ event: "work_board_decision", itemId: 7, operation: "decide-join", decision: "retry_merge" }],
+    [{ event: "work_board_decision", itemId: 7, operation: "retry-stage", outcome: "retried" }],
+  ]);
 });
 
 it("refuses a malformed or partial decision before the engine sees it", async () => {
@@ -194,7 +195,7 @@ it("starts a template run only from a gesture and the tuple the card showed, and
   const options = { template: TUPLE, templateSource: { kind: "schedule-attachment", attachmentId: "att-1", pin: TUPLE } };
   await expect(decide(WORK_BOARD.run, event, 7, options)).resolves.toEqual({ status: "awaiting_approval" });
   expect(engine.runItem).toHaveBeenCalledTimes(1);
-  expect(engine.runItem).toHaveBeenCalledWith(7, { templateSource: { kind: "local-create-and-run", pin: TUPLE } });
+  expect(engine.runItem).toHaveBeenCalledWith(7, { templateSource: { kind: "local-create-and-run", pin: TUPLE }, approvalSurface: event.sender });
 });
 
 it("creates and runs only the new item described by the native launch receipt", async () => {
@@ -210,7 +211,70 @@ it("creates and runs only the new item described by the native launch receipt", 
   await expect(decide(WORK_BOARD.add, event, input, launch)).resolves.toMatchObject({ status: "created", itemId: 7 });
   expect(engine.runItem).toHaveBeenCalledExactlyOnceWith(7, {
     templateSource: { kind: "local-create-and-run", pin: TUPLE, projectRoot },
+    approvalSurface: event.sender,
   });
+});
+
+it("records the exact typed detail only with a live native add gesture", async () => {
+  const { event, recordWorkBoardOwnerInput } = setup();
+  const input = { title: "Review", detail: "Run the checks.", projectRoot: defaultWorkspaceProject().projectRoot };
+  const add = handler(WORK_BOARD.add);
+  pressWorkBoardTestKey(event);
+  const created = await add(event, input, undefined, undefined, true);
+  expect(created).toMatchObject({ status: "created", item: input });
+  expect(recordWorkBoardOwnerInput).toHaveBeenCalledExactlyOnceWith(expect.objectContaining(input));
+  await expect(add(event, input, undefined, undefined, true)).resolves.toMatchObject({ status: "created" });
+  expect(recordWorkBoardOwnerInput).toHaveBeenCalledOnce();
+});
+
+it("does not record a detail the store did not preserve verbatim", async () => {
+  const { create, event, recordWorkBoardOwnerInput } = setup();
+  const input = { title: "Review", detail: "Run the checks.", projectRoot: defaultWorkspaceProject().projectRoot };
+  create.mockImplementationOnce(async () => ({
+    status: "created", itemId: 7, item: {
+      ...input, detail: "Different detail", id: 7, status: "in_progress",
+      status_resolved: "in_progress", priority: "medium", created_at: "x", updated_at: "x",
+    },
+  }));
+  pressWorkBoardTestKey(event);
+  await expect(handler(WORK_BOARD.add)(event, input, undefined, undefined, true)).resolves.toMatchObject({ status: "created" });
+  expect(recordWorkBoardOwnerInput).not.toHaveBeenCalled();
+});
+
+it.each(["pasted detail", "programmatic detail"])("creates an item without recording unverified %s", async (detail) => {
+  const { event, recordWorkBoardOwnerInput } = setup();
+  const input = { title: "Review", detail, projectRoot: defaultWorkspaceProject().projectRoot };
+  pressWorkBoardTestKey(event);
+  await expect(handler(WORK_BOARD.add)(event, input)).resolves.toMatchObject({ status: "created" });
+  expect(recordWorkBoardOwnerInput).not.toHaveBeenCalled();
+});
+
+it("refuses evidence from a non-owner frame or an expired native add gesture", async () => {
+  const { event, recordWorkBoardOwnerInput } = setup();
+  const input = { title: "Review", detail: "Run the checks.", projectRoot: defaultWorkspaceProject().projectRoot };
+  const add = handler(WORK_BOARD.add);
+  const subframe = { ...event, senderFrame: { ...event.senderFrame } };
+  const now = vi.spyOn(Date, "now");
+  try {
+    now.mockReturnValue(1_000);
+    pressWorkBoardTestKey(event);
+    await expect(add(subframe, input, undefined, undefined, true)).resolves.toMatchObject({ status: "created" });
+    now.mockReturnValue(6_001);
+    await expect(add(event, input, undefined, undefined, true)).resolves.toMatchObject({ status: "created" });
+    expect(recordWorkBoardOwnerInput).not.toHaveBeenCalled();
+  } finally {
+    now.mockRestore();
+  }
+});
+
+it("records typed detail using the validated create-and-run decision receipt", async () => {
+  const { event, recordWorkBoardOwnerInput } = setup();
+  const projectRoot = defaultWorkspaceProject().projectRoot;
+  const input = { title: "Review", detail: "Run the checks.", templateId: TUPLE.templateId, projectRoot };
+  const launch = { ...TUPLE, projectRoot };
+  const token = await captureWorkBoardTestGesture(handler, event, WORK_BOARD.add, input, launch);
+  await expect(handler(WORK_BOARD.add)(event, input, launch, token, true)).resolves.toMatchObject({ status: "created" });
+  expect(recordWorkBoardOwnerInput).toHaveBeenCalledExactlyOnceWith(expect.objectContaining(input));
 });
 
 it("leaves an ordinary run as it was: no gesture, no source", async () => {
@@ -251,7 +315,7 @@ it("retries a host-refused stage through IPC and persists the successful attempt
     const window = { isDestroyed: () => false, webContents: owner };
     registerWorkBoardHandlers({
       workBoardStore: h.board, workBoardEngine: h.engine, settingsService: { get: () => undefined },
-      auditLogger: new AuditLogger(join(h.dir, "audit")), getMainWindow: () => window, getAppWindows: () => [window],
+      getMainWindow: () => window, getAppWindows: () => [window],
     } as unknown as IpcDeps);
     const event = { sender: owner, senderFrame: owner.mainFrame };
     await bindDefaultProject(event);
@@ -290,7 +354,7 @@ it.each<[string, string, Parameters<typeof stageRunHarness>[0], (h: Harness) => 
   try {
     const owner = workBoardTestSender();
     const window = { isDestroyed: () => false, webContents: owner };
-    registerWorkBoardHandlers({ workBoardStore: h.board, workBoardEngine: h.engine, auditLogger: { log: vi.fn() }, getMainWindow: () => window, getAppWindows: () => [window] } as unknown as IpcDeps);
+    registerWorkBoardHandlers({ workBoardStore: h.board, workBoardEngine: h.engine, getMainWindow: () => window, getAppWindows: () => [window] } as unknown as IpcDeps);
     const [channel, args] = await prepare(h);
     const files = [h.boardPath, join(h.dir, "workflow-runs.json")];
     for (const written of files) writeFileSync(written, JSON.stringify(JSON.parse(readFileSync(written, "utf8"))));
@@ -323,16 +387,16 @@ it("projects a parked result on get and list, then refuses the superseded snapsh
     const privatePath = ["", "Users", "demo", "Documents", "report.md"].join("/");
     const rawResult = `First review result at ${privatePath}`;
     const { id, item } = await awaiting(h, { summary: rawResult });
-    const audit = new AuditLogger(join(h.dir, "audit"));
+
     const owner = workBoardTestSender();
     const window = { isDestroyed: () => false, webContents: owner };
-    registerWorkBoardHandlers({ workBoardStore: h.board, workBoardEngine: h.engine, settingsService: { get: () => undefined }, auditLogger: audit, getMainWindow: () => window, getAppWindows: () => [window] } as unknown as IpcDeps);
+    registerWorkBoardHandlers({ workBoardStore: h.board, workBoardEngine: h.engine, settingsService: { get: () => undefined }, getMainWindow: () => window, getAppWindows: () => [window] } as unknown as IpcDeps);
     const event = { sender: owner, senderFrame: owner.mainFrame };
     const stage = item.stageRuns[0];
     const binding = { runId: item.runId, stageId: "a", attempt: 1, resultHash: stage.resultHash };
     const expected = { runPin: item.record?.pin, pendingWorkflowDecisions: [{ kind: "stage-gate", binding, result: expect.stringContaining("First review result at ") }] };
     registerWorkApprovalsHandlers({
-      workBoardStore: h.board, workBoardEngine: h.engine, routinesStore: { list: () => [], listInvalid: () => [] }, auditLogger: audit,
+      workBoardStore: h.board, workBoardEngine: h.engine, routinesStore: { list: () => [], listInvalid: () => [] },
     } as unknown as IpcDeps);
     await bindDefaultProject(event);
     await expect(handler(WORK_APPROVALS.list)(event, {})).resolves.toMatchObject({
@@ -351,7 +415,7 @@ it("projects a parked result on get and list, then refuses the superseded snapsh
     await expect(decide(WORK_BOARD.decideStage, event, id, { ...binding, attempt: 2, decision: "approve" })).resolves.toEqual({ ok: false, reason: "result_mismatch" });
     expect((await h.item(id)).stageRuns).toEqual(revised.stageRuns);
     await expect(handler(WORK_BOARD.get)(event, id)).resolves.toMatchObject({
-      item: { workflowRun: { decisions: [{ kind: "stage-gate", stageId: "a", attempt: 1, decision: "request_changes" }] } },
+      item: { workflowRun: { decisions: [] } },
     });
   } finally { for (const child of h.children) child.finish(); await h.cleanup(); }
 });
@@ -368,7 +432,7 @@ it("projects join conflict evidence and refuses the previous conflict hash after
     const window = { isDestroyed: () => false, webContents: owner };
     const deps = {
       workBoardStore: h.board, workBoardEngine: h.engine, routinesStore: { list: () => [], listInvalid: () => [] },
-      auditLogger: { log: vi.fn() }, getMainWindow: () => window, getAppWindows: () => [window],
+      getMainWindow: () => window, getAppWindows: () => [window],
     } as unknown as IpcDeps;
     registerWorkBoardHandlers(deps);
     registerWorkApprovalsHandlers(deps);
@@ -406,7 +470,7 @@ it("shows stored delegation edges only for the parent session of this legacy ite
   registerWorkBoardHandlers({
     workBoardStore: { get },
     getSubAgentRunner: () => ({ isPersistedSpawnOfOrigin, listPersistedSpawnsForOrigin }),
-    auditLogger: { log: vi.fn() }, getMainWindow: () => window,
+    getMainWindow: () => window,
   } as unknown as IpcDeps);
   await bindDefaultProject(event);
   await expect(handler(WORK_BOARD.get)(event, 7)).resolves.toMatchObject({
@@ -494,7 +558,7 @@ it.each([
     registerWorkBoardHandlers({
       workBoardStore: { get: () => ({ status: "found", item }), update: result, transition: result, complete: result, reopen: result },
       workBoardEngine: { clearMissingRun: result },
-      auditLogger: { log: vi.fn() }, getMainWindow: () => window, getAppWindows: () => [window],
+      getMainWindow: () => window, getAppWindows: () => [window],
     } as unknown as IpcDeps);
     const invoke = handler(channel);
     await handler(WORK_BOARD.setProjectScope)(event, rootA);
@@ -532,7 +596,7 @@ it("scopes run progress, failure, list, get, transcript, reports, briefings, app
     const deps = {
       workBoardReport: { generate },
       workBoardStore: h.board, workBoardEngine: h.engine, routinesStore: { list: () => [], listInvalid: () => [] },
-      auditLogger: { log: vi.fn() }, getMainWindow: () => windows[0], getAppWindows: () => windows,
+      getMainWindow: () => windows[0], getAppWindows: () => windows,
     } as unknown as IpcDeps;
     registerWorkBoardHandlers(deps);
     registerWorkApprovalsHandlers(deps);
@@ -615,7 +679,6 @@ it("reads Work Approvals without confirming a failed settle or releasing its wor
     const before = readFileSync(runsFile);
     registerWorkApprovalsHandlers({
       workBoardStore: h.board, workBoardEngine: h.engine, routinesStore: { list: () => [], listInvalid: () => [] },
-      auditLogger: { log: vi.fn() },
     } as unknown as IpcDeps);
     await expect(handler(WORK_APPROVALS.list)({}, { allProjects: true })).resolves.toMatchObject({ ok: true, items: [] });
     await h.drainRunWork();
@@ -653,8 +716,7 @@ it("opens only the current conflict's host-owned join folder with a fresh receip
     const owner = workBoardTestSender();
     const event = { sender: owner, senderFrame: owner.mainFrame };
     const window = { webContents: owner, isDestroyed: () => false };
-    registerWorkBoardHandlers({ workBoardStore: h.board, workBoardEngine: h.engine, auditLogger: { log: vi.fn() },
-      getMainWindow: () => window, getAppWindows: () => [window] } as unknown as IpcDeps);
+    registerWorkBoardHandlers({ workBoardStore: h.board, workBoardEngine: h.engine, getMainWindow: () => window, getAppWindows: () => [window] } as unknown as IpcDeps);
     await expect(handler(WORK_BOARD.openJoin)(event, id, input)).resolves.toEqual({ ok: false, reason: "user-gesture-required" });
     await expect(decide(WORK_BOARD.openJoin, event, id, { ...input, path: "other" })).resolves.toEqual({ ok: false, reason: "invalid-input" });
     await expect(decide(WORK_BOARD.openJoin, event, id, { ...input, conflictHash: "b".repeat(64) })).resolves.toEqual({ ok: false, reason: "conflict_mismatch" });
@@ -684,7 +746,7 @@ it("keeps a B stage and its descendant approval details out of the launching A w
     projectSettings.mockReturnValue({ ...settings, permissions: { ...settings.permissions, additionalDirectories: [rootA, rootB] } });
     const deps = {
       approvalGate: gate, workBoardStore: h.board, workBoardEngine: h.engine,
-      auditLogger: { log: vi.fn() }, getMainWindow: () => windows[0], getAppWindows: () => windows,
+      getMainWindow: () => windows[0], getAppWindows: () => windows,
     } as unknown as IpcDeps;
     registerWorkBoardHandlers(deps);
     registerPermissionsHandlers(deps);
@@ -794,7 +856,7 @@ it("a click approves a stage with requested outputs and shows the full request",
     const window = { isDestroyed: () => false, webContents: owner };
     const deps = {
       workBoardStore: h.board, workBoardEngine: h.engine, routinesStore: { list: () => [], listInvalid: () => [] },
-      auditLogger: { log: vi.fn() }, getMainWindow: () => window, getAppWindows: () => [window],
+      getMainWindow: () => window, getAppWindows: () => [window],
     } as unknown as IpcDeps;
     registerWorkBoardHandlers(deps);
     registerWorkApprovalsHandlers(deps);

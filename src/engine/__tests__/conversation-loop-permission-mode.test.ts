@@ -1,11 +1,12 @@
-import { describe, expect, it, vi } from "vitest";
+import { collectPermissionEvents } from "../../__tests__/support/permission-events.js";
+import { describe, expect, it, vi, onTestFinished } from "vitest";
 import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 import { setupCommittedAveHome } from "../../__tests__/support/committed-ave-home.js";
 
 import { fakeLlmSettings } from "../../shared/__tests__/fake-llm-settings.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import { ConversationLoop } from "../conversation-loop.js";
-import type { LLMProvider, StreamEvent, StreamTurnInput,
+import type { LLMProvider, StreamEvent, StreamTurnParams,
 } from "../llm/types.js";
 import { userKeyboardTurn } from "../../__tests__/support/user-keyboard-turn.js";
 import { AveHomeConfigurationRefusedWriteError } from "../../shared/ave-home.js";
@@ -17,7 +18,7 @@ setupCommittedAveHome("ave-permission-mode-loop-");
 class UnusedProvider implements LLMProvider {
   readonly vendor = "openai" as const;
 
-  async *streamTurn(_input: StreamTurnInput): AsyncIterable<StreamEvent> {
+  async *streamTurn(_input: StreamTurnParams): AsyncIterable<StreamEvent> {
     throw new Error("slash command should not stream LLM turns");
   }
 }
@@ -37,10 +38,7 @@ function makeLoop() {
   const approvalGate = {
     requestAndWait: answeringRequestAndWait(() => ({ choice: "allow-once" })),
   };
-  const auditLogger = {
-    isPermissionAuditChainReady: vi.fn(() => true),
-    appendPermissionAuditEntry: vi.fn(async () => undefined),
-  };
+
   const loop = new ConversationLoop({
     settingsService: {
       get: () => fakeLlmSettings(),
@@ -59,11 +57,10 @@ function makeLoop() {
     },
     permissionManager,
     approvalGate,
-    auditLogger,
     disableSessionPersistence: true,
   } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
   (loop as unknown as { provider: LLMProvider | null }).provider = new UnusedProvider();
-  return { loop, permissionManager, approvalGate, auditLogger };
+  return { loop, permissionManager, approvalGate };
 }
 
 describe("ConversationLoop permission mode slash events", () => {
@@ -84,7 +81,9 @@ describe("ConversationLoop permission mode slash events", () => {
   });
 
   it("applies durable built-in /permission mode changes without approval popup", async () => {
-    const { loop, permissionManager, approvalGate, auditLogger } = makeLoop();
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
+    const { loop, permissionManager, approvalGate } = makeLoop();
     const onPermissionModeChanged = vi.fn();
 
     const result = await loop.runTurn(
@@ -97,16 +96,8 @@ describe("ConversationLoop permission mode slash events", () => {
     expect(result.text).toContain("권한 모드 변경됨: default -> auto");
     expect(permissionManager.setModePersist).toHaveBeenCalledWith("auto");
     expect(approvalGate.requestAndWait).not.toHaveBeenCalled();
-    expect(auditLogger.appendPermissionAuditEntry).toHaveBeenCalledWith(
-      expect.objectContaining({
-        decision: "mode_change",
-        fromMode: "default",
-        toMode: "auto",
-        durable: true,
-        confirmationSource: "builtin-slash",
-      }),
-    );
-    expect(onPermissionModeChanged).toHaveBeenCalledWith("auto");
+    expect(capture.events).toContainEqual(expect.objectContaining({ event: "permission_mode_changed",
+      fromMode: "default", toMode: "auto", durable: true }));
   });
 
   it("says in the slash output that a refused home folder kept a durable mode change to this session", async () => {

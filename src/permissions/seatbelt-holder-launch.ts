@@ -6,7 +6,7 @@ import type { ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, readlinkSync } from "node:fs";
 import { posix } from "node:path";
-import type { Readable, Writable } from "node:stream";
+import { PassThrough, type Readable, type Writable } from "node:stream";
 import { setTimeout as sleep } from "node:timers/promises";
 import {
   observeManagedProcessGroup, spawnGatedManagedProcess, terminateManagedProcessGroup, type ConfirmedExit, type ManagedResources,
@@ -32,7 +32,8 @@ const HOLDER_PROXY_KEYS = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy
 const HOLDER_READ_BASE = "/";
 
 export class SeatbeltHolderLaunchError extends Error {
-  constructor(readonly code: "cwd-ungranted" | "proxy-invalid" | "read-base-supplied" | "command-invalid" | "write-root-withheld", message: string) {
+  constructor(readonly code: "cwd-ungranted" | "proxy-invalid" | "read-base-supplied" | "command-invalid" | "write-root-withheld"
+    | "socket-directory-invalid", message: string) {
     super(message);
     this.name = "SeatbeltHolderLaunchError";
   }
@@ -55,6 +56,12 @@ export interface SeatbeltHolderLaunchInput {
   readonly floorPierces?: readonly string[];
   readonly network: SeatbeltHolderNetwork;
   readonly labels: SeatbeltHolderLabels;
+  /**
+   * The one Unix-socket directory an offline host holder may bind and connect in (owner L-O1: the document engine's
+   * per-session 0700 IPC directory), rendered in srt's rule form. It must be canonical and inside a write root; no
+   * other socket path is ever allowed, and a networked holder takes none.
+   */
+  readonly unixSocketDirectory?: string;
 }
 
 /** Everything one holder start runs with, named by one digest. Nothing of it is written to disk. */
@@ -167,7 +174,12 @@ export function composeSeatbeltHolderLaunch(input: SeatbeltHolderLaunchInput, ho
     || (!inChain && ![...grants.readonly, ...grants.readwrite].some(coversCwd))) {
     throw new SeatbeltHolderLaunchError("cwd-ungranted", `Container holder working directory is outside its filesystem grants: ${cwd}`);
   }
-  const profile = buildSeatbeltHolderProfile({ model, grants, lookups, unixSocketRoots: [], proxyPort, labels: input.labels });
+  const socket = input.unixSocketDirectory;
+  if (socket !== undefined && (input.network !== "offline" || !posix.isAbsolute(socket) || canonicalPath(socket, true, lookups) !== socket
+    || !lookups.exists(socket) || !grants.readwrite.some(root => atOrUnder(socket, root, lookups.foldsCase)))) {
+    throw new SeatbeltHolderLaunchError("socket-directory-invalid", `Container holder socket directory must be a canonical directory inside an offline holder's write root: ${socket}`);
+  }
+  const profile = buildSeatbeltHolderProfile({ model, grants, lookups, unixSocketRoots: socket === undefined ? [] : [socket], proxyPort, labels: input.labels });
   const env = Object.freeze(holderEnvironment(input.env, input.network));
   const argv = Object.freeze(["-p", profile, HOLDER_SHELL, "-c", HOLDER_READY_SHIM, "ave-holder", input.command, ...input.args]);
   const record = { profile, argv, env, cwd, proxyPort };
@@ -265,6 +277,9 @@ export interface StartSeatbeltHolderOptions {
   /** The row-2 recheck. It runs synchronously after the group is registered and before the release byte. */
   readonly assertStillValid: () => void;
   readonly egress?: SeatbeltHolderEgress;
+  /** Aborted when the holder's admission is revoked after the gate released it: the start stops it and refuses, instead
+   * of waiting for the ready byte. The caller's post-start recheck covers a revocation after the ready byte. */
+  readonly revoked?: AbortSignal;
   readonly resources?: ManagedResources;
   readonly startMs?: number;
 }
@@ -290,7 +305,8 @@ const EXIT_SHIM_NOT_EXECUTED = 71;
 type StartObservation =
   | { readonly kind: "ready" }
   | { readonly kind: "closed"; readonly code: number | null; readonly signal: NodeJS.Signals | null }
-  | { readonly kind: "stalled" };
+  | { readonly kind: "stalled" }
+  | { readonly kind: "revoked" };
 
 function startRefusal(code: number | null, signal: NodeJS.Signals | null, diagnostic: string): MxcHolderStartRefusedError {
   if (code === EXIT_PROFILE_REJECTED) return new MxcHolderStartRefusedError("request-rejected", diagnostic || "the kernel refused the profile");
@@ -363,13 +379,20 @@ export async function startSeatbeltHolderNow(launch: SeatbeltHolderLaunch, optio
   const onDiagnostic = (chunk: Buffer): void => {
     if (diagnostic.length < DIAGNOSTIC_BYTES) diagnostic += chunk.toString("utf8").slice(0, DIAGNOSTIC_BYTES - diagnostic.length);
   };
+  // The start reads stderr for its refusal diagnostic, which puts the stream in flowing mode. The holder's consumer reads
+  // this buffer instead, so nothing the holder writes between the ready byte and the consumer's first read is dropped.
+  const stderr = new PassThrough();
+  child.stderr?.pipe(stderr);
   child.stderr?.on("data", onDiagnostic);
   const ready = child.stdio[4] as Readable;
   const observation = await new Promise<StartObservation>((resolve) => {
     const timer = setTimeout(() => resolve({ kind: "stalled" }), options.startMs ?? TOOL_TIMEOUT_POLICY.mxcMacHolderStartMs);
     timer.unref?.();
-    ready.once("data", () => { clearTimeout(timer); resolve({ kind: "ready" }); });
-    void closed.then(({ code, signal }) => { clearTimeout(timer); resolve({ kind: "closed", code, signal }); });
+    const onRevoked = (): void => { clearTimeout(timer); resolve({ kind: "revoked" }); };
+    ready.once("data", () => { clearTimeout(timer); options.revoked?.removeEventListener("abort", onRevoked); resolve({ kind: "ready" }); });
+    void closed.then(({ code, signal }) => { clearTimeout(timer); options.revoked?.removeEventListener("abort", onRevoked); resolve({ kind: "closed", code, signal }); });
+    if (options.revoked?.aborted) onRevoked();
+    else options.revoked?.addEventListener("abort", onRevoked, { once: true });
   });
   ready.destroy();
   child.stderr?.off("data", onDiagnostic);
@@ -382,7 +405,7 @@ export async function startSeatbeltHolderNow(launch: SeatbeltHolderLaunch, optio
     // A process that left the group may still hold the holder's stdout; the group check must not wait on it. The tail
     // of the output gets a bounded drain, then Ave lets go of the streams.
     await Promise.race([streamsClosed, sleep(TOOL_TIMEOUT_POLICY.mxcMacHolderOutputDrainMs, undefined, { ref: false })]);
-    for (const stream of [child.stdin, child.stdout, child.stderr]) stream?.destroy();
+    for (const stream of [child.stdin, child.stdout, child.stderr, stderr]) stream?.destroy();
     const receipt = await exit.confirmExit(reason);
     const sweep = await runHolderSweep(options.helper, "sweep", launch.labels.holder, TOOL_TIMEOUT_POLICY.mxcMacHolderSweepMs);
     if (receipt !== undefined && sweep.verified) {
@@ -396,7 +419,8 @@ export async function startSeatbeltHolderNow(launch: SeatbeltHolderLaunch, optio
 
   if (observation.kind !== "ready") {
     // A refused start still runs the sweep: something may have started between the profile and the failure.
-    await dispose(observation.kind === "stalled" ? "holder start stalled" : "holder start refused");
+    await dispose(observation.kind === "stalled" ? "holder start stalled" : observation.kind === "revoked" ? "holder start revoked" : "holder start refused");
+    if (observation.kind === "revoked") throw new MxcProcessContractError("Container holder admission was revoked during its start");
     if (observation.kind === "stalled") throw new MxcHolderStartRefusedError("holder-start-failed", "the holder did not start in time");
     throw startRefusal(observation.code, observation.signal, diagnostic.trim());
   }
@@ -404,7 +428,7 @@ export async function startSeatbeltHolderNow(launch: SeatbeltHolderLaunch, optio
     pid: child.pid as number,
     stdin: child.stdin as Writable,
     stdout: child.stdout as Readable,
-    stderr: child.stderr as Readable,
+    stderr,
     completion: closed,
   });
   return Object.freeze({ process: holderProcess, confinement: "macos-seatbelt" as const, labels: launch.labels, dispose });

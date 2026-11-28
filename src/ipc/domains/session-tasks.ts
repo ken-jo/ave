@@ -14,11 +14,11 @@ function namedSession(sessionId: unknown): string | null {
 }
 
 export function registerSessionTasksHandlers(deps: IpcDeps): void {
-  const { sessionTasksStore, auditLogger, getMainWindow } = deps;
+  const { sessionTasksStore, getMainWindow } = deps;
 
   ipcMain.handle(CHANNELS.sessionTasks.list, (e, sessionId: unknown) => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.sessionTasks.list, e);
+      auditUnauthorized(CHANNELS.sessionTasks.list);
       return UNAUTHORIZED_FRAME;
     }
     const sid = namedSession(sessionId);
@@ -31,7 +31,7 @@ export function registerSessionTasksHandlers(deps: IpcDeps): void {
   });
   ipcMain.handle(CHANNELS.sessionTasks.clear, async (e, sessionId: unknown) => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.sessionTasks.clear, e);
+      auditUnauthorized(CHANNELS.sessionTasks.clear);
       return UNAUTHORIZED_FRAME;
     }
     const sid = namedSession(sessionId);

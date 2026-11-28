@@ -10,8 +10,10 @@ import {
   normalizeCorpCaCommonName,
 } from "../shared/corp-ca-common-name.js";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
+import { UUID_PATTERN } from "../shared/uuid.js";
 import { writeUtf8FileAtomicSync } from "../lib/atomic-file.js";
 import { commitUnderAdmission } from "../shared/admission-commit.js";
 import { withInstalledStateMutation } from "../main/installed-state-mutation.js";
@@ -459,14 +461,6 @@ export interface A2ARemoteSettings {
   receiverMaxKeysPerGeneration: number;
 }
 
-/** §14.2 Audit log rotation + retention settings. - auditRotationMaxBytes: rotate when file exceeds
- * this size (default 10 MB) - auditRetentionDays: delete archives older than this many days (default 30) */
-export interface AuditSettings {
-  /** Rotate active .jsonl when it exceeds this size in bytes. Default: 10_485_760 (10 MB). */
-  auditRotationMaxBytes: number;
-  /** Delete .jsonl.*.gz archives older than this many days. Default: 30. */
-  auditRetentionDays: number;
-}
 
 /** Experimental feature flags; UI-toggleable, persisted to settings.json. Defaults are defined per flag in
  * settings-defaults.ts. Safe to add fields without migration; missing keys are treated as false at load time. */
@@ -476,6 +470,8 @@ export interface FeatureFlags {
   /** When true, idle IDLE_SCAN may send eligible active global and current explicit-project raw memories to the
    * configured LLM to update a derived long-term overview. Default false: manual consolidation remains available. */
   idleMemoryConsolidation?: boolean;
+  /** Review verified skill invocations at task or session completion. */
+  automaticSkillMemory?: boolean;
   /** When true, a queued background sub-agent Message may start a new parent turn while that exact parent
    * session is loaded and idle. Default false: the durable mailbox joins the user's next turn instead. */
   subAgentAutonomousWake?: boolean;
@@ -537,7 +533,6 @@ export interface AppSettings {
   privacy: PrivacySettings;
   updates: UpdateSettings;
   telemetry: TelemetrySettings;
-  audit: AuditSettings;
   /** Where the sandbox egress proxy sends allowed connections next. Main-owned: written only through the permissions `upstreamProxySet`
    * channel (host renderer only) via `set`, never through `patch()`, and left out of the renderer snapshot. See `src/shared/upstream-proxy.ts`. */
   upstreamProxy: UpstreamProxySettings;
@@ -847,6 +842,7 @@ export class SettingsWriteRefusedError extends Error {
 
 export class SettingsService {
   private readonly changeListeners = new Map<keyof AppSettings, Set<() => void>>();
+  private savedSkillMemoryGeneration: string | undefined;
   private providerConfigRevision = 0;
   private readonly secretGenerations = new Map<string, number>();
   private observedSecretFingerprint: string | null | "unreadable" | undefined;
@@ -992,6 +988,14 @@ export class SettingsService {
 
   get<K extends keyof AppSettings>(key: K): AppSettings[K] {
     return structuredClone(this.settings[key]);
+  }
+
+  getSaved<K extends keyof AppSettings>(key: K): AppSettings[K] {
+    return structuredClone(this.saved[key]);
+  }
+
+  getSavedSkillMemoryGeneration(): string | undefined {
+    return this.savedSkillMemoryGeneration;
   }
 
   async set<K extends keyof AppSettings>(key: K, value: AppSettings[K], admission?: SettingsWriteAdmission): Promise<void> {
@@ -1193,9 +1197,6 @@ export class SettingsService {
         nextTelemetry.level = telemetryLevel({ enabled: nextTelemetry.enabled, crashReportingEnabled: nextTelemetry.crashReportingEnabled });
       }
       this.settings.telemetry = nextTelemetry;
-    }
-    if (partial.audit) {
-      this.settings.audit = { ...this.settings.audit, ...partial.audit };
     }
     if (partial.diagnostics) {
       // Field-level validation (mirrors `system`/`features`): an invalid includeCrashDumps or out-of-range logRetentionDays is coerced/dropped so a
@@ -1889,7 +1890,6 @@ export class SettingsService {
         privacy: normalizePrivacy(parsed.privacy),
         updates: { ...DEFAULT_SETTINGS.updates, ...parsed.updates },
         telemetry: normalizeTelemetry(parsed.telemetry),
-        audit: { ...DEFAULT_SETTINGS.audit, ...parsed.audit },
         upstreamProxy: normalizeUpstreamProxy(parsed.upstreamProxy),
         diagnostics: normalizeDiagnostics(parsed.diagnostics),
         appearance,
@@ -1907,6 +1907,11 @@ export class SettingsService {
         features: { ...DEFAULT_SETTINGS.features, ...normalizedFeatures },
         appliedMigrations,
       };
+      if (Object.hasOwn(parsed, "skillMemoryGeneration")) {
+        const generation: unknown = parsed.skillMemoryGeneration;
+        this.savedSkillMemoryGeneration = typeof generation === "string" && UUID_PATTERN.test(generation)
+          ? generation : randomUUID();
+      }
       return {
         settings: result,
         writeBack: needsAppearanceWriteBack || migrationWriteBack,
@@ -1944,11 +1949,7 @@ export class SettingsService {
           for (const write of admitted) write.apply(this.settings);
           const featuresChanged = !isDeepStrictEqual(this.saved.features, snapshot.features);
           this.saved = snapshot;
-          if (featuresChanged) {
-            for (const listener of this.changeListeners.get("features") ?? []) {
-              try { listener(); } catch (error) { log.warn({ error }, "settings change listener failed"); }
-            }
-          }
+          if (featuresChanged) this.notifyFeaturesSaved();
           if (this.withheldSecretKeys.size > 0) void this.deleteWithheldSecrets();
           for (const write of batch) write.resolve();
         } catch (err) {
@@ -1959,6 +1960,14 @@ export class SettingsService {
       }
     } finally {
       this.saving = false;
+    }
+  }
+
+  private notifyFeaturesSaved(): void {
+    for (const listener of this.changeListeners.get("features") ?? []) {
+      try {
+        void Promise.resolve(listener()).catch(error => log.warn({ error }, "settings change listener failed"));
+      } catch (error) { log.warn({ error }, "settings change listener failed"); }
     }
   }
 
@@ -1989,7 +1998,14 @@ export class SettingsService {
   }
 
   private async saveSettings(settings: AppSettings): Promise<void> {
-    writeUtf8FileAtomicSync(this.settingsPath, JSON.stringify(settings, null, 2));
+    const wasOff = this.saved.features?.automaticSkillMemory === false;
+    const isOff = settings.features?.automaticSkillMemory === false;
+    // Fence old evidence at the settings commit, even if journal cleanup fails or the host exits.
+    const skillMemoryGeneration = isOff && !wasOff
+      ? randomUUID()
+      : this.savedSkillMemoryGeneration ?? (wasOff || isOff ? randomUUID() : undefined);
+    writeUtf8FileAtomicSync(this.settingsPath, JSON.stringify({ ...settings, skillMemoryGeneration }, null, 2));
+    this.savedSkillMemoryGeneration = skillMemoryGeneration;
   }
 
 }

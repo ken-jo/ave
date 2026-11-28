@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect } from "vitest";
 
 import { ConversationLoop } from "../conversation-loop.js";
 import type { LLMProvider, StreamEvent, StreamTurnParams,
@@ -6,19 +6,11 @@ import type { LLMProvider, StreamEvent, StreamTurnParams,
 import { ToolRegistry } from "../../tools/registry.js";
 import { createDynamicTool } from "../../tools/base.js";
 import { TOOL_SEARCH_TOOL_NAME } from "../../tools/registry.js";
-import { AuditLogger } from "../../audit/audit-logger.js";
 import { EAGER_TOOL_EXPOSURE_CEILING } from "../../shared/tool-exposure-policy.js";
 import { fakeLlmSettings } from "../../shared/__tests__/fake-llm-settings.js";
 import type { TurnDecisionEvent } from "../turn/types.js";
 import { endTurnScript } from "./conversation-loop-test-helpers.js";
 import { userKeyboardTurn } from "../../__tests__/support/user-keyboard-turn.js";
-
-type CapturedToolExposure = {
-  loadedToolCount: number;
-  deferredCatalogCount: number;
-  deferralEligibleLoadedCount: number;
-  deferredLoadedRatio: number | null;
-};
 
 class RecordingProvider implements LLMProvider {
   readonly vendor = "openai" as const;
@@ -48,7 +40,6 @@ function readonlyPluginTool(name: string, pluginId: string) {
 function makeLoop(opts: {
   provider: LLMProvider;
   headless?: boolean;
-  auditLogger?: AuditLogger;
   inactivePluginIds?: Set<string>;
   extraMeetingTools?: number;
 }): ConversationLoop {
@@ -124,7 +115,6 @@ function makeLoop(opts: {
     // Plugin scope is host-selected; natural-language keywords cannot activate tools.
     forcedActivePluginIds: ["com.example.meeting"],
     headless: opts.headless,
-    ...(opts.auditLogger ? { auditLogger: opts.auditLogger } : {}),
   } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
   (loop as unknown as { provider: LLMProvider | null }).provider =
     opts.provider;
@@ -161,26 +151,6 @@ describe("ConversationLoop — eager active-plugin tool exposure (#1176)", () =>
     expect(searchCalls).toHaveLength(0);
   });
 
-  it("emits an empty catalog and a 0 deferred ratio in eager mode", async () => {
-    const provider = new RecordingProvider(endTurnScript("ok"));
-    const auditLogger = new AuditLogger();
-    const captured: CapturedToolExposure[] = [];
-    vi.spyOn(auditLogger, "logTurn").mockImplementation(
-      (params: { toolExposure?: CapturedToolExposure }) => {
-        if (params.toolExposure) captured.push(params.toolExposure);
-      },
-    );
-    const loop = makeLoop({ provider, auditLogger });
-    await loop.runTurn("회의 정리해줘", undefined, undefined, {
-      ...userKeyboardTurn(),
-    });
-
-    expect(captured).toHaveLength(1);
-    const exposure = captured[0];
-    expect(exposure.deferralEligibleLoadedCount).toBe(3);
-    expect(exposure.deferredCatalogCount).toBe(0);
-    expect(exposure.deferredLoadedRatio).toBe(0);
-  });
 });
 
 describe("ConversationLoop — active/inactive plugin gating (#1176)", () => {

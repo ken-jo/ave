@@ -48,7 +48,6 @@ function makeDeps(history: GenericMessage[]) {
         markMainActiveResume: vi.fn(async () => undefined),
       },
     } as any,
-    auditLogger: { log: vi.fn() } as any,
     getMainWindow: vi.fn(() => null),
   };
 }

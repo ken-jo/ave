@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from 
 import { inspectFile } from "../../__tests__/test-helpers.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { JsonlRecordFile, parseJsonlLines } from "../jsonl-reader.js";
+import { JsonlRecordFile, parseJsonlLines } from "../../lib/jsonl-record-file.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
 describe("parseJsonlLines", () => {

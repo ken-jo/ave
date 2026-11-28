@@ -20,7 +20,7 @@ const card = { id: "alert:abc", source: { kind: "alert", pluginId: "fixturemail"
 
 function register(alertsService: unknown, deps: Record<string, unknown> = {}, marketplace: unknown = {}) {
   handlers.clear();
-  registerAlertsHandlers({ alertsService, auditLogger: { log: vi.fn() }, ...deps } as never, async () => marketplace as never);
+  registerAlertsHandlers({ alertsService, ...deps } as never, async () => marketplace as never);
   return (channel: string, ...args: unknown[]) => handlers.get(channel)!(hostFrameEvent(), ...args);
 }
 

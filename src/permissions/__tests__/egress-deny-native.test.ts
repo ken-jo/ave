@@ -17,7 +17,7 @@ import { startEgressDenyMonitor } from "../egress-deny-monitor.js";
 import { liveEgressInvocationCount } from "../egress-invocations.js";
 import { spawnConfinedChild } from "../confined-child.js";
 import { setPluginWorkerConfinementRequestedAtBoot } from "../sandbox-capability.js";
-import type { SandboxEgressDenyAuditEntry } from "../../audit/sandbox-audit.js";
+import type { SandboxEgressDenyAuditEntry } from "../../permissions/egress-observation.js";
 import { sandboxCasesRequired, sandboxCasesRun } from "../../plugins/isolation/__tests__/sandbox-cases.js";
 import { spawnWithSandbox } from "../../tools/shell-tools.js";
 import { prepareSandboxFixture } from "../../tools/__tests__/support/prepared-shell.js";

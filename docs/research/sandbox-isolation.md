@@ -69,7 +69,7 @@ The write jail for a spawn comes from `src/permissions/sandbox-write-jail.ts` (t
 - Dependencies missing with the Settings toggle: stay unconfined, report `none`, warn loudly (`degrade`).
 - Dependencies missing with `AVE_SANDBOX_ENABLED=1` or `AVE_PLUGIN_WORKER_CONFINEMENT=1` on macOS or Linux: refuse to start (`abort`). Windows never aborts, so first run can reach the install step.
 
-The outcome is written to the boot audit log and shown in the Permissions tab.
+The outcome is logged at boot and shown in the Permissions tab.
 
 ### 3.3 Capability as the reviewer's source of truth
 
@@ -107,30 +107,12 @@ Network policy for all of these is one shared allow-list; see [network-restricte
 
 `src/shared/canonical-json.ts` (`canonicalStringify`) makes record and lookup keys symmetric: object keys sorted, `undefined` members dropped, array order kept with nested objects canonicalized, depth capped at 100, and only true ancestor cycles marked. It is shared by the main process and the renderer, and should only receive JSON-clean values.
 
-### 3.6 S2 sandbox audit fields
+### 3.6 Sandbox logging
 
-Each reviewed call writes one `SandboxAuditEntry` (`src/audit/sandbox-audit.ts`), separate from the permission-gate audit entries in `audit-schema.ts`. `buildSandboxAuditEntry()` always sets `timestamp` itself.
-
-| Field | Type | Meaning |
-|---|---|---|
-| `timestamp` | string | ISO 8601 time the entry was built. |
-| `tool.name` | string | Tool name. |
-| `tool.args` | string | Tool input as JSON, DLP-masked by the caller. |
-| `tool.source` | string | Tool source (`builtin`, `plugin` or `mcp`). |
-| `tool.trustOrigin` | `ToolTrustOrigin`, optional | Trust origin of the call. |
-| `tool.approvalCacheKey` | string, optional | Authority-sensitive approval identity. |
-| `sandbox.kind` | `SandboxKind` | Capability used for this call's verdict. |
-| `sandbox.confidence` | `verified` / `assumed` / `policy-best-effort` | Capability confidence. |
-| `sandbox.events` | `SandboxEvent[]` | `{ type: "egress_attempted", blocked, target }` or `{ type: "fs_write_attempted", blocked, path }`. |
-| `sandbox.spawnLatencyMs` | number | Spawn to first stdout byte, in ms. |
-| `sandbox.overheadPercent` | number | `spawnLatencyMs / totalExecutionMs * 100`, two decimals. |
-| `reviewer.ruleVerdict` | `low` / `medium` / `high` | Deterministic rule verdict. |
-| `reviewer.llmVerdict` | `low` / `medium` / `high` or `null` | LLM verdict; `high` when it fails closed; `null` when no LLM verdict exists (memory hit, rule-only, host-determined, fallback to rules). |
-| `reviewer.finalVerdict` | `low` / `medium` / `high` | `max(rule, llm)`, or `max(rule, stored)` on a memory hit. |
-| `reviewer.compositionRulesTriggered` | `{ rule, reason }[]` | Rules that changed the outcome. |
-| `reviewer.userApprovalUsed` | object or `null` | `memoryHit`, `nlJustification` (masked, or `null`), `verdictAtApproval` (or `null`); `null` when no interactive approval was involved. |
-
-Sink (`src/audit/sandbox-audit-sink.ts`): one JSON line per entry appended to `~/.ave/audit/<YYYY-MM-DD>.sandbox.jsonl`, with the date in UTC like the permission-gate channel, directory `0o700`, file `0o600`. The sink applies no DLP; callers mask `args` and `nlJustification`. Write failures are swallowed at the call sites so audit never blocks a tool.
+Sandbox reviews and proxy outcomes use the [application logger](../references/observability-guide.md#application-logs).
+Sandbox execution records include the tool, capability, confidence and event count.
+Proxy refusal records include the capability, invocation kind and refusal action.
+Logging is best-effort and independent of permission decisions.
 
 Current producers are `PermissionManager.dispatchReviewer` (`src/permissions/permission-manager.ts`) and the approval-memory skip (`src/tools/pipeline/approval-memory-skip.ts`). Both run before execution, so `events` is always `[]` and `spawnLatencyMs` and `overheadPercent` are `0`, meaning "not measured". The only composition rule recorded today is `host-determined`.
 

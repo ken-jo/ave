@@ -1,7 +1,7 @@
 import type { PreviewTableDocument } from "./preview-document.js";
 import type { PreviewAnyFormat, PreviewDocumentFor, PreviewPageDocument, PreviewDocumentElement } from "./preview-page-document.js";
 import type { EgressGrantScope } from "./egress-grant-scopes.js";
-import type { EgressDecisionBasis } from "../audit/sandbox-audit.js";
+import type { EgressDecisionBasis } from "../permissions/egress-observation.js";
 
 export type ObservationSource = "document" | "browser" | "terminal";
 export interface ObservationTarget { id: string; path: string; hostSessionId?: string }

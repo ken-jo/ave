@@ -16,7 +16,7 @@ import { isWindowControlOwned } from "../window-control-registry.js";
 export { registerWindowEventListeners } from "../../main/window-event-listeners.js";
 
 export function registerWindowHandlers(deps: IpcDeps): void {
-  const { auditLogger, getMainWindow } = deps;
+  const { getMainWindow } = deps;
   const getSenderWindow = (e: IpcMainInvokeEvent): ElectronBaseWindow | null =>
     (mainWindowForContents(e.sender) ?? BrowserWindow.fromWebContents(e.sender));
   const getSenderWindowOrMain = (e: IpcMainInvokeEvent): ElectronBaseWindow | null =>
@@ -25,25 +25,25 @@ export function registerWindowHandlers(deps: IpcDeps): void {
     validateHostRendererSender(e) || isWindowControlOwned(e.sender);
 
   ipcMain.handle(CHANNELS.window.minimize, (e) => {
-    if (!canUseWindowControl(e)) { auditUnauthorized(auditLogger, CHANNELS.window.minimize, e); return; }
+    if (!canUseWindowControl(e)) { auditUnauthorized(CHANNELS.window.minimize); return; }
     getSenderWindowOrMain(e)?.minimize();
   });
 
   ipcMain.handle(CHANNELS.window.toggleMaximize, (e) => {
-    if (!canUseWindowControl(e)) { auditUnauthorized(auditLogger, CHANNELS.window.toggleMaximize, e); return; }
+    if (!canUseWindowControl(e)) { auditUnauthorized(CHANNELS.window.toggleMaximize); return; }
     const win = getSenderWindowOrMain(e);
     if (!win) return;
     win.isMaximized() ? win.unmaximize() : win.maximize();
   });
 
   ipcMain.handle(CHANNELS.window.close, (e) => {
-    if (!canUseWindowControl(e)) { auditUnauthorized(auditLogger, CHANNELS.window.close, e); return; }
+    if (!canUseWindowControl(e)) { auditUnauthorized(CHANNELS.window.close); return; }
     getSenderWindow(e)?.close();
   });
 
   ipcMain.handle(CHANNELS.window.openHtmlPreview, async (e, payload): Promise<OpenHtmlPreviewWindowResult> => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.window.openHtmlPreview, e);
+      auditUnauthorized(CHANNELS.window.openHtmlPreview);
       return { ok: false, error: UNAUTHORIZED_FRAME.error };
     }
 

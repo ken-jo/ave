@@ -126,6 +126,12 @@ describe("container route call sites", () => {
       .toEqual(["src/boot/steps/sandbox-init.ts"]);
   });
 
+  it("lets only the offline holder session open a Unix-socket directory, and only the document engine start one (L-O1)", () => {
+    expect(callers(/\bunixSocketDirectory\b/u, "src/permissions/seatbelt-holder-launch.ts")).toEqual(["src/sandbox/wrap-bundled-command.ts"]);
+    expect(callers(/\bsession:\s*\{\s*writeRoot:/u, "src/sandbox/wrap-bundled-command.ts")).toEqual(["src/permissions/offline-process-sandbox.ts"]);
+    expect(callers(/\bstartOfflineProcessHolder\s*\(/u, "src/permissions/offline-process-sandbox.ts")).toEqual(["src/observation/libreoffice-process.ts"]);
+  });
+
   it("shares the request builder between boot verification and the POSIX shell launch", () => {
     // The macOS holder launch ranks its rows with the same function, never a copy.
     expect(callers(/\brankPosixContainerRows\b/u, "src/permissions/mxc-posix.ts"))
@@ -159,7 +165,8 @@ describe("container route call sites", () => {
     expect(callers(/\bisContainerHolderRouteEnabled\s*\(/u, definition))
       // Boot runs the macOS holder route check only once the holder route is on.
       // Row 2 admits a macOS user hook on the proven holder route; the hook plan puts it there only on that route.
+      // A `process` plugin launch is refused wherever the holder route runs plugins (owner card 2026-11-28).
       .toEqual(["src/boot/steps/sandbox-init.ts", "src/permissions/asrt-sandbox.ts", "src/permissions/confined-child.ts",
-        "src/permissions/sandbox-capability.ts", "src/sandbox/wrap-bundled-command.ts"]);
+        "src/permissions/sandbox-capability.ts", "src/plugins/isolation/out-of-process-plugin.ts", "src/sandbox/wrap-bundled-command.ts"]);
   });
 });

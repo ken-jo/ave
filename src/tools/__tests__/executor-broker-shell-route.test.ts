@@ -1,8 +1,9 @@
+import { trackInvocationCorrelations, collectPermissionEvents } from "../../__tests__/support/permission-events.js";
 import { reviewerJudgeOutcomeForTest } from "../../__tests__/support/reviewer-judge.js";
 import { lstatSync, mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, posix } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, onTestFinished } from "vitest";
 
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
@@ -15,6 +16,8 @@ import { ToolExecutor } from "../executor.js";
 import { ToolRegistry } from "../registry.js";
 import { BashTool } from "../shell-tools.js";
 import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
+
+const invocationCorrelationId = trackInvocationCorrelations();
 
 const localSpawn = vi.hoisted(() => vi.fn(() => {
   throw new Error("local spawn forbidden in broker route test");
@@ -132,13 +135,9 @@ describe("executor broker shell route", () => {
     const permissionManager = new PermissionManager(join(root, "permissions.json"));
     permissionManager.setMode("allow");
     const permissionCheck = vi.spyOn(permissionManager, "checkDetailed");
-    const appendPermissionAuditEntry = vi.fn();
-    const auditLogger = {
-      log: vi.fn(),
-      isPermissionAuditChainReady: () => true,
-      assertPermissionAuditWritable: vi.fn(),
-      appendPermissionAuditEntry,
-    };
+    const logs = collectPermissionEvents();
+    onTestFinished(logs.restore);
+
     const executor = new ToolExecutor(
       registry,
       undefined,
@@ -146,7 +145,6 @@ describe("executor broker shell route", () => {
       undefined,
       undefined,
       undefined,
-      auditLogger as never,
     );
     broker.execute.mockResolvedValueOnce({
       output: "broker-executed",
@@ -209,13 +207,8 @@ describe("executor broker shell route", () => {
     expect(permissionCheck.mock.calls[0]?.[4]?.ruleSubject?.kind).toBe("shell");
     expect(permissionCheck.mock.calls[0]?.[4]?.guestCwd).toBe(expectedCwd);
     expect(permissionCheck.mock.calls[0]?.[4]?.fileWritePolicy).toBeUndefined();
-    expect(appendPermissionAuditEntry).toHaveBeenCalledWith(expect.objectContaining({
-      toolUseId: "tu-broker-guest-shell",
-      executionRoute: expect.objectContaining({
-        decision: "selected",
-        route: "disposable-container",
-        disposableCapability: expect.objectContaining({ kind: "workload-broker" }),
-      }),
+    expect(logs.events).toContainEqual(expect.objectContaining({
+      event: "permission_decision", correlationId: invocationCorrelationId("tu-broker-guest-shell"), sandboxRoute: "disposable-container",
     }));
   });
 
@@ -237,14 +230,9 @@ describe("executor broker shell route", () => {
         cacheReason: "miss-not-found",
       };
     }) as typeof permissionManager.dispatchReviewer;
-    const auditLogger = {
-      log: vi.fn(),
-      isPermissionAuditChainReady: () => true,
-      assertPermissionAuditWritable: vi.fn(),
-      appendPermissionAuditEntry: vi.fn(),
-    };
+
     const executor = new ToolExecutor(
-      registry, undefined, permissionManager, undefined, undefined, undefined, auditLogger as never,
+      registry, undefined, permissionManager, undefined, undefined, undefined,
     );
     broker.execute.mockResolvedValueOnce({
       output: "x86_64",

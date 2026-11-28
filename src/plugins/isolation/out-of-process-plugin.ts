@@ -1,5 +1,4 @@
 import { withLocalityDecision } from "../../shared/local-path-io.js";
-import type { AuditLogger } from "../../audit/audit-logger.js";
 /** Isolated factories preserve the runtime contract (docs/blueprints/plugin-process-isolation.md).
  * Worker confinement is independent of shell confinement: disabled children receive no isolation relaxation; enabled wrapping is mandatory and failure prevents loading. */
 import { mkdirSync, statSync } from "node:fs";
@@ -10,6 +9,7 @@ import { ProcessEntryUnconfinedError, type ProcessLaunch } from "../process-entr
 import { isAbsolute, join, resolve as resolvePath } from "node:path";
 import { createLogger } from "../../lib/logger.js";
 import { errorMessage } from "../../shared/error-message.js";
+import { isContainerHolderRouteEnabled } from "../../shared/container-platform.js";
 import { admitWindowsLookupPaths, windowsObligationsApply } from "../../permissions/admitted-obligation.js";
 import { capturePluginStderr } from "./plugin-stderr.js";
 import { sandboxTargetSetupFailed } from "../../permissions/launcher-environment.js";
@@ -467,6 +467,11 @@ function windowsLoopbackLaunchLine(
   };
 }
 
+/** Where the holder route runs plugins, a `process` launch has no confinement to run under: the holder admits only the reference child runtime. */
+function processLaunchRefusedOnThisPlatform(): boolean {
+  return isContainerHolderRouteEnabled(process.platform);
+}
+
 /** Writes include the envelope, private home, principal temp, and runtime device defaults; protect bundle roots while permitting own data.
  * Read re-allows require a covering install-root deny on macOS/Linux; an unresolved symlinked sibling remains a residual.
  * Windows holds permitted envelope ACL grants for the child lifetime and refuses reach into other plugin-owned roots; use authenticated loopback transport and preserved symlink imports.
@@ -480,7 +485,7 @@ export async function spawnConfinedPluginChild(
   assertExtensionStartAllowed(extensionStart ? { start: extensionStart } : {});
   const { launch } = spec;
   const processLaunch = launch.kind === "process";
-  if (processLaunch && process.platform === "win32") throw new ProcessEntryUnconfinedError();
+  if (processLaunch && processLaunchRefusedOnThisPlatform()) throw new ProcessEntryUnconfinedError();
   spec.assertStillValid?.();
   const sandboxHome = createSandboxProcessHome();
   const socketDir = spec.socketDir;
@@ -745,7 +750,6 @@ export async function spawnConfinedPluginChild(
 export interface OutOfProcessPluginSpec {
   readonly manifest: PluginManifest;
   readonly auditLog?: (level: "info" | "warn" | "error", message: string, data?: unknown) => void;
-  readonly effectAudit?: Pick<AuditLogger, "logShadow">;
   /** How the plugin's process is produced, and so what construct's `entryPath` says (decision 33): the resolved, real path of the plugin's JS module (not
    * of the child runtime) for an `entry` plugin; for a `process` plugin the launch `resolveProcessLaunch` built, whose command path construct carries. */
   readonly launch:
@@ -854,9 +858,9 @@ export function createOutOfProcessPluginFactory(
     if (spec.prepareMxcChild && spec.launch.kind !== "entry") {
       throw new MxcProcessContractError("Native plugin launch requires the reference child runtime");
     }
-    // A `process` launch runs code the host cannot read, so it runs only under a live sandbox that confines processes: never unwrapped (unlike an `entry` launch with
-    // the sandbox off), and never on Windows, whose sandbox does not confine process creation (§2.2, §7.3). The deny floor and the wrap stay `spawnConfinedChild`'s.
-    if (spec.launch.kind === "process" && (!isPluginWorkerConfinementActive() || process.platform === "win32")) {
+    // A `process` launch requires live process confinement, and a holder admits only the reference child runtime.
+    // Check this after the start gate so a start that needs per-start consent still reports that requirement first.
+    if (spec.launch.kind === "process" && (!isPluginWorkerConfinementActive() || processLaunchRefusedOnThisPlatform())) {
       throw new ProcessEntryUnconfinedError();
     }
     const hostApi = context.hostApi as unknown as DispatchableHostApi;
@@ -973,7 +977,6 @@ export function createOutOfProcessPluginFactory(
         entryPath: spec.launch.kind === "entry" ? spec.launch.entryPath : spec.launch.command,
         table,
         ...(spec.auditLog ? { auditLog: spec.auditLog } : {}),
-        effectAudit: spec.effectAudit,
         onClosed: async () => {
           try {
             await spawned.waitForExit?.();

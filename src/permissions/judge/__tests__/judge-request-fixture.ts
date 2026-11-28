@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { AuditEntry, AuditLogger } from "../../../audit/audit-logger.js";
-import type { PermissionAuditEntry, PermissionAuditEntryInput } from "../../../audit/audit-schema.js";
+import { collectPermissionEvents } from "../../../__tests__/support/permission-events.js";
 import type { ToolInvocationContext } from "../../reviewer/risk-classifier.js";
 import type { JudgeRequest } from "../judge-contract.js";
 import { DEFAULT_JUDGE_SETTINGS, type JudgeSettings, type JudgeStageSettings } from "../judge-settings.js";
@@ -61,41 +60,21 @@ export function judgeSettings(overrides: Partial<JudgeSettings> = {}): JudgeSett
   };
 }
 
-export interface CollectingAudit {
-  // Plain shadow-channel rows.
-  entries: AuditEntry[];
-  // HMAC-chain rows (active decisions).
-  chained: PermissionAuditEntryInput[];
-  logger: Pick<AuditLogger, "logShadow" | "appendPermissionAuditEntry">;
+export type JudgeEventCapture = ReturnType<typeof collectPermissionEvents>;
+
+export function collectJudgeEvents(): JudgeEventCapture {
+  return collectPermissionEvents();
 }
 
-export function collectingAudit(): CollectingAudit {
-  const entries: AuditEntry[] = [];
-  const chained: PermissionAuditEntryInput[] = [];
-  return {
-    entries,
-    chained,
-    logger: {
-      logShadow: (e: AuditEntry) => void entries.push(e),
-      appendPermissionAuditEntry: async (e: PermissionAuditEntryInput) => {
-        chained.push(e);
-        return { ...e, prevHash: "test" } as PermissionAuditEntry;
-      },
-    },
-  };
-}
-
-export function auditPayload(entry: AuditEntry): Record<string, unknown> {
-  return JSON.parse(entry.output ?? "{}") as Record<string, unknown>;
-}
-
-// Judge records from both channels, shadow first.
-export function judgeRecords(audit: Pick<CollectingAudit, "entries" | "chained">): Array<Record<string, unknown>> {
-  return [
-    ...audit.entries.map(auditPayload),
-    ...audit.chained.map((e) => {
-      if (e.decision !== "judge") throw new Error(`unexpected chained decision ${e.decision}`);
-      return e.judgeRecord as unknown as Record<string, unknown>;
-    }),
-  ];
+export function judgeRecords(capture: Pick<JudgeEventCapture, "events">) {
+  let stages: Record<string, unknown>[] = [];
+  const records: Record<string, unknown>[] = [];
+  for (const event of capture.events) {
+    if (event.event === "permission_judge_stage") stages.push(event);
+    if (event.event === "permission_judge") {
+      records.push({ ...event, stages });
+      stages = [];
+    }
+  }
+  return records;
 }

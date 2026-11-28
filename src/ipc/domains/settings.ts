@@ -1,3 +1,4 @@
+import { logPermissionEvent, permissionLogId } from "../../lib/permission-log.js";
 import { showNativeMessage, pickNativeFiles } from "../../main/desktop-approval-presentation.js";
 import { securitySettingsGestures } from "../security-settings-gesture.js";
 import { hasUserKeyboardIntent, USER_KEYBOARD_REQUIRED } from "../../shared/chat-origin.js";
@@ -371,7 +372,7 @@ export interface SettingsHandlerHooks {
 /** Registers the settings IPC handlers. Returns the disposer for the subscription auto-verify listener, the one registration
  * here that outlives ipcMain's handler table. */
 export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerHooks): () => void {
-  const { settingsService, conversationLoop, auditLogger } = deps;
+  const { settingsService, conversationLoop } = deps;
   let activeChatRuntimeTransitionRevision = 0;
   // Handler-start ownership prevents a slow verify/model lookup from applying an older subscription choice after a newer provider/API selection.
   let activeChatRuntimeSelectionIntentRevision = 0;
@@ -388,14 +389,9 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     action: string,
     provider: SubscriptionRuntimeId | "api" | "invalid",
     outcome: "succeeded" | "failed" | "cancelled" | "rejected",
-    error?: SubscriptionRuntimeErrorCode,
+    _error?: SubscriptionRuntimeErrorCode,
   ): void => {
-    auditLogger.log({
-      timestamp: new Date().toISOString(),
-      sessionId: "subscription-runtime",
-      type: outcome === "succeeded" || outcome === "cancelled" ? "info" : "warn",
-      input: JSON.stringify({ action, provider, outcome, ...(error ? { error } : {}) }),
-    });
+    logPermissionEvent("subscription_runtime_outcome", { sessionId: permissionLogId("subscription-runtime"), action: permissionLogId(action), provider: permissionLogId(provider), outcome: permissionLogId(outcome) });
   };
   const openSubscriptionLogin: OpenOAuthLogin = async (url, options) => {
     const validated = validateExternalUrl(url);
@@ -420,16 +416,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
   const resolveSubscriptionRuntime = (): Promise<SubscriptionRuntimeService> =>
     getSubscriptionRuntimeService(openSubscriptionLogin, {
       audit: (event) => {
-        auditLogger.log({
-          timestamp: new Date().toISOString(),
-          sessionId: "subscription-runtime",
-          type: "warn",
-          input: JSON.stringify({
-            provider: event.provider,
-            outcome: event.outcome,
-            ...(event.requestKind ? { requestKind: event.requestKind } : {}),
-          }),
-        });
+        logPermissionEvent("subscription_runtime_warning", { sessionId: permissionLogId("subscription-runtime"), provider: permissionLogId(event.provider), outcome: permissionLogId(event.outcome) }, "warn");
       },
     });
   const runSubscriptionAction = async (
@@ -513,6 +500,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     previousActiveChatRuntime: LLMSettings["activeChatRuntime"],
     failedActiveChatRuntime: LLMSettings["activeChatRuntime"],
     transitionRevision: number,
+    rebindSettledReviewer: () => Promise<void>,
   ): Promise<{ runtime: LLMSettings["activeChatRuntime"] } | null> => {
     // Only the request that still owns the active selection may undo it; a newer selection binds execution itself.
     if (transitionRevision !== activeChatRuntimeTransitionRevision) return null;
@@ -537,12 +525,14 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
       // The restoring save failed as well, so memory is back on the settings on disk. Bind execution to them rather than to the runtime that could not be saved.
       if (transitionRevision === activeChatRuntimeTransitionRevision) {
         await bindExecutionToSettings();
+        await rebindSettledReviewer();
         await broadcastSettingsSnapshot(deps, () => transitionRevision === activeChatRuntimeTransitionRevision);
       }
       return null;
     }
     if (!ownsRestoration()) return null;
 
+    await rebindSettledReviewer();
     await broadcastSettingsSnapshot(deps, ownsRestoration);
     return ownsRestoration() ? { runtime: restoredRuntime } : null;
   };
@@ -556,7 +546,8 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     const nextSubscriptionProvider = activeChatRuntime?.kind === "subscription"
       ? activeChatRuntime.provider
       : null;
-    if (!sameActiveChatRuntime(previousLlm.activeChatRuntime, activeChatRuntime)) {
+    const routeChanged = !sameActiveChatRuntime(previousLlm.activeChatRuntime, activeChatRuntime);
+    if (routeChanged) {
       // A provider selection is an authentication-boundary change. Abort both interactive loops before exposing
       // the new selection so a prior API tool round cannot issue another request after subscription activation.
       const reason = new Error("active chat runtime changed");
@@ -564,8 +555,22 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
       deps.sideChatConversationLoop?.abortCurrentTurn?.(reason);
       for (const paneLoop of deps.paneChatLoops?.all() ?? []) paneLoop.abortCurrentTurn?.(reason);
     }
-    const persistSelection = settingsService.patch({ llm: { activeChatRuntime } });
+    const permissionManager = conversationLoop.permissionManager;
+    const reconfiguration = permissionManager?.beginChatRuntimeReviewerReconfiguration(routeChanged);
     const transitionRevision = ++activeChatRuntimeTransitionRevision;
+    const rebindSettledReviewer = async (): Promise<void> => {
+      if (reconfiguration === undefined || transitionRevision !== activeChatRuntimeTransitionRevision) return;
+      permissionManager?.settleChatRuntimeReviewerReconfiguration(reconfiguration);
+      for (let attempt = 0; attempt < 2 && transitionRevision === activeChatRuntimeTransitionRevision; attempt++) {
+        try {
+          await deps.rewireReviewerAgent?.();
+          return;
+        } catch {
+          // Only a successful rewire of this settled generation can release the hold.
+        }
+      }
+    };
+    const persistSelection = settingsService.patch({ llm: { activeChatRuntime } });
     const ownsTransition = (): boolean => (
       transitionRevision === activeChatRuntimeTransitionRevision
       && sameActiveChatRuntime(settingsService.get("llm").activeChatRuntime, activeChatRuntime)
@@ -587,6 +592,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
           previousLlm.activeChatRuntime,
           activeChatRuntime,
           transitionRevision,
+          rebindSettledReviewer,
         );
       } catch {
         // The renderer must never be told that the new runtime became active when its exact persisted predecessor could not be restored.
@@ -603,6 +609,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     // broadcast/status effects; its executable bindings were already applied synchronously by its own call.
     if (!ownsTransition()) return;
 
+    await rebindSettledReviewer();
     await broadcastSettingsSnapshot(deps, ownsTransition);
     if (!ownsTransition()) return;
     if (previousSubscriptionProvider && previousSubscriptionProvider !== nextSubscriptionProvider) {
@@ -617,14 +624,14 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     const windows = deps.getAppWindows?.() ?? [deps.getMainWindow?.()];
     const mainFrame = event.senderFrame !== null && event.senderFrame === event.sender?.mainFrame
       && windows.some((window) => window && !window.isDestroyed() && window.webContents === event.sender);
-    if (!validateHostRendererSender(event) || !mainFrame) { auditUnauthorized(auditLogger, channel, event); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(event) || !mainFrame) { auditUnauthorized(channel); return UNAUTHORIZED_FRAME; }
     const intent = typeof payload === "object" && payload !== null ? (payload as { intent?: unknown }).intent : undefined;
     if (!hasUserKeyboardIntent(intent) || !securitySettingsGestures.consume(event.sender, { channel, payload })) return USER_KEYBOARD_REQUIRED;
     return null;
   };
 
   ipcMain.handle(SETTINGS.defaults, (event) => {
-    if (!validateHostRendererSender(event)) { auditUnauthorized(auditLogger, SETTINGS.defaults, event); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(event)) { auditUnauthorized(SETTINGS.defaults); return UNAUTHORIZED_FRAME; }
     return rendererSettingsSnapshot(settingsService, DEFAULT_SETTINGS);
   });
 
@@ -645,19 +652,19 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
   });
 
   ipcMain.handle(CHANNELS.settings.get, (event) => {
-    if (!validateHostRendererSender(event)) { auditUnauthorized(auditLogger, CHANNELS.settings.get, event); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(event)) { auditUnauthorized(CHANNELS.settings.get); return UNAUTHORIZED_FRAME; }
     return rendererSettingsSnapshot(settingsService);
   });
 
   // Read-only, and presence only: the answer is a list of settings paths the environment is forcing ON, never the value of any variable. A control that
   // showed the saved value alone would be describing a state the running app is not in, since every one of these gates resolves as `settings || env`.
   ipcMain.handle(CHANNELS.settings.envForcedSettings, (e) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.settings.envForcedSettings, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.settings.envForcedSettings); return UNAUTHORIZED_FRAME; }
     return envForcedSettingsPaths();
   });
 
   ipcMain.handle(CHANNELS.settings.update, async (e, partial) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.settings.update, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.settings.update); return UNAUTHORIZED_FRAME; }
     if (partial?.chat?.subAgentMaxRounds !== undefined && !isSubAgentMaxRounds(partial.chat.subAgentMaxRounds)) return { ok: false, error: "invalid-subagent-max-rounds" };
     if (partial?.telemetry !== undefined) {
       const error = telemetryPatchError(partial.telemetry, { isPackaged: app.isPackaged, allowlistEnv: process.env.AVE_TELEMETRY_ALLOWLIST });
@@ -903,7 +910,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
   });
 
   ipcMain.handle(CHANNELS.settings.setApiKey, async (e, vendor: string, apiKey: string) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.settings.setApiKey, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.settings.setApiKey); return UNAUTHORIZED_FRAME; }
     const secretKey = llmSecretKeyForInput(deps, vendor);
     if (!secretKey) {
       return {
@@ -932,7 +939,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
   });
 
   ipcMain.handle(CHANNELS.settings.deleteApiKey, async (e, vendor: string) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.settings.deleteApiKey, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.settings.deleteApiKey); return UNAUTHORIZED_FRAME; }
     const secretKey = llmSecretKeyForDeleteInput(deps, vendor);
     if (!secretKey) {
       return {
@@ -952,7 +959,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
   });
 
   ipcMain.handle(CHANNELS.settings.listLlmModels, async (e, request: LlmModelListRequest) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.settings.listLlmModels, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.settings.listLlmModels); return UNAUTHORIZED_FRAME; }
     const vendor = request && typeof request.vendor === "string"
       ? request.vendor
       : settingsService.get("llm").provider;
@@ -1026,7 +1033,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
   // id; executable paths, verification URLs, credentials, and raw runtime output remain main-owned.
   ipcMain.handle(CHANNELS.settings.subscriptionRuntimeStatus, async (e, providerValue: unknown, optionsValue?: unknown) => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.settings.subscriptionRuntimeStatus, e);
+      auditUnauthorized(CHANNELS.settings.subscriptionRuntimeStatus);
       return UNAUTHORIZED_FRAME;
     }
     if (!isSubscriptionRuntimeId(providerValue)) {
@@ -1039,7 +1046,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
   });
   ipcMain.handle(CHANNELS.settings.subscriptionChooseRuntime, async (e, providerValue: unknown) => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.settings.subscriptionChooseRuntime, e);
+      auditUnauthorized(CHANNELS.settings.subscriptionChooseRuntime);
       return UNAUTHORIZED_FRAME;
     }
     if (!isSubscriptionRuntimeId(providerValue)) {
@@ -1072,7 +1079,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
   });
   ipcMain.handle(CHANNELS.settings.subscriptionForgetRuntime, async (e, providerValue: unknown) => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.settings.subscriptionForgetRuntime, e);
+      auditUnauthorized(CHANNELS.settings.subscriptionForgetRuntime);
       return UNAUTHORIZED_FRAME;
     }
     if (!isSubscriptionRuntimeId(providerValue)) {
@@ -1089,7 +1096,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
   });
   ipcMain.handle(CHANNELS.settings.subscriptionVerifyRuntime, async (e, providerValue: unknown) => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.settings.subscriptionVerifyRuntime, e);
+      auditUnauthorized(CHANNELS.settings.subscriptionVerifyRuntime);
       return UNAUTHORIZED_FRAME;
     }
     if (!isSubscriptionRuntimeId(providerValue)) {
@@ -1104,7 +1111,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     CHANNELS.settings.subscriptionStartLogin,
     async (e, providerValue: unknown, methodValue: unknown) => {
       if (!validateHostRendererSender(e)) {
-        auditUnauthorized(auditLogger, CHANNELS.settings.subscriptionStartLogin, e);
+        auditUnauthorized(CHANNELS.settings.subscriptionStartLogin);
         return UNAUTHORIZED_FRAME;
       }
       if (!isSubscriptionRuntimeId(providerValue)) {
@@ -1126,7 +1133,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
   );
   ipcMain.handle(CHANNELS.settings.subscriptionOpenLoginBrowser, async (e, providerValue: unknown) => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.settings.subscriptionOpenLoginBrowser, e);
+      auditUnauthorized(CHANNELS.settings.subscriptionOpenLoginBrowser);
       return UNAUTHORIZED_FRAME;
     }
     if (!isSubscriptionRuntimeId(providerValue)) {
@@ -1142,7 +1149,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
   });
   ipcMain.handle(CHANNELS.settings.subscriptionCancelLogin, async (e, providerValue: unknown) => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.settings.subscriptionCancelLogin, e);
+      auditUnauthorized(CHANNELS.settings.subscriptionCancelLogin);
       return UNAUTHORIZED_FRAME;
     }
     if (!isSubscriptionRuntimeId(providerValue)) {
@@ -1155,7 +1162,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
   });
   ipcMain.handle(CHANNELS.settings.subscriptionAcknowledgeNotice, async (e, providerValue: unknown) => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.settings.subscriptionAcknowledgeNotice, e);
+      auditUnauthorized(CHANNELS.settings.subscriptionAcknowledgeNotice);
       return UNAUTHORIZED_FRAME;
     }
     if (!isSubscriptionRuntimeId(providerValue)) {
@@ -1166,7 +1173,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
   });
   ipcMain.handle(CHANNELS.settings.subscriptionLogout, async (e, providerValue: unknown) => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.settings.subscriptionLogout, e);
+      auditUnauthorized(CHANNELS.settings.subscriptionLogout);
       return UNAUTHORIZED_FRAME;
     }
     if (!isSubscriptionRuntimeId(providerValue)) {
@@ -1198,7 +1205,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
   });
   ipcMain.handle(CHANNELS.settings.subscriptionListModels, async (e, providerValue: unknown) => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.settings.subscriptionListModels, e);
+      auditUnauthorized(CHANNELS.settings.subscriptionListModels);
       return UNAUTHORIZED_FRAME;
     }
     if (!isSubscriptionRuntimeId(providerValue)) {
@@ -1210,7 +1217,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     CHANNELS.settings.subscriptionUseForChat,
     async (e, providerValue: unknown, modelValue: unknown) => {
       if (!validateHostRendererSender(e)) {
-        auditUnauthorized(auditLogger, CHANNELS.settings.subscriptionUseForChat, e);
+        auditUnauthorized(CHANNELS.settings.subscriptionUseForChat);
         return UNAUTHORIZED_FRAME;
       }
       if (!isSubscriptionRuntimeId(providerValue)) {
@@ -1296,7 +1303,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
   );
   ipcMain.handle(CHANNELS.settings.subscriptionUseApiForChat, async (e) => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.settings.subscriptionUseApiForChat, e);
+      auditUnauthorized(CHANNELS.settings.subscriptionUseApiForChat);
       return UNAUTHORIZED_FRAME;
     }
     // API and subscription selections share one handler-start intent order.
@@ -1313,7 +1320,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
   });
 
   ipcMain.handle(CHANNELS.shell.openExternal, async (e, url: unknown) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.shell.openExternal, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.shell.openExternal); return UNAUTHORIZED_FRAME; }
     const { shell } = await import("electron");
     const validated = validateExternalUrl(url);
     if (!validated.ok) return validated;
@@ -1326,7 +1333,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
   });
 
   ipcMain.handle(CHANNELS.settings.setWebApiKey, async (e, provider: string, apiKey: string) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.settings.setWebApiKey, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.settings.setWebApiKey); return UNAUTHORIZED_FRAME; }
     if (!isWebSearchProvider(provider) || typeof apiKey !== "string" || apiKey.trim() === "") {
       return { ok: false, error: "invalid-input" };
     }
@@ -1336,13 +1343,13 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
   });
 
   ipcMain.handle(CHANNELS.settings.hasWebApiKey, async (e, provider: string) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.settings.hasWebApiKey, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.settings.hasWebApiKey); return UNAUTHORIZED_FRAME; }
     if (!isWebSearchProvider(provider)) throw new Error("Unsupported web search provider.");
     return settingsService.hasStoredSecret(`web.apiKey.${provider}`);
   });
 
   ipcMain.handle(CHANNELS.settings.deleteWebApiKey, async (e, provider: string) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.settings.deleteWebApiKey, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.settings.deleteWebApiKey); return UNAUTHORIZED_FRAME; }
     if (!isWebSearchProvider(provider)) return { ok: false, error: "invalid-input" };
     await settingsService.deleteSecret(`web.apiKey.${provider}`);
     await broadcastSettingsSnapshot(deps);
@@ -1352,7 +1359,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
   // Read-only. The allowlist bounds `telemetry.endpoint`, which the renderer can already write; so it is shown, never set: a
   // control the same party could widen is not a bound. Host names only, which is exactly what the endpoint field needs the user to know.
   ipcMain.handle(CHANNELS.telemetry.allowedHosts, (event) => {
-    if (!validateHostRendererSender(event)) { auditUnauthorized(auditLogger, CHANNELS.telemetry.allowedHosts, event); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(event)) { auditUnauthorized(CHANNELS.telemetry.allowedHosts); return UNAUTHORIZED_FRAME; }
     return telemetryAllowedHosts(process.env, app.isPackaged);
   });
 

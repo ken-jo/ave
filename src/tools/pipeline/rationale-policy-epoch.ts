@@ -19,6 +19,7 @@ export interface RationalePolicyEpochSources {
 export interface RationalePolicySnapshot {
   readonly epoch: string;
   readonly permission: string;
+  readonly reviewerRouteGeneration: number;
   readonly hooks: string;
   readonly scriptHooks: string;
   readonly approvals: string;
@@ -57,6 +58,7 @@ function sameDirectories(left: readonly string[], right: readonly string[]): boo
 export function captureRationalePolicySnapshot(sources: RationalePolicyEpochSources): RationalePolicySnapshot {
   const components = {
     permission: sources.permissionManager?.getPolicyEpoch() ?? "unmanaged",
+    reviewerRouteGeneration: sources.permissionManager?.getRationaleReviewerRouteGeneration() ?? 0,
     hooks: sources.hookRunner.getGeneration(),
     scriptHooks: sources.scriptHookManager?.getGeneration() ?? "unwired" as const,
     approvals: getUserApprovalGeneration(),
@@ -86,7 +88,8 @@ export function issueRationaleApprovalPolicyTransition(input: {
       decision.requestId !== input.requestId || !/^[a-f0-9]{64}$/.test(input.actionDigest) ||
       !["allow-once", "allow-session", "allow-always"].includes(decision.choice)) return null;
   const proof = (input.approvalGate as ApprovalMutationAuthority).consumeApprovalPolicyMutation?.(decision);
-  if (!proof || before.hooks !== after.hooks || before.scriptHooks !== after.scriptHooks || before.categories !== after.categories) return null;
+  if (!proof || before.reviewerRouteGeneration !== after.reviewerRouteGeneration ||
+      before.hooks !== after.hooks || before.scriptHooks !== after.scriptHooks || before.categories !== after.categories) return null;
   if (before.permission !== after.permission &&
       (proof.permission?.from !== before.permission || proof.permission.to !== after.permission)) return null;
   if (before.approvals !== after.approvals &&

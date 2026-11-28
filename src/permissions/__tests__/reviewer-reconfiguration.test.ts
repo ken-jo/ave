@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { PermissionManager } from "../permission-manager.js";
-import { judgeSettings, scriptedStage, collectingAudit } from "../judge/__tests__/judge-request-fixture.js";
+import { judgeSettings, scriptedStage } from "../judge/__tests__/judge-request-fixture.js";
 import { dispatchPermissionReviewerCommandWithRewire } from "../permission-slash.js";
 import { readPermissionSettings } from "../permission-settings-store.js";
 import { PermissionTestResources } from "./test-resources.js";
@@ -27,7 +27,7 @@ function subject(customJudge = false) {
     const stage = scriptedStage("old-custom");
     manager.setJudge({ settings: judgeSettings({ chain: customJudge ? [stage] : [], categories: { shell: true, write: true, network: true } }),
       chain: customJudge ? [{ settings: stage, judge: { id: "old-custom", version: "fixture", judge } }] : [],
-      breaker: manager.getJudgeBreaker(), audit: collectingAudit().logger });
+      breaker: manager.getJudgeBreaker() });
   };
   configure();
   let invocation = 0;
@@ -79,6 +79,21 @@ describe("reviewer reconfiguration authority", () => {
     expect((await current.review()).permission).toMatchObject({ decision: "ask", reasonCode: "reviewer-human-required" });
     expect(() => current.manager.completeReviewerReconfiguration({})).toThrow("current host token");
     expect((await current.review(true)).permission).toMatchObject({ decision: "deny", reasonCode: "no-approver" });
+  });
+
+  it("keeps the newer settled chat hold when a rewire started for an older generation completes", async () => {
+    const { manager, review } = subject();
+    const older = manager.beginChatRuntimeReviewerReconfiguration(true);
+    if (older === undefined) throw new Error("Expected the older chat runtime generation");
+    manager.settleChatRuntimeReviewerReconfiguration(older);
+    const rewire = manager.beginReviewerReconfiguration();
+    const newer = manager.beginChatRuntimeReviewerReconfiguration(true);
+    if (newer === undefined) throw new Error("Expected the newer chat runtime generation");
+    manager.settleChatRuntimeReviewerReconfiguration(newer);
+    manager.completeReviewerReconfiguration(rewire);
+    expect((await review()).permission.decision).toBe("ask");
+    manager.completeReviewerReconfiguration(manager.beginReviewerReconfiguration());
+    expect((await review()).permission.decision).toBe("allow");
   });
 
   it("lets a successful healthy-settings rollback restore review after the failed rewire", async () => {
