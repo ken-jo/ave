@@ -27,7 +27,7 @@ describe("Vitest tier selection", () => {
   it("names only collected census partitions and native suites", () => {
     const collected = new Set(collectedVitestFiles(root));
     expect(CENSUS_TIER_TESTS).toHaveLength(12);
-    expect(NATIVE_TIER_TESTS).toHaveLength(14);
+    expect(NATIVE_TIER_TESTS).toHaveLength(15);
     for (const test of [...CENSUS_TIER_TESTS, ...NATIVE_TIER_TESTS]) expect(collected.has(test), test).toBe(true);
     expect(CENSUS_TIER_TESTS.filter(test => NATIVE_TIER_TESTS.includes(test))).toEqual([]);
   });

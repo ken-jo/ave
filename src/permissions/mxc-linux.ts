@@ -5,6 +5,7 @@ import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { createServer, type Server } from "node:net";
 import { posix } from "node:path";
 import { Writable } from "node:stream";
+import { setTimeout as sleep } from "node:timers/promises";
 import { promisify } from "node:util";
 import { expandReadDenyGlobLinuxSteps } from "@anthropic-ai/sandbox-runtime/dist/sandbox/read-deny-glob.js";
 import { finishInTurns, type GlobWalkListings } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
@@ -13,9 +14,17 @@ import type { HostResources } from "../main/host-resources.js";
 import { containerTarget } from "../shared/container-platform.js";
 import { errorMessage } from "../shared/error-message.js";
 import { isRecord } from "../shared/is-record.js";
-import type { LinuxRawIpVerdict, SandboxContainerShellSupport, SandboxContainerShellUnavailableReason } from "../shared/sandbox-capability-info.js";
+import type {
+  LinuxRawIpVerdict, SandboxContainerHolderSupport, SandboxContainerHolderUnavailableReason, SandboxContainerShellSupport,
+  SandboxContainerShellUnavailableReason,
+} from "../shared/sandbox-capability-info.js";
+import type { ProvenLinuxHolderRoute } from "./linux-holder-route.js";
+import { MxcHolderStartRefusedError } from "./mxc-extension-errors.js";
+import {
+  establishLinuxCaptureFolder, linuxFileIdentity, linuxHolderLaunchDigest, startLinuxHolder, translateLinuxHolderRequest,
+} from "./mxc-linux-holder-launch.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
-import { INVOCATION_PROXY_REFUSED_STATUS, openInvocationProxyListener } from "./egress-invocation-listener.js";
+import { INVOCATION_PROXY_REFUSED_STATUS, openInvocationProxyListener, openInvocationProxySocketListener } from "./egress-invocation-listener.js";
 import {
   appOwnedSandboxPrivateRoots, aveHomeReadBoundaryRoots, getDefaultSensitiveReadDenyPaths, getDefaultSensitiveWriteDenyEntries,
   getProtectedReadDenyFloor, getUserReadDenies, getUserWriteDenies, runWithSandboxWritePreflight,
@@ -715,4 +724,182 @@ async function runLinuxCanary(
   }
 }
 
+/** The holder canary's outcome: its support for Settings and the plans, and the route its start proved. */
+export interface LinuxHolderCanaryResult {
+  readonly support: SandboxContainerHolderSupport;
+  readonly route?: ProvenLinuxHolderRoute;
+}
+
+/**
+ * The holder canary (design 6.3), separate from the shells': the pinned programs, the runtime root, the system bwrap
+ * and its namespaces, the capture folder, then one real holder from translate to ready byte. Inside it: one deny
+ * beside one control for the filesystem, the bridge to its proxy socket, the Unix-socket filter, no nested user
+ * namespace, and then the raw-IP measurements of design 2.4. The first failure is the reason; there is no fallback.
+ */
+export async function detectHostMxcLinuxHolderSupport(resources: HostResources, signal?: AbortSignal): Promise<LinuxHolderCanaryResult> {
+  signal?.throwIfAborted();
+  const unavailable = (reason: SandboxContainerHolderUnavailableReason, detail?: readonly string[]): LinuxHolderCanaryResult =>
+    ({ support: { state: "unavailable", reason, ...(detail === undefined ? {} : { detail }) } });
+  const { target, launcher, helper, helperArch, directories, env } = linuxShellPrograms(resources, process.arch);
+  if (target === undefined || launcher === undefined || helper === undefined || helperArch === undefined) return unavailable("unsupported-arch");
+  if (!executable(launcher) || !executable(helper)) return unavailable("binary-missing");
+  let programs: Awaited<ReturnType<typeof requireMxcLinuxShellPrograms>>;
+  try { programs = await requireMxcLinuxShellPrograms(resources); } catch { return unavailable("launcher-mismatch"); }
+  let root: string;
+  try { root = requireMxcContainerStartRoot(); } catch { return unavailable("runtime-root-unproved"); }
+  // Holders need bwrap alone: a host without slirp4netns still contains its extensions and hooks (design 2.5).
+  const bwrap = directories.map(directory => posix.join(directory, "bwrap")).find(executable);
+  if (bwrap === undefined || !trustedTool(bwrap)) return unavailable("tools-missing", ["bwrap"]);
+  const helperSha256 = filterPins[helperArch];
+  let captureFolder: string;
+  try { captureFolder = establishLinuxCaptureFolder(root, helper, helperSha256); } catch { return unavailable("capture-folder-untrusted"); }
+  try {
+    await runFile(bwrap, ["--unshare-user", "--unshare-net", "--die-with-parent", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "/bin/true"],
+      { env, signal, timeout: TOOL_TIMEOUT_POLICY.mxcLinuxShellProbeMs, killSignal: "SIGKILL" });
+  } catch {
+    signal?.throwIfAborted();
+    return unavailable("namespaces-unavailable");
+  }
+  const route: ProvenLinuxHolderRoute = { programs, helperSha256, captureFolder, bwrap: { path: bwrap, identity: linuxFileIdentity(bwrap) } };
+  try {
+    const rawIpProbe = await runLinuxHolderCanary(root, route, signal);
+    return { support: { state: "available", ...(rawIpProbe === undefined ? {} : { rawIpProbe }) }, route };
+  } catch (error) {
+    signal?.throwIfAborted();
+    log.warn("Linux holder canary failed: %s", errorMessage(error));
+    return unavailable(error instanceof MxcHolderStartRefusedError && error.reason === "request-rejected" ? "request-rejected" : "holder-start-failed");
+  }
+}
+
+/** A canary hook the native tests use to add an interface to the holder's namespace while it runs (N22). */
+interface LinuxHolderCanaryTestOverrides {
+  readonly whileRunning?: (holderPid: number) => Promise<void>;
+  readonly hostAddress?: string;
+  readonly prober?: string;
+}
+
+async function runLinuxHolderCanary(
+  root: string, route: ProvenLinuxHolderRoute, signal?: AbortSignal, overrides: LinuxHolderCanaryTestOverrides = {},
+): Promise<LinuxRawIpVerdict | undefined> {
+  const scratch = await mkdtemp(posix.join(root, "holder-canary-"));
+  const nonce = randomBytes(16).toString("hex");
+  let nonceRecorded = false;
+  let proxy: Awaited<ReturnType<typeof openInvocationProxySocketListener>> | undefined;
+  let targets: Awaited<ReturnType<typeof openLinuxRawIpHostTargets>>;
+  let hostConnected = false;
+  const unix = createServer(socket => { hostConnected = true; socket.destroy(); });
+  try {
+    const working = posix.join(scratch, "w");
+    const sealed = posix.join(scratch, "s");
+    await mkdir(working);
+    await mkdir(sealed);
+    await writeFile(posix.join(sealed, "secret"), "holder-canary-secret");
+    await writeFile(posix.join(working, "raw-ip.sh"), overrides.prober ?? LINUX_RAW_IP_PROBER, { flag: "wx", mode: 0o600 });
+    const model = buildPolicyModel({
+      floors: [policyFloorRow(sealed, "denied", "read-boundary", true)],
+      launchGrants: [policyGrantRow(scratch, "ro", "launch-grant", true), policyGrantRow(working, "rw", "launch-grant", true)],
+      userGrants: [], extensionManifests: [],
+    });
+    // The control goes through a real invocation listener on the holder's socket: it refuses `<nonce>.localhost` as a
+    // loopback destination and reports that refusal here. It forwards nothing, since the canary holds no egress grant.
+    proxy = await openInvocationProxySocketListener({
+      socketPath: posix.join(scratch, "proxy.sock"), upstream: () => undefined,
+      onRefused: (destination) => { if (destination === `${nonce}.localhost`) nonceRecorded = true; },
+    });
+    await new Promise<void>((resolve, reject) => {
+      unix.once("error", reject);
+      unix.listen(posix.join(working, "u"), resolve);
+    });
+    const hostAddress = overrides.hostAddress ?? primaryIpv4();
+    targets = await openLinuxRawIpHostTargets(hostAddress, nonce);
+    const udp = targets?.udp;
+    // Measured, not assumed: the arrival listener must take an unconfined connect before the holder runs.
+    const arrivalControl = targets === undefined ? false : await targets.tcp.control();
+    const lookups = posixPolicyLookups(working, false);
+    const held = await holdMxcLinuxPlaceholders(lookups, (current) => rankPosixContainerRows(model, "bubblewrap", current));
+    try {
+      const connectTimeout = TOOL_TIMEOUT_POLICY.mxcLinuxShellProbeConnectionMs / 1000;
+      const availability = [
+        "printf 'boundary-control\\n' > control && /bin/cat control || exit 11",
+        `if /bin/cat ${quote(posix.join(sealed, "secret"))}; then exit 12; fi`,
+        `if (printf x > ${quote(posix.join(sealed, "new"))}); then exit 13; fi`,
+        // The bridge: the proxy variables name it, and it reaches the host's socket.
+        `[ "$HTTPS_PROXY" = http://127.0.0.1:${LINUX_HOLDER_BRIDGE_PORT} ] || exit 14`,
+        `/usr/bin/timeout ${connectTimeout} /bin/bash -c 'exec 3<>/dev/tcp/127.0.0.1/${LINUX_HOLDER_BRIDGE_PORT}' || exit 16`,
+        `${quote(route.programs.helper)} --check-unix-socket u || exit 18`,
+        "if unshare -Ur /bin/true; then exit 19; fi",
+      ];
+      const proberArguments = linuxRawIpProberArguments({
+        nonce, host: targets?.address, closedPort: targets?.closedPort, udpPort: udp?.port, arrivalPort: targets?.tcp.port,
+      }).map(quote).join(" ");
+      // Availability is decided by the checks alone; the prober runs only after they passed and writes only its file.
+      const script = [
+        "(", ...availability, ")",
+        "status=$?",
+        `if [ "$status" -eq 0 ]; then /usr/bin/timeout -s KILL ${TOOL_TIMEOUT_POLICY.mxcLinuxRawIpProbeMs / 1000} `
+          + `/bin/bash raw-ip.sh ${proberArguments} > raw-ip.out 2> /dev/null < /dev/null; fi`,
+        'exit "$status"',
+      ].join("\n");
+      const request = buildBubblewrapHolderRequest({
+        grants: held.grants, lookups, argv: ["/bin/sh", "-c", script], cwd: working,
+        env: { HOME: working, TMPDIR: working, PATH: "/usr/sbin:/usr/bin:/sbin:/bin" }, proxySocket: proxy.socketPath, helper: route.programs.helper,
+      });
+      const requestPath = posix.join(scratch, "request.json");
+      const bytes = Buffer.from(JSON.stringify(request));
+      await writeFile(requestPath, bytes, { mode: 0o600, flag: "wx" });
+      const call = await translateLinuxHolderRequest({
+        launcher: route.programs.launcher, env: route.programs.env, captureFolder: route.captureFolder, helperSha256: route.helperSha256,
+        bwrap: route.bwrap.path, requestPath, logPath: posix.join(scratch, "launcher.log"), request, ...(signal === undefined ? {} : { signal }),
+      });
+      const digest = () => linuxHolderLaunchDigest({ request: bytes, call, executable: "/bin/sh" });
+      const admitted = digest();
+      const holder = await startLinuxHolder(call, {
+        label: "linux-holder-canary", bwrap: route.bwrap, cwd: request.process.cwd, admittedDigest: admitted, currentDigest: digest,
+        assertStillValid: () => { route.programs.validate(); held.validate(); },
+        recordHolder: (pid) => held.recordHolder(pid, route.bwrap.path),
+        startMs: TOOL_TIMEOUT_POLICY.mxcLinuxHolderStartMs,
+      });
+      const stdout: Buffer[] = [];
+      let kept = 0;
+      holder.process.stdout.on("data", (chunk: Buffer) => {
+        kept += chunk.length;
+        if (kept <= LINUX_CANARY_STDOUT_LIMIT) stdout.push(chunk);
+      });
+      holder.process.stderr.resume();
+      holder.process.stdin.end();
+      const watch = overrides.whileRunning?.(holder.process.pid);
+      const deadline = sleep(TOOL_TIMEOUT_POLICY.mxcLinuxShellProbeMs + TOOL_TIMEOUT_POLICY.mxcLinuxRawIpProbeMs, undefined, { ref: false })
+        .then(() => ({ code: null, signal: "SIGKILL" as const }));
+      const exit = await Promise.race([holder.process.completion, deadline]);
+      await watch;
+      await holder.dispose("holder canary ended");
+      const control = await readFile(posix.join(working, "control"), "utf8").catch(() => "");
+      const printed = Buffer.concat(stdout).toString("utf8");
+      if (exit.code !== 0 || hostConnected || printed !== "boundary-control\n" || control !== printed) {
+        throw new MxcHolderStartRefusedError("holder-start-failed", `the holder canary's checks failed (${exit.signal ?? `exit ${exit.code}`})`);
+      }
+      const output = await readFile(posix.join(working, "raw-ip.out"), "utf8").then(parseLinuxRawIpProbeOutput, (error: unknown) => {
+        log.warn("Linux holder raw-IP prober output unreadable: %s", (error as NodeJS.ErrnoException).code);
+        return undefined;
+      });
+      const udpSend = linuxRawIpUdpSend(output?.targets.UA, "holder");
+      const udpArrived = udp !== undefined && udpSend === "sent" ? await udp.settle() : udp?.arrived === true;
+      const udpArrival = linuxRawIpUdpArrival(udpSend, udp !== undefined, udpArrived);
+      return linuxRawIpVerdict({
+        ran: true, backend: "holder", hostInBackendNetwork: false, ...(output === undefined ? {} : { output }),
+        expectedStatus: INVOCATION_PROXY_REFUSED_STATUS, nonceRecorded, tlRan: targets !== undefined, udpArrival, firewallDrops: false,
+        ...(targets === undefined ? {} : { arrival: { controlPassed: arrivalControl, arrived: targets.tcp.arrived } }),
+      });
+    } finally {
+      await held.release();
+    }
+  } finally {
+    await proxy?.close();
+    await targets?.close();
+    unix.close();
+    await rm(scratch, { recursive: true, force: true });
+  }
+}
+
+export { runLinuxHolderCanary as _runLinuxHolderCanaryForTest };
 export { detectMxcLinuxShellSupport as _detectMxcLinuxShellSupportForTest, runLinuxCanary as _runLinuxCanaryForTest, trustedLinuxPath as _trustedLinuxPathForTest };

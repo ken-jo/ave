@@ -2053,6 +2053,41 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
       : t("permissionsTab.osSandboxMacContainerRawIpUnknown", { reason: t(reasonKey) }));
   });
 
+  it.each([
+    [{ state: "checking" }, () => t("permissionsTab.osSandboxLinuxHolderChecking")],
+    [{ state: "available", rawIpProbe: { rawIp: "blocked", reason: "blocked", evidenceKind: "measured", reachableTargets: [], udpArrival: "absent" } },
+      () => `${t("permissionsTab.osSandboxLinuxHolderAvailable")} ${t("permissionsTab.osSandboxMacContainerRawIpBlocked")}`],
+    [{ state: "unavailable", reason: "capture-folder-untrusted" }, () => t("permissionsTab.osSandboxLinuxHolderUnavailable",
+      { reason: t("permissionsTab.osSandboxLinuxHolderReasonCaptureFolderUntrusted") })],
+    [{ state: "unavailable", reason: "tools-missing", detail: ["bwrap"] }, () => t("permissionsTab.osSandboxLinuxHolderUnavailable",
+      { reason: t("permissionsTab.osSandboxLinuxHolderReasonToolsMissing") })],
+  ] as const)("shows the Linux extensions and hooks line beside the shells' (%#)", async (containerHolder, copy) => {
+    const { ave } = installApiWithWindows();
+    ave.permission.sandboxCapability.mockResolvedValue({
+      platform: "linux", enabled: true, available: true, kind: "full", reason: "",
+      runtime: { available: true, kind: "full", reason: "" },
+      containerShell: { state: "unavailable", reason: "tools-missing", detail: ["slirp4netns"], egressProtocolCoverage: { dns: "unknown", rawIp: "unknown" } },
+      containerHolder,
+      confines: { filesystem: true, process: true, network: true },
+    } as never);
+    await act(async () => { render(<PermissionsTab />); });
+    expect(screen.getByTestId("os-sandbox-linux-container")).toHaveAttribute("data-state", "unavailable");
+    const row = screen.getByTestId("os-sandbox-linux-holder");
+    expect(row).toHaveAttribute("data-state", containerHolder.state);
+    expect(row).toHaveTextContent(copy());
+  });
+
+  it("shows no Linux extensions line before the holder route is on", async () => {
+    const { ave } = installApiWithWindows();
+    ave.permission.sandboxCapability.mockResolvedValue({
+      platform: "linux", enabled: true, available: true, kind: "full", reason: "",
+      runtime: { available: true, kind: "full", reason: "" },
+      confines: { filesystem: true, process: true, network: true },
+    } as never);
+    await act(async () => { render(<PermissionsTab />); });
+    expect(screen.queryByTestId("os-sandbox-linux-holder")).toBeNull();
+  });
+
   it("keeps opt-in enabled and shows a localized error, not main's raw detail, on an ok:false shape", async () => {
     const { updateSettings } = installApiWithWindows({
       sandboxWindowsInstall: vi.fn(async () => ({

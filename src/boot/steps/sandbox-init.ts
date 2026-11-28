@@ -228,7 +228,9 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
             });
 
       const privacyFailure = getAveHomePrivacyFailure();
-      const shouldProbeLinuxShell = process.platform === "linux" && shellRequested
+      // Extensions and hooks need the holder canary, which this step runs once their route is on, even with shells off.
+      const shouldProbeLinuxShell = process.platform === "linux"
+        && (shellRequested || (workerRequested && isContainerHolderRouteEnabled("linux")))
         && privacyFailure === undefined && isContainerShellRouteEnabled("linux");
       // Every home pins its profile-child deny rows (the profile ~/.ave root is always one) through the same helper, so helper-unavailable also refuses proxy-only.
       if (privacyFailure !== undefined && (windowsStart !== "proxy-only" || !isAveHomePrivacyApprovable(privacyFailure.category))) {
@@ -644,7 +646,23 @@ async function recordLinuxShellSupport(startupSignal?: AbortSignal) {
   }
   const support = await detectHostMxcLinuxShellSupport(getHostResources(), startupSignal);
   setContainerShellSubstrate("linux", support);
+  if (isContainerHolderRouteEnabled("linux")) await recordLinuxHolderSupport(startupSignal);
   return support;
+}
+
+/** The Linux holder canary (design 6.3), once the holder route is on: starts wait while it runs, then take its proof. */
+async function recordLinuxHolderSupport(startupSignal?: AbortSignal): Promise<void> {
+  const [{ detectHostMxcLinuxHolderSupport }, { setLinuxHolderSupport }, { setProvenLinuxHolderRoute }, { getHostResources }] = await Promise.all([
+    import("../../permissions/mxc-linux.js"),
+    import("../../permissions/sandbox-capability.js"),
+    import("../../permissions/linux-holder-route.js"),
+    import("../../main/host-resources.js"),
+  ]);
+  setLinuxHolderSupport({ state: "checking" });
+  const result = await detectHostMxcLinuxHolderSupport(getHostResources(), startupSignal);
+  setProvenLinuxHolderRoute(result.route);
+  setLinuxHolderSupport(result.support);
+  if (result.support.state === "unavailable") log.warn("boot: Linux holder route unavailable: %s", result.support.reason);
 }
 
 /** Sweep both private roots while retaining this process's directories; report failed roots and leave the read-deny floor intact. */

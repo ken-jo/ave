@@ -77,6 +77,7 @@ import {
   detectShellSandboxCapability,
   getHostShellExecutionPlan,
   getSandboxBootOutcome,
+  getContainerHolderInfo,
   getContainerShellInfo,
   getWindowsSandboxSubstrate,
   getSandboxHomesUnavailable,
@@ -324,6 +325,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     // so "on" means shells are contained, not merely that ASRT is running (Windows Plan B runs shells plain).
     const shellPlan = getHostShellExecutionPlan();
     const containerShell = getContainerShellInfo();
+    const containerHolder = getContainerHolderInfo();
     const runtime = runtimeInfoFromCapability(containerShell === undefined ? detectShellSandboxCapability() : shellPlan.capability);
     const envForced = envForcedValueForSettingsPath("features.osToolSandbox") === true;
     let shell: ShellSandboxStatusInfo;
@@ -374,6 +376,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       // Windows: which substrate carries shells and extensions this boot and how strongly their egress is attributed (proxy-egress PR 9).
       windowsSubstrate: platform === "win32" ? getWindowsSandboxSubstrate() : null,
       ...(containerShell === undefined ? {} : { containerShell }),
+      ...(containerHolder === undefined ? {} : { containerHolder }),
       ...(platform === "win32" && getSandboxHomesUnavailable() ? { sandboxHomesUnavailable: true } : {}),
       shellExecutionPlan: getHostShellExecutionPlanAuditProjection(shellPlan),
       confines: sandboxConfinementForPlatform(platform, kind),

@@ -51,6 +51,49 @@ function unknown(
   return { rawIp: "unknown", reason, reachableTargets, udpArrival };
 }
 
+// What a holder's namespace measures (design 2.4): every non-loopback connect has no route, the netns holds only lo.
+const HOLDER = [CONTROL, "T4 Network is unreachable", "T6 Network is unreachable", "TL Network is unreachable", "TA Network is unreachable",
+  "UA Network is unreachable", "IF lo"];
+const HOLDER_HELD = { backend: "holder", arrival: { controlPassed: true, arrived: false } } as const;
+
+describe("Linux holder raw-IP verdict (design 2.4)", () => {
+  it("counts ENETUNREACH as refused locally for the holder backend only", () => {
+    expect(classifyLinuxRawIpTarget("Network is unreachable", "holder")).toEqual({ class: "refused-local" });
+    expect(classifyLinuxRawIpTarget("Network is unreachable", "slirp")).toEqual({ class: "inconclusive", kind: "no-route" });
+    expect(linuxRawIpUdpSend("Network is unreachable", "holder")).toBe("refused-local");
+    expect(linuxRawIpUdpSend("Network is unreachable", "slirp")).toBe("unmeasured");
+    expect(linuxRawIpUdpSend("Network is unreachable")).toBe("unmeasured");
+  });
+
+  it("is blocked, evidence measured, only with every row", () => {
+    expect(linuxRawIpVerdict(measured(HOLDER, HOLDER_HELD))).toEqual(blocked("measured"));
+  });
+
+  it.each([
+    ["the control failed", measured(HOLDER.map(line => line.startsWith("C ") ? "C status=none refused=none" : line), HOLDER_HELD), "control-failed"],
+    ["no nonce recorded", measured(HOLDER, { ...HOLDER_HELD, nonceRecorded: false }), "control-failed"],
+    ["a second interface", measured(HOLDER.map(line => line === "IF lo" ? "IF lo,eth0" : line), HOLDER_HELD), "no-evidence"],
+    ["no arrival listener", measured(HOLDER, { backend: "holder" }), "no-evidence"],
+    ["an arrival listener whose control failed", measured(HOLDER, { backend: "holder", arrival: { controlPassed: false, arrived: false } }), "no-evidence"],
+    ["an unmeasured datagram", measured(HOLDER, { ...HOLDER_HELD, udpArrival: "unmeasured" }), "udp-unmeasured"],
+    ["no TL target", measured(HOLDER.filter(line => !line.startsWith("TL ")), { ...HOLDER_HELD, tlRan: false }), "no-evidence"],
+    ["T4 timed out", measured(HOLDER.map(line => line.startsWith("T4 ") ? "T4 deadline" : line), HOLDER_HELD), "timeout"],
+  ] as const)("is unknown with %s", (_name, measurement, reason) => {
+    expect(linuxRawIpVerdict(measurement)).toMatchObject({ rawIp: "unknown", reason });
+  });
+
+  it("is unknown when anything arrives, by TCP or UDP, whatever else holds", () => {
+    expect(linuxRawIpVerdict(measured(HOLDER, { ...HOLDER_HELD, arrival: { controlPassed: true, arrived: true } })))
+      .toMatchObject({ rawIp: "unknown", reason: "raw-ip-reachable", reachableTargets: ["ta"] });
+    expect(linuxRawIpVerdict(measured(HOLDER, { ...HOLDER_HELD, udpArrival: "arrived" })))
+      .toMatchObject({ rawIp: "unknown", reason: "raw-ip-reachable", reachableTargets: ["udp"] });
+  });
+
+  it("is unknown with the structure alone: lo only but nothing measured", () => {
+    expect(linuxRawIpVerdict(measured(["IF lo"], HOLDER_HELD))).toMatchObject({ rawIp: "unknown" });
+  });
+});
+
 describe("Linux raw-IP verdict rules", () => {
   it("classifies bash's C-locale connect results by the Linux column of the rules", () => {
     // No canary has observed a TCP policy refusal on the slirp shell route: there a drop is judged by arrival.

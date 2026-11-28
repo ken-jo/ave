@@ -31,16 +31,22 @@ export interface RawIpTargetResult {
 
 /**
  * The network a Linux canary's container had. `slirp`: the shell route, the launcher's slirp4netns backend with its
- * firewall. Each backend counts as a local refusal only the TCP result a canary has observed on it.
+ * firewall. `holder`: a holder's own network namespace holding only `lo`, reached from outside only through its
+ * bridge to the proxy socket (design 2.4). Each backend counts as a local refusal only the TCP result a canary has
+ * observed on it.
  */
-export type LinuxRawIpBackend = "slirp";
+export type LinuxRawIpBackend = "slirp" | "holder";
 
 // Linux column of the rules. The prober is plain bash, which reports a failed connect by its C-locale message, not
 // its number. A connect, or ECONNREFUSED, means the packet reached a peer.
 const LINUX_RESULTS = {
   // No canary has observed a TCP policy refusal (EPERM, EACCES) through slirp4netns: the launcher's firewall drops the
   // packet, which is judged by arrival. So no TCP result counts as refused locally there.
-  tcpRefusedLocal: { slirp: new Set<string>() } satisfies Record<LinuxRawIpBackend, ReadonlySet<string>>,
+  tcpRefusedLocal: {
+    slirp: new Set<string>(),
+    // Measured in a holder's namespace: a connect to any non-loopback address has no route there (owner ruling 3).
+    holder: new Set(["Network is unreachable"]),
+  } satisfies Record<LinuxRawIpBackend, ReadonlySet<string>>,
   // A datagram's send is refused locally by EPERM or EACCES: the firewall's OUTPUT drop, as the canary measures.
   udpRefusedLocal: new Set(["Operation not permitted", "Permission denied"]),
   allowed: new Set(["0", "Connection refused"]),
@@ -57,7 +63,9 @@ const LINUX_RESULTS = {
 export function classifyLinuxRawIpTarget(result: string | undefined, backend?: LinuxRawIpBackend, udp = false): RawIpTargetResult {
   if (result === undefined) return { class: "inconclusive", kind: "unclassified" };
   const refusedLocal = udp ? LINUX_RESULTS.udpRefusedLocal : backend === undefined ? undefined : LINUX_RESULTS.tcpRefusedLocal[backend];
-  if (refusedLocal?.has(result) === true) return { class: "refused-local" };
+  // A holder's namespace has no route but `lo`, so a datagram it cannot send is refused there as a connect is.
+  const holderRefused = udp && backend === "holder" && LINUX_RESULTS.tcpRefusedLocal.holder.has(result);
+  if (refusedLocal?.has(result) === true || holderRefused) return { class: "refused-local" };
   if (LINUX_RESULTS.allowed.has(result)) return { class: "allowed" };
   if (LINUX_RESULTS.noRoute.has(result)) return { class: "inconclusive", kind: "no-route" };
   if (LINUX_RESULTS.timeout.has(result)) return { class: "inconclusive", kind: "timeout" };
@@ -122,9 +130,9 @@ export interface LinuxRawIpMeasurement {
  * What the prober's `UA` line says about the datagram: sent, refused in the container by a local policy error, or
  * neither (missing, timed out or unclassified), which is no send to measure.
  */
-export function linuxRawIpUdpSend(printed: string | undefined): MxcRawIpUdpSend {
+export function linuxRawIpUdpSend(printed: string | undefined, backend?: LinuxRawIpBackend): MxcRawIpUdpSend {
   if (printed === "0") return "sent";
-  return classifyLinuxRawIpTarget(printed, undefined, true).class === "refused-local" ? "refused-local" : "unmeasured";
+  return classifyLinuxRawIpTarget(printed, backend, true).class === "refused-local" ? "refused-local" : "unmeasured";
 }
 
 /**
@@ -166,6 +174,7 @@ export function linuxRawIpVerdict(measurement: LinuxRawIpMeasurement): LinuxRawI
     log.info("raw-ip arrival unprovable: the host address lies in the backend's own network");
     return unknown("arrival-unprovable");
   }
+  if (measurement.backend === "holder") return holderVerdict(measurement, { t4, t6, tl }, unknown, reachableTargets);
   // Owner ruling: with no IPv6 route, a network namespace holding nothing but `lo` is structural evidence for T6.
   const interfaces = output.interfaces;
   const onlyLoopback = interfaces !== undefined && interfaces.length === 1 && interfaces[0] === "lo";
@@ -195,6 +204,36 @@ export function linuxRawIpVerdict(measurement: LinuxRawIpMeasurement): LinuxRawI
   }
   // Rule 4.
   if (tl === undefined) return unknown("no-evidence");
+  const inconclusive = [t4, t6, tl].filter((result) => result.class === "inconclusive");
+  if (inconclusive.some((result) => result.kind === "timeout")) return unknown("timeout");
+  if (t4.kind === "no-route" || tl.kind === "no-route") return unknown("no-route");
+  if (t6.kind === "no-route") return unknown("ipv6-unmeasured");
+  return unknown("unclassified");
+}
+
+/**
+ * A holder's verdict (design 2.4): `blocked` needs every row, measured on this boot: the control through the bridge,
+ * T4 refused in the namespace, T6 refused or structurally absent, no TCP and no UDP arrival at the host's primary
+ * IPv4 with the arrival listener's own control passed, and a namespace holding only `lo`. The structure alone, or a
+ * missing row, is `unknown`.
+ */
+function holderVerdict(
+  measurement: LinuxRawIpMeasurement,
+  { t4, t6, tl }: { readonly t4: RawIpTargetResult; readonly t6: RawIpTargetResult; readonly tl: RawIpTargetResult | undefined },
+  unknown: (reason: LinuxRawIpUnknownReason) => LinuxRawIpVerdict,
+  reachableTargets: readonly (LinuxRawIpTarget | "udp")[],
+): LinuxRawIpVerdict {
+  const interfaces = measurement.output?.interfaces;
+  const onlyLoopback = interfaces !== undefined && interfaces.length === 1 && interfaces[0] === "lo";
+  const t4Refused = t4.class === "refused-local";
+  const t6Refused = t6.class === "refused-local" || (onlyLoopback && t6.class === "inconclusive" && t6.kind === "no-route");
+  const noArrival = measurement.arrival?.controlPassed === true && !measurement.arrival.arrived && measurement.udpArrival === "absent";
+  if (t4Refused && t6Refused && tl !== undefined && onlyLoopback && noArrival) {
+    log.info("raw-ip blocked in the holder namespace, evidence measured (structure: lo only)");
+    return { rawIp: "blocked", reason: "blocked", evidenceKind: "measured", reachableTargets: [...reachableTargets], udpArrival: measurement.udpArrival };
+  }
+  if (measurement.udpArrival === "unmeasured") return unknown("udp-unmeasured");
+  if (tl === undefined || measurement.arrival?.controlPassed !== true || !onlyLoopback) return unknown("no-evidence");
   const inconclusive = [t4, t6, tl].filter((result) => result.class === "inconclusive");
   if (inconclusive.some((result) => result.kind === "timeout")) return unknown("timeout");
   if (t4.kind === "no-route" || tl.kind === "no-route") return unknown("no-route");

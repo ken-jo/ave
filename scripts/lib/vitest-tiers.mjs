@@ -10,6 +10,7 @@ export const NATIVE_TIER_TESTS = [
   "src/permissions/__tests__/mxc-linux-boundary.native.test.ts",
   "src/permissions/__tests__/mxc-linux-filter-helper.native.test.ts",
   "src/permissions/__tests__/mxc-linux-holder-boundary.native.test.ts",
+  "src/permissions/__tests__/mxc-linux-holder-canary.native.test.ts",
   "src/plugins/isolation/__tests__/confined-plugin-child.test.ts",
   "src/sandbox/__tests__/runtime-grant-native.test.ts",
   "src/shared/__tests__/ave-home-boundaries.windows.test.ts",
