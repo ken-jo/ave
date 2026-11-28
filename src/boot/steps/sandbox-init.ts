@@ -624,7 +624,7 @@ async function recordLinuxShellSupport(startupSignal?: AbortSignal) {
   const [
     { detectHostMxcLinuxShellSupport },
     { establishMxcRuntimeRoot },
-    { sweepMxcLinuxPlaceholders },
+    { installMxcLinuxWatchedPlaceholderOccupant, sweepMxcLinuxPlaceholders },
     { setContainerShellSubstrate },
     { getHostResources },
     { isHostInstanceLockHeld },
@@ -636,6 +636,7 @@ async function recordLinuxShellSupport(startupSignal?: AbortSignal) {
     import("../../main/host-resources.js"),
     import("../../main/host-instance-lock.js"),
   ]);
+  installMxcLinuxWatchedPlaceholderOccupant();
   let runtimeRoot = false;
   try {
     establishMxcRuntimeRoot();

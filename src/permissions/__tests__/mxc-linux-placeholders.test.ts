@@ -5,7 +5,9 @@ import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { t } from "../../i18n/index.js";
 import { launcherPathFor } from "../mxc-launcher.js";
-import { holdMxcLinuxPlaceholders, sweepMxcLinuxPlaceholders, takeMxcLinuxPlaceholderRecoveryNotice } from "../mxc-linux-placeholders.js";
+import {
+  holdMxcLinuxPlaceholders, isHeldMxcLinuxPlaceholder, sweepMxcLinuxPlaceholders, takeMxcLinuxPlaceholderRecoveryNotice,
+} from "../mxc-linux-placeholders.js";
 import { posixPolicyLookups, rankPosixContainerRows, type PosixPolicyLookups } from "../mxc-posix.js";
 import { _forgetMxcRuntimeRootForTest, currentMxcRuntimeHost, establishMxcRuntimeRoot, requireMxcContainerStartRoot, type MxcRuntimeHost } from "../mxc-runtime-root.js";
 import { buildPolicyModel, policyFloorRow, policyGrantRow } from "../policy-model.js";
@@ -65,6 +67,16 @@ describe.runIf(process.platform === "linux")("Linux placeholder ownership", () =
     mkdirFault.path = undefined;
     _forgetMxcRuntimeRootForTest(host.cacheHome);
     rmSync(root, { recursive: true, force: true });
+  });
+
+  // Review #758 P3-10: a watched name counts another run's placeholder as absent only while that run lives.
+  it("counts a placeholder as held only while one of its owner runs is alive", async () => {
+    const hold = await holdMxcLinuxPlaceholders(lookups, rank, host);
+    expect(isHeldMxcLinuxPlaceholder(leaf, host)).toBe(true);
+    const aveGone: MxcRuntimeHost = { ...host, processExists: (pid) => pid !== host.pid && host.processExists(pid) };
+    expect(isHeldMxcLinuxPlaceholder(leaf, aveGone)).toBe(false);
+    await hold.release();
+    expect(isHeldMxcLinuxPlaceholder(leaf, host)).toBe(false);
   });
 
   it("keeps an absent leaf and its pinned parents until the last run leaves", async () => {
@@ -436,5 +448,21 @@ describe.runIf(process.platform === "linux")("Linux placeholder ownership", () =
         { stopOrphanHolders: true });
       expect(signal).toBe("SIGKILL");
     });
+  });
+});
+
+// Review #758 P3-10: importing the placeholder module installs nothing; Linux boot installs the watched rows' occupant.
+describe("the watched rows' placeholder occupant", () => {
+  it("is not installed by importing the placeholder module", async () => {
+    vi.resetModules();
+    const installed = vi.fn();
+    vi.doMock("../windows-watched-rows.js", async (actual) => ({ ...await actual<object>(), setWatchedPlaceholderOccupant: installed }));
+    try {
+      await import("../mxc-linux-placeholders.js");
+      expect(installed).not.toHaveBeenCalled();
+    } finally {
+      vi.doUnmock("../windows-watched-rows.js");
+      vi.resetModules();
+    }
   });
 });

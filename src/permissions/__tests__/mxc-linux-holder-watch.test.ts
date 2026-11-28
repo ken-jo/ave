@@ -34,7 +34,7 @@ const { t } = await import("../../i18n/index.js");
 const { posixPolicyLookups, rankPosixContainerRows } = await import("../mxc-posix.js");
 const { buildPolicyModel, policyFloorRow, policyGrantRow } = await import("../policy-model.js");
 const { claimMxcWatchedRows, isWatchedWorkspaceConsumable, resetWatchedRows } = await import("../windows-watched-rows.js");
-const { holdMxcLinuxPlaceholders } = await import("../mxc-linux-placeholders.js");
+const { holdMxcLinuxPlaceholders, installMxcLinuxWatchedPlaceholderOccupant } = await import("../mxc-linux-placeholders.js");
 const { currentMxcRuntimeHost } = await import("../mxc-runtime-root.js");
 
 describe.runIf(process.platform === "linux")("Linux holder protected names: placeholder or watch", () => {
@@ -42,6 +42,8 @@ describe.runIf(process.platform === "linux")("Linux holder protected names: plac
   beforeEach(() => {
     roots.base = realpathSync.native(mkdtempSync(join(tmpdir(), "ave-holder-watch-")));
     user = join(roots.base, "project");
+    // What Linux boot installs: a live run's placeholder at a watched name counts as absent.
+    installMxcLinuxWatchedPlaceholderOccupant();
     for (const path of [user, join(roots.base, "ave-home", "plugin-data"), join(roots.base, "sandbox-private", "home"), join(roots.base, "runtime")]) {
       mkdirSync(path, { recursive: true });
     }

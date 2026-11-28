@@ -25,6 +25,7 @@ const h = vi.hoisted(() => ({
   detectLinuxShell: vi.fn<() => Promise<SandboxContainerShellSupport>>(),
   detectLinuxHolder: vi.fn<() => Promise<LinuxHolderCanaryResult>>(),
   sweep: vi.fn(async () => {}),
+  installOccupant: vi.fn(),
   establishRoot: vi.fn(() => "/run/ave-test-root"),
   holderRoute: true,
   logger: {
@@ -58,6 +59,7 @@ vi.mock("../../permissions/mxc-runtime-root.js", async (actual) => ({
 
 vi.mock("../../permissions/mxc-linux-placeholders.js", async (actual) => ({
   ...await actual<typeof import("../../permissions/mxc-linux-placeholders.js")>(), sweepMxcLinuxPlaceholders: h.sweep,
+  installMxcLinuxWatchedPlaceholderOccupant: h.installOccupant,
 }));
 
 vi.mock("../../shared/container-platform.js", async (actual) => {
@@ -144,6 +146,8 @@ describe("Linux boot with the holder route on", () => {
     });
     await initSandboxGate(harness.context(false, true));
     expect(order).toEqual(["shell", "holder"]);
+    // Review #758 P3-10: the watched rows learn about live placeholders from boot, not from a module import.
+    expect(h.installOccupant).toHaveBeenCalledTimes(1);
     expect(provenLinuxHolderRoute()).toMatchObject({ bwrap: { path: "/usr/bin/bwrap" } });
     expect(getContainerHolderInfo()).toEqual({ state: "available" });
   });

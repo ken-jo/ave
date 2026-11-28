@@ -267,19 +267,28 @@ export async function sweepMxcLinuxPlaceholders(
   }, { createTarget: false });
 }
 
-/** Whether `path` is a folder a live run's placeholder holds, by the journal and the folder's identity. */
-function isHeldPlaceholder(path: string): boolean {
+/**
+ * Whether `path` is a folder a live run's placeholder holds: by the journal, the folder's identity, and an owner run
+ * whose Ave or launcher is still alive (review #758 P3-10). A dead run's folder is the user's to watch.
+ */
+export function isHeldMxcLinuxPlaceholder(path: string, host: MxcRuntimeHost = currentMxcRuntimeHost()): boolean {
   try {
-    const registry = readRegistry(registryPath(currentMxcRuntimeHost()));
+    const registry = readRegistry(registryPath(host));
+    const liveRun = (id: string): boolean => registry.runs.some((run) => run.id === id
+      && (isLive(run.owner, host) || (run.launcher !== undefined && isLive(run.launcher, host))));
     return registry.directories.some((directory) => directory.path === path && directory.identity !== undefined
-      && directory.owners.length > 0 && isSameDirectory(path, directory.identity));
+      && directory.owners.some(liveRun) && isSameDirectory(path, directory.identity));
   } catch {
     // Unreadable: the folder counts as present, so a watch refuses or quarantines rather than ignoring it.
     return false;
   }
 }
 
-if (process.platform === "linux") setWatchedPlaceholderOccupant(isHeldPlaceholder);
+/** Linux boot: watched rows count a live run's placeholder as absent. Installed by boot, never by importing this module. */
+export function installMxcLinuxWatchedPlaceholderOccupant(): void {
+  if (process.platform !== "linux") throw new Error("Container placeholders require Linux");
+  setWatchedPlaceholderOccupant((path) => isHeldMxcLinuxPlaceholder(path));
+}
 
 export interface MxcLinuxPlaceholderHold<Grants> {
   readonly grants: Grants;
