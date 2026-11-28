@@ -20,6 +20,13 @@ import { WorkerControlError, type PluginWorkerExitInfo } from "../../plugins/pub
 import { asrtCanInitialize } from "./test-helpers.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { aveHome } from "../../shared/ave-home.js";
+import { isContainerHolderRouteEnabled } from "../../shared/container-platform.js";
+import { startEgressRelayService, stopEgressRelayService } from "../egress-relay/relay.js";
+import { verifyHolderSweepHelper } from "../holder-label-sweep.js";
+import { currentMxcRuntimeHost, establishMxcRuntimeRoot, _forgetMxcRuntimeRootForTest } from "../mxc-runtime-root.js";
+import { __resetMacExtensionPlanForTest, setMacExtensionPlan, setMacHolderCapability } from "../sandbox-capability.js";
+import { __setProvenSeatbeltHolderRouteForTest } from "../seatbelt-holder-boot.js";
+import { closeHeldHolderLeases, measureSeatbeltHolderLaunchers } from "../seatbelt-holder-launch.js";
 
 // The worker, written verbatim to a temp file. Logs go to stderr: in this mode stdout carries frames only.
 const WORKER_SOURCE = String.raw`
@@ -270,10 +277,30 @@ describe("worker stdio control v1 with a real worker (unconfined)", () => {
 });
 
 // The Seatbelt write jail is the macOS worker path; other platforms confine workers differently and are covered elsewhere.
-describe.runIf(process.platform === "darwin")("worker stdio control v1 under real ASRT (macOS)", () => {
-  beforeEach(() => setPluginWorkerConfinementRequestedAtBoot(true));
+// macOS with its holder route on: a worker is a holder beneath its plugin's holder (the real launch gate, sandbox-exec and
+// label helper); the wrap is never taken.
+const MAC_HOLDER = process.platform === "darwin" && isContainerHolderRouteEnabled("darwin");
 
-  it("drives the wrapped worker over stdio; egress allow/deny enforced; state dir writable; outside the jail denied", async (test) => {
+describe.runIf(process.platform === "darwin")("worker stdio control v1 under the real macOS confinement", () => {
+  let holderCache: string | undefined;
+  let holderBase: string | undefined;
+  beforeEach(() => setPluginWorkerConfinementRequestedAtBoot(true));
+  afterEach(async () => {
+    if (!MAC_HOLDER) return;
+    for (const worker of workers.splice(0)) worker.stop();
+    await closeHeldHolderLeases();
+    await stopEgressRelayService();
+    __setProvenSeatbeltHolderRouteForTest(undefined);
+    __resetMacExtensionPlanForTest();
+    if (holderCache !== undefined) _forgetMxcRuntimeRootForTest(holderCache);
+    holderCache = undefined;
+    if (holderBase !== undefined) await cleanupTmpDir(holderBase);
+    holderBase = undefined;
+  });
+
+  it(MAC_HOLDER
+    ? "refuses a container worker started alone, outside its plugin's holder (the driven holder worker is seatbelt-holder-boundary.native N15)"
+    : "drives the wrapped worker over stdio; egress allow/deny enforced; state dir writable; outside the jail denied", async (test) => {
     if (!(await asrtCanInitialize())) {
       // A confinement job asks for real sandbox cases; there a missing sandbox is a failure, not a skip.
       if (process.env.AVE_REQUIRE_SANDBOX_CASES === "1") throw new Error("ASRT cannot initialize on this machine");
@@ -285,6 +312,23 @@ describe.runIf(process.platform === "darwin")("worker stdio control v1 under rea
     // GENUINELY outside the write jail: a path in HOME is covered by no grant.
     const outsideJail = join(homedir(), `.stdio-smoke-denied-${process.pid}-${Date.now()}.txt`);
     await initializeAsrtSandbox({ allowedDomains: ["example.com"], strictAllowlist: true }, undefined);
+    if (MAC_HOLDER) {
+      // The container runtime root may not sit in the Ave home, so it gets a base of its own.
+      holderBase = mkdtempSync(join("/private/tmp", "ave-stdio-holder-"));
+      vi.stubEnv("AVE_TEST_SANDBOX_BASE", holderBase);
+      holderCache = currentMxcRuntimeHost().cacheHome;
+      establishMxcRuntimeRoot();
+      // The holder's relay asks the same question the allowlist answers.
+      startEgressRelayService({ ask: async (destination) => destination.host === "example.com" });
+      __setProvenSeatbeltHolderRouteForTest({ helper: verifyHolderSweepHelper("resources"), launchers: measureSeatbeltHolderLaunchers() });
+      setMacHolderCapability({ state: "ready" });
+      setMacExtensionPlan({ platform: "darwin", requestedBackend: "mxc", selectedBackend: "mxc", readiness: "ready", reason: "ready", egressIdentity: "shared" });
+      // A container worker runs only beneath its plugin's live container process, never alone and never wrapped. The
+      // worker driven inside a plugin child holder is seatbelt-holder-boundary.native's N15.
+      await expect(start(workerFile, "stdio-smoke", { allowWritePaths: [tmpRoot ?? ""] }))
+        .rejects.toThrow("refusing a container worker whose plugin has no live container process");
+      return;
+    }
 
     const worker = await start(workerFile, "stdio-smoke", { allowWritePaths: [tmpRoot!] });
     worker.onStderr((chunk) => console.log(`[stdio-smoke][worker-stderr] ${chunk.trim()}`));

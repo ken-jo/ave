@@ -375,13 +375,21 @@ const ROWS: readonly Row[] = [
       const reason = publishExtensionPlan({ state: "unavailable", reason: "runtime-start-failed" });
       return { outcome: extensionStart().outcome, reason };
     } },
-  { id: "L6", point: "macOS/Linux extension start: no gate", tree: "no row", unknown: "U2",
+  { id: "L6", point: "Linux extension start: no gate", tree: "no row", unknown: "U2",
     today: { outcome: "unasked", reason: "none" },
     core: { outcome: "ask-human" },
     observe: () => {
+      setProcessPlatform("linux");
       setPluginWorkerConfinementRequestedAtBoot(true);
-      return (["darwin", "linux"] as const).map(platform => { setProcessPlatform(platform); return extensionStart(); })
-        .reduce((first, next) => { expect(next).toEqual(first); return first; });
+      return extensionStart();
+    } },
+  // macOS with its holder route on asks once per start until its container is proven, as Windows does (owner card O1, 2026-11-27).
+  { id: "L6.macos", point: "macOS extension start, holder route unproven", tree: "T:154", unknown: "U2",
+    today: { outcome: "ask-human", reason: "extension-start-consent-required" },
+    observe: () => {
+      setProcessPlatform("darwin");
+      setPluginWorkerConfinementRequestedAtBoot(true);
+      return extensionStart();
     } },
   { id: "L13", point: "container filesystem request shape", tree: "no row", unknown: "-",
     today: { outcome: "deny", reason: "uncoded:Error" },

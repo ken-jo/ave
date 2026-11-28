@@ -7,13 +7,14 @@ import { openDocumentSessionFiles, openDocumentSessionFile, teardownDocumentPrev
 import { openInlineSettings } from "./inline-settings.js";
 import { makeTestT } from "./i18n.js";
 import { documentEngineImportSupported } from "../../../src/observation/libreoffice-engine.js";
-import { documentEngineReleaseFor } from "../../../src/main/document-engine-release-pins.js";
-import { offlineProcessConfinementImplemented } from "../../../src/permissions/offline-confinement-platforms.js";
+import { isDocumentEngineAppInstalled } from "../../../src/main/document-engine-installation.js";
+import { documentEngineCopyKey } from "../../../src/ui/renderer/components/DocumentEngineInstallContent.js";
 import { wordDocumentFixture, textDocumentFixture } from "../../../src/__tests__/support/structured-document-fixtures.js";
 
 // launchSeededElectron seeds the Korean UI.
 const t = makeTestT("ko");
-const INSTALLATION_SUPPORTED = offlineProcessConfinementImplemented() && documentEngineReleaseFor() !== null;
+// macOS shows the installed-app copy (owner decision 2026-11-28); Windows and Linux keep main's.
+const copy = (key: string): string => t(documentEngineCopyKey(key, process.platform === "darwin"));
 
 test("optional engine absence keeps document outlines and an explicit installation surface", async () => {
   expect(builtMainExists()).toBe(true);
@@ -53,19 +54,24 @@ test("optional engine absence keeps document outlines and an explicit installati
     await openDocumentSessionFile(ctx.page, "report.hwpx");
     // Owner decision 6b96ef3ab: HWP/HWPX are refused on macOS before any engine lookup, so there the viewer names the
     // platform; elsewhere the absent engine is named (documentEngineImportSupported).
-    await expect(preview.getByTestId("chat-side-panel-file-error")).toContainText(t(documentEngineImportSupported(process.platform)
+    await expect(preview.getByTestId("chat-side-panel-file-error")).toContainText(copy(documentEngineImportSupported(process.platform)
       ? "documentEngine.previewUnavailable" : "documentEngine.previewPlatformUnsupported"));
     await openInlineSettings(ctx.app, ctx.page, "chat");
     const installation = ctx.page.getByTestId("document-engine-install");
     await installation.scrollIntoViewIfNeeded();
-    await expect(installation).toContainText("문서 엔진 설치");
+    await expect(installation).toContainText(copy("documentEngine.title"));
     await expect(installation).toContainText("선택 사항");
     await expect(installation.getByTestId("document-engine-size")).toContainText("MiB");
-    const install = installation.getByRole("button", { name: "다운로드 및 설치" });
-    if (INSTALLATION_SUPPORTED) await expect(install).toBeEnabled();
-    else {
-      await expect(install).toBeDisabled();
+    // The engine is the LibreOffice the user installed (owner decision 2026-11-28): Ave offers its extension only beside it,
+    // and only on macOS (Linux: lead decision 2026-11-28, pending the owner).
+    if (process.platform !== "darwin") {
+      await expect(installation.getByRole("button", { name: t("documentEngine.install") })).toBeDisabled();
       await expect(installation).toContainText(t("documentEngine.unsupported"));
+    } else if (await isDocumentEngineAppInstalled()) {
+      await expect(installation.getByRole("button", { name: copy("documentEngine.install") })).toBeEnabled();
+    } else {
+      await expect(installation.getByTestId("document-engine-app-missing")).toContainText(t("documentEngine.appMissing"));
+      await expect(installation.getByRole("button", { name: t("documentEngine.checkAgain") })).toBeEnabled();
     }
     const screenshot = test.info().outputPath("document-engine-install.png");
     await installation.screenshot({ path: screenshot });

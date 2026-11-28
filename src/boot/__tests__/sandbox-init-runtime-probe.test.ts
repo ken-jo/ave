@@ -46,6 +46,14 @@ vi.mock("../../permissions/mxc-linux.js", () => ({
   detectHostMxcLinuxShellSupport: h.detectLinuxShell,
 }));
 
+// The macOS holder route is on: its boot check has its own suites (seatbelt-holder-boot); here it reports unproven
+// without spawning anything, so these cases see only the shell and runtime probes they drive.
+vi.mock("../../permissions/seatbelt-holder-boot.js", () => ({
+  startSeatbeltHolderBootServices: vi.fn(async (deps: { publish: (readiness: { ready: false; reason: "binary-missing" }) => void }) => {
+    deps.publish({ ready: false, reason: "binary-missing" });
+    return { proof: { state: "unproven", reason: "binary-missing" } };
+  }),
+}));
 vi.mock("../../permissions/asrt-sandbox.js", async () => {
   // Boot sweeps private roots; use an owned temporary home.
   const { tmpdir } = await import("node:os");

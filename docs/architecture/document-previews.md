@@ -104,7 +104,7 @@ The shared error union and the renderer's localized mapping remain the response 
 | `encrypted`, `unsupported-encoding` | The content needs unsupported decryption or text decoding. |
 | `engine-unavailable` | The format requires an optional engine that is not installed; supported cached-value and outline readers remain usable. |
 | `engine-integrity-failed` | The installed engine fails payload or signature verification. |
-| `engine-confinement-unavailable` | The host cannot provide the required offline conversion sandbox. |
+| `engine-termination-unverified` | The engine's termination could not be confirmed, so its session resources are held. |
 | `engine-runtime-unavailable` | An additional importer runtime or its private-profile registration is unavailable. |
 | `engine-failed` | Conversion or its derived output fails the engine contract. |
 | `corrupt-document` | Inspected content is malformed or inconsistent with its requested container, including fatal delimited quoting errors. |

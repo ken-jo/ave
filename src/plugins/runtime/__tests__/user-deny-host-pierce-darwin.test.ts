@@ -1,6 +1,11 @@
-/** The macOS counterpart of user-deny-host-pierce.test.ts, on the real package wrap: a plugin whose reviewed certs host
- * directory a user's read deny covers does not start and its card names the rule; another plugin started with it does. */
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+/** The macOS counterpart of user-deny-host-pierce.test.ts, on the real confinement (the holder once its route is on, the
+ * package wrap before): a plugin whose reviewed certs host directory a user's read deny covers does not start and its card
+ * names the rule; another plugin started with it does. */
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { MAC_HOLDER_ROUTE, provenMacHolderRoute, type ProvenMacHolderRoute } from "../../../__tests__/support/mac-holder-route.js";
+
+vi.mock("../../../main/default-workspace-root.js", async (actual) =>
+  (await import("../../../__tests__/support/holder-test-workspace.js")).holderTestWorkspaceRoot(await actual()));
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { mkdirSync, mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -16,10 +21,12 @@ import type { PluginManifest } from "../../types.js";
 
 const CERTS_PLUGIN = "certsreader";
 const OTHER_PLUGIN = "plainreader";
+const CONFINEMENT = MAC_HOLDER_ROUTE ? "macos-seatbelt" : "macos-sandbox";
 
 describe.runIf(process.platform === "darwin")("a user's read deny over a plugin's certs host directory, through the runtime on macOS", () => {
   let testDir: string;
   let runtime: PluginRuntime | undefined;
+  let route: ProvenMacHolderRoute | undefined;
   const certs = () => join(aveHome(), "certs");
 
   beforeEach(() => {
@@ -33,7 +40,10 @@ describe.runIf(process.platform === "darwin")("a user's read deny over a plugin'
   afterEach(async () => {
     await runtime?.stopAll();
     runtime = undefined;
+    await route?.release();
+    route = undefined;
     if (isAsrtSandboxActive()) await resetAsrtSandbox();
+    vi.unstubAllEnvs();
     __resetSandboxRequestedAtBootForTest();
     await rm(testDir, { recursive: true, force: true });
   });
@@ -66,6 +76,7 @@ describe.runIf(process.platform === "darwin")("a user's read deny over a plugin'
     ];
     await writeFile(registryPath, JSON.stringify({ version: 1, plugins: rows }), "utf-8");
     await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true, denyRead: [certs()] });
+    if (MAC_HOLDER_ROUTE) route = provenMacHolderRoute();
     const started = makeTestPluginRuntime({ rootDir: testDir, registryPath, pluginsRoot: join(testDir, "plugins") });
     runtime = started;
     await started.startAll();
@@ -77,12 +88,12 @@ describe.runIf(process.platform === "darwin")("a user's read deny over a plugin'
     expect(message).toMatch(/, which this launch needs to read; the launch is refused \(user-deny-covers-pierce\)$/u);
     expect(started.listPluginIds()).not.toContain(CERTS_PLUGIN);
     expect(card(OTHER_PLUGIN)?.installFailureMessage).toBeUndefined();
-    // The other plugin ran under the wrap, so the certs refusal was the wrap's own and not a skipped one.
-    expect(card(OTHER_PLUGIN)?.confinement).toBe("macos-sandbox");
+    // The other plugin ran confined, so the certs refusal was the confinement's own and not a skipped one.
+    expect(card(OTHER_PLUGIN)?.confinement).toBe(CONFINEMENT);
     await expect(started.call("plain_reader_ping")).resolves.toBe("pong");
   });
 
-  it("starts the certs plugin under the wrap beside a deny inside its pierce", async () => {
+  it("starts the certs plugin confined beside a deny inside its pierce", async () => {
     if (!(await asrtCanInitialize())) {
       if (process.env.AVE_REQUIRE_SANDBOX_CASES === "1") throw new Error("ASRT sandbox cannot initialize");
       return;
@@ -93,13 +104,14 @@ describe.runIf(process.platform === "darwin")("a user's read deny over a plugin'
     const rows = [await installPlugin(CERTS_PLUGIN, "certs_reader_ping", { read: [{ kind: "hostDirectory", segments: ["certs"], why: "Read trust anchors" }] })];
     await writeFile(registryPath, JSON.stringify({ version: 1, plugins: rows }), "utf-8");
     await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true, denyRead: [corp] });
+    if (MAC_HOLDER_ROUTE) route = provenMacHolderRoute();
     const started = makeTestPluginRuntime({ rootDir: testDir, registryPath, pluginsRoot: join(testDir, "plugins") });
     runtime = started;
     await started.startAll();
     const card = started.listPluginCards().find((entry) => entry.id === CERTS_PLUGIN);
     // The pierce stays and only what the deny matches is withheld, so the launch is not refused.
     expect(card?.installFailureMessage).toBeUndefined();
-    expect(card?.confinement).toBe("macos-sandbox");
+    expect(card?.confinement).toBe(CONFINEMENT);
     expect(started.listPluginIds()).toContain(CERTS_PLUGIN);
     await expect(started.call("certs_reader_ping")).resolves.toBe("pong");
   });

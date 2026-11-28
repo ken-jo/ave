@@ -14,6 +14,7 @@ vi.mock("../../shared/container-platform.js", async (actual) => {
 });
 
 import { __resetManagedChildProcessesForTest } from "../../main/managed-child-processes.js";
+import { PROCESS_GROUP_REAPER_SCRIPT } from "../../main/process-group-reaper.js";
 import { __resetOfflineHolderQuarantineForTest, prepareMxcHolderStart, spawnMxcBundledHolder, spawnSeatbeltOfflineHolder, type MxcBundledHolder } from "../../sandbox/wrap-bundled-command.js";
 import { spawnMxcConfinedChild } from "../confined-child.js";
 import { startEgressRelayService, stopEgressRelayService } from "../egress-relay/relay.js";
@@ -292,6 +293,33 @@ describe.runIf(NATIVE)("macOS holder boundary (native)", () => {
     await expect(start(true)).rejects.toThrow("Container filesystem changed after admission");
   });
 
+  it("T12: a #! script replaced after admission refuses the start, as its interpreter would (rv13 P3-2)", async () => {
+    const scripts = join(root, "scripts");
+    mkdirSync(scripts);
+    // The last two calls of the adapter check are the recheck before native creation and the one after the start; the
+    // control run counts them, and the swap run replaces the script at that recheck, after the launch was measured.
+    let controlCalls = 0;
+    const start = async (swapAt: number | undefined) => {
+      const name = swapAt === undefined ? "kept" : "swapped";
+      const script = join(scripts, `${name}.sh`);
+      writeFileSync(script, "#!/bin/sh\necho up\nexec /bin/cat\n");
+      chmodSync(script, 0o755);
+      const write = join(root, `write-${name}`);
+      mkdirSync(write);
+      let calls = 0;
+      const started = await holder("", { command: script, args: [], allowWrite: [write],
+        assertStillValid: () => {
+          calls += 1;
+          if (swapAt === undefined) controlCalls = calls;
+          else if (calls === swapAt) { rmSync(script); writeFileSync(script, "#!/bin/sh\necho swapped\nexec /bin/cat\n"); chmodSync(script, 0o755); }
+        } });
+      return line(started.process.stdout);
+    };
+    await expect(start(undefined)).resolves.toBe("up");
+    expect(controlCalls).toBeGreaterThan(2);
+    await expect(start(controlCalls - 1)).rejects.toThrow("Container executable changed after admission");
+  });
+
   it("N12: an offline holder reaches no TCP listener and no Unix socket, writes only its staging; the host controls connect", async () => {
     const { createServer } = await import("node:net");
     const tcp = createServer(socket => socket.end()).listen(0, "127.0.0.1");
@@ -325,76 +353,6 @@ describe.runIf(NATIVE)("macOS holder boundary (native)", () => {
       tcp.close();
       unix.close();
     }
-  });
-
-  it("L-O1: a session holder binds and connects only in its one 0700 socket directory, and writes only its root", async () => {
-    const { createServer } = await import("node:net");
-    const session = join(root, "session");
-    const output = join(session, "output");
-    const ipc = join(output, "ipc");
-    const input = join(session, "input");
-    mkdirSync(ipc, { recursive: true, mode: 0o700 });
-    chmodSync(ipc, 0o700);
-    mkdirSync(input);
-    // A host socket in the same write root but outside the socket directory, and one elsewhere: both stay unreachable.
-    const beside = join(output, "beside.sock");
-    const elsewhere = join(root, "elsewhere.sock");
-    const servers = [createServer(socket => socket.end()).listen(beside), createServer(socket => socket.end()).listen(elsewhere)];
-    await Promise.all(servers.map(server => new Promise(r => server.once("listening", r))));
-    const perlConnect = (path: string) => `/usr/bin/perl -MIO::Socket::UNIX -e 'IO::Socket::UNIX->new(Peer => $ARGV[0]) or exit 1' '${path}' 2>/dev/null`;
-    const pipe = join(ipc, "OSL_PIPE_test");
-    const serve = `/usr/bin/perl -MIO::Socket::UNIX -e 'my $s = IO::Socket::UNIX->new(Local => $ARGV[0], Listen => 1) or exit 3; print "bound\\n"; $| = 1; my $c = $s->accept; print scalar <$c>' '${pipe}'`;
-    const sessionOf = { writeRoot: output, runtimeReads: [], socketDirectory: ipc };
-    try {
-      for (const path of [beside, elsewhere]) execFileSync("/usr/bin/perl", ["-MIO::Socket::UNIX", "-e", "IO::Socket::UNIX->new(Peer => $ARGV[0]) or exit 1", path], { timeout: 5000 });
-      const server = await spawnSeatbeltOfflineHolder({ label: "test:engine-a", command: "/bin/sh", args: ["-c", serve], baseEnv: { PATH }, session: sessionOf });
-      const client = [
-        `${perlConnect(beside)} && echo beside-open || echo beside-refused`,
-        `${perlConnect(elsewhere)} && echo elsewhere-open || echo elsewhere-refused`,
-        `/usr/bin/perl -MIO::Socket::UNIX -e 'my $c = IO::Socket::UNIX->new(Peer => $ARGV[0]) or exit 1; print $c "hello\\n"' '${pipe}' && echo pipe-open || echo pipe-refused`,
-        `(echo x > "$HOME/ok" && echo home-written) || echo home-refused`,
-        `(echo x > '${join(input, "x")}' 2>/dev/null && echo input-written) || echo input-refused`,
-      ].join("; ");
-      try {
-        expect(await line(server.process.stdout)).toBe("bound");
-        const received = line(server.process.stdout);
-        const started = await spawnSeatbeltOfflineHolder({ label: "test:engine-b", command: "/bin/sh", args: ["-c", client], baseEnv: { PATH }, session: sessionOf });
-        try {
-          const out: string[] = [];
-          started.process.stdout.on("data", (chunk: Buffer) => out.push(chunk.toString()));
-          await started.process.completion;
-          await vi.waitFor(() => expect(out.join("").trim().split("\n")).toEqual(["beside-refused", "elsewhere-refused", "pipe-open", "home-written", "input-refused"]),
-            { timeout: 5_000, interval: 25 });
-          expect(await received).toBe("hello");
-          expect(readFileSync(join(output, "ok"), "utf8")).toBe("x\n");
-        } finally {
-          await started.release();
-        }
-      } finally {
-        await server.release();
-      }
-    } finally {
-      for (const server of servers) server.close();
-    }
-  });
-
-  it("L-O1: a session's socket directory must be a private 0700 directory inside its write root", async () => {
-    const output = join(root, "out2");
-    const open = join(output, "ipc");
-    mkdirSync(open, { recursive: true });
-    chmodSync(open, 0o755);
-    await expect(spawnSeatbeltOfflineHolder({ label: "test:engine-c", command: "/usr/bin/true", args: [], baseEnv: { PATH },
-      session: { writeRoot: output, runtimeReads: [], socketDirectory: open } })).rejects.toThrow("private 0700 directory");
-    const outside = join(root, "ipc-outside");
-    mkdirSync(outside, { mode: 0o700 });
-    await expect(spawnSeatbeltOfflineHolder({ label: "test:engine-c", command: "/usr/bin/true", args: [], baseEnv: { PATH },
-      session: { writeRoot: output, runtimeReads: [], socketDirectory: outside } })).rejects.toThrow("private 0700 directory");
-    // Control: the same directory made private starts.
-    chmodSync(open, 0o700);
-    const started = await spawnSeatbeltOfflineHolder({ label: "test:engine-c", command: "/usr/bin/true", args: [], baseEnv: { PATH },
-      session: { writeRoot: output, runtimeReads: [], socketDirectory: open } });
-    await started.process.completion;
-    await started.release();
   });
 
   /** A write root of its own: two live holders may not share one. */
@@ -462,6 +420,8 @@ describe.runIf(NATIVE)("macOS holder boundary (native)", () => {
       expect(hits).toEqual([`http://allowed.example:${upstreamPort + 1}/ok`]);
       await vi.waitFor(() => expect(direct).toBe(1), { timeout: 5_000, interval: 25 });
       expect(tailnetHits).toBe(0);
+      // The relay did ask (for the denied host), so its silence about the Tailnet port is a refusal, not a relay that never asks.
+      expect(asked.some(entry => entry.startsWith("denied.example:")), JSON.stringify(asked)).toBe(true);
       expect(asked.some(entry => entry.endsWith(`:${tailnetPort}`))).toBe(false);
     } finally {
       releaseTailnet();
@@ -522,6 +482,32 @@ describe.runIf(NATIVE)("macOS holder boundary (native)", () => {
     expect(() => process.kill(victim.process.id, 0)).not.toThrow();
   }, 30_000);
 
+  // Fable P3-5 on #761: the two cross-principal properties the wrapped-route suite proves on Linux, named here for the
+  // holder route. Each holder's staging HOME and temp are its own; the floor rows keep every other one out of reach.
+  it("N22: a holder cannot read another holder's temp files or its sandbox HOME; it reads its own, and the host reads both", async () => {
+    const victim = await holder("echo victim-temp > \"$TMPDIR/secret\" && echo victim-home > \"$HOME/secret\" && echo \"$HOME|$TMPDIR\"; exec /bin/cat", own("victim"));
+    const [victimHome, victimTemp] = (await line(victim.process.stdout)).split("|") as [string, string];
+    // Control: the files exist and are readable to a process outside every holder.
+    expect(readFileSync(join(victimTemp, "secret"), "utf8")).toBe("victim-temp\n");
+    expect(readFileSync(join(victimHome, "secret"), "utf8")).toBe("victim-home\n");
+    const probe = [
+      `cat ${join(victimTemp, "secret")} 2>/dev/null && echo other-temp=read || echo other-temp=denied`,
+      `cat ${join(victimHome, "secret")} 2>/dev/null && echo other-home=read || echo other-home=denied`,
+      `ls ${victimHome} >/dev/null 2>&1 && echo other-home-list=read || echo other-home-list=denied`,
+      // Control: the same reads of its own staging work.
+      'echo mine > "$TMPDIR/secret" && cat "$TMPDIR/secret" >/dev/null && echo own-temp=read || echo own-temp=denied',
+      'echo mine > "$HOME/secret" && cat "$HOME/secret" >/dev/null && echo own-home=read || echo own-home=denied',
+      "echo done",
+    ].join("\n");
+    const text = await output(await holder(probe, own("attacker")));
+    expect(text, text).toContain("other-temp=denied");
+    expect(text, text).toContain("other-home=denied");
+    expect(text, text).toContain("other-home-list=denied");
+    expect(text, text).toContain("own-temp=read");
+    expect(text, text).toContain("own-home=read");
+    expect(text, text).not.toContain("victim-");
+  }, 30_000);
+
   it("N6: a plugin hook runs as a holder through the hook runner: stdin JSON in, its verdict out, a timeout that leaves nothing", async () => {
     const { runOneHookScript } = await import("../../hooks/script-hook-runner.js");
     const generationRoot = join(root, "generation");
@@ -531,7 +517,7 @@ describe.runIf(NATIVE)("macOS holder boundary (native)", () => {
     writeFileSync(verdict, '#!/bin/sh\nread -r line\ncase "$line" in *read_file*) printf \'{"action":"deny","reason":"saw read_file"}\';; *) printf \'{"action":"allow"}\';; esac\n');
     const pidFile = join(dataDir, "escaped.pid");
     const stuck = join(generationRoot, "stuck.sh");
-    writeFileSync(stuck, `#!/bin/sh\n/usr/bin/perl -e 'use POSIX; POSIX::setsid(); exec "/bin/sleep", "59"' & echo $! > '${pidFile}'\nexec /bin/sleep 59\n`);
+    writeFileSync(stuck, `#!/bin/sh\n/usr/bin/perl -e 'use POSIX; POSIX::setsid(); exec "/bin/sleep", "57"' & echo $! > '${pidFile}'\nexec /bin/sleep 57\n`);
     chmodSync(verdict, 0o755); chmodSync(stuck, 0o755);
     const payload = { hookType: "pre", event: "pre", toolName: "read_file", source: "builtin", category: "read", input: {},
       sessionId: "native-hook", trustOrigin: "user-keyboard" } as const;
@@ -549,6 +535,87 @@ describe.runIf(NATIVE)("macOS holder boundary (native)", () => {
     expect(Number.isInteger(escaped) && escaped > 0).toBe(true);
     // The holder's stop swept its label: the setsid escape is gone.
     await vi.waitFor(() => expect(() => process.kill(escaped, 0)).toThrow(), { timeout: 5_000, interval: 50 });
+  }, 60_000);
+
+  // N5: a stand-in host proves the route (the real boot check, boot sweep and watcher), starts two holders, one with a
+  // setsid escape, and is killed with SIGKILL. The watcher's sweep ends the escape. Control: without the watcher it lives.
+  it.each([["the watcher", true, false], ["no watcher (control)", false, false], ["the watcher killed once first (N5c)", true, true]] as const)("N5: a host killed with SIGKILL, %s", async (_name, watcher, killWatcherFirst) => {
+    const { spawnSacrificialHost } = await import("../../__tests__/support/sacrificial-host.js");
+    const report = join(root, `n5-${String(watcher)}.json`);
+    // The stand-in host's own Ave home (its instance lock and boot sweep scope) and its own runtime base.
+    const hostHome = join(root, "n5-home");
+    const hostBase = join(root, "n5-base");
+    mkdirSync(hostHome, { mode: 0o700 }); mkdirSync(hostBase, { mode: 0o700 });
+    const source = `
+      const [wrap, boot, launch, capability, runtime, relay, sweep, lock, resources, report, watcher] = process.argv.slice(1);
+      const { writeFileSync } = await import("node:fs");
+      const { establishMxcRuntimeRoot } = await import(runtime);
+      const { startEgressRelayService } = await import(relay);
+      const { setMacExtensionPlan, setMacHolderCapability } = await import(capability);
+      const { spawnMxcBundledHolder } = await import(wrap);
+      establishMxcRuntimeRoot();
+      startEgressRelayService({ ask: async () => false });
+      if (watcher === "true") {
+        await (await import(lock)).acquireHostInstanceLock();
+        const { startSeatbeltHolderBootServices } = await import(boot);
+        await startSeatbeltHolderBootServices({ resourcePath: resources, home: process.env.AVE_HOME, publish: () => {} });
+      } else {
+        const { __setProvenSeatbeltHolderRouteForTest } = await import(boot);
+        const { verifyHolderSweepHelper } = await import(sweep);
+        const { measureSeatbeltHolderLaunchers } = await import(launch);
+        __setProvenSeatbeltHolderRouteForTest({ helper: verifyHolderSweepHelper(resources), launchers: measureSeatbeltHolderLaunchers() });
+      }
+      setMacHolderCapability({ state: "ready" });
+      setMacExtensionPlan({ platform: "darwin", requestedBackend: "mxc", selectedBackend: "mxc", readiness: "ready", reason: "ready", egressIdentity: "shared" });
+      const pids = [];
+      for (const [name, script] of [["plain", "exec /bin/sleep 57"], ["escape", "/usr/bin/perl -e 'use POSIX; POSIX::setsid(); exec \\"/bin/sleep\\", \\"57\\"' & echo $!; exec /bin/sleep 57"]]) {
+        const write = report + "-" + name;
+        (await import("node:fs")).mkdirSync(write);
+        const started = await spawnMxcBundledHolder({ label: "test:n5-" + name, command: "/bin/sh", args: ["-c", script], baseEnv: { PATH: "/usr/bin:/bin" },
+          holderEnv: {}, allowRead: [], allowWrite: [write], ownedReadRoots: [], egressOwner: { kind: "worker", role: "mcp-server", pluginId: undefined, instanceId: "n5-" + name } });
+        pids.push(started.process.id);
+        if (name === "escape") pids.push(await new Promise(done => started.process.stdout.once("data", chunk => done(Number(String(chunk).trim())))));
+      }
+      writeFileSync(report, JSON.stringify(pids));
+      setInterval(() => {}, 1000);
+    `;
+    const mod = (path: string) => resolve(path);
+    const host = spawnSacrificialHost(source, [mod("src/sandbox/wrap-bundled-command.ts"), mod("src/permissions/seatbelt-holder-boot.ts"),
+      mod("src/permissions/seatbelt-holder-launch.ts"), mod("src/permissions/sandbox-capability.ts"), mod("src/permissions/mxc-runtime-root.ts"),
+      mod("src/permissions/egress-relay/relay.ts"), mod("src/permissions/holder-label-sweep.ts"), mod("src/main/host-instance-lock.ts"),
+      RESOURCES, report, String(watcher)],
+      // A spawned process has no test seam: its own HOME keeps its runtime root (under HOME's cache) out of the account's.
+      { HOME: hostBase, AVE_HOME: hostHome, AVE_TEST_MXC_RUNTIME_ROOT: "null" });
+    let pids: number[] = [];
+    try {
+      await vi.waitFor(() => { pids = JSON.parse(readFileSync(report, "utf8")) as number[]; }, { timeout: 30_000, interval: 100 });
+      const escaped = pids[2];
+      if (escaped === undefined) throw new Error("the escape's pid was not reported");
+      expect(() => process.kill(escaped, 0)).not.toThrow();
+      if (killWatcherFirst) {
+        // The host's watcher is its helper in watch mode; kill it, and the host keeps one running again within 2 s.
+        const watchers = () => execFileSync("/bin/ps", ["-axo", "pid=,ppid=,command="], { encoding: "utf8" }).split("\n")
+          .map(row => row.trim().split(/\s+/u)).filter(([, ppid, command, mode]) => Number(ppid) === host.pid && command?.endsWith("ave-holder-sweep") && mode === "watch")
+          .map(([pid]) => Number(pid));
+        const [first] = watchers();
+        if (first === undefined) throw new Error("the host's watcher is not running");
+        process.kill(first, "SIGKILL");
+        await vi.waitFor(() => expect(watchers().filter(pid => pid !== first)).toHaveLength(1), { timeout: 2_000, interval: 50 });
+        // Both holders kept running.
+        for (const pid of pids) expect(() => process.kill(pid, 0)).not.toThrow();
+      }
+      host.kill("SIGKILL");
+      if (watcher) {
+        await vi.waitFor(() => expect(() => process.kill(escaped, 0)).toThrow(), { timeout: 5_000, interval: 50 });
+        for (const pid of pids) await vi.waitFor(() => expect(() => process.kill(pid, 0)).toThrow(), { timeout: 5_000, interval: 50 });
+      } else {
+        await new Promise(done => setTimeout(done, 2_000));
+        expect(() => process.kill(escaped, 0)).not.toThrow();
+      }
+    } finally {
+      host.kill("SIGKILL");
+      for (const pid of pids) { try { process.kill(pid, "SIGKILL"); } catch { /* gone */ } }
+    }
   }, 60_000);
 
   it("N5b: the watcher killed while two holders run: it comes back, both still stop verified, a new start works", async () => {
@@ -578,6 +645,101 @@ describe.runIf(NATIVE)("macOS holder boundary (native)", () => {
       expect(await watcher.stop()).toBe(true);
     }
   }, 30_000);
+
+  // N18: the boot sweep is scoped to the instance's own Ave home. Stand-in hosts, each with its own home and HOME. The
+  // sweep is the backstop for a host whose process-group reaper did not run; a host's death alone is the reaper's job.
+  it("N18: one host's boot sweep leaves another home's holder alone; the same home cannot get the lock; a later run of the same home sweeps its leftover", async () => {
+    const { spawnSacrificialHost } = await import("../../__tests__/support/sacrificial-host.js");
+    const source = `
+      const [lock, wrap, boot, launch, capability, runtime, relay, sweep, resources, report, mode] = process.argv.slice(1);
+      const { writeFileSync, mkdirSync } = await import("node:fs");
+      try { await (await import(lock)).acquireHostInstanceLock(); }
+      catch (error) { writeFileSync(report, JSON.stringify({ lock: "refused", code: error.code ?? error.name })); process.exit(0); }
+      const { verifyHolderSweepHelper } = await import(sweep);
+      if (mode === "sweep") {
+        const { runHolderBootSweep } = await import(boot);
+        writeFileSync(report, JSON.stringify({ swept: await runHolderBootSweep(verifyHolderSweepHelper(resources), process.env.AVE_HOME) }));
+        process.exit(0);
+      }
+      (await import(runtime)).establishMxcRuntimeRoot();
+      (await import(relay)).startEgressRelayService({ ask: async () => false });
+      (await import(boot)).__setProvenSeatbeltHolderRouteForTest({ helper: verifyHolderSweepHelper(resources), launchers: (await import(launch)).measureSeatbeltHolderLaunchers() });
+      const { setMacExtensionPlan, setMacHolderCapability } = await import(capability);
+      setMacHolderCapability({ state: "ready" });
+      setMacExtensionPlan({ platform: "darwin", requestedBackend: "mxc", selectedBackend: "mxc", readiness: "ready", reason: "ready", egressIdentity: "shared" });
+      const write = report + "-write"; mkdirSync(write);
+      const started = await (await import(wrap)).spawnMxcBundledHolder({ label: "test:n18", command: "/bin/sleep", args: ["57"], baseEnv: { PATH: "/usr/bin:/bin" },
+        holderEnv: {}, allowRead: [], allowWrite: [write], ownedReadRoots: [], egressOwner: { kind: "worker", role: "mcp-server", pluginId: undefined, instanceId: "n18" } });
+      writeFileSync(report, JSON.stringify({ pid: started.process.id }));
+      setInterval(() => {}, 1000);
+    `;
+    const mod = (path: string) => resolve(path);
+    const modules = [mod("src/main/host-instance-lock.ts"), mod("src/sandbox/wrap-bundled-command.ts"), mod("src/permissions/seatbelt-holder-boot.ts"),
+      mod("src/permissions/seatbelt-holder-launch.ts"), mod("src/permissions/sandbox-capability.ts"), mod("src/permissions/mxc-runtime-root.ts"),
+      mod("src/permissions/egress-relay/relay.ts"), mod("src/permissions/holder-label-sweep.ts"), RESOURCES];
+    const homes = { a: join(root, "home-a"), b: join(root, "home-b") };
+    for (const dir of Object.values(homes)) mkdirSync(dir, { mode: 0o700 });
+    let run = 0;
+    const host = (home: string, mode: "holder" | "sweep") => {
+      const name = `n18-${++run}`;
+      const base = join(root, `${name}-base`);
+      mkdirSync(base, { mode: 0o700 });
+      const report = join(root, `${name}.json`);
+      const child = spawnSacrificialHost(source, [...modules, report, mode], { HOME: base, AVE_HOME: home, AVE_TEST_MXC_RUNTIME_ROOT: "null" });
+      const result = async () => { let value: Record<string, unknown> = {}; await vi.waitFor(() => { value = JSON.parse(readFileSync(report, "utf8")); }, { timeout: 30_000, interval: 100 }); return value; };
+      return { child, result };
+    };
+    /** The host's process-group reaper: its `/bin/sh` child running the reaper script (`process-group-reaper.ts`). */
+    const reaperOf = (hostPid: number): number => {
+      const found = execFileSync("/bin/ps", ["-axo", "pid=,ppid=,command="]).toString().split("\n").flatMap((entry) => {
+        const match = /^\s*(\d+)\s+(\d+)\s+(.*)$/u.exec(entry);
+        return match && Number(match[2]) === hostPid && match[3]?.startsWith(`/bin/sh -c ${PROCESS_GROUP_REAPER_SCRIPT.split("\n")[0]}`) ? [Number(match[1])] : [];
+      });
+      if (found.length !== 1) throw new Error(`Expected one reaper under host ${hostPid}, found ${found.length}`);
+      return found[0] as number;
+    };
+    const hosts: ReturnType<typeof host>[] = [];
+    const pids: number[] = [];
+    try {
+      const a = host(homes.a, "holder"); hosts.push(a);
+      const aPid = (await a.result()).pid as number;
+      pids.push(aPid);
+      // Another home's boot sweep: A's holder is untouched.
+      const b = host(homes.b, "sweep"); hosts.push(b);
+      expect(await b.result()).toEqual({ swept: true });
+      expect(() => process.kill(aPid, 0)).not.toThrow();
+      // Same home while A runs: no lock, so no sweep; A's holder is untouched.
+      const same = host(homes.a, "sweep"); hosts.push(same);
+      expect(await same.result()).toMatchObject({ lock: "refused" });
+      expect(() => process.kill(aPid, 0)).not.toThrow();
+      // A true leftover: A dies and its process-group reaper never runs. A live reaper reads EOF when its host dies and
+      // kills every registered group within milliseconds (the control below), so A's death alone leaves nothing behind.
+      // Its reaper is held stopped across A's death, then killed: the holder outlives both.
+      const aReaper = reaperOf(a.child.pid as number);
+      pids.push(aReaper);
+      process.kill(aReaper, "SIGSTOP");
+      a.child.kill("SIGKILL");
+      await new Promise(done => a.child.once("exit", done));
+      process.kill(aReaper, "SIGKILL");
+      await vi.waitFor(() => expect(() => process.kill(aReaper, 0)).toThrow(), { timeout: 5_000, interval: 20 });
+      await new Promise(done => setTimeout(done, 250));
+      expect(() => process.kill(aPid, 0)).not.toThrow();
+      // The next run of home A sweeps what A left.
+      const later = host(homes.a, "sweep"); hosts.push(later);
+      expect(await later.result()).toEqual({ swept: true });
+      await vi.waitFor(() => expect(() => process.kill(aPid, 0)).toThrow(), { timeout: 5_000, interval: 50 });
+      // Control: with its reaper running, a host's death ends its holder without any sweep.
+      const c = host(homes.b, "holder"); hosts.push(c);
+      const cPid = (await c.result()).pid as number;
+      pids.push(cPid);
+      c.child.kill("SIGKILL");
+      await new Promise(done => c.child.once("exit", done));
+      await vi.waitFor(() => expect(() => process.kill(cPid, 0)).toThrow(), { timeout: 5_000, interval: 20 });
+    } finally {
+      for (const started of hosts) started.child.kill("SIGKILL");
+      for (const pid of pids) { try { process.kill(pid, "SIGKILL"); } catch { /* gone */ } }
+    }
+  }, 90_000);
 
   it("N13: a kernel-refused start runs nothing and leaves no staging tree", async () => {
     const staging = join(cache, "ai.agent-connector.ave", "mxc-runtime", "staging");

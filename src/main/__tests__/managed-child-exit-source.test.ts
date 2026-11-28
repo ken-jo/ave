@@ -44,13 +44,14 @@ const RAW_DEFINITIONS: Readonly<Record<string, readonly string[]>> = {
 };
 const RAW_NAMES = new Set(Object.values(RAW_DEFINITIONS).flat());
 
-const OWNER_MODULES = ["src/sandbox/wrap-bundled-command.ts", "src/permissions/offline-process-sandbox.ts"];
+const OWNER_MODULES = ["src/sandbox/wrap-bundled-command.ts"];
 const COVERED_CALLERS = ["src/hooks/script-hook-runner.ts", "src/observation/libreoffice-process.ts"];
 
 /** Reviewed owner call sites per covered caller: root handles, nested handles, path records and never-spawned releases. */
 const OWNER_CALL_SITES: Readonly<Record<string, Readonly<Record<string, number>>>> = {
   "src/hooks/script-hook-runner.ts": { root: 1, nested: 0, paths: 0, abandon: 3 },
-  "src/observation/libreoffice-process.ts": { root: 2, nested: 4, paths: 5, abandon: 4 },
+  // paths 7: the boot sweep also records the stale profile's own pipe (#761 P3-2).
+  "src/observation/libreoffice-process.ts": { root: 2, nested: 4, paths: 7, abandon: 4 },
 };
 
 function ownerCallSites(source: string): Record<string, number> {
@@ -70,7 +71,6 @@ const RAW_IMPORTERS: Readonly<Record<string, readonly string[]>> = {
     "cleanupAsrtSandboxAfterCommand", "createManagedRelayResources", "createSandboxProcessHome", "holdWindowsFilesystemGrant",
     "observeManagedWindowsRelayExit", "recordManagedCleanup",
   ],
-  "src/permissions/offline-process-sandbox.ts": ["cleanupBwrapMountPoints", "recordManagedCleanup"],
   // The Linux dependency check's unbound dynamic import of the module; it calls only checkLinuxDependencies.
   "src/permissions/asrt-sandbox.ts": ["@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js:*"],
   // Out of scope for this owner: other launch sites with their own lifetime contracts, and boot/shutdown wiring.
@@ -237,10 +237,6 @@ function statements(source: string): string {
   return source.replace(/^[ \t]*\/\/.*$/gmu, "").replace(/\s+/gu, " ").trim();
 }
 
-const offline = readRepoFile("src/permissions/offline-process-sandbox.ts");
-const scanner = section(offline, "async function runOfflineScan", "function within");
-const confirmScanner = "if (!confirmed) throw new OfflineScanExitUnconfirmedError()";
-const returnScan = "if (scan.ok) return scan.value";
 const hook = readRepoFile("src/hooks/script-hook-runner.ts");
 const confined = readRepoFile("src/permissions/confined-child.ts");
 const grant = readRepoFile("src/sandbox/wrap-bundled-command.ts");
@@ -254,12 +250,6 @@ const windowsGrant = section(grant, "export async function spawnWindowsBundledPr
 const managedExit = section(managed, "async function waitForManagedProcessGroupExit", "export function observeManagedProcessGroup");
 const managedEngineStop = "const proof = await running.exit.confirmExit(reason);";
 const earlyWindowsRelease = 'if (windowsSpawn) await forceKillManagedChildProcess(windowsSpawn.child, "hook caller aborted");';
-
-function scannerWaitsForVerdict(source: string): boolean {
-  return source.indexOf(returnScan) > source.indexOf(confirmScanner)
-    && appearsInOrder(source, "const child = start(acquired =>", "observeManagedProcessGroup(acquired,",
-      "observeManagedWindowsJobExit(acquired,", "exit.wait(stop)", "await exit.confirmExit", confirmScanner, "noteExit(confirmed);", returnScan);
-}
 
 function hookStopsAfterAuthorityRefresh(source: string): boolean {
   const flow = section(source, "let refreshError: unknown", "if (contained)");
@@ -815,15 +805,6 @@ describe("managed child receipts", () => {
 });
 
 describe("managed process exit source rules", () => {
-  it("acquires the scanner and waits on the managed verdict before success or scratch cleanup", () => {
-    expect(scanner.match(/\bspawnManaged\(/gu)).toHaveLength(2);
-    expect(scanner.match(/\brunWithCeiling\(/gu)).toHaveLength(1);
-    expect(scannerWaitsForVerdict(scanner)).toBe(true);
-    const earlyReturn = scanner.replace(confirmScanner, `${returnScan};\n    ${confirmScanner}`);
-    expect(earlyReturn).not.toBe(scanner);
-    expect(scannerWaitsForVerdict(earlyReturn)).toBe(false);
-  });
-
   it("acquires the managed process before registering it and requires group absence", () => {
     const launch = section(managed, "export function spawnManaged(", "export function trackManagedChildProcess");
     expect(appearsInOrder(launch, "const child = spawn(command, args,", "onSpawn?.(child);", "trackChild(child,",
@@ -837,10 +818,8 @@ describe("managed process exit source rules", () => {
 
   it("forbids local POSIX child close or exit waits and uses the managed launch and group verdict", () => {
     expect(hook).not.toMatch(/\bspawn\(/u);
-    for (const source of [scanner, posixHook]) {
-      expect(source).not.toMatch(LOCAL_CHILD_WAIT);
-      expect(source).not.toMatch(LOCAL_TERMINATION_POLICY);
-    }
+    expect(posixHook).not.toMatch(LOCAL_CHILD_WAIT);
+    expect(posixHook).not.toMatch(LOCAL_TERMINATION_POLICY);
     const waited = posixHook.replace("    waitingForGroup = true;", '    await new Promise<void>(resolve => child.once("exit", () => resolve()));\n    waitingForGroup = true;');
     expect(waited).not.toBe(posixHook);
     expect(waited).toMatch(LOCAL_CHILD_WAIT);

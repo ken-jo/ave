@@ -8,6 +8,8 @@
  * user — nothing is cut silently.
  */
 import { EmptyState } from "../../../components/ui/empty-state.js";
+import { isDarwin } from "../api-client.js";
+import { documentEngineCopyKey } from "../components/DocumentEngineInstallContent.js";
 import { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Badge } from "../../../components/ui/badge.js";
 import { useTranslation } from "../../../i18n/react.js";
@@ -29,8 +31,12 @@ const LazyTableDocumentGrid = lazy(() =>
   })),
 );
 
-/** Map a read-document error code to its user message key. */
-export function tableErrorKey(code: Exclude<PreviewDocumentError, "superseded">): string {
+/** Map a read-document error code to its user message key; the document engine's copy follows the platform. */
+export function tableErrorKey(code: Exclude<PreviewDocumentError, "superseded">, darwin = isDarwin()): string {
+  return documentEngineCopyKey(readErrorKey(code), darwin);
+}
+
+function readErrorKey(code: Exclude<PreviewDocumentError, "superseded">): string {
   switch (code) {
     case "path-not-allowed":
     case "sensitive-path":
@@ -63,8 +69,8 @@ export function tableErrorKey(code: Exclude<PreviewDocumentError, "superseded">)
       return "documentEngine.previewUnavailable";
     case "engine-integrity-failed":
       return "documentEngine.previewIntegrity";
-    case "engine-confinement-unavailable":
-      return "documentEngine.previewConfinement";
+    case "engine-termination-unverified":
+      return "documentEngine.previewTerminationUnverified";
     case "engine-runtime-unavailable":
       return "documentEngine.previewRuntime";
     case "engine-format-unsupported-on-platform":

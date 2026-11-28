@@ -75,7 +75,6 @@ const LAUNCH_FILES = [
   "permissions/mxc-runtime-root.ts",
   "permissions/mxc-shell-supervisor-client.ts", // macOS shell supervisor: process.execPath as Node, safe env without loader overrides
   "permissions/mxc-windows.ts",
-  "permissions/offline-process-sandbox.ts",
   "permissions/seatbelt-holder-boot.ts", // macOS holder boot check and watcher: the pinned helper and /bin/sleep by absolute path
   "permissions/seatbelt-holder-launch.ts", // macOS holder chain: /bin/sh launch gate, /usr/bin/sandbox-exec, the admitted command
   "permissions/srt-win-integrity.ts",
@@ -135,12 +134,5 @@ describe("host program launch source guard", () => {
   it.each(RESOLVED_SITES)("%s resolves its program through the shared resolver", (site) => {
     const file = files.find(({ path }) => path === site);
     expect(file?.text, site).toMatch(/\b(?:resolveHostProgram|findHostProgram)\(/u);
-  });
-
-  it("does not search PATH for offline wrapper programs", () => {
-    const site = "permissions/offline-process-sandbox.ts";
-    const file = files.find(({ path }) => path === site);
-    expect(file?.text, site).toBeDefined();
-    expect(file?.text, site).not.toMatch(/\b(?:resolveHostProgram|findHostProgram)\b/u);
   });
 });

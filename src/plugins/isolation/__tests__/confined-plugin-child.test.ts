@@ -3,6 +3,7 @@ import { setFixtureOwner } from "../../../__tests__/support/fixture-owner.js";
 import { canCreateSymlinks } from "../../../__tests__/support/symlink-capability.js";
 import { approvedExtensionStart, FIXTURE_START_IDENTITY } from "../../../__tests__/support/approved-extension-start.js";
 import { pluginChildStartKey } from "../../../permissions/extension-start-consent.js";
+import { MAC_HOLDER_ROUTE } from "../../../__tests__/support/mac-holder-route.js";
 /** Exercise real confined spawns: secret denial, outside-write refusal, usable own data, private temp storage, mandatory wrapping, and unavailable desktop APIs.
  * Read isolation needs a covering deny; allowed writes include the principal temp directory, and offline probes do not prove egress enforcement.
  * Native cases may opt out locally when unavailable, but required CI backends must fail rather than skip. */
@@ -107,6 +108,10 @@ vi.mock("../../../main/managed-child-processes.js", async original => {
 
 const execFileAsync = promisify(execFile);
 
+// Where a plugin child runs in the package wrap: Linux, and macOS before its holder route. On that route a macOS plugin
+// child is a holder; its boundary is proven against the production factory in adversarial-escapes and natively in
+// seatbelt-holder-boundary.native, and these protocol cases keep running on Linux.
+const WRAPPED_PLUGIN_CHILD = process.platform === "linux" || (process.platform === "darwin" && !MAC_HOLDER_ROUTE);
 const PLUGIN_ID = "sampleassistant";
 const WIDENED_PLUGIN_ID = "local-indexer";
 const WIDENED_SANDBOX: NonNullable<PluginManifest["sandbox"]> = {
@@ -1374,7 +1379,7 @@ setTimeout(() => process.exit(0), 2000).unref?.();
 });
 
 describe("the confined child, against the real sandbox", () => {
-  it.runIf(process.platform === "darwin" || process.platform === "linux")(
+  it.runIf(WRAPPED_PLUGIN_CHILD)(
     "is denied the host's secrets and the paths outside its write jail, and keeps its own",
     async () => {
       if (!(await sandboxCasesRun())) return;
@@ -1523,7 +1528,7 @@ describe("the confined child, against the real sandbox", () => {
 /** The widening, end to end: the declared authority decides, the derivation resolves, the wrap grants, and the kernel is asked. The point of running the WHOLE chain rather than handing the spawn a hand-built envelope is that the interesting claims are about the derivation's output;
  * that a `hostDirectory` row re-opens a path the deny floor closed, that a `userChosenDirectory` row admits the user's directory and only it, and that neither one turns a read grant into a write. A fixture envelope would prove the wrap works and say nothing about what the host decided. */
 describe("a child the host widened reaches exactly what the host widened it with", () => {
-  it.runIf(process.platform === "darwin" || process.platform === "linux")(
+  it.runIf(WRAPPED_PLUGIN_CHILD)(
     "confines a new candidate to its declared trust anchor and approved directory",
     async () => {
       if (!(await sandboxCasesRun())) return;
@@ -1547,7 +1552,7 @@ describe("a child the host widened reaches exactly what the host widened it with
     60_000,
   );
 
-  it.runIf(process.platform === "darwin" || process.platform === "linux")(
+  it.runIf(WRAPPED_PLUGIN_CHILD)(
     "keeps a declared indexer's grants without opening adjacent paths",
     async () => {
       if (!(await sandboxCasesRun())) return;
@@ -1602,7 +1607,7 @@ describe("a child the host widened reaches exactly what the host widened it with
 /** The pilot's own tool, invoked out of process AND confined, through the production factory. This is the claim the two stages make together, and neither of the other suites makes it: `out-of-process-plugin.test.ts` runs the real protocol over fake pipes, the probe above
  * runs a real sandbox around a fake protocol, and only here are both real at once. It is also the only test that exercises the BUNDLED child entry; the stdout claim, the entry-module guard, and the ESM bundle boundary are all things the TypeScript source cannot prove. */
 describe("the pilot's tools, out of process and confined", () => {
-  it.runIf(process.platform === "darwin" || process.platform === "linux")(
+  it.runIf(WRAPPED_PLUGIN_CHILD)(
     "invokes a declared tool in a sandboxed child and returns the plugin's own value",
     async () => {
       if (!(await sandboxCasesRun())) return;
@@ -1745,7 +1750,7 @@ describe("the host protocol, spoken by a real confined child", () => {
     };
   }
 
-  it.runIf(process.platform === "darwin" || process.platform === "linux")(
+  it.runIf(WRAPPED_PLUGIN_CHILD)(
     "runs the meeting golden fixture and answers exactly as its recorded transcript does",
     async () => {
       if (!(await sandboxCasesRun())) return;
@@ -1800,7 +1805,7 @@ describe("the host protocol, spoken by a real confined child", () => {
     120_000,
   );
 
-  it.runIf(process.platform === "darwin" || process.platform === "linux")(
+  it.runIf(WRAPPED_PLUGIN_CHILD)(
     "exits within five seconds of its stdin closing, with no request from the host",
     async () => {
       if (!(await sandboxCasesRun())) return;
@@ -1847,7 +1852,7 @@ describe("the host protocol, spoken by a real confined child", () => {
     120_000,
   );
 
-  it.runIf(process.platform === "darwin" || process.platform === "linux")(
+  it.runIf(WRAPPED_PLUGIN_CHILD)(
     "puts nothing on stdout but protocol frames, whatever the plugin prints",
     async () => {
       if (!(await sandboxCasesRun())) return;
@@ -1914,7 +1919,7 @@ export const createPlugin = async () => {
 /** The members §3.2 calls lossy or stateful, exercised by a REAL confined child. `host-api-service-members.test.ts` drives the same members across a real dispatcher and a real child runtime over an in-memory channel, which proves the marshalling and
  * proves nothing about the jail. This proves both at once, and it is the only place that can: the question "can the plugin reach the secret it was not handed" has two answers; one from the gate and one from the sandbox; and only a real process has both. */
 describe("the lossy and stateful members, across a real confined boundary", () => {
-  it.runIf(process.platform === "darwin" || process.platform === "linux")(
+  it.runIf(WRAPPED_PLUGIN_CHILD)(
     "hands over what the gate grants, refuses what it does not, and cannot be reached around",
     async () => {
       if (!(await sandboxCasesRun())) return;
@@ -2177,7 +2182,7 @@ export const createPlugin = async (context) => {
  * Check granted secrets, refused secrets, and raw secret-file denial together, plus inherited confinement in spawned binaries.
  * An outside-root listing must precede the real rename so the case measures write refusal rather than missing fixtures. */
 describe("a refused candidate's members, out of process and confined", () => {
-  it.runIf(process.platform === "darwin" || process.platform === "linux")(
+  it.runIf(WRAPPED_PLUGIN_CHILD)(
     "carries the gate's verdict both ways, and refuses the window its primary tool opens",
     async () => {
       if (!(await sandboxCasesRun())) return;
@@ -2751,7 +2756,7 @@ describe("a confined child and a Unix-domain socket", () => {
   let previousHome: string | undefined;
 
   beforeAll(async () => {
-    if (process.platform === "win32" || !(await sandboxCasesRun())) return;
+    if (!WRAPPED_PLUGIN_CHILD || !(await sandboxCasesRun())) return;
     previousHome = process.env.AVE_HOME;
     shortPlugin = makeShortRootedPlugin();
     process.env.AVE_HOME = join(shortPlugin.root, ".ave");
@@ -2782,7 +2787,7 @@ describe("a confined child and a Unix-domain socket", () => {
     }
   });
 
-  it.runIf(process.platform !== "win32")(
+  it.runIf(WRAPPED_PLUGIN_CHILD)(
     "binds in the directory the host registered, and the HOST reaches it",
     async () => {
       if (!(await sandboxCasesRun())) return;
@@ -2801,7 +2806,7 @@ describe("a confined child and a Unix-domain socket", () => {
     120_000,
   );
 
-  it.runIf(process.platform === "darwin")(
+  it.runIf(process.platform === "darwin" && !MAC_HOLDER_ROUTE)(
     "cannot connect to a socket in the plugin's retired run directory",
     async () => {
       if (!(await sandboxCasesRun())) return;
@@ -2819,7 +2824,7 @@ describe("a confined child and a Unix-domain socket", () => {
     120_000,
   );
 
-  it.runIf(process.platform === "darwin")(
+  it.runIf(process.platform === "darwin" && !MAC_HOLDER_ROUTE)(
     "refuses a socket in a directory that is writable but NOT registered",
     async () => {
       if (!(await sandboxCasesRun())) return;
@@ -2838,7 +2843,7 @@ describe("a confined child and a Unix-domain socket", () => {
 });
 
 describe("a confined child and a loopback TCP listener", () => {
-  it.runIf(process.platform === "darwin")(
+  it.runIf(process.platform === "darwin" && !MAC_HOLDER_ROUTE)(
     "on macOS the bind is refused outright, so the failure arrives before the user does",
     async () => {
       if (!(await sandboxCasesRun())) return;
@@ -2874,7 +2879,7 @@ describe("a confined child and a loopback TCP listener", () => {
 
 /** Verify host-injected worker settings through real confinement; child homedir must differ from userHome while context.userHome retains the user's actual home. */
 describe("the indexer's host-supplied answers, out of process and confined", () => {
-  it.runIf(process.platform === "darwin" || process.platform === "linux")(
+  it.runIf(WRAPPED_PLUGIN_CHILD)(
     "hands over the real home, the real Ave root, and the drive lookup it no longer spawns for",
     async () => {
       if (!(await sandboxCasesRun())) return;
@@ -3073,7 +3078,7 @@ ELECTRON_RUN_AS_NODE=1 exec ${JSON.stringify(process.execPath)} "$PLUGIN_ROOT/in
     };
   }
 
-  it.runIf(process.platform === "darwin" || process.platform === "linux")(
+  it.runIf(WRAPPED_PLUGIN_CHILD)(
     "delivers the process entry environment through fd 4 without including its values in launch arguments",
     async () => {
       if (!(await sandboxCasesRun())) return;
@@ -3161,7 +3166,7 @@ ELECTRON_RUN_AS_NODE=1 exec ${JSON.stringify(process.execPath)} "$PLUGIN_ROOT/in
     return plugin;
   }
 
-  it.runIf(process.platform === "darwin" || process.platform === "linux")(
+  it.runIf(WRAPPED_PLUGIN_CHILD)(
     "reports a forced environment shim failure without its payload",
     async () => {
       if (!(await sandboxCasesRun())) return;
@@ -3195,7 +3200,7 @@ ELECTRON_RUN_AS_NODE=1 exec ${JSON.stringify(process.execPath)} "$PLUGIN_ROOT/in
     },
   );
 
-  it.runIf(process.platform === "darwin" || process.platform === "linux")(
+  it.runIf(WRAPPED_PLUGIN_CHILD)(
     "reports a target's own exit 1 after a successful setup as its exit status",
     async () => {
       if (!(await sandboxCasesRun())) return;
@@ -3212,7 +3217,7 @@ ELECTRON_RUN_AS_NODE=1 exec ${JSON.stringify(process.execPath)} "$PLUGIN_ROOT/in
     },
   );
 
-  it.runIf(process.platform === "darwin" || process.platform === "linux")(
+  it.runIf(WRAPPED_PLUGIN_CHILD)(
     "refuses an incompatible process entry environment before registering the sandbox command",
     async () => {
       if (!(await sandboxCasesRun())) return;
@@ -3231,7 +3236,7 @@ ELECTRON_RUN_AS_NODE=1 exec ${JSON.stringify(process.execPath)} "$PLUGIN_ROOT/in
     },
   );
 
-  it.runIf(process.platform === "darwin" || process.platform === "linux")(
+  it.runIf(WRAPPED_PLUGIN_CHILD)(
     "runs nothing before confinement from a BASH_ENV pair",
     async () => {
       if (!(await sandboxCasesRun())) return;
@@ -3270,7 +3275,7 @@ ELECTRON_RUN_AS_NODE=1 exec ${JSON.stringify(process.execPath)} "$PLUGIN_ROOT/in
   );
   // The host keeps resolving the data root; every storage handle and every spawn starts from it; so plugin-owned code that could swap it for a link would steer those. It still writes freely inside the root (the first step, which is also the proof the
   // script ran under the wrap); it may not rename the root into another of its write roots, remove it, or so put a link in its place. macOS: the pinned-root deny (`pinWriteRoots`, asrt-sandbox.ts). Linux: every write root is a bubblewrap bind mount.
-  it.runIf(process.platform === "darwin" || process.platform === "linux")(
+  it.runIf(WRAPPED_PLUGIN_CHILD)(
     "a plugin child cannot rename, remove or replace its own data root, while writing inside it",
     async () => {
       if (!(await sandboxCasesRun())) return;
@@ -3298,7 +3303,7 @@ ELECTRON_RUN_AS_NODE=1 exec ${JSON.stringify(process.execPath)} "$PLUGIN_ROOT/in
     120_000,
   );
 
-  it.runIf(process.platform === "darwin" || process.platform === "linux")(
+  it.runIf(WRAPPED_PLUGIN_CHILD)(
     "a plugin worker cannot rename, remove or replace its plugin's data root, while writing inside it",
     async () => {
       if (!(await sandboxCasesRun())) return;
@@ -3336,7 +3341,7 @@ ELECTRON_RUN_AS_NODE=1 exec ${JSON.stringify(process.execPath)} "$PLUGIN_ROOT/in
     120_000,
   );
 
-  it.runIf(process.platform === "darwin" || process.platform === "linux")(
+  it.runIf(WRAPPED_PLUGIN_CHILD)(
     "a bundled hook cannot rename, remove or replace its plugin's data root, while writing inside it",
     async () => {
       if (!(await sandboxCasesRun())) return;
@@ -3477,7 +3482,7 @@ function sampleProcessTree(rootPid: number, exited: Promise<unknown>): Promise<T
   })();
 }
 
-it.runIf(process.platform === "darwin" || process.platform === "linux")("samples a live child before its immediate exit", async () => {
+it.runIf(WRAPPED_PLUGIN_CHILD)("samples a live child before its immediate exit", async () => {
   const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
     env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
     stdio: "ignore",
@@ -3498,7 +3503,7 @@ it.runIf(process.platform === "darwin" || process.platform === "linux")("samples
   }
 });
 
-it.runIf(process.platform === "darwin" || process.platform === "linux")("reports a child that exited before its first sample", async () => {
+it.runIf(WRAPPED_PLUGIN_CHILD)("reports a child that exited before its first sample", async () => {
   const child = spawn(process.execPath, ["-e", "process.exit(0)"], {
     env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
     stdio: "ignore",
@@ -3702,7 +3707,7 @@ describe("the python smoke, confined by the production factory", () => {
     return process.platform === "darwin" ? value as number : (value as number) * 1024;
   }
 
-  it.runIf(process.platform === "darwin" || process.platform === "linux")(
+  it.runIf(WRAPPED_PLUGIN_CHILD)(
     "runs construct, start, tools/call and stop over the real wrap, with nothing on stdout but frames",
     async () => {
       if (!(await sandboxCasesRun())) return;
@@ -3730,7 +3735,7 @@ describe("the python smoke, confined by the production factory", () => {
     600_000,
   );
 
-  it.runIf(process.platform === "darwin" || process.platform === "linux")(
+  it.runIf(WRAPPED_PLUGIN_CHILD)(
     "exits within five seconds of its stdin closing, with no request from the host and no termination",
     async () => {
       if (!(await sandboxCasesRun())) return;
@@ -3756,7 +3761,7 @@ describe("the python smoke, confined by the production factory", () => {
     600_000,
   );
 
-  it.runIf(process.platform === "darwin" || process.platform === "linux").each([
+  it.runIf(WRAPPED_PLUGIN_CHILD).each([
     ["a bare line before its first frame", "echo ready"],
     ["a Content-Length header", "printf 'Content-Length: 120\\r\\n\\r\\n'"],
   ])(
@@ -3777,7 +3782,7 @@ describe("the python smoke, confined by the production factory", () => {
 describe("the sandbox temp directories", () => {
   // ASRT writes `TMPDIR=<shared root>` ahead of every wrapped command. Each confined process instead gets its principal's directory under that root; its plugin's, for a plugin child, worker or bundled hook; its own, for an MCP
   // stdio server; set as `TMPDIR` inside the wrap, granted alone, with the root read-denied. ASRT reads are deny-only and `0o700` stops no process of the same user, so the grants are the whole of the isolation measured here.
-  it.runIf(process.platform === "darwin" || process.platform === "linux")(
+  it.runIf(WRAPPED_PLUGIN_CHILD)(
     "no principal reaches another's temp files: two plugin children, a worker, a bundled hook and an MCP stdio wrap",
     async () => {
       if (!(await sandboxCasesRun())) return;
@@ -3858,7 +3863,7 @@ describe("the sandbox temp directories", () => {
     120_000,
   );
 
-  it.runIf(process.platform === "darwin" || process.platform === "linux")(
+  it.runIf(WRAPPED_PLUGIN_CHILD)(
     "no confined process reads another's sandbox HOME: an MCP stdio wrap, a plugin child and a bundled hook",
     async () => {
       if (!(await sandboxCasesRun())) return;
@@ -3906,7 +3911,7 @@ describe("the sandbox temp directories", () => {
     120_000,
   );
 
-  it.runIf(process.platform === "darwin" || process.platform === "linux")(
+  it.runIf(WRAPPED_PLUGIN_CHILD)(
     "a bundled hook writes under its $TMPDIR, and cannot rename or remove that directory",
     async () => {
       if (!(await sandboxCasesRun())) return;
@@ -3962,7 +3967,7 @@ describe("the sandbox temp directories", () => {
   );
 });
 
-it.runIf(process.platform === "darwin" || process.platform === "linux").each(["complete", "interrupted"])(
+it.runIf(WRAPPED_PLUGIN_CHILD).each(["complete", "interrupted"])(
   "keeps a bundled MCP environment canary private during a %s launch",
   async delivery => {
     if (!(await sandboxCasesRun())) return;
@@ -4054,7 +4059,7 @@ function buildPreloadMarkerLibrary(root: string, library: string, sentinel: stri
   execFileSync("cc", ["-shared", "-fPIC", "-o", library, source]);
 }
 
-it.runIf(process.platform === "darwin" || process.platform === "linux").each([
+it.runIf(WRAPPED_PLUGIN_CHILD).each([
   "BASH_ENV", process.platform === "linux" ? "LD_PRELOAD" : "DYLD_INSERT_LIBRARIES",
 ])(
   "refuses delegated worker %s without running host startup code and delivers the target environment",

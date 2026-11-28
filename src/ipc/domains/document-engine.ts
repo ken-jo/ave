@@ -83,10 +83,10 @@ export function registerDocumentEngineHandlers(deps: IpcDeps): void {
       operation = undefined;
       return { ok: true };
     }
-    // A platform that cannot confine the engine is never offered a download it could not run.
-    if (initial.phase === "unsupported") {
+    // Nothing is downloaded where the engine cannot run: no supported platform, or no LibreOffice installed by the user.
+    if (initial.phase === "unsupported" || initial.phase === "app-missing") {
       operation = undefined;
-      return { ok: false, error: "unsupported-platform" };
+      return { ok: false, error: initial.phase === "unsupported" ? "unsupported-platform" : "app-missing" };
     }
     state = { ...initial, phase: "downloading", error: undefined };
     current.completion = (async () => {

@@ -61,6 +61,32 @@ describe.runIf(process.platform !== "win32")("macOS holder interpreter resolutio
     expect(() => resolvePosixHolderLaunch(script, { PATH: bin })).toThrow(expect.objectContaining({ code: "executable-not-admissible", message: expect.stringContaining(line) }));
   });
 
+  it.each([
+    ["a doubled slash", "#!//usr/bin/env fake-node"],
+    ["a dot-dot spelling", "#!/usr/bin/../bin/env fake-node"],
+  ])("takes the env rule for env spelled with %s, so the runtime is resolved here", (_case, line) => {
+    const script = program(join(root, "pkg"), `spell-${Math.random().toString(16).slice(2)}.js`, `${line}\n`);
+    expect(resolvePosixHolderLaunch(script, { PATH: bin })).toEqual({ command: join(bin, "fake-node"), prefix: [script], files: [script, join(bin, "fake-node")] });
+  });
+
+  it("refuses env spelled another way with an option, as it refuses /usr/bin/env -S", () => {
+    const script = program(join(root, "pkg"), "spell-s.js", "#!/usr/bin/../bin/env -S fake-node -x\n");
+    expect(() => resolvePosixHolderLaunch(script, { PATH: bin })).toThrow(MxcExecutableNotAdmissibleError);
+  });
+
+  it("reads a one-line script with no trailing newline as the kernel does", () => {
+    const script = program(join(root, "pkg"), "oneline.sh", "#!/bin/sh");
+    expect(resolvePosixHolderLaunch(script, { PATH: bin })).toMatchObject({ command: realpathSync.native("/bin/sh"), prefix: [script] });
+  });
+
+  it("refuses an executable it cannot read with the admission error, not a raw EACCES", () => {
+    const script = program(join(root, "pkg"), "unreadable.sh", "#!/bin/sh\necho hi\n");
+    chmodSync(script, 0o111);
+    try {
+      expect(() => resolvePosixHolderLaunch(script, { PATH: bin })).toThrow(expect.objectContaining({ code: "executable-not-admissible" }));
+    } finally { chmodSync(script, 0o755); }
+  });
+
   it("refuses an interpreter that is itself a script", () => {
     const wrapper = program(join(root, "wrap"), "runtime", "#!/bin/sh\nexec /bin/cat\n");
     const script = program(join(root, "pkg"), "nested.js", `#!${wrapper}\n`);

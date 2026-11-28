@@ -132,6 +132,19 @@ function pathKey(path: string, foldsCase: boolean): string {
   return foldsCase ? path.normalize("NFC").toLowerCase() : path;
 }
 
+/**
+ * The folder a POSIX holder reads its executable's runtime from. On macOS an app bundle's executable loads its
+ * frameworks and resources from beside `Contents/MacOS`, so the read is the bundle's `Contents`; otherwise it is the
+ * executable's own folder. As a grant it holds wherever the bundle sits, never depending on the read carve.
+ */
+export function posixExecutableReadRoot(executable: string, platform: NodeJS.Platform = process.platform): string {
+  const folder = posix.dirname(executable);
+  if (platform !== "darwin") return folder;
+  const contents = posix.dirname(folder);
+  return posix.basename(folder) === "MacOS" && posix.basename(contents) === "Contents" && posix.dirname(contents).endsWith(".app")
+    ? contents : folder;
+}
+
 export function atOrUnder(path: string, root: string, foldsCase: boolean): boolean {
   const key = pathKey(path, foldsCase);
   const parent = pathKey(root, foldsCase);
@@ -216,13 +229,14 @@ function carveGrants(
     throw new PosixContainerPolicyError("grant-limit-exceeded", `Container grant limit (${MAX_CARVE_GRANTS}) exceeded at: ${firstExcess}`);
   }
   const grantKeys = new Set(grants.map(key));
-  const emitted = new Set([...rw, ...ro].map(key));
+  const keptWhole = [...rw, ...ro];
+  const emitted = new Set(keptWhole.map(key));
   const limited: string[] = [];
   let remainingEntries = MAX_CARVE_ENTRIES;
   const chainFolders = [...chain.values()].sort((left, right) => left.length - right.length);
   for (const folder of chainFolders) {
-    // A grant kept whole already opens its subtree.
-    if (emitted.has(key(folder))) continue;
+    // A grant kept whole already opens its subtree, including the chain folders down to a deeper grant inside it.
+    if (keptWhole.some(kept => covers(kept, folder))) continue;
     const enclosing = nearestEnclosing(folder, grants, lookups.foldsCase);
     if (enclosing === undefined) continue;
     // A surviving grant reopens its subtree inside a carved deny. Denies inside that grant still apply.

@@ -207,6 +207,8 @@ export interface MxcConfinedChildSpec extends Pick<ConfinedChildSpec,
   /** Host adapter's negotiated mode; public worker negotiation is owned by its contract. */
   readonly workerTransport?: PluginWorkerControl;
   readonly signal?: AbortSignal;
+  /** POSIX: files the command interprets (a `#!` script); measured into the executable identity with the command. */
+  readonly interpretedFiles?: readonly string[];
 }
 
 export type { MxcHolderProcess } from "./holder-admission-darwin.js";
@@ -556,7 +558,12 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
     });
     return { admitted, grants, ownRoots, footprintPaths };
   })));
-  const measureIdentity = posixHolder ? measurePosixExecutableIdentity : measureExecutableIdentity;
+  const interpreted = posixHolder ? spec.interpretedFiles ?? [] : [];
+  // A script's bytes run as much as its interpreter's: a script replaced after admission must refuse the start too.
+  const measureIdentity = !posixHolder ? measureExecutableIdentity
+    : interpreted.length === 0 ? measurePosixExecutableIdentity
+      : (command: string): string => createHash("sha256")
+        .update([command, ...interpreted].map(measurePosixExecutableIdentity).join("\0")).digest("hex");
   const assertNesting = (): void => assertNoCoHolderNesting(ownRoots);
   assertNesting();
   if (!spec.holder || typeof spec.holder !== "object" || admittedNativeHolderIdentities.has(spec.holder)) {

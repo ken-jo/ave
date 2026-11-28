@@ -4113,11 +4113,6 @@
       "count": 1
     },
     {
-      "file": "src/main/document-engine-payload.ts",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 2
-    },
-    {
       "file": "src/main/document-engine-signature.ts",
       "category": "lint/correctness/noVoidTypeReturn",
       "count": 3
@@ -7160,11 +7155,6 @@
     {
       "file": "src/permissions/mxc-supervisor-service.ts",
       "category": "lint/style/useImportType",
-      "count": 1
-    },
-    {
-      "file": "src/permissions/offline-process-sandbox.ts",
-      "category": "lint/complexity/noUselessEscapeInRegex",
       "count": 1
     },
     {

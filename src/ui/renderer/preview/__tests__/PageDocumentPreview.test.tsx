@@ -141,9 +141,9 @@ describe("read-only page observation rendering", () => {
       seq: 2, ts: 1_700_000_000_000, kind: "status", before: null, after: { code: "reload-required" } });
     expect(view.container.querySelector("[data-observation-current]")).toBeNull();
     view.unmount();
-    read.mockResolvedValueOnce({ ok: false, error: "engine-confinement-unavailable", message: "private raw diagnostic" });
+    read.mockResolvedValueOnce({ ok: false, error: "engine-termination-unverified", message: "private raw diagnostic" });
     render(<PageDocumentPreview path={PATH} sessionId={SESSION} observe />);
-    expect(await screen.findByTestId("chat-side-panel-file-error")).toHaveTextContent("Secure isolation");
+    expect(await screen.findByTestId("chat-side-panel-file-error")).toHaveTextContent("could not be confirmed stopped");
     expect(screen.queryByText("private raw diagnostic")).toBeNull();
   });
 

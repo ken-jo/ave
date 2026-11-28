@@ -29,6 +29,8 @@ import { BashTool, spawnWithSandbox } from "../shell-tools.js";
 import { prepareSandboxFixture } from "./support/prepared-shell.js";
 import { buildSafeChildEnv } from "../safe-env.js";
 import { TEST_WORKER_EGRESS_OWNER } from "../../__tests__/support/egress-fixture.js";
+import { MAC_HOLDER_ROUTE, provenMacHolderRoute } from "../../__tests__/support/mac-holder-route.js";
+import { spawnMxcBundledHolder } from "../../sandbox/wrap-bundled-command.js";
 
 let root: string;
 let cwd: string;
@@ -252,6 +254,32 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("s
     expect(builtin.isError, builtin.output).toBe(false);
     expect(builtin.output).toContain(CONTENT.trim());
     const ordinary = join(cwd, "ordinary.txt"); writeFileSync(ordinary, "ordinary-child-fixture");
+    if (MAC_HOLDER_ROUTE) {
+      // macOS on its holder route: the confined child is a holder, granted the same reads; the session floor still holds.
+      const route = provenMacHolderRoute();
+      try {
+        const holder = await spawnMxcBundledHolder({
+          label: "session-read-confined-fixture", command: "/bin/cat", args: [ordinary, transcript], baseEnv: buildSafeChildEnv(), holderEnv: {},
+          allowRead: [cwd, profile], allowWrite: [cwd], ownedReadRoots: [],
+          egressOwner: { kind: "worker", role: "mcp-server", pluginId: undefined, instanceId: "session-read-fixture" },
+        });
+        try {
+          const output: Buffer[] = [];
+          holder.process.stdout.on("data", (chunk: Buffer) => output.push(chunk));
+          const { exitCode } = await holder.process.completion;
+          const stdout = Buffer.concat(output).toString("utf8");
+          expect(exitCode).toBe(1);
+          expect(stdout).toContain("ordinary-child-fixture");
+          expect(stdout).not.toContain(CONTENT.trim());
+        } finally {
+          await holder.release();
+        }
+      } finally {
+        await route.release();
+        vi.unstubAllEnvs();
+      }
+      return;
+    }
     let wrapped = false;
     try {
       const { child, confinement } = await spawnConfinedChild({

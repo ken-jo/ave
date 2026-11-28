@@ -7,6 +7,7 @@ import { posixProcessExists, spawnSacrificialHost, stopFixtureProcesses, stopSac
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { shellQuote } from "../../../lib/shell-resolver.js";
 import { ProcessEntryUnconfinedError } from "../../process-entry.js";
+import { isContainerHolderRouteEnabled } from "../../../shared/container-platform.js";
 import { spawnConfinedPluginChild } from "../out-of-process-plugin.js";
 
 const HOST = `
@@ -177,8 +178,11 @@ it("reports the stalled phase at the shared fixture deadline and runs teardown",
   }
 });
 
-describe.runIf(process.platform === "win32")("direct process plugin admission", () => {
-  it("refuses a Windows process launch before validating its command or roots", async () => {
+// Where holders run plugins (Windows, and macOS on its holder route) a process launch is refused outright.
+const PROCESS_LAUNCH_REFUSED = isContainerHolderRouteEnabled(process.platform);
+
+describe.runIf(PROCESS_LAUNCH_REFUSED)("direct process plugin admission", () => {
+  it("refuses a process launch where holders run plugins, before validating its command or roots", async () => {
     const root = join(tmpdir(), "missing-process-plugin");
     await expect(spawnConfinedPluginChild({
       pluginId: PLUGIN_ID,
@@ -189,7 +193,7 @@ describe.runIf(process.platform === "win32")("direct process plugin admission", 
   });
 });
 
-describe.runIf(process.platform === "linux" || process.platform === "darwin")("process plugin host death", () => {
+describe.runIf((process.platform === "linux" || process.platform === "darwin") && !PROCESS_LAUNCH_REFUSED)("process plugin host death", () => {
   it("reaps the confined group on host SIGKILL and measures the new session", async () => {
     const root = await realpath(await mkdtemp(join(tmpdir(), "ave-plugin-heartbeat-")));
     const home = join(root, "home");

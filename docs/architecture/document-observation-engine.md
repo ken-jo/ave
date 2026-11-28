@@ -19,7 +19,7 @@ User document, browser and terminal activity never becomes agent observation.
 | ODT | A temporary PDF rendered by the existing page reader, plus bounded paragraph source elements. | A bounded text outline from the isolated reader. |
 | PPTX | A temporary PDF rendered by the existing page reader, plus bounded slide-shape source elements. | The existing slide text outline. |
 | XLSX, ODS | A recalculated temporary workbook of the same format decoded by the existing table reader. | The existing cached-value grid and source recalculation signal. |
-| HWP v5, HWPX | Linux: a temporary PDF page, with an ODT import representation when available, through the private-profile extension and verified Java 11 or newer. macOS: an explicit `engine-format-unsupported-on-platform` result (see [Korean document importer](#korean-document-importer)). | An explicit `engine-unavailable` result; on macOS, `engine-format-unsupported-on-platform`. |
+| HWP v5, HWPX | macOS: an explicit `engine-format-unsupported-on-platform` result (see [Korean document importer](#korean-document-importer)). Where the engine is offered and imports HWP: a temporary PDF page, with an ODT import representation when available, through the private-profile extension and verified Java 11 or newer. | An explicit `engine-unavailable` result; on macOS, `engine-format-unsupported-on-platform`. |
 | PDF, CSV, TSV, XLS, text/code | The existing bounded reader. | The same reader. |
 
 LibreOffice supplies conversion and formula recalculation behind
@@ -36,7 +36,7 @@ parsing. Session release and engine disposal end owned processes and queued
 work. They do not add an observation channel or an alternate event envelope.
 
 Before an agent panel request is sent, the optional engine `prepare` hook verifies
-the installed payload and starts the session runtime through the same bounded
+the installed app and Ave's extension and starts the session runtime through the same bounded
 FIFO used for conversion, under the tool's cancellation signal. It waits for
 the session instance's readiness probe and, for HWP/HWPX, importer
 registration. The panel's
@@ -50,7 +50,7 @@ the shared session; its runtime is released when its final owner leaves.
 An absent installation is the only automatic engine-selection fallback. An
 installation that is being installed or removed has no admitted receipt and is
 absent to the engine, so documents opened meanwhile keep the existing reader.
-Integrity, signature, confinement, conversion and response-contract failures
+Integrity, signature, conversion and response-contract failures
 remain explicit failures. A process exiting successfully is insufficient:
 expected output must exist, fit its limits and pass the ordinary bounded
 reader. A recalculated result clears the panel's recalculation signal only for
@@ -59,116 +59,78 @@ attributes, including the request for recalculation made by the editing skill.
 
 ## Optional installation
 
-Install onboarding offers **문서 엔진 설치 / Install document engine** as an
-optional step. The same controls remain available in document settings.
-The card discloses download and installed size, reports progress, and provides
-cancel, retry and uninstall. Each explicit user action takes effect without a
-second confirmation. Skipping installation leaves existing viewers usable.
+LibreOffice is a verified third-party app that the user installs like any other
+app, such as a browser. Ave does not download, bundle or confine it; the
+document engine runs only while it is installed (owner decision 2026-11-28).
+Install onboarding and document settings show **문서 엔진 (LibreOffice) /
+Document engine (LibreOffice)** as an optional step. Without the app the card
+reports `app-missing`, links to the LibreOffice download page and offers
+"check again"; existing viewers stay usable.
 
-The engine is downloaded separately and stored in the private
-`openFeatureNamespace("document-engine")` namespace. It is not inside the app
-archive. Installation channels are private app-window main-frame operations;
-they accept no caller-selected path, executable, download URL or script.
-Progress state contains installation metadata only. Uninstall first ends
-engine sessions and then removes only the owned installation.
+The [installation owner](../../src/main/document-engine-installation.ts) looks
+for the app only at the platform's standard locations, never on PATH:
 
-The [release pins](../../src/main/document-engine-release-pins.ts) own the exact
-version, platform artifacts, byte counts, SHA-256 values and signature material.
-A release update changes those reviewed
-pins; runtime discovery never substitutes a moving latest release or a PATH
-executable. Downloads use HTTPS, a fixed host allowlist and the host's network
-guard and transport. Every redirect retains those checks. TDF artifact URLs
-use `?mirrorlist=0` to keep the transfer on the official distribution host.
-Length and hash verification precede extraction or mounting.
+- macOS: `/Applications/LibreOffice.app`, then `~/Applications/LibreOffice.app`.
+  Only macOS is offered.
+- Windows: not offered; the session's readiness check knows only the POSIX
+  single-instance pipe.
+- Linux: not offered (lead decision 2026-11-28, pending the owner's
+  correction). Earlier builds offered a confined Linux x64 engine; Linux loses
+  it until the slice 8 route flip. The unconfined office's `/tmp` pipe accepts
+  forwarded command lines, and a wrapped Linux extension may reach Unix sockets,
+  so it could drive the office to read files as the user. Linux is offered again
+  from the slice 8 flip, once that pipe is proven unreachable from wraps.
 
-The [signature verifier](../../src/main/document-engine-signature.ts) verifies
-the detached TDF release signature against the in-app pinned key. It also
-requires the platform's native code-signature policy where available:
+On Windows and Linux the status is `unsupported` with the same payload and copy
+Windows had before, and the install action returns `unsupported-platform`
+before any discovery, download or signature check. On Windows any receipt is
+refused as integrity-failed, as it always was. On Linux the payload an earlier
+build installed can still be removed. Its schema-2 receipt is validated as that
+build validated it (seven keys, release 26.8.1 linux x64, slot name, digests),
+and the slot must be a plain private directory in the namespace. The status
+then carries `legacyPayload` and the card offers "Uninstall engine". Any other
+receipt is refused.
 
-- macOS checks the application and executable signature, the pinned Developer
-  ID team and identifier, and the platform execution assessment.
-- Windows checks Authenticode validity and the signer organization on the
-  installer and extracted executable.
-- Linux checks the pinned archive and derives executable integrity from its
-  authenticated contents. Editing a local receipt cannot create trusted bytes.
+Ave admits the app it finds once per app identity, off the main thread and
+without blocking status reads (`verifying-installation`):
 
-Existing verified-executable location and ownership checks still apply.
-A corrupt receipt or payload is an error, not absence.
+- macOS requires the [publisher signature](../../src/main/document-engine-signature.ts):
+  `codesign --verify --deep --strict`, TDF's Developer ID team `7P5S3ZLCN7` and
+  identifier `org.libreoffice.script`, and the Gatekeeper execution assessment.
+  The seal is verified over the whole bundle, and both executables must resolve
+  directly into the bundle's `Contents/MacOS`, so neither they nor the version
+  in the app's `Info.plist` can come from outside the sealed bundle.
 
-The release archive is hashed through a held descriptor before its signature is
-checked and before a system tool reads it by path. macOS mounts the image with
-`hdiutil attach -noverify`: its bytes are already pinned and signature-verified,
-and the image's own checksum pass would write a `com.apple.diskimages.recentcksum`
-attribute onto it. Because attribute writers outside Ave (provenance, indexing)
-still change an archive's ctime without changing bytes, the archive identity
-compares device, inode, size, mode, link count and mtime, and a ctime change is
-admitted only when the held descriptor still hashes to the pin. Installed
-payload entries keep the strict identity, ctime included.
+The admission is bound to the app's identity (device, inode, mtime and ctime of
+its root and executables). An update or replacement makes it a different app,
+which is admitted afresh; a change found at launch invalidates the old
+admission in the same process. A failed admission stays failed until the app,
+Ave's slot or the lifecycle changes. No minimum LibreOffice version is enforced.
 
-Full verification runs once per installation. The installer hashes every
-installed byte and compares the tree with the authenticated archive's tree (on
-macOS read from the same mount the copy came from), checks the extension, runs
-the platform signer checks above, and records the tree digest and a metadata
-identity digest in the schema 2 receipt. The identity digest covers each entry's
-path, kind, inode, size, mode, link count, mtime, ctime and link target. It is
-taken before the hash and must still hold afterwards, which binds it to the
-hashed bytes.
+Ave's own part is the pinned HWP import extension, H2Orestart. The install
+action downloads only that file over HTTPS from its fixed GitHub release origin
+through the host's network guard, checks its length and SHA-256 against the
+[release pin](../../src/main/document-engine-release-pins.ts), and stores it in
+a slot of the private `openFeatureNamespace("document-engine")` namespace.
+A schema 3 receipt records only that slot. Uninstall ends engine sessions and
+removes only Ave's slot; the app stays the user's. A slot and schema 2 receipt
+left by an earlier Ave that installed its own LibreOffice copy are reported as
+absent and removed by the next install or uninstall. Installation channels are
+private app-window main-frame operations and accept no caller-selected path,
+executable, download URL or script. A corrupt receipt is an error, not absence.
+Each launch rechecks the extension bytes against the pin, and the synchronous
+check just before spawn covers the recorded anchors (app root, executables,
+slot and extension). Same-user in-place changes between that recheck and
+process creation are outside the guarantee on every platform.
 
-Runtime admission happens once per process and installation, off the main
-thread and without blocking status reads. While it runs, status reports
-`verifying-installation` and the card shows that state without a cancel action.
-Admission recomputes the identity digest with asynchronous `lstat` calls and
-requires it to equal the receipt. On macOS it then relies on the TDF code-signing
-seal (`codesign --verify --deep --strict` plus the pinned team and identifier)
-instead of rereading the archive. Platforms without a payload seal, currently
-Linux, reconstruct the authenticated tree from the verified archive again, so
-the receipt is never a self-attesting trust root. A failed admission stays failed
-until install or uninstall; it is not retried on every status read. An integrity
-or signature failure found at a later launch invalidates the completed admission
-in the same process, so status reports the error at once and later uses fail
-without trusting the stale result. Each launch recomputes the asynchronous
-identity digest, compares the payload tree bytes with the recorded tree digest,
-and checks the extension against its pinned hash. This verifies the bytes read
-during the recheck. The synchronous check immediately before spawn covers only
-the recorded anchors (namespace, slot, payload, application root, executables
-and extension). On every platform, same-user in-place changes between the
-byte recheck and process creation are outside that guarantee.
-Extraction is into Ave-owned storage and runs no downloaded maintainer script
-or global installer. Platform extraction prerequisites and native validation
-remain separate from the existence of a manifest entry.
-
-An installed payload being verified is separate from its execution capability.
-macOS and Linux execution require the native offline wrapper. The
-[confinement platform list](../../src/permissions/offline-confinement-platforms.ts)
-is the single source for which platforms have one. Installation status, the
-install action and engine admission use it, so a platform without one (currently
-Windows) reports `unsupported` and the install action returns
-`unsupported-platform` before any download. Its release pins stay reviewed for
-when a confinement backend exists. An installation also requires a matching
-[release pin](../../src/main/document-engine-release-pins.ts): Linux currently
-has an x64 pin only, so Linux arm64 reports `unsupported` and keeps installation
-disabled while document outlines remain available. On a supported platform, an unavailable
-runtime confinement capability still fails execution with
-`engine-confinement-unavailable` and never retries unconfined. Execution uses only the payload's office executable
-and, for HWP/HWPX importer registration, its extension tool. No scripting
-interpreter is started: on macOS 26 the pinned build's embedded Python and UNO
-helper executables are terminated at launch by the operating system's
-launch-constraint policy, including when run from the mounted official image.
-There is no separate runtime download or PATH lookup. Linux native
-compatibility remains an execution prerequisite, not a consequence of having a
-release pin. HWP/HWPX additionally require a trusted Java 11 or newer
-installation and successful confined registration. Missing Java or failed
-registration returns `engine-runtime-unavailable` without affecting other
-document formats in the same session.
-
-## Confined session execution
+## Session execution
 
 The [session process owner](../../src/observation/libreoffice-process.ts) owns
 one warm headless instance and one single-writer queue per admitted host
 session. A private profile is selected with `-env:UserInstallation`; another
-session and the user's normal office profile are never reused. The profile and
-the instance's socket directory (`OSL_SOCKET_PATH`) belong to that session's
-temporary output tree. The resident opens no UNO acceptor and no TCP listener.
+session and the user's normal office profile are never reused. The profile
+belongs to that session's temporary output tree. The resident opens no UNO
+acceptor and no TCP listener.
 
 The resident starts headless with one host-authored, empty text document from
 its private output tree. The office's command-line dispatcher terminates the
@@ -176,20 +138,22 @@ instance when a forwarded request completes while no frame is open, and the
 instance's own command-line open is asynchronous. This holder document keeps the
 warm instance alive; it is never exported and holds no source document. Each
 conversion is a fixed `--convert-to <extension>:<filter> --outdir <private
-output>` command line, plus a fixed `--infilter` for HWP/HWPX, run by a confined
+output>` command line, plus a fixed `--infilter` for HWP/HWPX, run by a
 client on the same profile. The client forwards it through the instance's
 private single-instance pipe and exits.
 
 Forwarding starts only after the holder document's lock file exists, which the
 office writes while loading that document into its frame, and after the
 single-instance pipe exists, so a client can neither end the instance early
-nor become a second office on the profile. The office places that pipe under
-`/tmp` or `/var/tmp` when either is writable and otherwise under the private
-`OSL_SOCKET_PATH`. The macOS confinement denies writes to both shared
-directories. Linux confinement must do the same so that every confined process
-of a session meets the same pipe; this has not been validated natively. A
-client that cannot reach the instance converts by itself and is refused, as
-described below.
+nor become a second office on the profile. The office binds that pipe under
+`/tmp` whenever it is writable, which it is for the installed app, and uses
+`OSL_SOCKET_PATH` only otherwise (measured with LibreOffice 26.8.3.1 on macOS).
+Its name is `OSL_PIPE_<uid>_SingleOfficeIPC_<hash>`, the hash being the MD5 of
+the profile URL in UTF-16LE printed without zero padding, so the session's fresh
+profile makes it unique. The engine refuses a start when that name already
+exists, accepts only a socket owned by the user, and removes the name with the
+resident's exit receipt, because a killed office leaves it behind. A client that
+cannot reach the instance converts by itself and is refused, as described below.
 
 A forwarding client exits successfully even when the forwarded conversion
 fails. A result is therefore accepted only when the resident printed its
@@ -205,20 +169,31 @@ Their formula caches come from the profile's recalculate-on-load policy:
 the office run a hard recalculation on load whatever application saved the
 workbook. ODS has no source recalculation signal in the table contract.
 
-Execution requires the OS sandbox. Its read scope contains the verified runtime,
-required OS libraries/fonts and that session's staging directory of admitted
-input copies. A completed job removes its document input before the next job runs; the
-warm process has no read grant for arbitrary source paths. Its write scope
-contains only private temporary output, profile and cache storage. It grants no workspace write root,
-real user HOME or another session's storage. IP network access is denied by the
-native wrapper with no proxy exception or approval prompt. External resources
-and document links cannot widen this policy. An unavailable or unprovable
-confinement backend fails clearly and never retries unconfined.
+The engine runs unconfined, as the app the user installed (owner decision
+2026-11-28). It is started directly, with no shell, by absolute path from the
+admitted installation, in its own process group under host child-lifecycle
+management. Its environment is the host's sanitized child environment with
+HOME, TMPDIR and the XDG directories pointed into the session's private output
+tree. It receives only private copies of admitted input under host-selected
+names, never a source path or workspace root, and each completed job removes its
+input before the next one runs. Network access is not blocked by Ave; the
+profile below turns off the office's own remote content and link updates.
 
 The isolated profile is written before the instance starts. It sets
 `DisableMacrosExecution`, the highest macro security level, no trusted macro
 locations, `DisableActiveContent` and `BlockUntrustedRefererLinks`, and sets
-Calc and Writer link updates to never. Macro execution is disabled for the profile rather than per load.
+Calc and Writer link updates to never. The two settings number their choices
+differently: Calc's `1` and Writer's `0` mean never, and Writer's `2` means
+always. Macro execution is disabled for the profile rather than per load.
+With the app unconfined these settings are the barrier against a document's
+own references. Measured with 26.8.3.1 on macOS, a linked local-file section
+and a linked HTTP section are blocked by each barrier alone: active content
+off, no trusted location, and link updates never. A profile without all three
+reads both; the native document-reads test pins each case. Calc's link barrier
+is unproven: under a fully permissive profile no spreadsheet construct leaked
+(linked sheet, linked range, external reference, DDE link, WEBSERVICE; every
+Calc link value), so no control exists. The test names that case and skips it
+with this reason.
 Headless mode alone is not the macro or network boundary. A conversion may read
 an untrusted parser input; signature verification establishes executable
 provenance, not the safety of that document.
@@ -235,7 +210,7 @@ contract violation is reported as an error, with no empty success or suppressed
 dialog used as recovery.
 
 Each session's private temporary directory holds an owner record with the
-creating Ave process ID, outside the confined writable output. If Ave itself
+creating Ave process ID, outside the engine's output tree. If Ave itself
 crashes or is killed, its resident outlives it and the directory keeps its
 read-only input copies and profile. At boot, the engine host removes such a
 directory only when it is a real 0700 directory of this user, carries a valid
@@ -285,8 +260,8 @@ extension imports HWP v5/HWPX for passive viewing. Ave exposes no
 HWP/HWPX serializer, editing operation or source-file save path.
 
 The extension contains Java code; its pinned source declares Java 11. The
-downloaded office application does not itself establish that a compatible JRE
-is present. HWP/HWPX support requires trusted Java 11 or newer, a confined version
+installed office application does not itself establish that a compatible JRE
+is present. HWP/HWPX support requires trusted Java 11 or newer, a version
 probe and successful private-profile registration/import;
 an `.oxt` file's presence is insufficient. Missing Java or a failed import is
 reported explicitly. Ordinary DOCX/ODT/PPTX/XLSX/ODS conversion does not prove
@@ -294,7 +269,7 @@ this importer works. Importer logs can include document contents, so its HOME,
 profile and caches remain local, private and subject to session cleanup.
 
 Registering the extension's Java component makes the extension tool start the
-office's separate UNO helper process. On macOS 26 the pinned LibreOffice 26.8.1
+office's separate UNO helper process. On macOS 26 the LibreOffice 26.8.1
 helper is terminated at launch by the operating system
 (`CODESIGNING / Launch Constraint Violation`, reproduced from the mounted
 official image), which also leaves a crash report on the user's machine.
@@ -306,23 +281,22 @@ parsing HWP/HWPX returns `engine-format-unsupported-on-platform` before any
 installation lookup or engine call, so no extension tool or helper is ever
 started and no crash report is produced. The panel and tool descriptions say
 the format is not supported on macOS yet; every other format keeps working.
-The gate is lifted when a pinned TDF build's helper runs on macOS, proven by
+The gate is lifted when a TDF build's helper runs on macOS, proven by
 native importer registration and an HWP/HWPX conversion there.
 
 ## Validation and upstream references
 
 Targeted tests must cover engine absence, integrity failures, serialized work,
 cancellation, bounded results, source preservation, registered-frame delivery
-and element addressing. Native tests must separately establish process confinement,
-network denial, actual formula results and importer behavior. Mocked process
-tests, a passing build and a pinned download do not supply native execution
-proof. The delivery report records platforms actually exercised and remaining
+and element addressing. Native tests must separately establish a real
+conversion with the installed app, actual formula results and importer
+behavior. Mocked process tests and a passing build do not supply native
+execution proof. The delivery report records platforms actually exercised and remaining
 runtime prerequisites.
 
 Primary sources below were accessed on **2026-10-27**:
 
-- [TDF release directory](https://download.documentfoundation.org/libreoffice/stable/26.8.1/)
-  and [artifact metadata](https://download.documentfoundation.org/libreoffice/stable/26.8.1/mac/aarch64/LibreOffice_26.8.1_MacOS_aarch64.dmg.mirrorlist)
+- [LibreOffice download page](https://www.libreoffice.org/download/download-libreoffice/), where the user installs the app
   publish fixed distribution artifacts, sizes, hashes and detached signatures.
 - [Startup parameters](https://help.libreoffice.org/latest/en-GB/text/shared/guide/start_parameters.html)
   document headless mode, alternate user profiles and UNO acceptors. Ave's

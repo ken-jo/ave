@@ -1,10 +1,12 @@
+import { homedir } from "node:os";
+import { statSync } from "node:fs";
 import { posix as posixPath, win32 as winPath } from "node:path";
 import type { ContainerRequest } from "@microsoft/mxc-sdk/v1";
 import type { MxcHolderProcess } from "../../permissions/confined-child.js";
 import { isMxcConfinedChildLive, spawnMxcConfinedChild, type MxcConfinedChildSpawn } from "../../permissions/confined-child.js";
 import { assertMxcHolderStaging, type MxcExtensionFilesystemOwnership } from "../../permissions/mxc-filesystem-ownership.js";
 import { mxcStagingParent } from "../../permissions/mxc-runtime-root.js";
-import { atOrUnder } from "../../permissions/mxc-posix.js";
+import { atOrUnder, posixExecutableReadRoot } from "../../permissions/mxc-posix.js";
 import { registerMxcPluginChildHolder } from "../../permissions/mxc-holder-lifetime.js";
 import { isWindowsPathAtOrUnder } from "../../permissions/mxc-windows.js";
 import { MxcProcessCleanupError, MxcProcessContractError } from "../../permissions/mxc-extension-errors.js";
@@ -144,13 +146,43 @@ export function assertLaunchMatchesIntent(request: ContainerRequest, intent: Pic
 function pluginChildReadRoots(envelopeReads: readonly string[], command: string, entry: string | undefined): string[] {
   const windows = process.platform === "win32";
   const path = windows ? winPath : posixPath;
-  const roots = [...new Set([...envelopeReads, path.dirname(command)])];
+  const roots = [...new Set([...envelopeReads, windows ? path.dirname(command) : posixExecutableReadRoot(command)])];
   if (entry === undefined) return roots;
   const entryDirectory = path.dirname(entry);
   const inArchive = entryDirectory.split(/[\\/]/u).some((segment) => segment.toLowerCase().endsWith(".asar"));
   const contains = windows ? isWindowsPathAtOrUnder : (path: string, root: string) => atOrUnder(path, root, true);
-  if (inArchive || roots.some((root) => contains(entryDirectory, root))) return roots;
-  return [...roots, entryDirectory];
+  if (inArchive) return roots;
+  const granted = roots.some((root) => contains(entryDirectory, root)) ? roots : [...roots, entryDirectory];
+  if (process.platform !== "darwin") return granted;
+  // macOS: an unpacked entry (a development build) loads the main bundle's external packages from the nearest node_modules
+  // above it, and Node reads the package.json beside it for the entry's package scope; a packaged app keeps both inside
+  // its archive. Granted like the entry, they never depend on the read carve. The rest of that folder stays ungranted.
+  // The walk stays inside the checkout whose node_modules holds the runtime: never above it, never for a runtime that is
+  // not a checkout's, and never when that checkout is the home folder or the root.
+  const checkout = runtimeCheckout(command);
+  if (checkout === undefined || !atOrUnder(entryDirectory, checkout, true)) return granted;
+  const modules = nearestNodeModules(entryDirectory, checkout);
+  if (modules === undefined) return granted;
+  const manifest = posixPath.join(posixPath.dirname(modules), "package.json");
+  const extra = [modules, ...(statSync(manifest, { throwIfNoEntry: false })?.isFile() === true ? [manifest] : [])];
+  return [...granted, ...extra.filter((path) => !granted.some((root) => contains(path, root)))];
+}
+
+/** The folder whose node_modules holds the runtime (`<checkout>/node_modules/electron/...`); undefined otherwise. */
+function runtimeCheckout(command: string): string | undefined {
+  const index = command.indexOf("/node_modules/");
+  if (index <= 0) return undefined;
+  const checkout = command.slice(0, index);
+  return checkout === posixPath.resolve(homedir()) ? undefined : checkout;
+}
+
+/** The nearest node_modules from `from` up to `bound`, both inclusive; never above `bound`. */
+function nearestNodeModules(from: string, bound: string): string | undefined {
+  for (let dir = from; ; dir = posixPath.dirname(dir)) {
+    const candidate = posixPath.join(dir, "node_modules");
+    if (statSync(candidate, { throwIfNoEntry: false })?.isDirectory() === true) return candidate;
+    if (dir === bound || dir === "/") return undefined;
+  }
 }
 
 /** Admission is row 2's (`spawnMxcConfinedChild`): start guard, plan readiness, filesystem ranking, sibling-root and

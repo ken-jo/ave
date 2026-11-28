@@ -332,9 +332,6 @@ function buildSeatbeltProfile(input: SeatbeltProfileInput, proxyPort: number | n
   const writable = new Set(readwrite);
   const forms = [SHELL_BASELINE, ...rows.map(path =>
     `(allow file-read*${writable.has(path) ? " file-write*" : ""} ${subpath(path)})`)];
-  // srt's allowUnixSockets form: socket() itself has no path, so AF_UNIX creation is allowed once, and bind and connect
-  // only under each named directory.
-  if (unixSocketRoots.length > 0) forms.push("(allow system-socket (socket-domain AF_UNIX))");
   for (const root of unixSocketRoots) {
     forms.push(`(allow network-bind (local unix-socket ${subpath(root)}))`);
     forms.push(`(allow network-outbound (remote unix-socket ${subpath(root)}))`);

@@ -169,7 +169,7 @@ export type PreviewDocumentError =
   | "renderer-unavailable"
   | "engine-unavailable"
   | "engine-integrity-failed"
-  | "engine-confinement-unavailable"
+  | "engine-termination-unverified"
   | "engine-runtime-unavailable"
   | "engine-format-unsupported-on-platform"
   | "engine-failed"

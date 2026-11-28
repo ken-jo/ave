@@ -9,7 +9,7 @@ import { egressIdentityStrength } from "../egress-identity.js";
 import { openEgressInvocation } from "../egress-invocations.js";
 import { openEgressRelay } from "../egress-relay/relay.js";
 import {
-  __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest,
+  __resetActiveSandboxCapabilityForTest, __resetMacExtensionPlanForTest, __resetSandboxRequestedAtBootForTest, setMacHolderCapability,
   detectMxcShellCapability, getHostShellExecutionPlan, getContainerShellInfo, setActiveSandboxCapability, setContainerShellSubstrate, setShellSandboxRequestedAtBoot,
 } from "../sandbox-capability.js";
 
@@ -30,10 +30,10 @@ describe.runIf(platform === "darwin" || platform === "linux")("POSIX shell and h
     });
   }
 
-  it.runIf(platform === "darwin")("requires a proved macOS container and keeps the hook wrap independent", () => {
+  it.runIf(platform === "darwin")("requires a proved macOS container, and for a hook also the holder proof, never the wrap", () => {
     publishWrap();
     expect(isContainerShellRouteEnabled(platform)).toBe(true);
-    expect(isContainerHolderRouteEnabled(platform)).toBe(false);
+    expect(isContainerHolderRouteEnabled(platform)).toBe(true);
     // Unmeasured raw IP is unknown; only this boot's measured verdict publishes blocked, on the plan and in Settings.
     setContainerShellSubstrate("darwin", { state: "available" });
     expect(getHostShellExecutionPlan()).toMatchObject({
@@ -43,8 +43,12 @@ describe.runIf(platform === "darwin" || platform === "linux")("POSIX shell and h
     const measured = { state: "available", rawIpProbe: { rawIp: "blocked", reason: "blocked", evidenceKind: "measured", reachableTargets: [], udpArrival: "absent" } } as const;
     setContainerShellSubstrate("darwin", measured);
     expect(getHostShellExecutionPlan().egressProtocolCoverage).toEqual({ dns: "unknown", rawIp: "blocked" });
-    expect(getHostShellExecutionPlan("default", "hook").identity).toBe("host-shell-execution-plan/v4:darwin:asrt");
-    expect(getHostShellExecutionPlan("default", "hook").egressProtocolCoverage.rawIp).toBe("unknown");
+    // A hook is its own holder: with the holder unproven its plan is the no-confinement floor, never the wrap.
+    expect(getHostShellExecutionPlan("default", "hook")).toMatchObject({ mode: "plain", substrate: "none", requiresExplicitUserApproval: true });
+    setMacHolderCapability({ state: "ready" });
+    expect(getHostShellExecutionPlan("default", "hook")).toMatchObject({ identity: "host-shell-execution-plan/v4:darwin:mxc", sandboxed: true });
+    expect(getHostShellExecutionPlan("default", "hook").egressProtocolCoverage.rawIp).toBe("blocked");
+    __resetMacExtensionPlanForTest();
     expect(getContainerShellInfo()).toEqual({ ...measured, egressProtocolCoverage: { dns: "unknown", rawIp: "blocked" } });
     setContainerShellSubstrate("darwin", { state: "available", rawIpProbe: { rawIp: "unknown", reason: "ipv6-unmeasured", reachableTargets: [], udpArrival: "absent" } });
     expect(getHostShellExecutionPlan().egressProtocolCoverage.rawIp).toBe("unknown");
@@ -64,7 +68,7 @@ describe.runIf(platform === "darwin" || platform === "linux")("POSIX shell and h
     expect(unprovedHost).toMatchObject({ mode: "plain", executionRequest: "host" });
     expect(unprovedHost.identity.startsWith("host-shell-execution-plan/v4:darwin:explicit-host")).toBe(true);
     expect(unprovedHost.identity).not.toBe("host-shell-execution-plan/v4:darwin:explicit-host");
-    expect(getHostShellExecutionPlan("default", "hook").identity).toBe("host-shell-execution-plan/v4:darwin:asrt");
+    expect(getHostShellExecutionPlan("default", "hook")).toMatchObject({ mode: "plain", substrate: "none", requiresExplicitUserApproval: true });
     __resetActiveSandboxCapabilityForTest();
     expect(getHostShellExecutionPlan().fallbackReason).toBe("requested-sandbox-unavailable");
   });
@@ -126,10 +130,10 @@ describe("container route call sites", () => {
       .toEqual(["src/boot/steps/sandbox-init.ts"]);
   });
 
-  it("lets only the offline holder session open a Unix-socket directory, and only the document engine start one (L-O1)", () => {
-    expect(callers(/\bunixSocketDirectory\b/u, "src/permissions/seatbelt-holder-launch.ts")).toEqual(["src/sandbox/wrap-bundled-command.ts"]);
-    expect(callers(/\bsession:\s*\{\s*writeRoot:/u, "src/sandbox/wrap-bundled-command.ts")).toEqual(["src/permissions/offline-process-sandbox.ts"]);
-    expect(callers(/\bstartOfflineProcessHolder\s*\(/u, "src/permissions/offline-process-sandbox.ts")).toEqual(["src/observation/libreoffice-process.ts"]);
+  it("starts the document engine as an installed app, through no sandbox or holder (owner decision 2026-11-28)", () => {
+    const engine = readFileSync(resolve("src/observation/libreoffice-process.ts"), "utf8");
+    expect(engine).not.toMatch(/from "\.\.\/(permissions|sandbox)\//u);
+    expect(engine).toMatch(/\bspawnManaged\(command, \[\.\.\.args\]/u);
   });
 
   it("shares the request builder between boot verification and the POSIX shell launch", () => {
