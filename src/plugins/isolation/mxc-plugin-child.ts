@@ -1,3 +1,4 @@
+import { homedir } from "node:os";
 import { statSync } from "node:fs";
 import { posix as posixPath, win32 as winPath } from "node:path";
 import type { ContainerRequest } from "@microsoft/mxc-sdk/v1";
@@ -156,18 +157,31 @@ function pluginChildReadRoots(envelopeReads: readonly string[], command: string,
   // macOS: an unpacked entry (a development build) loads the main bundle's external packages from the nearest node_modules
   // above it, and Node reads the package.json beside it for the entry's package scope; a packaged app keeps both inside
   // its archive. Granted like the entry, they never depend on the read carve. The rest of that folder stays ungranted.
-  const modules = nearestNodeModules(entryDirectory);
+  // The walk stays inside the checkout whose node_modules holds the runtime: never above it, never for a runtime that is
+  // not a checkout's, and never when that checkout is the home folder or the root.
+  const checkout = runtimeCheckout(command);
+  if (checkout === undefined || !atOrUnder(entryDirectory, checkout, true)) return granted;
+  const modules = nearestNodeModules(entryDirectory, checkout);
   if (modules === undefined) return granted;
   const manifest = posixPath.join(posixPath.dirname(modules), "package.json");
   const extra = [modules, ...(statSync(manifest, { throwIfNoEntry: false })?.isFile() === true ? [manifest] : [])];
   return [...granted, ...extra.filter((path) => !granted.some((root) => contains(path, root)))];
 }
 
-function nearestNodeModules(from: string): string | undefined {
+/** The folder whose node_modules holds the runtime (`<checkout>/node_modules/electron/...`); undefined otherwise. */
+function runtimeCheckout(command: string): string | undefined {
+  const index = command.indexOf("/node_modules/");
+  if (index <= 0) return undefined;
+  const checkout = command.slice(0, index);
+  return checkout === posixPath.resolve(homedir()) ? undefined : checkout;
+}
+
+/** The nearest node_modules from `from` up to `bound`, both inclusive; never above `bound`. */
+function nearestNodeModules(from: string, bound: string): string | undefined {
   for (let dir = from; ; dir = posixPath.dirname(dir)) {
     const candidate = posixPath.join(dir, "node_modules");
     if (statSync(candidate, { throwIfNoEntry: false })?.isDirectory() === true) return candidate;
-    if (dir === "/") return undefined;
+    if (dir === bound || dir === "/") return undefined;
   }
 }
 

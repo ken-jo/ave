@@ -505,6 +505,38 @@ describe("macOS plugin child admission", () => {
     }
   });
 
+  it.runIf(process.platform === "darwin")("grants no node_modules outside the checkout that holds the runtime", async () => {
+    const { owned } = fixture();
+    const staging = "/ave-runtime/staging/0123456789abcdef0123456789abcdef";
+    const checkout = realpathSync.native(mkdtempSync(join(tmpdir(), "ave-dev-checkout-")));
+    const elsewhere = realpathSync.native(mkdtempSync(join(tmpdir(), "ave-elsewhere-")));
+    try {
+      mkdirSync(join(checkout, "node_modules"));
+      // A folder beside the checkout with its own packages: a walk from an entry there must not reach them.
+      mkdirSync(join(elsewhere, "node_modules"));
+      writeFileSync(join(elsewhere, "package.json"), "{}");
+      mkdirSync(join(elsewhere, "child"));
+      for (const command of [`${checkout}/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron`,
+        "/Applications/Ave.app/Contents/MacOS/Ave"]) {
+        spawn.mockReset().mockImplementation(async () => ({ process: owned, confinement: "macos-seatbelt", release: vi.fn(async () => {}) }));
+        const child = await spawnMxcPluginChild({ home: `${staging}/home`, temp: `${staging}/temp`,
+          filesystemOwnership: { readRoots: [], writeRoots: [staging], hostStorageRoots: [] },
+          signal: new AbortController().signal, assertCurrent: vi.fn(), release: vi.fn() }, {
+          pluginId: "mac-probe", command, args: [join(elsewhere, "child", "plugin-child-main.mjs")], cwd: "/srv/kit",
+          envelope: { read: ["/srv/kit"], write: [] }, floorPierces: [], baseEnv: {},
+        });
+        const reads = (spawn.mock.calls[0]?.[0] as MxcConfinedChildSpec | undefined)?.allowRead ?? [];
+        expect(reads).toContain(join(elsewhere, "child"));
+        expect(reads.filter((path) => path.startsWith(elsewhere) && path !== join(elsewhere, "child"))).toEqual([]);
+        child.link.terminate("done");
+        await child.waitForExit();
+      }
+    } finally {
+      rmSync(checkout, { recursive: true, force: true });
+      rmSync(elsewhere, { recursive: true, force: true });
+    }
+  });
+
   it("grants an entry directory outside every read root once, with POSIX containment", async () => {
     const { owned } = fixture();
     const staging = "/ave-runtime/staging/0123456789abcdef0123456789abcdef";
