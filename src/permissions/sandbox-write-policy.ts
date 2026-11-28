@@ -1017,7 +1017,8 @@ export function buildMandatorySandboxWritePolicy(
   allowWrite: string[];
   denyWrite: FilesystemPathEntry[];
   windowsRequiredWriteDenies: readonly string[];
-  narrowedWriteRoots: readonly { root: string; reason: "entry-budget" | "path-budget" | "filesystem-access" | "routing-link" }[];
+  /** `link`: for `routing-link`, the protected name that is a symbolic link the container cannot mask. */
+  narrowedWriteRoots: readonly { root: string; reason: "entry-budget" | "path-budget" | "filesystem-access" | "routing-link"; link?: string }[];
   gitControlSnapshot?: SandboxGitControlSnapshot;
 } {
   if (inheritedWriteDenies.some(path => !isAbsolute(path) || /[*?\[\]]/.test(path))) throw new Error("Invalid inherited sandbox write deny");
@@ -1089,12 +1090,12 @@ export function buildMandatorySandboxWritePolicy(
     }
   }
   const revoked = new Set<string>();
-  const narrowed = new Map<string, "entry-budget" | "path-budget" | "filesystem-access" | "routing-link">();
-  const revoke = (root: string, reason: "entry-budget" | "path-budget" | "filesystem-access" | "routing-link"): void => {
+  const narrowed = new Map<string, { reason: "entry-budget" | "path-budget" | "filesystem-access" | "routing-link"; link?: string }>();
+  const revoke = (root: string, reason: "entry-budget" | "path-budget" | "filesystem-access" | "routing-link", link?: string): void => {
     // A surviving ancestor would re-open an incompletely discovered child.
     for (const candidate of roots) if (isPhysicalPathWithin(candidate, root)) {
       revoked.add(candidate);
-      narrowed.set(candidate, reason);
+      narrowed.set(candidate, link === undefined ? { reason } : { reason, link });
     }
   };
   const discovered = new Set<string>();
@@ -1128,7 +1129,7 @@ export function buildMandatorySandboxWritePolicy(
     for (const routingPath of [...routingPins, ...discoveredRoutingPins]) {
       const routingParent = dirname(routingPath);
       for (const root of roots) {
-        if (isPhysicalPathWithin(root, routingParent)) revoke(root, "routing-link");
+        if (isPhysicalPathWithin(root, routingParent)) revoke(root, "routing-link", routingPath);
       }
     }
   }
@@ -1180,7 +1181,7 @@ export function buildMandatorySandboxWritePolicy(
   return {
     allowWrite: roots.filter(root => !revoked.has(root)), denyWrite: backendEntries,
     windowsRequiredWriteDenies: [...windowsRequiredWriteDenies].map(nativeWriteDenyPath),
-    narrowedWriteRoots: [...narrowed].map(([root, reason]) => ({ root, reason })),
+    narrowedWriteRoots: [...narrowed].map(([root, entry]) => ({ root, ...entry })),
     ...(gitDiscovery ? { gitControlSnapshot: finishGitControlSnapshot(
       new Map([...rootIdentities].filter(([root]) => !revoked.has(root))),
       new Set([...bareRoots].filter(root => !revoked.has(root))), gitDiscovery, discovered,

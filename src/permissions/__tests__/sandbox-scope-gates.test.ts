@@ -172,12 +172,28 @@ describe("each spawn path reads only its own scope's gate", () => {
     const plan = text.slice(text.indexOf("export function getHostShellExecutionPlan"));
     const body = plan.slice(0, plan.indexOf("\n}\n"));
     expect(body).toContain("requestedSandbox: isShellSandboxRequestedAtBoot()");
-    // The shell plan takes its own published container proof. POSIX hooks retain the scope of the wrap; a Darwin hook,
-    // once the holder route is on, takes the container only with the holder capability proven, never the wrap.
+    // The shell plan takes its own published container proof. A macOS or Linux hook, once its holder route is on, takes
+    // the container only with its holder proof (the macOS capability, the Linux canary), never the wrap.
     expect(body).toContain("activeCapability: mxc ?? detectShellSandboxCapability()");
-    expect(body).toContain('const holderHook = darwin && consumer === "hook" && isContainerHolderRouteEnabled("darwin");');
+    expect(body).toContain('const holderHook = posix && consumer === "hook" && isContainerHolderRouteEnabled(process.platform);');
+    expect(body).toContain('const holderReady = darwin ? _macHolderCapability?.state === "ready" : _linuxHolderSupport?.state === "available";');
     expect(body).toContain('const shellContainer = posix && consumer === "hook" && !holderHook ? undefined : detectMxcShellCapability();');
-    expect(body).toContain('const mxc = holderHook && _macHolderCapability?.state !== "ready" ? undefined : shellContainer;');
+    expect(body).toContain("const mxc = holderHook && !holderReady ? undefined : shellContainer;");
     expect(body).toContain('shellSubstrate: mxc !== undefined ? "mxc" : selectsPosixContainer ? "none" : "asrt"');
+  });
+
+  // A Windows or macOS holder's release must run its egress release and identity cleanup in the same turn as before the
+  // Linux arm existed: an optional-chained `await` on an absent Linux staging would yield one microtask first. The
+  // release order is observable only through a real holder spawn, so the guard on the one Linux-only step is pinned.
+  it("the holder release awaits the Linux staging only when there is one, before the egress release", () => {
+    const text = source("permissions/confined-child.ts");
+    expect(text).not.toContain("await linuxStaging?.");
+    const release = text.slice(text.indexOf("await lease?.close();"));
+    expect(release.startsWith("await lease?.close();\n      // Guarded, not optional-chained")).toBe(true);
+    const staged = release.indexOf("if (linuxStaging) await linuxStaging.remove();");
+    const egress = release.indexOf("egress.release();");
+    expect(staged).toBeGreaterThan(0);
+    expect(egress).toBeGreaterThan(staged);
+    expect(release.slice(staged, egress).match(/\bawait\b/gu)).toHaveLength(1);
   });
 });

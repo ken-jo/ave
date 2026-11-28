@@ -169,7 +169,9 @@ it("preserves the shell boundary report check whenever a selected suite runs", a
   const repo = fixture(t);
   const plan = join(repo.root, "selection.json");
   const boundary = "src/permissions/__tests__/mxc-linux-boundary.native.test.ts";
-  const placeholders = "src/permissions/__tests__/mxc-linux-placeholders.test.ts";
+  // The full run is whatever the step lists, so a suite added to the job is covered without editing this test.
+  const fullList = [...step.run.match(/suites=\(\n([\s\S]*?)\n\s*\)/u)[1].matchAll(/\S+/gu)].map(match => match[0]);
+  assert.ok(fullList.includes(boundary));
   const run = `bun() { shift 7; printf 'test: %s\\n' "$@"; }\njq() { echo 'checked report'; return 42; }\n${step.run}`;
   const cases = [[null, 42], [[suite], 0], [[boundary], 42]];
   for (const [selection, status] of cases) {
@@ -181,7 +183,7 @@ it("preserves the shell boundary report check whenever a selected suite runs", a
     assert.equal(result.status, status, result.stderr);
     if (status === 0) assert.match(result.stdout, /^::notice::test-only diff: 0 files for this job\n$/u);
     else {
-      const tests = selection ? [boundary] : [boundary, placeholders];
+      const tests = selection ? [boundary] : fullList;
       assert.equal(result.stdout, [...tests.map(path => `test: ${path}`), "checked report", ""].join("\n"));
     }
   }

@@ -1,15 +1,16 @@
 import { createHash } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+import { basename, join } from "node:path";
+import { t } from "../i18n/index.js";
 import { getHostResources } from "../main/host-resources.js";
 import {
   aveHomeReadBoundaryCovering, getDefaultSensitiveWriteDenyEntries, getProtectedReadDenyFloor,
-  getUserReadDenies, getUserWriteDenies, protectedReadDenyMatcher, runWithSandboxWritePreflight,
+  getUserReadDenies, protectedReadDenyMatcher, runWithSandboxWritePreflight,
 } from "../permissions/asrt-sandbox.js";
 import { buildSeatbeltShellRequest } from "../permissions/mxc-macos.js";
-import { buildBubblewrapShellRequest, projectLinuxSavedSessionDenies, requireMxcLinuxShellPrograms } from "../permissions/mxc-linux.js";
-import { holdMxcLinuxPlaceholders } from "../permissions/mxc-linux-placeholders.js";
-import { atOrUnder, posixPathFoldsCase, posixPolicyLookups, rankPosixContainerRows, type PosixFilesystemGrants } from "../permissions/mxc-posix.js";
+import { buildBubblewrapShellRequest, linuxContainerPolicyModel, projectLinuxSavedSessionDenies, requireMxcLinuxShellPrograms } from "../permissions/mxc-linux.js";
+import { ContainerPlaceholderChangedError, holdMxcLinuxPlaceholders, takeMxcLinuxPlaceholderRecoveryNotice } from "../permissions/mxc-linux-placeholders.js";
+import { gitExclusions, posixPathFoldsCase, posixPolicyLookups, rankPosixContainerRows } from "../permissions/mxc-posix.js";
 import { requireMxcContainerStartRoot } from "../permissions/mxc-runtime-root.js";
 import { MxcCwdChangedError, stageMxcShellRequest, startMxcShellSupervisor, writeMxcShellRequest, type MxcShellRunAuthorizer } from "../permissions/mxc-shell-supervisor-client.js";
 import { captureShellWorkingDirectoryIdentity, type ShellWorkingDirectoryIdentity } from "../permissions/shell-working-directory-identity.js";
@@ -75,19 +76,18 @@ export async function prepareMxcPosixShellLaunch(input: PreparePosixShellInput, 
   const reads = linux ? await projectLinuxSavedSessionDenies({
     denyRead, userDenyRead, lookups, grants: [...allowRead, ...mandatory.allowWrite, ...input.floorPierces], signal: lifecycle.signal,
   }) : { denyRead, userDenyRead, rows: [] };
-  const model = shellPolicyModel({
+  // Linux rows come from the one Linux container builder, shared with extension holders; macOS keeps its own.
+  const model = programs !== undefined ? linuxContainerPolicyModel({
+    allowRead: input.allowRead.filter(admittedPath), allowWrite: mandatory.allowWrite,
+    denyRead: reads.denyRead, userDenyRead: reads.userDenyRead, floorPierces: input.floorPierces,
+    derivedRows: [...reads.rows, ...mandatory.literalRows, ...mandatory.patternRows], programs,
+  }) : shellPolicyModel({
     allowRead, allowWrite: mandatory.allowWrite,
     denyRead: reads.denyRead, userDenyRead: reads.userDenyRead, protectedFloor,
     denyWrite: [],
     floorPierces: input.floorPierces,
   }, [...reads.rows, ...mandatory.literalRows, ...mandatory.patternRows, ...sensitive.map(entry =>
-    policyFloorRow(typeof entry === "string" ? entry : entry.path, "ro", "protected-name", linux || typeof entry !== "string")),
-    ...(linux ? getUserWriteDenies().map(entry => policyFloorRow(
-      typeof entry === "string" ? entry : entry.path, "ro", "protected-name", typeof entry !== "string" && entry.literal === true,
-    )) : []),
-    ...(programs === undefined ? [] : [programs.launcher, programs.helper].map(path =>
-      policyFloorRow(dirname(path), "ro", "protected-name", true))),
-  ]);
+    policyFloorRow(typeof entry === "string" ? entry : entry.path, "ro", "protected-name", typeof entry !== "string"))]);
   const roots = [hostHome, input.cwd, ...mandatory.allowWrite];
   const foldsCase = !linux && roots.every(path => posixPathFoldsCase(lookups.canonical(path)));
 
@@ -150,9 +150,18 @@ export async function prepareMxcPosixShellLaunch(input: PreparePosixShellInput, 
         const completion = Promise.all([settled, marked]).then(async ([outcome, markerError]) => {
           // Quarantine runs after every launch: no exit status or stderr line can prove the command did not start.
           let cleanupNotice: string | undefined;
+          // The folders this run held are proved again at exit: one the host replaced meanwhile is a named violation.
+          let violation: string | undefined;
+          try { held.validate(); } catch (error) {
+            if (!(error instanceof ContainerPlaceholderChangedError)) throw error;
+            violation = t("sandboxPolicy.linuxPlaceholderChanged", { path: error.path });
+          }
           try { await held.release(); } finally {
             try { cleanupNotice = cleanupGit?.(); } finally { releaseGit?.(); }
           }
+          // A boot that set an unreadable placeholder journal aside tells the user once, with the next command.
+          const recovered = takeMxcLinuxPlaceholderRecoveryNotice();
+          if (recovered !== undefined || violation !== undefined) cleanupNotice = [violation, recovered, cleanupNotice].filter(Boolean).join("\n");
           if ("error" in outcome) throw outcome.error;
           if (markerError !== undefined) throw markerError;
           return { ...outcome.exit, ...(cleanupNotice === undefined ? {} : { cleanupNotice }) };
@@ -171,12 +180,4 @@ export async function prepareMxcPosixShellLaunch(input: PreparePosixShellInput, 
       return launch;
     },
   };
-}
-
-function gitExclusions(grants: PosixFilesystemGrants): (path: string, includesChildren?: boolean) => boolean {
-  const protectedRows = [...grants.readonly, ...grants.denied];
-  const covering = (path: string, rows: readonly string[]) => Math.max(-1,
-    ...rows.filter(root => atOrUnder(path, root, false)).map(root => root.length));
-  return (path, includesChildren) => covering(path, grants.readwrite) <= covering(path, protectedRows)
-    || (includesChildren === true && protectedRows.some(row => atOrUnder(row, path, false)));
 }

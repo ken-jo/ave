@@ -17,6 +17,7 @@ import type {
   SandboxWindowsSubstrateInfo,
   SandboxExtensionPlan,
   SandboxMacExtensionPlan,
+  SandboxContainerHolderSupport,
   SandboxWindowsExtensionPlan,
 } from "../shared/sandbox-capability-info.js";
 import {
@@ -336,6 +337,25 @@ export function getMacHolderCapability(): MacHolderCapability | undefined {
   return _macHolderCapability;
 }
 
+/** The Linux holder canary's result this app run (design 6.3). */
+let _linuxHolderSupport: SandboxContainerHolderSupport | undefined;
+
+/** @internal — boot (`sandbox-init.ts`) and tests only. A change starts a new generation, as a plan change does. */
+export function setLinuxHolderSupport(support: SandboxContainerHolderSupport | undefined): void {
+  _linuxHolderSupport = support === undefined ? undefined : Object.freeze({ ...support });
+  _sandboxGeneration += 1;
+  notifySandboxStatusChanged();
+}
+
+export function getLinuxHolderSupport(): SandboxContainerHolderSupport | undefined {
+  return _linuxHolderSupport;
+}
+
+/** What Settings shows for Linux extensions and hooks: only once their route is on. */
+export function getContainerHolderInfo(): SandboxContainerHolderSupport | undefined {
+  return process.platform === "linux" && isContainerHolderRouteEnabled("linux") ? _linuxHolderSupport : undefined;
+}
+
 const containerShellSubstrates: Partial<Record<"darwin" | "linux", SandboxContainerShellSupport>> = {};
 const MAC_CONTAINER_SHELL_CAPABILITY: SandboxCapability = Object.freeze({
   kind: "asrt", platform: "darwin", confidence: "verified", reason: "macOS container shell verified",
@@ -485,16 +505,21 @@ export function getHostShellExecutionPlan(
   const generation = getSandboxGeneration();
   const darwin = process.platform === "darwin";
   const posix = darwin || process.platform === "linux";
-  // A macOS hook runs in a container once the holder route is on: as its own holder, so only when the shell container
-  // AND the holder capability are both proven. Otherwise its plan has no substrate (the no-confinement floor), never
-  // the wrap. Before the route is on, a hook stays on the existing sandbox. A Linux hook never selects the container.
-  const holderHook = darwin && consumer === "hook" && isContainerHolderRouteEnabled("darwin");
+  // A macOS or Linux hook runs in a container once its holder route is on: as its own holder, so only when the shell
+  // container AND the holder route are both proven (the macOS holder capability; the Linux holder canary). Otherwise
+  // its plan has no substrate (the no-confinement floor), never the wrap. Before the route is on, a hook stays on the
+  // existing sandbox.
+  const holderHook = posix && consumer === "hook" && isContainerHolderRouteEnabled(process.platform);
+  const holderReady = darwin ? _macHolderCapability?.state === "ready" : _linuxHolderSupport?.state === "available";
   const selectsPosixContainer = posix && (consumer === "shell" || holderHook) && isContainerShellRouteEnabled(process.platform);
   const shellContainer = posix && consumer === "hook" && !holderHook ? undefined : detectMxcShellCapability();
-  const mxc = holderHook && _macHolderCapability?.state !== "ready" ? undefined : shellContainer;
+  const mxc = holderHook && !holderReady ? undefined : shellContainer;
   const privacyFailure = getAveHomePrivacyFailure();
   // Only a live POSIX container route carries its own measurement; every other route is unmeasured.
-  const recorded = posix && mxc !== undefined ? containerShellSubstrates[process.platform as "darwin" | "linux"] : undefined;
+  // A Linux hook is a holder: its egress is the holder canary's own measurement, never the shells' (design 2.4).
+  const recorded = posix && mxc !== undefined
+    ? holderHook && !darwin ? _linuxHolderSupport : containerShellSubstrates[process.platform as "darwin" | "linux"]
+    : undefined;
   const containerRawIpProbe = recorded?.state === "available" ? recorded.rawIpProbe : undefined;
   const plan = buildHostShellExecutionPlan({
     platform: process.platform,

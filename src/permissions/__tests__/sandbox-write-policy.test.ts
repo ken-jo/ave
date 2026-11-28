@@ -172,7 +172,8 @@ describe("mandatory sandbox control-file writes", () => {
     symlinkSync(target, link, "file");
     const policy = withPlatform("linux", () => buildMandatorySandboxWritePolicy([project, work]));
     expect(policy.allowWrite).toEqual([work]);
-    expect(policy.narrowedWriteRoots).toEqual([{ root: project, reason: "routing-link" }]);
+    // The notice names the link, so the user can replace it and get the write root back.
+    expect(policy.narrowedWriteRoots).toEqual([{ root: project, reason: "routing-link", link }]);
     expect(nativeDenyRows(policy.denyWrite)).toEqual(expect.arrayContaining([link, target]));
   });
 

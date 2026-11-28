@@ -62,6 +62,10 @@ export const TOOL_TIMEOUT_POLICY = {
   mxcLinuxShellProbeMs: 5_000,
   mxcLinuxShellProbeConnectionMs: 750,
   mxcLinuxShellStopMs: 2_000,
+  // A Linux holder's ready byte must arrive within this bound from the gate's release, or the start is stopped and refused.
+  mxcLinuxHolderStartMs: 10_000,
+  // At a Linux holder's stop: how long its own pid has after its SIGTERM before Ave signals the outer bwrap.
+  mxcLinuxHolderTermGraceMs: 2_000,
   // The boot canary's raw-IP probe: each target's deadline, and the bound on the whole prober inside the container.
   mxcLinuxRawIpTargetMs: 3_000,
   mxcLinuxRawIpProbeMs: 12_000,
@@ -169,12 +173,17 @@ export const TOOL_TIMEOUT_POLICY = {
 
 /** A container holder's start deadline on the platform it runs on: the Windows ACL host, or a macOS holder's ready byte. */
 export function containerHolderStartMs(platform: NodeJS.Platform = process.platform): number {
+  if (platform === "linux") return TOOL_TIMEOUT_POLICY.mxcLinuxHolderStartMs;
   return platform === "darwin" ? TOOL_TIMEOUT_POLICY.mxcMacHolderStartMs : TOOL_TIMEOUT_POLICY.windowsAclHostStartupMs;
 }
 
 /** Disposing a container holder: Windows' process-tree kill, or a macOS holder's group stop with its grace, the group
  * confirmation, the output drain and the label sweep (`seatbelt-holder-launch.ts`). */
 export function containerHolderStopMs(platform: NodeJS.Platform = process.platform): number {
+  // A Linux holder: its own TERM grace, bwrap's TERM before the group kill, and the resident set's confirmation.
+  if (platform === "linux") {
+    return TOOL_TIMEOUT_POLICY.mxcLinuxHolderTermGraceMs + TOOL_TIMEOUT_POLICY.mxcLinuxShellStopMs + TOOL_TIMEOUT_POLICY.processTreeKillMs;
+  }
   return platform === "darwin"
     ? TOOL_TIMEOUT_POLICY.mxcMacHolderTermGraceMs + TOOL_TIMEOUT_POLICY.mxcMacHolderOutputDrainMs
       + TOOL_TIMEOUT_POLICY.processTreeKillMs + TOOL_TIMEOUT_POLICY.mxcMacHolderSweepMs

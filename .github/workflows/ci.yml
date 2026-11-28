@@ -2006,6 +2006,12 @@ jobs:
           src/permissions/__tests__/mxc-linux.test.ts
           src/permissions/__tests__/mxc-linux-raw-ip.test.ts
           src/permissions/__tests__/mxc-linux-placeholders.test.ts
+          src/permissions/__tests__/mxc-linux-holder-launch.test.ts
+          src/permissions/__tests__/mxc-linux-holder-request.test.ts
+          src/permissions/__tests__/mxc-linux-holder-thread.test.ts
+          src/permissions/__tests__/linux-extension-start.test.ts
+          src/sandbox/__tests__/linux-holder-selection.test.ts
+          src/boot/__tests__/sandbox-init-linux-holder.test.ts
           src/tools/__tests__/mxc-shell-source.test.ts
           src/plugins/isolation/__tests__/confined-plugin-child.test.ts
           src/plugins/isolation/__tests__/plugin-stderr.test.ts
@@ -2038,6 +2044,10 @@ jobs:
         run: |
           suites=(
             src/permissions/__tests__/mxc-linux-boundary.native.test.ts
+            src/permissions/__tests__/mxc-linux-filter-helper.native.test.ts
+            src/permissions/__tests__/mxc-linux-holder-boundary.native.test.ts
+            src/permissions/__tests__/mxc-linux-holder-canary.native.test.ts
+            src/permissions/__tests__/mxc-linux-holder-watch.test.ts
             src/permissions/__tests__/mxc-linux-placeholders.test.ts
           )
           if [[ -n "$AVE_CI_TEST_ONLY_PLAN" ]]; then
@@ -2053,6 +2063,44 @@ jobs:
           bun run test:vitest -- run --reporter=default --reporter=json --outputFile="$RUNNER_TEMP/linux-shell-boundary.json" "${suites[@]}"
           jq -e '.numPassedTests > 0 and .numPendingTests == 0 and .numTodoTests == 0 and .numFailedTests == 0' \
             "$RUNNER_TEMP/linux-shell-boundary.json"
+      # Design 2.5: holders need only bwrap. With slirp4netns hidden the shell canary reports it missing, and the holder
+      # canary and the holder suite still pass. Every system tool folder is searched whatever PATH says, so it is moved.
+      - &linux-holders-without-slirp
+        name: Run the Linux holder suites without slirp4netns
+        if: steps.docs-impact.outputs.docs_only != 'true' && needs.build.outputs.docs_only != 'true'
+        working-directory: ave
+        env:
+          AVE_RUN_MXC_LINUX_BOUNDARY: "1"
+          AVE_EXPECT_NO_SLIRP4NETNS: "1"
+          AVE_VITEST_MAX_WORKERS: "2"
+        run: |
+          slirp=$(command -v slirp4netns)
+          trap 'sudo mv "$slirp.hidden" "$slirp"' EXIT
+          sudo mv "$slirp" "$slirp.hidden"
+          if command -v slirp4netns; then exit 1; fi
+          bun run test:vitest -- run --reporter=default --reporter=json --outputFile="$RUNNER_TEMP/linux-holders-no-slirp.json" \
+            src/permissions/__tests__/mxc-linux-holder-boundary.native.test.ts \
+            src/permissions/__tests__/mxc-linux-holder-canary.native.test.ts
+          jq -e '.numPassedTests > 0 and .numPendingTests == 0 and .numTodoTests == 0 and .numFailedTests == 0' \
+            "$RUNNER_TEMP/linux-holders-no-slirp.json"
+      # N19 at ptrace_scope 0: a holder must not reach its unfiltered bridge even where Yama allows ptrace of a parent.
+      # The bridge's non-dumpable step is the mechanism; the dumpable control is built here with the pinned toolchain.
+      - &linux-bridge-ptrace-scope-zero
+        name: Prove the holder bridge at ptrace_scope 0
+        if: steps.docs-impact.outputs.docs_only != 'true' && needs.build.outputs.docs_only != 'true'
+        working-directory: ave
+        env:
+          AVE_RUN_MXC_LINUX_BOUNDARY: "1"
+          AVE_VITEST_MAX_WORKERS: "2"
+        run: |
+          previous=$(cat /proc/sys/kernel/yama/ptrace_scope)
+          trap 'sudo sysctl -w kernel.yama.ptrace_scope="$previous"' EXIT
+          sudo sysctl -w kernel.yama.ptrace_scope=0
+          command -v cargo
+          bun run test:vitest -- run --reporter=default --reporter=json --outputFile="$RUNNER_TEMP/linux-bridge-scope-zero.json" \
+            src/permissions/__tests__/mxc-linux-filter-helper.native.test.ts -t "native Linux proxy bridge"
+          jq -e '[.testResults[].assertionResults[] | select(.title | test("every route into its bridge|non-dumpable step")) | .status]
+            | length == 2 and all(. == "passed")' "$RUNNER_TEMP/linux-bridge-scope-zero.json"
 
   linux-confinement-x64:
     name: Linux shell container boundary (x64)
@@ -2095,3 +2143,5 @@ jobs:
       - *linux-container-prove
       - *download-test-only-plan
       - *linux-shell-boundary
+      - *linux-holders-without-slirp
+      - *linux-bridge-ptrace-scope-zero
