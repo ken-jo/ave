@@ -1,11 +1,12 @@
 import type { EnvelopeToolRef, StageEnvelope } from "../shared/workflow-template-types.js";
-import { isModelExposedTool, type Tool } from "../tools/base.js";
+import { isModelExposedTool, isUnattendedReadTool, type Tool } from "../tools/base.js";
 import type { ToolRegistry } from "../tools/registry.js";
 
 export type ToolEffectEvidence = "outward" | "safe" | "unknown";
 
 export interface ToolEffectResolver {
   effectOf(tool: Pick<EnvelopeToolRef, "collection" | "name">): ToolEffectEvidence;
+  isFixedLocalRead?(name: string): boolean;
 }
 
 const TOOL_SOURCE_BY_COLLECTION = {
@@ -32,6 +33,10 @@ export function effectFromAnnotations(annotations: ExternalEffectAnnotations | u
 
 export function createToolEffectResolver(registry: Pick<ToolRegistry, "findByName">): ToolEffectResolver {
   return {
+    isFixedLocalRead(name) {
+      const tool = registry.findByName(name);
+      return tool !== undefined && isUnattendedReadTool(tool);
+    },
     effectOf({ collection, name }) {
       const tool = registry.findByName(name);
       return tool?.source === TOOL_SOURCE_BY_COLLECTION[collection] ? tool.unattendedEffect ?? "unknown" : "unknown";

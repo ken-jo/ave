@@ -1716,7 +1716,8 @@ export class PermissionManager {
     if (unattended) {
       const { source, name } = evidence.tool;
       const collection = source === "builtin" ? "tools" : source === "mcp" ? "mcpReadOnlyTools" : "pluginGenerationTools";
-      const currentEffect = this.unattendedEffects?.effectOf({ collection, name }) ?? "unknown";
+      const currentEffect = unattended.readOnly && (source !== "builtin" || !this.unattendedEffects?.isFixedLocalRead?.(name))
+        ? "unknown" : this.unattendedEffects?.effectOf({ collection, name }) ?? "unknown";
       evidence = {
         ...evidence, unattended,
         unattendedEffect: evidence.unattendedEffect === undefined || evidence.unattendedEffect === "safe"

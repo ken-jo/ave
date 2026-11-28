@@ -421,7 +421,8 @@ it("a grandchild's rounds and denials count against its stage", async () => {
   let nestedResult: SubAgentSpawnResult | undefined;
   const requests: string[] = [];
   const read = createDynamicTool({
-    name: "read_fixture", description: "Read a fixture", source: "builtin", category: "read",
+    name: "read_file", description: "Read a fixture", source: "builtin", category: "read",
+    unattendedEffect: "safe",
     isReadOnly: () => true,
     jsonSchema: { type: "object", properties: { fixture: { type: "string" } }, required: ["fixture"] },
     execute: async (input, ctx) => {
@@ -472,7 +473,7 @@ it("a grandchild's rounds and denials count against its stage", async () => {
       },
     });
     await h.runThenEnd(async () => {
-      const started = await startScheduled(h, [autoStageOf("report", { envelope: ENVELOPE, allowSubAgents: true })]);
+      const started = await startScheduled(h, [autoStageOf("report", { envelope: { ...ENVELOPE, tools: [read.name] }, allowSubAgents: true })]);
       const result = await started.result;
       expect(requests).toEqual(["stage:first", "nested:first"]);
       expect(execute).toHaveBeenCalledTimes(2);

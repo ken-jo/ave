@@ -30,6 +30,10 @@ function insideEnvelope(request: PermissionDecisionRequest, entry: UnattendedSta
   const { envelope, workspaceRoot } = entry;
   const { source, name, kind } = request.tool;
   const connection = request.unattendedNetwork;
+  if (entry.readOnly && (source !== "builtin" || kind !== "read" || connection !== undefined
+      || request.paths?.some(path => path.effect === "write"))) {
+    return { inside: false, why: "The stage permits only local reads." };
+  }
   if (connection !== undefined || source === "builtin" && kind === "network") {
     if (!connection?.sandboxed || !envelope.network.some(target =>
       target.host === connection.host && (target.port === undefined || target.port === connection.port))) {
@@ -75,7 +79,7 @@ function deny(code: UnattendedDenyCode): PermissionPipelineDecision {
 
 export function decideUnattended(request: PermissionDecisionRequest): PermissionPipelineDecision {
   if (request.floor) return deny("forbidden-unattended");
-  if (!request.unattended?.isolation.proven) return deny("isolation-unproven");
+  if (!request.unattended || (!request.unattended.readOnly && !request.unattended.isolation.proven)) return deny("isolation-unproven");
   if (request.rules?.ask !== undefined) return deny("rule-ask");
   if (request.exfiltration) return deny("exfiltration-guardrail");
   const shell = request.tool.kind === "shell";

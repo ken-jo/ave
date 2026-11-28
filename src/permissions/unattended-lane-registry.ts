@@ -10,6 +10,7 @@ export interface UnattendedStageEntry {
   stageId: string;
   envelope: StageEnvelope;
   workspaceRoot: string;
+  readOnly?: true;
   isolation: { proven: boolean; reason?: string; profile?: UnattendedIsolationProfile };
 }
 
@@ -32,8 +33,7 @@ const log = createLogger("unattended-lane");
 interface StageAdmission {
   envelope: StageEnvelope;
   workspaceRoot: string;
-  profile: UnattendedIsolationProfile;
-  prove: () => UnattendedIsolationProof;
+  prove?: () => UnattendedIsolationProof;
 }
 const admissions = new Map<string, StageAdmission>();
 const admissionKey = (runKey: string, stageId: string): string => JSON.stringify([runKey, stageId]);
@@ -125,11 +125,14 @@ export const unattendedLaneHooks = {
     const admission = admittedUnattendedStage(runKey, stageId);
     if (!admission) return;
     if (admission.workspaceRoot !== workspaceRoot) throw new Error("Unattended stage workspace changed before linking");
-    const isolation = admission.prove();
-    if (!isolation.proven) return { code: "isolation-unproven", reason: isolation.reason };
+    const isolation = admission.prove?.();
+    if (isolation && !isolation.proven) return { code: "isolation-unproven", reason: isolation.reason };
     registerStage(sessionId, {
       stageSessionId: sessionId,
-      entry: { runKey, stageId, envelope: admission.envelope, workspaceRoot, isolation },
+      entry: {
+        runKey, stageId, envelope: admission.envelope, workspaceRoot,
+        ...(isolation ? { isolation } : { readOnly: true, isolation: { proven: false } }),
+      },
       prove: admission.prove,
     });
     return undefined;

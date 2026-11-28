@@ -127,8 +127,11 @@ export function workflowEngineExtensions(store: WorkBoardStore, templates: Pick<
           if (!run || run.settled !== undefined || run.runStartedBy.kind !== "schedule-attachment") return unavailable;
           const version = await templates.resolveVersion(run.pin);
           assertPinnedVersion(version, run.pin);
-          if (isAllReadOnlyVersion(version)) return { ok: true };
           if (!envelope) return { ok: false, code: "envelope-missing" };
+          if (isAllReadOnlyVersion(version)) return {
+            ok: true,
+            activate: () => activateUnattendedAdmission(runKey, stageId, { envelope, workspaceRoot }),
+          };
           let toolchainRoots: readonly string[] | undefined;
           const prove = () => {
             const plan = getHostShellExecutionPlan("default", "shell");
@@ -158,7 +161,7 @@ export function workflowEngineExtensions(store: WorkBoardStore, templates: Pick<
             ok: true,
             toolchainReadRoots: proof.profile.toolchainReadRoots,
             activate: () => activateUnattendedAdmission(runKey, stageId, {
-              envelope, workspaceRoot, profile: proof.profile, prove,
+              envelope, workspaceRoot, prove,
             }),
           };
         } catch {

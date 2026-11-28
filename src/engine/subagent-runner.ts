@@ -2430,6 +2430,7 @@ export class SubAgentRunner {
     approvalProvenance: SubAgentApprovalProvenance | null;
     unattendedStage?: boolean;
     unattendedEnvelope?: StageEnvelope;
+    unattendedReadOnly?: boolean;
     stageOutputTool?: Tool;
     stageSpawnEnabled?: boolean;
     parentStage?: { registry: ToolRegistry; activePluginIds: ReadonlySet<string> };
@@ -2444,7 +2445,7 @@ export class SubAgentRunner {
     const envelope = args.unattendedEnvelope;
     const effects = createToolEffectResolver(registry);
     const allowedByLane = (tool: Tool): boolean => envelope
-      ? unattendedEnvelopeTool(tool, envelope, effects)
+      ? (!args.unattendedReadOnly || isUnattendedReadTool(tool)) && unattendedEnvelopeTool(tool, envelope, effects)
       : !args.unattendedStage || isUnattendedReadTool(tool);
     const exposeAgentSend = !args.unattendedStage && args.parentStage === undefined && (args.includeAgentSend === true
       || (scope.kind === "exactly" && scope.names.includes("agent_send")));
@@ -2908,12 +2909,13 @@ export class SubAgentRunner {
           throw new Error("Unattended stage session was not registered");
         }
         const { childDeps, grantedScope } = this.buildChildDeps({
-          toolScope: linkedLane?.isolation.proven === false ? DENY_ALL_TOOL_SCOPE : input.toolScope,
+          toolScope: linkedLane && !linkedLane.readOnly && !linkedLane.isolation.proven ? DENY_ALL_TOOL_SCOPE : input.toolScope,
           title: input.title,
           profileModel: input.profileModel,
           includeAgentSend: true,
           unattendedStage: input.unattendedStage !== undefined,
-          unattendedEnvelope: linkedLane?.isolation.proven ? linkedLane.envelope : undefined,
+          unattendedEnvelope: linkedLane && (linkedLane.readOnly || linkedLane.isolation.proven) ? linkedLane.envelope : undefined,
+          unattendedReadOnly: linkedLane?.readOnly,
           stageOutputTool: input.stageOutputTool,
           stageSpawnEnabled: stageAuthority !== undefined,
           ...(stageParent ? { parentStage: { registry: stageParent.stage.child.deps.toolRegistry, activePluginIds: stageParent.activePluginIds } } : {}),
