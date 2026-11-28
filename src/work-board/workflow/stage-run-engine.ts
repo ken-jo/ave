@@ -38,7 +38,7 @@ import { isUnattendedReadTool } from "../../tools/base.js";
 import { isAllReadOnlyVersion, WorkflowTemplateError } from "../template-graph.js";
 import { WORK_DECISION_AUTHORITY_REVOKED, WorkDecisionAuthorityError, type WorkDecisionAuthority } from "../work-decision-authority.js";
 import type { AuthoriseRunSource, RunAuthorityVerdict } from "./run-authority.js";
-import type { LaneBlockCode, RunPin, StageFailure } from "./shipped-shapes.js";
+import type { RunPin, StageFailure } from "./shipped-shapes.js";
 import type { PassConditionRegistry } from "./stage-gates.js";
 import { assertPinnedVersion, readyStages, stepsOf } from "./stage-graph.js";
 import { hasRejectedWork, MAX_STAGE_ATTEMPTS, reduceRun, type RunEffect, type RunEvent, type StageEnded } from "./stage-machine.js";
@@ -66,8 +66,19 @@ const stageDeclaresOutputs = (stage: TemplateStage): boolean => Boolean(stage.re
 
 const runKeyOf = (itemId: number, runId: string): string => `work-board:${itemId}#${runId}`;
 
+type LaneBlock = Omit<NonNullable<WorkItemStageRun["blocked"]>, "at">;
+
+class LaneAdmissionError extends Error {
+  override readonly name = "LaneAdmissionError";
+  constructor(readonly blocked: LaneBlock) {
+    super(`lane-blocked: ${blocked.code}`);
+  }
+}
+
 interface LaneHooks {
-  admit(a: { runKey: string; stageId: string; envelope: StageEnvelope | undefined; workspaceRoot: string }): Promise<{ ok: true } | { ok: false; code: LaneBlockCode }>;
+  admit(a: { runKey: string; stageId: string; envelope: StageEnvelope | undefined; workspaceRoot: string }): Promise<
+    { ok: true; activate?: () => () => void } | ({ ok: false } & LaneBlock)
+  >;
   sessionLinked(a: { runKey: string; stageId: string; sessionId: string; envelope: StageEnvelope; workspaceRoot: string }): void;
   sessionEnded(sessionId: string): void;
   onDenied(listener: (e: { sessionId: string; code: string; call: { toolName: string } }) => void): () => void;
@@ -620,8 +631,12 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       for (const retry of state.gateRetries.values()) retry();
       while (state.held.length > 0) {
         if (!owned() || state.rowGone || state.lost) return;
-        const record = await records.get(state.itemId, state.runId);
-        if (!record) return;
+        const read = await records.read(state.itemId, state.runId);
+        if (read.status !== "found") {
+          if (read.status === "not-found" && runs.get(state.itemId) !== state) retiredSeals.delete(state.runId);
+          return;
+        }
+        const record = read.run;
         const first = state.held[0];
         const stale = staleness(record, first);
         if (stale !== null) log.info("held stage run event dropped (id=%d, event=%s): %s", state.itemId, first.kind, stale);
@@ -640,7 +655,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
         if (!first.gatePending) await dropHeld(state, first);
       }
       if (runs.get(state.itemId) !== state) {
-        retiredSeals.delete(state.runId);
+        if (state.held.length === 0) retiredSeals.delete(state.runId);
         return;
       }
       const record = await records.get(state.itemId, state.runId);
@@ -763,13 +778,17 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     if (result.ok) {
       if (state.boardUnread) {
         state.boardUnread = false;
-        emit({ itemId: state.itemId, phase: "executing", message: "resumed" });
+        if (runs.get(state.itemId) === state && result.run.settled === undefined) {
+          emit({ itemId: state.itemId, phase: "executing", message: "resumed" });
+        }
       }
       return { run: result.run };
     }
     if (result.reason === "board-unread" && !state.boardUnread) {
       state.boardUnread = true;
-      emit({ itemId: state.itemId, phase: "executing", message: "template-runs-board-unread", reasonCode: "template-runs-board-unread" });
+      if (runs.get(state.itemId) === state) {
+        emit({ itemId: state.itemId, phase: "executing", message: "template-runs-board-unread", reasonCode: "template-runs-board-unread" });
+      }
     }
     // The row does not name the run: its class says what follows. A lost run ends error, its end written by its id.
     if (result.reason === "row-gone" || result.reason === "row-lost") {
@@ -1357,6 +1376,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     }
 
     state.starting.add(stageId);
+    let releaseAdmission: (() => void) | undefined;
     try {
       if (deadline) armDeadline();
       const record = await beforeDeadline(() => records.get(state.itemId, state.runId));
@@ -1418,7 +1438,11 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
         const admitted = laneHooks
           ? await beforeDeadline(() => laneHooks.admit({ runKey, stageId, envelope: stage.envelope, workspaceRoot: stageRoot }))
           : isAllReadOnlyVersion(version) ? { ok: true as const } : { ok: false as const, code: "lane-unavailable" as const };
-        if (!admitted.ok) throw new WorkflowInvariantError("lane-blocked", admitted.code);
+        if (!admitted.ok) {
+          const { ok: _ok, ...blocked } = admitted;
+          throw new LaneAdmissionError(blocked);
+        }
+        releaseAdmission = admitted.activate?.();
       }
 
       const runner = deps.getRunner();
@@ -1494,7 +1518,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
         return true;
       });
       const unsubscribe = budget && deps.lane?.onDenied(({ sessionId, code, call }) => {
-        if (linked === undefined || budgetFailure !== undefined || (code !== "outside-envelope" && code !== "no-approver")) return;
+        if (linked === undefined || budgetFailure !== undefined || code !== "outside-envelope") return;
         if (sessionId !== linked && !runner.listRunStatuses(linked).some(child => child.childSessionId === sessionId)) return;
         deniedCalls.push({ toolName: maskWorkflowText(call.toolName).slice(0, 500), code });
         usage.denials = deniedCalls.length;
@@ -1658,6 +1682,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       if (deadline?.signal.aborted && error === deadline.signal.reason) return { budgetFailure: "minutes", usage: snapshotUsage() };
       throw error;
     } finally {
+      releaseAdmission?.();
       clearTimeout(timer);
       state.starting.delete(stageId);
     }
@@ -1703,9 +1728,8 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
         next = { type: "spawn_refused", stageId, attempt };
       } else if (error instanceof WorkflowInvariantError && (error.code === "version-missing" || error.code === "graph-mismatch" || error.code === "run-state-failed")) {
         faultCause = error.reasonCode ?? error.code;
-      } else if (error instanceof WorkflowInvariantError && error.code === "lane-blocked") {
-        const code = error.reasonCode as LaneBlockCode;
-        next = { type: "stage_ended", stageId, attempt, ok: false, reason: error.message, failure: "error", blocked: { code, at: new Date().toISOString() } };
+      } else if (error instanceof LaneAdmissionError) {
+        next = { type: "stage_ended", stageId, attempt, ok: false, reason: error.message, failure: "error", blocked: { ...error.blocked, at: new Date().toISOString() } };
       } else {
         const stopped = error instanceof WorkflowInvariantError && error.code === "run-stopped";
         if (!stopped) log.warn("stage child did not start (id=%d, stage=%s): %s", state.itemId, stageId, errorMessage(error));

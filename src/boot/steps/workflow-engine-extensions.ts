@@ -1,3 +1,4 @@
+import { homedir } from "node:os";
 import { getDefaultWorkspaceRoot } from "../../main/default-workspace-root.js";
 import { createLogger } from "../../lib/logger.js";
 import { isAllReadOnlyVersion, qualifyUnattended } from "../../work-board/template-graph.js";
@@ -15,7 +16,10 @@ import { createHostGit } from "../../work-board/workflow/host-git.js";
 import { bindStageWorkspace, unbindStageWorkspace } from "../../permissions/stage-workspace-binding.js";
 import type { PermissionManager } from "../../permissions/permission-manager.js";
 import { createRunScopeHooks } from "../../permissions/run-scope.js";
-import { unattendedLaneHooks } from "../../permissions/unattended-lane-registry.js";
+import { getHostShellExecutionPlan, onSandboxStatusChanged } from "../../permissions/sandbox-capability.js";
+import { protectedReadDenyMatcher } from "../../permissions/asrt-sandbox.js";
+import { proveUnattendedIsolation } from "../../permissions/unattended-isolation.js";
+import { activateUnattendedAdmission, reproveUnattendedStages, unattendedLaneHooks } from "../../permissions/unattended-lane-registry.js";
 import type { ToolEffectResolver } from "../../permissions/tool-effect-evidence.js";
 import type { StageRunEngineDeps } from "../../work-board/workflow/stage-run-engine.js";
 
@@ -101,6 +105,7 @@ export function workflowEngineExtensions(store: WorkBoardStore, templates: Pick<
     ask();
   };
   store.onItemRemoved = ask;
+  onSandboxStatusChanged(reproveUnattendedStages);
   return {
     runs,
     workspace,
@@ -116,7 +121,7 @@ export function workflowEngineExtensions(store: WorkBoardStore, templates: Pick<
     },
     lane: {
       ...unattendedLaneHooks,
-      admit: async ({ runKey }) => {
+      admit: async ({ runKey, stageId, envelope, workspaceRoot }) => {
         const unavailable = { ok: false, code: "lane-unavailable" } as const;
         const [, item, runId] = /^work-board:([1-9]\d*)#([^#]+)$/.exec(runKey) ?? [];
         const itemId = Number(item);
@@ -126,7 +131,28 @@ export function workflowEngineExtensions(store: WorkBoardStore, templates: Pick<
           if (!run || run.settled !== undefined || run.runStartedBy.kind !== "schedule-attachment") return unavailable;
           const version = await templates.resolveVersion(run.pin);
           assertPinnedVersion(version, run.pin);
-          return isAllReadOnlyVersion(version) ? { ok: true } : unavailable;
+          if (isAllReadOnlyVersion(version)) return { ok: true };
+          if (!envelope) return { ok: false, code: "envelope-missing" };
+          const prove = () => {
+            const plan = getHostShellExecutionPlan("default", "shell");
+            try {
+              const covered = protectedReadDenyMatcher();
+              return proveUnattendedIsolation({
+                plan, envelope, workspaceRoot, home: homedir(), toolchainRoots: [],
+                floorCovers: path => covered(path) !== undefined,
+              });
+            } catch {
+              return { proven: false, reason: "read-narrowing-unavailable" } as const;
+            }
+          };
+          const proof = prove();
+          if (!proof.proven) return { ok: false, code: "isolation-unproven", reason: proof.reason };
+          return {
+            ok: true,
+            activate: () => activateUnattendedAdmission(runKey, stageId, {
+              envelope, workspaceRoot, profile: proof.profile, prove,
+            }),
+          };
         } catch {
           return unavailable;
         }

@@ -1,18 +1,16 @@
 import { isAbsolute } from "node:path";
-import type { StageEnvelope } from "../shared/workflow-template-types.js";
+import type { IsolationUnproven, StageEnvelope } from "../shared/workflow-template-types.js";
 import type { HostShellExecutionPlan } from "./host-shell-execution-plan.js";
 
-export type IsolationUnproven =
-  | "sandbox-unavailable"
-  | "platform-not-qualified"
-  | "boundary-unverified"
-  | "read-narrowing-unavailable";
+export type { IsolationUnproven } from "../shared/workflow-template-types.js";
 
 export interface UnattendedIsolationProfile {
   readRoots: readonly string[];
   writeRoots: readonly string[];
   readDenyRoots: readonly string[];
 }
+
+export type UnattendedIsolationProof = { proven: true; profile: UnattendedIsolationProfile } | { proven: false; reason: IsolationUnproven };
 
 export function proveUnattendedIsolation({ plan, envelope, workspaceRoot, home, toolchainRoots, floorCovers }: {
   plan: HostShellExecutionPlan;
@@ -21,7 +19,7 @@ export function proveUnattendedIsolation({ plan, envelope, workspaceRoot, home, 
   home: string | undefined;
   toolchainRoots: readonly string[];
   floorCovers: (path: string) => boolean;
-}): { proven: true; profile: UnattendedIsolationProfile } | { proven: false; reason: IsolationUnproven } {
+}): UnattendedIsolationProof {
   if (!plan.sandboxed) return { proven: false, reason: "sandbox-unavailable" };
   if (plan.substrate !== "mxc") return { proven: false, reason: "platform-not-qualified" };
   if (plan.egressProtocolCoverage.rawIp !== "blocked") return { proven: false, reason: "boundary-unverified" };

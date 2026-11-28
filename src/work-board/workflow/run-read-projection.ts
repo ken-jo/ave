@@ -139,6 +139,7 @@ export function projectWorkflowRun(
         stageId, attempt, status, childSessionId, startedAt, endedAt, failure, gate: shownGate, receivedInputs,
         ...(outputExecutions?.length && { outputExecutions: outputExecutions.map(({ id, status, detail }) => ({ id, status, ...(detail !== undefined && { detail: maskWorkflowText(detail) }) })) }),
         ...(hash && retryIds?.length && { outputRetry: { hash, ids: retryIds } }),
+        ...(stage.blocked && { blocked: { ...stage.blocked } }),
         ...(stage.failureReason !== undefined && { failureReason: stage.failureReason }),
         ...(stage.deniedCalls?.length ? { deniedCalls: stage.deniedCalls.map(({ toolName, code }) => ({ toolName: maskWorkflowText(toolName), code })) } : {}),
         ...(output !== undefined && { result: maskWorkflowText(output) }), resultHash, ...sessionFacts?.(stage),
