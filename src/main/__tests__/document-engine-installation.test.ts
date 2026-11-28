@@ -1,6 +1,7 @@
 // The document engine is the LibreOffice the user installed (owner decision 2026-11-28): Ave finds and verifies it,
 // and installs, verifies and removes only its own part, the pinned HWP import extension. The cases set the platform to
-// macOS, the only one offered; discovery checks execute permission with access(X_OK), which a Windows host also answers.
+// macOS, the only one offered; discovery checks execute permission with access(X_OK), which a Windows host also answers,
+// and the cases also run with no-follow opens absent, as on a Windows host.
 import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,6 +13,37 @@ const fixtures = vi.hoisted(() => ({
   fetch: vi.fn(), verifyPlatform: vi.fn(), system: vi.fn(),
 }));
 
+/**
+ * A Windows host has no `O_NOFOLLOW`. These cases simulate macOS through `process.platform` on any host, so the suite
+ * also runs them with that constant absent, which reproduces a Windows host on this one.
+ */
+const host = vi.hoisted(() => ({ noFollow: true }));
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  const constants = { ...actual.constants };
+  Object.defineProperty(constants, "O_NOFOLLOW", { enumerable: true,
+    get: () => host.noFollow ? actual.constants.O_NOFOLLOW : undefined });
+  return { ...actual, constants, default: { ...actual, constants } };
+});
+// With macOS simulated on a host without no-follow opens, the production opener refuses, fail-closed. The installer's
+// opener is therefore replaced on such a host only, by one doing what the opener does on Windows: links refused by
+// lstat, then the opened handle's identity checked against it. Everywhere else the production opener runs.
+vi.mock("../codex-executable-artifact.js", async (original) => {
+  const actual = await original<typeof import("../codex-executable-artifact.js")>();
+  const { constants, promises: fs } = await import("node:fs");
+  return { ...actual, openExecutableFile: async (path: string) => {
+    if (typeof constants.O_NOFOLLOW === "number") return actual.openExecutableFile(path);
+    const before = await fs.lstat(path, { bigint: true });
+    if (!before.isFile() || before.isSymbolicLink()) throw new actual.CodexExecutableArtifactError();
+    const handle = await fs.open(path, constants.O_RDONLY);
+    const opened = await handle.stat({ bigint: true });
+    if (opened.dev !== before.dev || opened.ino !== before.ino || opened.size !== before.size) {
+      await handle.close();
+      throw new actual.CodexExecutableArtifactError("Executable changed while opening");
+    }
+    return handle;
+  } };
+});
 vi.mock("../../core/network-guard.js", () => ({ fetchPublicHttpResponse: fixtures.fetch }));
 vi.mock("../codex-executable-location.js", async (original) => ({ ...await original<typeof import("../codex-executable-location.js")>(), assertCodexLocations: vi.fn().mockResolvedValue(undefined) }));
 vi.mock("../document-engine-release-pins.js", async () => {
@@ -45,6 +77,7 @@ async function installApp() {
 
 
 beforeEach(async () => {
+  host.noFollow = true;
   vi.resetModules();
   vi.clearAllMocks();
   setProcessPlatform("darwin");
@@ -73,7 +106,12 @@ afterEach(async () => {
   await rm(apps, { recursive: true, force: true });
 });
 
-describe("the document engine the user installed", () => {
+describe.each([
+  { hostKind: "a host with no-follow opens", noFollow: true },
+  { hostKind: "a host without them, as Windows", noFollow: false },
+])("the document engine the user installed, on $hostKind", ({ noFollow }) => {
+  beforeEach(() => { host.noFollow = noFollow; });
+
   it("reports a missing app, downloads nothing and writes nothing", async () => {
     expect(await installer.getDocumentEngineInstallationState()).toMatchObject({ phase: "app-missing" });
     expect(await installer.getVerifiedDocumentEngineInstallation(new AbortController().signal)).toBeNull();
@@ -210,6 +248,18 @@ async function placeLegacyPayload(receipt: string): Promise<string> {
   await writeFile(join(home, "document-engine", "installation.json"), receipt);
   return slot;
 }
+
+describe("the production executable opener", () => {
+  it("still refuses, fail-closed, on macOS without a no-follow open", async () => {
+    const actual = await vi.importActual<typeof import("../codex-executable-artifact.js")>("../codex-executable-artifact.js");
+    const app = await installApp();
+    host.noFollow = false;
+    await expect(actual.openExecutableFile(app.executable)).rejects.toThrow("No-follow open is unavailable");
+    // Control: with the flag present the same open succeeds. A Windows host has no such flag, so the control runs elsewhere.
+    host.noFollow = true;
+    if (HOST_PLATFORM !== "win32") await (await actual.openExecutableFile(app.executable)).close();
+  });
+});
 
 describe.each(["win32", "linux"] as const)("the document engine on %s", (platform) => {
   beforeEach(() => {
