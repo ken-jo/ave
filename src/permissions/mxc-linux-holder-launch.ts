@@ -107,22 +107,24 @@ function canonicalOrSelf(path: string): string {
 
 /** The structure checks of design 1.3, in order. Any failure names its reason and has no fallback. */
 export function checkBwrapCall(record: BwrapRecord, request: LinuxHolderRequestShape): LinuxHolderCall {
-  const end = record.words.indexOf("--");
-  if (end < 0) throw new LinuxHolderRequestRejected("the bwrap call has no command");
-  const options = record.words.slice(0, end);
-  const command = record.words.slice(end + 1);
+  const words = record.words;
   const present = new Set<string>();
   const counts = new Map<string, number>();
   const rows = new Set([...request.filesystem.readwritePaths, ...request.filesystem.readonlyPaths, ...request.filesystem.deniedPaths]
     .flatMap(path => [path, canonicalOrSelf(path)]));
   const denied = new Set(request.filesystem.deniedPaths.flatMap(path => [path, canonicalOrSelf(path)]));
-  const renumbered = [...options];
-  for (let index = 0; index < options.length;) {
-    const option = options[index] ?? "";
+  // Walked by arity, so an operand (an environment value of `--`, `--seccomp` or `--file`) is never read as an option
+  // and the command starts at the `--` that stands where an option would.
+  const descriptorFds = new Map<string, number>();
+  const renumbered: string[] = [];
+  let end = -1;
+  for (let index = 0; index < words.length;) {
+    const option = words[index] ?? "";
+    if (option === "--") { end = index; break; }
     const arity = OPTION_ARITY[option];
     if (arity === undefined) throw new LinuxHolderRequestRejected(`the bwrap call has an option outside the allowlist: ${option}`);
-    if (index + arity >= options.length && arity > 0) throw new LinuxHolderRequestRejected(`${option} is missing its operands`);
-    const operands = options.slice(index + 1, index + 1 + arity);
+    if (index + arity >= words.length && arity > 0) throw new LinuxHolderRequestRejected(`${option} is missing its operands`);
+    const operands = words.slice(index + 1, index + 1 + arity);
     present.add(option);
     counts.set(option, (counts.get(option) ?? 0) + 1);
     if (option === "--bind" || option === "--ro-bind" || option === "--tmpfs") {
@@ -136,22 +138,22 @@ export function checkBwrapCall(record: BwrapRecord, request: LinuxHolderRequestS
         throw new LinuxHolderRequestRejected(`${option} mounts ${JSON.stringify(operands[0])} at another path`);
       }
     }
-    if (option === "--seccomp") renumbered[index + 1] = String(LINUX_HOLDER_SECCOMP_FD);
-    if (option === "--file") renumbered[index + 1] = String(LINUX_HOLDER_RESOLVER_FD);
+    // The two data descriptors are renumbered where they stand as options, never where an operand spells the word.
+    const renumber = option === "--seccomp" ? LINUX_HOLDER_SECCOMP_FD : option === "--file" ? LINUX_HOLDER_RESOLVER_FD : undefined;
+    if (renumber !== undefined) descriptorFds.set(option, Number(operands[0]));
+    renumbered.push(option, ...(renumber === undefined ? operands : [String(renumber), ...operands.slice(1)]));
     index += 1 + arity;
   }
+  if (end < 0) throw new LinuxHolderRequestRejected("the bwrap call has no command");
+  const command = words.slice(end + 1);
   for (const required of REQUIRED_OPTIONS) {
     if (!present.has(required)) throw new LinuxHolderRequestRejected(`the bwrap call lacks ${required}`);
   }
   if ((counts.get("--seccomp") ?? 0) !== 1 || (counts.get("--file") ?? 0) > 1) {
     throw new LinuxHolderRequestRejected("the bwrap call must name one --seccomp and at most one --file descriptor");
   }
-  const descriptorOf = (option: string) => {
-    const index = options.indexOf(option);
-    return index < 0 ? undefined : Number(options[index + 1]);
-  };
-  const seccompFd = descriptorOf("--seccomp");
-  const resolverFd = descriptorOf("--file");
+  const seccompFd = descriptorFds.get("--seccomp");
+  const resolverFd = descriptorFds.get("--file");
   const named = [seccompFd, resolverFd].filter((fd): fd is number => fd !== undefined);
   if (record.descriptors.size !== named.length || named.some(fd => !record.descriptors.has(fd))) {
     throw new LinuxHolderRequestRejected("the recorded descriptors are not the ones the call names");

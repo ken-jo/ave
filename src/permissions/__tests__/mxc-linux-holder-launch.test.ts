@@ -97,6 +97,18 @@ describe("Linux holder bwrap record", () => {
     expect(() => checkBwrapCall(parseBwrapRecord(record([...measured, "--", ...command], fds)), request)).toThrow("not the request's command line");
   });
 
+  // Review P3-5: options are found by position, so an environment value that spells an option or the separator is data.
+  it("reads options by arity: an environment value of --seccomp, --file, --args or -- is an operand, not an option", () => {
+    const values = ["--seccomp", "--file", "--args", "--"];
+    const options = [...measured.slice(0, 7), ...values.flatMap((value, index) => ["--setenv", `V${index}`, value]), ...measured.slice(7)];
+    const checked = checkBwrapCall(parseBwrapRecord(record([...options, "--", "sh", "-c", request.process.commandLine], fds)), request);
+    expect(checked.command).toEqual(["sh", "-c", request.process.commandLine]);
+    expect(checked.options.slice(7, 7 + 3 * values.length)).toEqual(values.flatMap((value, index) => ["--setenv", `V${index}`, value]));
+    expect(checked.options.slice(-2)).toEqual(["--seccomp", "5"]);
+    expect(checked.seccomp.toString()).toBe("filter-bytes");
+    expect(checked.resolver?.toString()).toBe("nameserver 127.0.0.53\n");
+  });
+
   it("refuses recorded descriptors that are not the ones the call names", () => {
     expect(() => checkBwrapCall(parseBwrapRecord(record(call, [[10, "filter-bytes"]])), request)).toThrow("not the ones the call names");
     expect(() => checkBwrapCall(parseBwrapRecord(record(call, [...fds, [12, "x"]])), request)).toThrow("not the ones the call names");
