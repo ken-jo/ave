@@ -1,4 +1,3 @@
-import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -81,17 +80,24 @@ it("keeps the Linux request bytes stable and requires the nearest cwd row to all
   // The launcher would put a request's env on bwrap's command line, so the request carries none: the shell sources it.
   expect(request.process.env).toEqual([]);
   expect(environment).toBe("export HOME='/work/sandbox-home'\nexport TMPDIR='/work/sandbox-home/temp'\nexport PATH='/usr/bin'\n");
-  expect(buildBubblewrapShellRequest({ ...input, env: { TOKEN: "it's", "BAD-NAME": "x" } }).environment).toBe("export TOKEN='it'\"'\"'s'\n");
+  expect(buildBubblewrapShellRequest({ ...input, env: { TOKEN: "it's" } }).environment).toBe("export TOKEN='it'\"'\"'s'\n");
+  // A name sh cannot export, or one a shell owns (read-only in bash), is refused by name, never dropped.
+  for (const name of ["BAD-NAME", "UID", "SHELLOPTS", "BASH_ENV", "BASH_FUNC_x%%", "1X"]) {
+    expect(() => buildBubblewrapShellRequest({ ...input, env: { [name]: "x" } }), name).toThrow(JSON.stringify(name));
+  }
   expect(() => buildBubblewrapShellRequest({ ...input, cwd: "/work/.ave/hooks" })).toThrow("outside its filesystem grants");
 });
 
 describe("checked-in Linux shell filters", () => {
-  // A line-ending conversion on checkout (autocrlf, a text attribute) would change the bytes packaging hashes.
-  it.each(Object.entries(seccompPins))("keeps the %s filter byte-identical to its blob and its pin", (arch, pin) => {
+  // A line-ending conversion on checkout (autocrlf, a text attribute) would change the bytes packaging hashes. The
+  // checked-out bytes must match the pin, and the attributes file must mark each filter binary, so no checkout converts
+  // it. Both are read from the tree, so a source tree without `.git` proves the same.
+  it.each(Object.entries(seccompPins))("keeps the %s filter byte-identical to its pin and marked binary", (arch, pin) => {
     const path = `resources/linux-shell-seccomp/${arch}/apply-seccomp`;
-    expect(execFileSync("git", ["check-attr", "binary", "--", path], { encoding: "utf8" })).toBe(`${path}: binary: set\n`);
-    const blob = execFileSync("git", ["cat-file", "blob", `HEAD:${path}`], { maxBuffer: 16 * 1024 * 1024 });
-    expect(readFileSync(path).equals(blob)).toBe(true);
-    expect(createHash("sha256").update(blob).digest("hex")).toBe(pin);
+    expect(createHash("sha256").update(readFileSync(path)).digest("hex")).toBe(pin);
+    const rules = readFileSync(".gitattributes", "utf8").split("\n").map(line => line.trim().split(/\s+/u));
+    // Attribute patterns here use `*` within one path segment only.
+    const matches = (pattern: string) => new RegExp(`^${pattern.split("*").map(part => part.replace(/[.+?^${}()|[\]\\]/gu, "\\$&")).join("[^/]*")}$`, "u").test(path);
+    expect(rules.some(([pattern, ...attributes]) => pattern !== undefined && matches(pattern) && attributes.includes("binary"))).toBe(true);
   });
 });

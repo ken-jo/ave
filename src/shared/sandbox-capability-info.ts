@@ -305,7 +305,7 @@ export type ContainerRawIpEvidenceKind = "measured" | "structural" | "arrival";
  * Memory only, never persisted, re-measured every boot.
  */
 export type MxcRawIpProbeVerdict<
-  Reason extends MxcRawIpUnknownReason = MxcRawIpUnknownReason,
+  Reason extends string = MxcRawIpUnknownReason,
   Evidence extends ContainerRawIpEvidenceKind = Exclude<ContainerRawIpEvidenceKind, "arrival">,
   Target extends string = MxcRawIpTarget,
 > = {
@@ -327,7 +327,9 @@ export type MacRawIpVerdict = MxcRawIpProbeVerdict<MacRawIpUnknownReason>;
  * The reasons the Linux shell container's canary gives: the macOS ones. As on every POSIX backend, `blocked` needs the
  * UDP datagram measured and not arrived; an unmeasured one is `udp-unmeasured`.
  */
-export type LinuxRawIpUnknownReason = MacRawIpUnknownReason;
+export type LinuxRawIpUnknownReason = MacRawIpUnknownReason
+  /** The host's address lies in the backend's own network, so no arrival could have been delivered to its listener. */
+  | "arrival-unprovable";
 /** The Linux probe's targets: the shared ones plus `ta`, the TCP arrival listener on the host's primary IPv4. */
 export type LinuxRawIpTarget = MxcRawIpTarget | "ta";
 /** Whether a process in the Linux shell container can reach an IP address directly, as this boot's canary measured it. */
@@ -367,6 +369,18 @@ export type SandboxContainerShellSupport =
   // An available shell container without a measurement has an unknown raw-IP verdict. The unavailable arm has no field.
   | { readonly state: "available"; readonly rawIpProbe?: ContainerRawIpProbeVerdict }
   | { readonly state: "unavailable"; readonly reason: SandboxContainerShellUnavailableReason; readonly detail?: readonly string[] };
+
+/** Why the Linux holder route is not proven this app run (design 6.3). The canary reports the first failure. */
+export type SandboxContainerHolderUnavailableReason = Extract<SandboxMxcUnavailableReason,
+  "unsupported-arch" | "binary-missing" | "launcher-mismatch" | "runtime-root-unproved" | "request-rejected"
+> | "capture-folder-untrusted" | "tools-missing" | "namespaces-unavailable" | "holder-start-failed";
+
+/** The Linux holder canary's result: extensions and hooks need only bwrap, so it is reported beside the shells'. */
+export type SandboxContainerHolderSupport =
+  | { readonly state: "checking" }
+  // The holders' own raw-IP verdict; they never reuse the shells'.
+  | { readonly state: "available"; readonly rawIpProbe?: ContainerRawIpProbeVerdict }
+  | { readonly state: "unavailable"; readonly reason: SandboxContainerHolderUnavailableReason; readonly detail?: readonly string[] };
 
 export type SandboxContainerShellInfo = SandboxContainerShellSupport & {
   readonly egressProtocolCoverage: EgressProtocolCoverage;
@@ -555,6 +569,8 @@ export interface SandboxCapabilityInfo {
   windowsSubstrate?: SandboxWindowsSubstrateInfo | null;
   /** Boot verification for the macOS shell container. */
   containerShell?: SandboxContainerShellInfo;
+  /** Linux, once the holder route is on: the holder canary's result for extensions and hooks. */
+  containerHolder?: SandboxContainerHolderSupport;
   /** Windows: no sandboxed process can start this run because the container runtime root is unproved; set whatever the sandbox setting. */
   sandboxHomesUnavailable?: boolean;
   /** The shell sandbox as the chat input's permission card shows it. */

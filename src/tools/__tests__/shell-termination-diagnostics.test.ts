@@ -31,13 +31,14 @@ vi.mock("../../permissions/asrt-sandbox.js", async (importOriginal) => ({
 const containerLaunch = vi.hoisted(() => ({
   settle: undefined as undefined | ((outcome: {
     code: number | null; timedOut: boolean; cancelled: boolean; rejected: boolean; cleanupUnverified: boolean;
-    startFailed?: true; transportFailed?: true; cwdChanged?: true; grantWithheld?: true; failure?: { type: "error"; code: string; message: string };
+    startFailed?: true; transportFailed?: true; runFailed?: boolean; environmentFailed?: boolean; cwdChanged?: true; grantWithheld?: true; failure?: { type: "error"; code: string; message: string };
   }) => void),
   // The final check the route handed the supervisor client, called as the client calls it once the workload is ready.
   authorize: undefined as undefined | ((grant: () => boolean) => Promise<boolean>),
   child: undefined as undefined | import("node:child_process").ChildProcess & { stdout: import("node:stream").PassThrough; stderr: import("node:stream").PassThrough },
   // Runs once the launch is prepared: after the permit is consumed, before the supervisor starts.
   prepared: undefined as undefined | (() => void),
+  narrowedWriteRoots: [] as { root: string; reason: string; link?: string }[],
 }));
 vi.mock("../mxc-posix-shell-launch.js", async () => {
   const { ChildProcess } = await import("node:child_process");
@@ -46,7 +47,7 @@ vi.mock("../mxc-posix-shell-launch.js", async () => {
     prepareMxcPosixShellLaunch: vi.fn(async (_input: unknown, lifecycle: import("../contained-shell-lifecycle.js").ContainedShellLifecycle) => {
       containerLaunch.prepared?.();
       return {
-        carvedReadLimitedAt: undefined, proxyPort: 1, narrowedWriteRoots: [],
+        carvedReadLimitedAt: undefined, proxyPort: 1, narrowedWriteRoots: containerLaunch.narrowedWriteRoots,
         // As the real route: macOS spends a permit at the workload's grant, Linux before start.
         spendsPermitAtGrant: process.platform !== "linux",
         start(_label: string, authorize: (grant: () => boolean) => Promise<boolean>) {
@@ -398,6 +399,27 @@ describe.each(["darwin", "linux"] as const)("%s container shell completion", (pl
     expect(Buffer.concat(chunks).toString()).toBe(output);
   });
 
+  it("completes a sandboxed PowerShell command from the container's outcome, with its output and literal exit", async () => {
+    vi.mocked(spawn).mockImplementation((_command, args) => {
+      if (!args?.some((arg) => arg.endsWith(POWER_SHELL_AST_PARSER))) throw new Error("only the AST parser runs on the host");
+      const parser = childProcess();
+      queueMicrotask(() => {
+        parser.stdout.write(JSON.stringify({ errors: [], commands: [], redirections: [], unsupported: [] }));
+        close(parser, 0, null);
+      });
+      return parser;
+    });
+    const pending = new PowerShellTool().execute({ command: "Write-Output ready", timeoutSeconds: 1 }, {
+      cwd: process.cwd(), extraAllowedDirectories: [], metadata: {},
+    });
+    await vi.waitFor(() => expect(containerLaunch.settle).toBeTypeOf("function"));
+    containerLaunch.child?.stdout.write("partial\n");
+    containerLaunch.settle?.({ ...exited, code: 7 });
+    expect(await pending).toMatchObject({
+      output: "Shell command exited with code 7.\npartial", isError: true, metadata: { returncode: 7, sandboxed: true },
+    });
+  });
+
   it("reports the SDK's -1 as a shell that left no exit code, never as exit code -1", async () => {
     const locale = getLocale();
     try {
@@ -437,6 +459,61 @@ describe.each(["darwin", "linux"] as const)("%s container shell completion", (pl
     expect(result.output).toContain("partial");
     expect(result.output).toContain(t(key, { seconds: 1 }));
     expect(result.output).not.toMatch(/exited with code|terminated by/);
+  });
+});
+
+describe("linux container run that lost its launcher", () => {
+  beforeEach(() => {
+    setProcessPlatform("linux");
+    setShellSandboxRequestedAtBoot(true);
+    setActiveSandboxCapability({
+      kind: "asrt", confidence: "verified", platform: "linux",
+      reason: "Controlled wrapper", confines: { filesystem: true, process: true, network: true },
+    });
+    setContainerShellSubstrate("linux", { state: "available" });
+    containerLaunch.settle = undefined;
+    containerLaunch.child = undefined;
+  });
+  afterEach(() => { setContainerShellSubstrate("linux", { state: "unavailable", reason: "shell-start-failed" }); });
+
+  it("names the link when a symlinked protected name withheld a write root", async () => {
+    containerLaunch.narrowedWriteRoots = [{ root: "/work", reason: "routing-link", link: "/work/.vscode" }, { root: "/other", reason: "entry-budget" }];
+    try {
+      const pending = new BashTool().execute({ command: "echo ready", timeoutSeconds: 1 }, { cwd: process.cwd(), extraAllowedDirectories: [], metadata: {} });
+      await vi.waitFor(() => expect(containerLaunch.settle).toBeTypeOf("function"));
+      containerLaunch.settle?.({ code: 0, timedOut: false, cancelled: false, rejected: false, cleanupUnverified: false });
+      const result = await pending;
+      expect(result.output).toContain(t("sandboxPolicy.containerWriteWithheldLink", { root: "/work", link: "/work/.vscode" }));
+      expect(result.output).toContain(t("sandboxPolicy.containerWriteWithheld", { root: "/other" }));
+    } finally {
+      containerLaunch.narrowedWriteRoots = [];
+    }
+  });
+
+  it.each([
+    [true, "sandboxPolicy.linuxContainerEnvironmentFailed"],
+    [false, "sandboxPolicy.linuxContainerStartRefused"],
+  ] as const)("names a container shell that never reached its command (environment failed: %s), never as the command's status", async (environmentFailed, key) => {
+    const pending = new BashTool().execute({ command: "echo ready", timeoutSeconds: 1 }, { cwd: process.cwd(), extraAllowedDirectories: [], metadata: {} });
+    await vi.waitFor(() => expect(containerLaunch.settle).toBeTypeOf("function"));
+    containerLaunch.settle?.({ code: environmentFailed ? 125 : 126, timedOut: false, cancelled: false, rejected: true, environmentFailed, cleanupUnverified: false });
+    const result = await pending;
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain(t(key));
+    expect(result.output).not.toMatch(/exited with code/);
+  });
+
+  it("returns the command's output with a named failed run, never the refused-start message", async () => {
+    const pending = new BashTool().execute({ command: "echo ready", timeoutSeconds: 1 }, { cwd: process.cwd(), extraAllowedDirectories: [], metadata: {} });
+    await vi.waitFor(() => expect(containerLaunch.settle).toBeTypeOf("function"));
+    containerLaunch.child?.stdout.write("partial\n");
+    containerLaunch.settle?.({ code: 255, timedOut: false, cancelled: false, rejected: false, runFailed: true, cleanupUnverified: false });
+    const result = await pending;
+    expect(result).toMatchObject({ isError: true, metadata: { sandboxed: true } });
+    expect(result.output).toContain("partial");
+    expect(result.output).toContain(t("sandboxPolicy.linuxContainerRunFailed"));
+    expect(result.output).not.toContain(t("sandboxPolicy.linuxContainerStartRefused"));
+    expect(result.output).not.toMatch(/exited with code/);
   });
 });
 

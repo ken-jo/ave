@@ -23,6 +23,18 @@ const MANIFEST = "watched-manifest.json";
 interface FileIdentity {
   readonly dev: bigint;
   readonly ino: bigint;
+  /** Linux: the birth time in ns where the filesystem reports one; a reused inode number does not carry it over. */
+  readonly birth?: bigint;
+}
+
+/** A Linux folder's identity: device, inode and, where reported, birth time. Elsewhere device and file index only. */
+function linuxIdentity(entry: BigIntStats): FileIdentity {
+  return process.platform === "linux" && entry.birthtimeNs > 0n
+    ? { dev: entry.dev, ino: entry.ino, birth: entry.birthtimeNs } : { dev: entry.dev, ino: entry.ino };
+}
+
+function sameBirth(expected: FileIdentity, entry: BigIntStats): boolean {
+  return expected.birth === undefined || entry.birthtimeNs === expected.birth;
 }
 
 interface AnchorPin {
@@ -171,7 +183,7 @@ export function prepareAbsentProtectedWatch(path: string, roots: readonly string
   for (;;) {
     const entry = entryAt(anchor, true);
     if (entry?.isDirectory()) {
-      const pin = { anchor, anchorIdentity: { dev: entry.dev, ino: entry.ino } };
+      const pin = { anchor, anchorIdentity: linuxIdentity(entry) };
       return () => {
         const published = watched.get(id);
         if (published !== undefined) {
@@ -216,7 +228,22 @@ export interface WatchedRowClaim {
 }
 
 function refusal(path: string, cause?: unknown): Error {
-  return new Error(t("sandboxPolicy.windowsProtectedWriteRefused", { path }), cause === undefined ? undefined : { cause });
+  const message = process.platform === "linux" ? "sandboxPolicy.linuxProtectedWriteRefused" : "sandboxPolicy.windowsProtectedWriteRefused";
+  return new Error(t(message, { path }), cause === undefined ? undefined : { cause });
+}
+
+/**
+ * Linux: an empty folder another run's placeholder holds at a watched name (design 7.3). It is Ave's, not a name a
+ * holder created: it counts as absent until its run removes it, and from then on the name is watched like any other.
+ */
+let heldPlaceholderAt: (path: string) => boolean = () => false;
+
+export function setWatchedPlaceholderOccupant(occupied: (path: string) => boolean): void {
+  heldPlaceholderAt = occupied;
+}
+
+function vacant(path: string): boolean {
+  return entryAt(path) === undefined || heldPlaceholderAt(path);
 }
 
 /**
@@ -237,15 +264,21 @@ export function claimMxcWatchedRows(rows: readonly MxcWatchedRow[], context: Wat
           try {
             // The folder the ranker admitted, by the helper's identity, read between two looks at the same object.
             const before = entryAt(anchor, true);
-            const [facts] = pinWindowsPaths([anchor]);
+            // Windows names the folder by volume serial and file id; the Linux ranker records its device and inode there.
+            const facts = process.platform !== "linux" ? pinWindowsPaths([anchor])[0]
+              : before === undefined ? undefined : { volumeSerial: String(before.dev), fileId: String(before.ino) };
+            // Linux: the ranker's birth time too, where it recorded one, so a folder made again at a reused inode is refused.
+            const bornAsRanked = process.platform !== "linux" || row.birth === undefined
+              || (before !== undefined && String(before.birthtimeNs) === row.birth);
             const known = watched.get(key(target));
             if (before?.isDirectory() === true && !before.isSymbolicLink() && sameIdentity(anchor, before)
-              && facts?.volumeSerial === row.volumeSerial && facts.fileId === row.fileId
+              && facts?.volumeSerial === row.volumeSerial && facts.fileId === row.fileId && bornAsRanked
               && within(anchor, target) && key(anchor) !== key(target)
               // Still as ranked: once the first missing folder exists the name can carry an exact deny, so a stale ranking is refused.
-              && entryAt(join(anchor, relative(anchor, target).split(/[\\/]/)[0] ?? "")) === undefined
-              && (known === undefined || (known.anchorIdentity.dev === before.dev && known.anchorIdentity.ino === before.ino))) {
-              identity = { dev: before.dev, ino: before.ino };
+              && vacant(join(anchor, relative(anchor, target).split(/[\\/]/)[0] ?? ""))
+              && (known === undefined || (known.anchorIdentity.dev === before.dev && known.anchorIdentity.ino === before.ino
+                && sameBirth(known.anchorIdentity, before)))) {
+              identity = linuxIdentity(before);
             }
           } catch (error) {
             throw refusal(row.path, error);
@@ -305,7 +338,7 @@ export function watchedProtectedRows(): readonly string[] {
 // A fresh check beneath the recorded folder: the folder must still be the recorded object before the name is looked up in it.
 function rowState(row: WatchedRow, rootCount = row.roots.size): "absent" | "present" | "unverifiable" {
   try {
-    const present = entryAt(row.path) !== undefined;
+    const present = !vacant(row.path);
     if (anchorsIntact(row)) return present ? "present" : "absent";
     // A replaced folder with nothing at the name leaves nothing to read once no contained process can still write there.
     return present || row.holders.size > 0 || (row.exact && rootCount > 0) ? "unverifiable" : "absent";
@@ -395,7 +428,8 @@ function matchesStoredFileIdentity(identity: FileIdentity, expected: StoredFileI
 
 function sameIdentity(path: string, identity: FileIdentity): boolean {
   const current = entryAt(path, true);
-  return current?.isDirectory() === true && !current.isSymbolicLink() && current.dev === identity.dev && current.ino === identity.ino;
+  return current?.isDirectory() === true && !current.isSymbolicLink() && current.dev === identity.dev && current.ino === identity.ino
+    && sameBirth(identity, current);
 }
 
 function changedAnchor(row: WatchedRow): string | undefined {

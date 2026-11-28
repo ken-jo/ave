@@ -1,5 +1,6 @@
 
 
+import { provenLinuxHolderRoute } from "./linux-holder-route.js";
 import { MxcExtensionReadinessRefusedError, MxcNativeEntryRequiredError, MxcProcessContractError, WorkerTransportUnsupportedError } from "./mxc-extension-errors.js";
 import { assertMxcExtensionFilesystemOwnership, type MxcExtensionFilesystemOwnership } from "./mxc-filesystem-ownership.js";
 import { mxcRuntimeRootFloorPath } from "./mxc-runtime-root.js";
@@ -76,6 +77,7 @@ import {
 import { asrtInvocationListenersSupported, noteAsrtUnixSocketPolicy } from "./egress-identity.js";
 import {
   getExtensionBackendPlan,
+  getLinuxHolderSupport,
   getMacHolderCapability,
   isPluginWorkerConfinementRequestedAtBoot,
   isShellSandboxRequestedAtBoot,
@@ -1508,8 +1510,9 @@ export function assertExtensionStartAllowed(options?: { readonly backend: "mxc";
   readonly start?: ExtensionStartPresentation;
   readonly hostOwned?: true;
 }): void {
-  // The platforms whose extensions run in containers: Windows, and macOS once its holder route is on.
-  const containerPlatform = process.platform === "win32" || (process.platform === "darwin" && isContainerHolderRouteEnabled("darwin"));
+  // The platforms whose extensions run in containers: Windows, and macOS and Linux once their holder route is on.
+  const containerPlatform = process.platform === "win32"
+    || ((process.platform === "darwin" || process.platform === "linux") && isContainerHolderRouteEnabled(process.platform));
   const plan = containerPlatform ? getExtensionBackendPlan() : undefined;
   const nativeEntry = options !== undefined && "backend" in options;
   // A macOS user hook follows the shell setting: its native entry needs this run's holder route, not the extension plan.
@@ -1519,7 +1522,21 @@ export function assertExtensionStartAllowed(options?: { readonly backend: "mxc";
     }
     return;
   }
+  // Linux has no extension plan: a native entry needs the holder route this app run proved.
+  if (nativeEntry && process.platform === "linux") {
+    if (provenLinuxHolderRoute() === undefined) throw new MxcProcessContractError("Native extension backend is not ready for this start");
+    return;
+  }
   const legacy = options !== undefined && "backend" in options ? undefined : options;
+  // Linux once its holder route is on and extension isolation was requested (design 6.3): while the holder canary runs,
+  // a start waits as a checking plan makes it wait; once the route is proven every start takes the holder. A host-owned
+  // process is outside this floor and keeps its own gate, and a user who turned isolation off is not routed or asked.
+  const linuxHolderPlatform = process.platform === "linux" && containerPlatform && isPluginWorkerConfinementRequestedAtBoot()
+    && legacy?.hostOwned !== true;
+  if (linuxHolderPlatform && getLinuxHolderSupport()?.state === "checking") throw new MxcExtensionReadinessRefusedError();
+  if (linuxHolderPlatform && provenLinuxHolderRoute() !== undefined) {
+    throw legacy?.holder === "worker" ? new WorkerTransportUnsupportedError() : new MxcNativeEntryRequiredError();
+  }
   if (plan?.readiness === "checking" || plan?.readiness === "rejected") {
     throw new MxcExtensionReadinessRefusedError();
   }
@@ -1537,8 +1554,9 @@ export function assertExtensionStartAllowed(options?: { readonly backend: "mxc";
   if (failure === undefined || !isAveHomePrivacyApprovable(failure.category) || !waivable) assertAveHomePrivacyForConfinement();
   if (!waivable) return;
   // An expired readiness deadline is this same no-backend ask; it keeps its reason for the card and the notice.
+  // A Linux start with its holder route unproven asks: the existing sandbox never stands in for the holder.
   const cause = failure !== undefined ? "home-privacy-unverified"
-    : isPluginWorkerConfinementActive() ? undefined
+    : !linuxHolderPlatform && isPluginWorkerConfinementActive() ? undefined
       : plan?.reason === "readiness-deadline" ? "readiness-deadline" : "no-backend";
   if (cause === undefined) return;
   // No setting, rule or earlier answer stands in for it: one consent, one start.
@@ -1573,7 +1591,7 @@ function sensitiveReadFloorRows(userDataDir = _baseTrustedSettings?.userDataDir)
 }
 
 // Every spelling of the Ave home the sensitive table anchors to. Read-denied as a whole directory, so a child added later, a file created after a stamp, or a rename-over beneath it stays denied; a wrap re-opens only children AVE_HOME_READ_REALLOWS names.
-function aveHomeReadBoundaryRoots(): string[] {
+export function aveHomeReadBoundaryRoots(): string[] {
   const seen = new Set<string>();
   return [aveHome(), ...sensitiveDenyHomes().map((home) => join(home, ".ave"))].filter((root) => {
     const key = caseFoldForMatch(resolve(root));

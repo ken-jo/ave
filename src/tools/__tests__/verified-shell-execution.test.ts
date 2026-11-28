@@ -394,6 +394,34 @@ it.each((["bash", "powershell"] as const).flatMap((dialect) => [false, true].fla
   expect(previews.join("")).not.toContain(token);
 });
 
+it("reports a sandboxed Linux command that outlived its deadline as timed out, with its output", async () => {
+  const command = "git log HEAD";
+  const { cwd, identity } = await fixture(true, command);
+  const verifiedShellCommand = await prepareVerifiedShellCommand({ command, dialect: "bash", cwd });
+  expect(verifiedShellCommand).toBeDefined();
+  const { child, stdout, stderr } = controlledChild();
+  // Stays running until the container's deadline stops it.
+  Object.assign(child, { kill: vi.fn(() => {
+    queueMicrotask(() => {
+      stdout.end(); stderr.end();
+      Object.assign(child, { signalCode: "SIGKILL" });
+      child.emit("exit", null, "SIGKILL"); child.emit("close", null, "SIGKILL");
+    });
+    return true;
+  }) });
+  sandboxTransport();
+  vi.spyOn(childProcess, "spawn").mockImplementation(() => {
+    queueMicrotask(() => stdout.write("partial before the deadline\n"));
+    return child as ReturnType<typeof childProcess.spawn>;
+  });
+  const result = await new BashTool().execute({ command, timeoutSeconds: 1 }, {
+    cwd, extraAllowedDirectories: [], metadata: {}, hostShellExecutionPlan: identity.plan, verifiedShellCommand,
+  });
+  expect(result.isError).toBe(true);
+  expect(result.output).toContain(t("sandboxPolicy.containerShellTimedOut", { seconds: 1 }));
+  expect(result.output).toContain("partial before the deadline");
+});
+
 it.each((["bash", "powershell"] as const).flatMap((dialect) => ["abort", "error"].flatMap((event) =>
   [false, true].map((sandboxed) => ({ dialect, event, sandboxed })))))(
   "holds $dialect output through $event until child close with sandboxed=$sandboxed", async ({ dialect, event, sandboxed }) => {

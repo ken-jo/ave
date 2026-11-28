@@ -3,7 +3,7 @@ import { posix } from "node:path";
 import { sameFileIdentity } from "../lib/file-identity.js";
 import type { ContainerBackend } from "../shared/container-platform.js";
 import { canonicalWhereItExists } from "./mxc-runtime-root.js";
-import { mxcPolicyRows, type MxcFilesystemGrants, type MxcPolicyRows } from "./mxc-windows.js";
+import { mxcPolicyRows, type MxcFilesystemGrants, type MxcPolicyRows, type MxcWatchedRow } from "./mxc-windows.js";
 import { userDenyCoversPierce, type PolicyModel } from "./policy-model.js";
 
 type NestedGrantRule = "deny-wins" | "most-specific";
@@ -23,9 +23,18 @@ export interface PosixPolicyLookups {
   /** Whether the host account can read the path and search it if it is a directory. */
   readable(path: string): boolean;
   /** Directory identity, without following a final link. */
-  directoryIdentity(path: string): { readonly device: bigint; readonly inode: bigint } | undefined;
+  /**
+   * Directory identity, without following a final link. `birth` is the birth time in ns where the filesystem reports
+   * one (statx btime): a removed folder's inode number can be reused at once, its birth time is not.
+   */
+  directoryIdentity(path: string): { readonly device: bigint; readonly inode: bigint; readonly birth?: bigint } | undefined;
   readonly home: string;
   readonly foldsCase: boolean;
+  /**
+   * Bubblewrap only: write roots whose absent protected names are watched rather than held by a placeholder (a
+   * long-lived holder's user folders, design 7). Such a name is in no list; it is returned in `watched`.
+   */
+  readonly watchedRoots?: readonly string[];
 }
 
 export type PosixPolicyRefusal =
@@ -37,6 +46,7 @@ interface BubblewrapPlaceholder {
   readonly ancestor: string;
   readonly device: bigint;
   readonly inode: bigint;
+  readonly birth?: bigint;
   readonly parents: readonly string[];
 }
 
@@ -101,7 +111,8 @@ export function posixPolicyLookups(home: string, foldsCase: boolean): PosixPolic
     directoryIdentity(path) {
       try {
         const stat = lstatSync(path, { bigint: true });
-        return stat.isDirectory() ? { device: stat.dev, inode: stat.ino } : undefined;
+        if (!stat.isDirectory()) return undefined;
+        return stat.birthtimeNs > 0n ? { device: stat.dev, inode: stat.ino, birth: stat.birthtimeNs } : { device: stat.dev, inode: stat.ino };
       } catch (error) {
         if (isAbsent(error)) return undefined;
         throw error;
@@ -398,6 +409,7 @@ function applyBubblewrapRows(result: PosixFilesystemGrants, lookups: PosixPolicy
   const writeRows = new Set(readwrite);
   const pins = new Set<string>();
   const placeholders: BubblewrapPlaceholder[] = [];
+  const watched: MxcWatchedRow[] = [];
   const projectedReadonly: string[] = [];
   const projectedDenied: string[] = [];
   // A nested write root is a mount point, but the folders above it inside the enclosing write root are not. Renaming one
@@ -436,6 +448,13 @@ function applyBubblewrapRows(result: PosixFilesystemGrants, lookups: PosixPolicy
     if (identity === undefined) {
       throw new PosixContainerPolicyError("placeholder-parent-unproved", `Container cannot prove a parent of: ${path}`);
     }
+    if (lookups.watchedRoots?.some((root) => atOrUnder(enclosing, root, lookups.foldsCase)) === true) {
+      // Neither emitted nor created: the nearest existing folder's identity, checked again at the start and the release.
+      watched.push({ path, anchor: ancestor, volumeSerial: String(identity.device), fileId: String(identity.inode),
+        ...(identity.birth === undefined ? {} : { birth: String(identity.birth) }) });
+      for (const folder of parents) pins.delete(folder);
+      continue;
+    }
     placeholders.push({ path, ancestor, ...identity, parents });
     projectedDenied.push(path);
   }
@@ -445,7 +464,8 @@ function applyBubblewrapRows(result: PosixFilesystemGrants, lookups: PosixPolicy
   if (firstExcess !== undefined) {
     throw new PosixContainerPolicyError("grant-limit-exceeded", `Container grant limit (${MAX_CARVE_GRANTS}) exceeded at: ${firstExcess}`);
   }
-  return { ...result, readwrite: writable, readonly: projectedReadonly, denied: projectedDenied, pins: [...pins], placeholders };
+  return { ...result, readwrite: writable, readonly: projectedReadonly, denied: projectedDenied, pins: [...pins], placeholders,
+    ...(watched.length === 0 ? {} : { watched }) };
 }
 
 /** Rank the literal rows and retain the carve information needed to render the profile. */
@@ -474,4 +494,13 @@ export function posixPathFoldsCase(path: string): boolean {
   }
   // Unknown volumes retain case-sensitive path keys and the extra write-floor variants.
   return false;
+}
+
+/** The Git control snapshot leaves out what a container cannot write: paths its protected rows cover. */
+export function gitExclusions(grants: PosixFilesystemGrants): (path: string, includesChildren?: boolean) => boolean {
+  const protectedRows = [...grants.readonly, ...grants.denied];
+  const covering = (path: string, rows: readonly string[]) => Math.max(-1,
+    ...rows.filter(root => atOrUnder(path, root, false)).map(root => root.length));
+  return (path, includesChildren) => covering(path, grants.readwrite) <= covering(path, protectedRows)
+    || (includesChildren === true && protectedRows.some(row => atOrUnder(row, path, false)));
 }

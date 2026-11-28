@@ -2870,7 +2870,8 @@ async function runPosixContainerShell(input: {
     child.stderr.on("data", collector.collectStderr);
     const exit = await completion;
     const failure = "failure" in exit ? exit.failure : undefined;
-    const interrupted = exit.cancelled || exit.timedOut || exit.cleanupUnverified || failure !== undefined;
+    const runFailed = "runFailed" in exit && exit.runFailed;
+    const interrupted = exit.cancelled || exit.timedOut || exit.cleanupUnverified || runFailed || failure !== undefined;
     const artifact = await collector.finish(interrupted);
     collector.finishObservation(exit.code, exit.cancelled ? "cancelled" : interrupted || exit.rejected ? "failed" : undefined);
     if (("cwdChanged" in exit && exit.cwdChanged) || ("grantWithheld" in exit && exit.grantWithheld)) {
@@ -2880,7 +2881,8 @@ async function runPosixContainerShell(input: {
         : { output: `spawn failed: ${HOST_SHELL_AUTHORIZATION_REVOKED_ERROR}`, isError: true, metadata: { sandboxed: false, sandboxAttempted: true } };
     } else if (exit.rejected) {
       result = {
-        output: [process.platform === "linux" ? t("sandboxPolicy.linuxContainerStartRefused") : t("sandboxPolicy.containerStartRefused"),
+        output: ["environmentFailed" in exit && exit.environmentFailed ? t("sandboxPolicy.linuxContainerEnvironmentFailed")
+          : process.platform === "linux" ? t("sandboxPolicy.linuxContainerStartRefused") : t("sandboxPolicy.containerStartRefused"),
           // A launcher that failed after the command began still had its writes quarantined; say so.
           ...("cleanupNotice" in exit && typeof exit.cleanupNotice === "string" ? [exit.cleanupNotice] : [])].join("\n"), isError: true,
         metadata: { sandboxed: false, sandboxAttempted: true, isolation: "unavailable" },
@@ -2888,7 +2890,8 @@ async function runPosixContainerShell(input: {
     } else {
       const policyNotices = [...read.policyNotices,
         ...(launch.carvedReadLimitedAt?.map(folder => t("sandboxPolicy.carvedReadLimited", { folder })) ?? []),
-        ...launch.narrowedWriteRoots.map(({ root }) => t("sandboxPolicy.containerWriteWithheld", { root })),
+        ...launch.narrowedWriteRoots.map(({ root, link }) => link === undefined
+          ? t("sandboxPolicy.containerWriteWithheld", { root }) : t("sandboxPolicy.containerWriteWithheldLink", { root, link })),
         ...("cleanupNotice" in exit && typeof exit.cleanupNotice === "string" ? [exit.cleanupNotice] : []),
       ];
       // The SDK reports a shell ended by a signal, or a child lost before exec, as -1; 255 is a literal exit status.
@@ -2898,6 +2901,7 @@ async function runPosixContainerShell(input: {
       const ending = exit.cancelled ? t("sandboxPolicy.containerShellCancelled")
         : exit.timedOut ? t("sandboxPolicy.containerShellTimedOut", { seconds: timeoutMs / 1000 })
           : "startFailed" in exit && exit.startFailed ? t("sandboxPolicy.containerShellStartFailed")
+            : runFailed ? t("sandboxPolicy.linuxContainerRunFailed")
             : exit.cleanupUnverified ? t("sandboxPolicy.containerShellCleanupUnverified")
               : "transportFailed" in exit && exit.transportFailed ? t("sandboxPolicy.containerShellTransportFailed")
                 : failure ? t("sandboxPolicy.containerShellRefused", { reason: failure.code })

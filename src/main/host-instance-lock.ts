@@ -8,6 +8,11 @@ import { AveHomeConfigurationNotOwnerError, setAveHomeConfigurationOwner } from 
 // Keep ownership until the OS process exits, including after a cleanup timeout.
 let processLock: Database.Database | undefined;
 
+/** Whether this process holds the host instance lock now. */
+export function isHostInstanceLockHeld(): boolean {
+  return processLock?.open === true && processLock.inTransaction;
+}
+
 // A kernel-backed exclusive transaction survives event-loop pauses.
 export async function acquireHostInstanceLock(): Promise<void> {
   if (processLock) throw new Error("host-already-running");
@@ -29,7 +34,7 @@ export async function acquireHostInstanceLock(): Promise<void> {
     database = new Database(path, { timeout: 0 });
     database.exec("BEGIN EXCLUSIVE");
     processLock = database;
-    setAveHomeConfigurationOwner({ hasSingleInstanceLock: () => processLock?.open === true && processLock.inTransaction });
+    setAveHomeConfigurationOwner({ hasSingleInstanceLock: isHostInstanceLockHeld });
   } catch (error) {
     database?.close();
     const code = (error as { code?: string }).code;
