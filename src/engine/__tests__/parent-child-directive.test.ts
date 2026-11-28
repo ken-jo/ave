@@ -326,7 +326,11 @@ describe("SubAgentRunner.queueHostDirectiveToWorkBoardChild — authorization", 
     expect(runner.queueHostDirectiveToWorkBoardChild(WORK_BOARD_ORIGIN, OWNED_CHILD, "change direction"))
       .toEqual({ ok: false, reason: "recipient-unavailable" });
     expect(await mailbox.peek(OWNED_CHILD, WORK_BOARD_ORIGIN)).toHaveLength(0);
-    expect(permissionEvents()).toContainEqual(expect.objectContaining({ event: "work_board_steer_delivery", disposition: "dropped:recipient-unavailable" }));
+    expect(permissionEvents()).toContainEqual(expect.objectContaining({
+      event: "work_board_steer_delivery",
+      sessionId: "5",
+      disposition: "dropped:recipient-unavailable",
+    }));
     expect(JSON.stringify(permissionEvents())).not.toContain("change direction");
   });
 

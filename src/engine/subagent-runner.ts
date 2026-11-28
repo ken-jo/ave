@@ -1830,8 +1830,10 @@ export class SubAgentRunner {
     input: { originSessionId: string; childSessionId: string; messageId: string },
     disposition: string,
   ): void {
+    const itemId = parseWorkBoardOriginSessionId(input.originSessionId);
     logPermissionEvent("work_board_steer_delivery", {
-      sessionId: permissionLogId(input.originSessionId) ?? "unknown", disposition: permissionLogReasonCode(disposition),
+      sessionId: permissionLogId(itemId === null ? input.originSessionId : String(itemId)) ?? "unknown",
+      disposition: permissionLogReasonCode(disposition),
     }, level);
   }
 
