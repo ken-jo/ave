@@ -13,7 +13,8 @@ let bundledModelCatalog: ModelCatalogDocument | undefined;
 export async function loadBundledModelCatalog(): Promise<ModelCatalogDocument> {
   if (bundledModelCatalog) return bundledModelCatalog;
   const { default: snapshot } = await import("./bundled-snapshot.json", { with: { type: "json" } });
-  return bundledModelCatalog ??= verifyModelCatalogDocument(snapshot);
+  bundledModelCatalog ??= verifyModelCatalogDocument(snapshot);
+  return bundledModelCatalog;
 }
 
 type ModelCatalogOrigin = "pinned" | "cache" | "bundled";
