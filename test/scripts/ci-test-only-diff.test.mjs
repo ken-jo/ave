@@ -338,3 +338,77 @@ it("rejects a complete census-only Windows artifact when the build also selected
     assert.match(result.stderr, /tiers differ from the build selection/u);
   }
 });
+
+const holderBoundary = "src/permissions/__tests__/mxc-linux-holder-boundary.native.test.ts";
+const holderCanary = "src/permissions/__tests__/mxc-linux-holder-canary.native.test.ts";
+const filterHelper = "src/permissions/__tests__/mxc-linux-filter-helper.native.test.ts";
+
+for (const { name, files, match, host } of [
+  { name: "Run the Linux holder suites without slirp4netns", files: [holderBoundary, holderCanary], match: "", host: "slirp" },
+  { name: "Prove the holder bridge at ptrace_scope 0", files: [filterHelper], match: "native Linux proxy bridge", host: "ptrace" },
+]) {
+  it(`filters ${name} before changing the host and still checks the report and restores the host`, async (t) => {
+    const { parse } = await import("yaml");
+    const workflow = parse(readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), "utf8"));
+    const repo = fixture(t);
+    for (const file of files) repo.file(file, "// native suite\n");
+    const plan = join(repo.root, "selection.json");
+    const arm = workflow.jobs["linux-confinement-tests"].steps.find(step => step.name === name);
+    const x64 = workflow.jobs["linux-confinement-x64"].steps.find(step => step.name === name);
+    assert.ok(arm);
+    assert.deepEqual(x64, arm);
+
+    const commands = `
+      hidden=false
+      command() {
+        case "$2" in
+          slirp4netns) if [[ "$hidden" == true ]]; then return 1; fi; echo /tools/slirp4netns ;;
+          cargo) echo /tools/cargo >&2 ;;
+          *) return 1 ;;
+        esac
+      }
+      cat() { echo 1; }
+      sudo() {
+        case "$*" in
+          "mv /tools/slirp4netns /tools/slirp4netns.hidden") hidden=true; echo 'prepare slirp' ;;
+          "mv /tools/slirp4netns.hidden /tools/slirp4netns") echo 'restore slirp' ;;
+          "sysctl -w kernel.yama.ptrace_scope=0") echo 'prepare ptrace' ;;
+          "sysctl -w kernel.yama.ptrace_scope=1") echo 'restore ptrace' ;;
+          *) return 1 ;;
+        esac
+      }
+      bun() { shift 7; printf 'test: %s\\n' "$@"; }
+      jq() {
+        if [[ "$3" == *linux-bridge-scope-zero.json ]]; then
+          [[ "$2" == *'every route into its bridge|non-dumpable step'* && "$2" == *'length == 2'* ]] || return 41
+        else
+          [[ "$2" == *'.numPassedTests > 0'* && "$2" == *'.numFailedTests == 0'* ]] || return 41
+        fi
+        echo 'checked report'
+        return 42
+      }
+    `;
+    const run = commands + arm.run.replace("scripts/lib/ci-test-only-selection.mjs", '"$SELECTOR"');
+    for (const selection of [[suite], [files.at(-1)], null]) {
+      if (selection) writeFileSync(plan, JSON.stringify(testOnlyPlan(selection, selection[0] === suite ? [mustRun, suite] : [mustRun])));
+      const result = spawnSync("bash", ["-e", "-c", run], {
+        cwd: repo.root, encoding: "utf8", env: {
+          ...process.env, AVE_CI_TEST_ONLY_PLAN: selection ? plan : "", RUNNER_TEMP: repo.root, SELECTOR: selector,
+        },
+      });
+      assert.ifError(result.error);
+      if (selection?.[0] === suite) {
+        assert.equal(result.status, 0, result.stdout + result.stderr);
+        assert.equal(result.stdout, "::notice::test-only diff: 0 files for this job\n");
+      } else {
+        const selected = selection ?? files;
+        const filter = match ? ["test: -t", `test: ${match}`] : [];
+        assert.equal(result.status, 42, result.stdout + result.stderr);
+        assert.equal(result.stdout, [
+          `prepare ${host}`, ...selected.map(path => `test: ${path}`), ...filter, "checked report", `restore ${host}`, "",
+        ].join("\n"));
+      }
+    }
+    assert.equal(arm.env.AVE_CI_TEST_ONLY_PLAN, `\${{ needs.build.outputs.test_only == 'true' && format('{0}/ci-plan/ci-plan.json', runner.temp) || '' }}`);
+  });
+}

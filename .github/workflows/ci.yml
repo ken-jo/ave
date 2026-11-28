@@ -2073,17 +2073,30 @@ jobs:
         if: steps.docs-impact.outputs.docs_only != 'true' && needs.build.outputs.docs_only != 'true'
         working-directory: ave
         env:
+          AVE_CI_TEST_ONLY_PLAN: ${{ needs.build.outputs.test_only == 'true' && format('{0}/ci-plan/ci-plan.json', runner.temp) || '' }}
           AVE_RUN_MXC_LINUX_BOUNDARY: "1"
           AVE_EXPECT_NO_SLIRP4NETNS: "1"
           AVE_VITEST_MAX_WORKERS: "2"
         run: |
+          suites=(
+            src/permissions/__tests__/mxc-linux-holder-boundary.native.test.ts
+            src/permissions/__tests__/mxc-linux-holder-canary.native.test.ts
+          )
+          if [[ -n "$AVE_CI_TEST_ONLY_PLAN" ]]; then
+            selected=$(node scripts/lib/ci-test-only-selection.mjs "${suites[@]}")
+            if [[ -z "$selected" ]]; then
+              echo "::notice::test-only diff: 0 files for this job"
+              exit 0
+            fi
+            suites=()
+            while IFS= read -r suite; do suites+=("$suite"); done <<< "$selected"
+            unset AVE_CI_TEST_ONLY_PLAN
+          fi
           slirp=$(command -v slirp4netns)
           trap 'sudo mv "$slirp.hidden" "$slirp"' EXIT
           sudo mv "$slirp" "$slirp.hidden"
           if command -v slirp4netns; then exit 1; fi
-          bun run test:vitest -- run --reporter=default --reporter=json --outputFile="$RUNNER_TEMP/linux-holders-no-slirp.json" \
-            src/permissions/__tests__/mxc-linux-holder-boundary.native.test.ts \
-            src/permissions/__tests__/mxc-linux-holder-canary.native.test.ts
+          bun run test:vitest -- run --reporter=default --reporter=json --outputFile="$RUNNER_TEMP/linux-holders-no-slirp.json" "${suites[@]}"
           jq -e '.numPassedTests > 0 and .numPendingTests == 0 and .numTodoTests == 0 and .numFailedTests == 0' \
             "$RUNNER_TEMP/linux-holders-no-slirp.json"
       # N19 at ptrace_scope 0: a holder must not reach its unfiltered bridge even where Yama allows ptrace of a parent.
@@ -2093,15 +2106,25 @@ jobs:
         if: steps.docs-impact.outputs.docs_only != 'true' && needs.build.outputs.docs_only != 'true'
         working-directory: ave
         env:
+          AVE_CI_TEST_ONLY_PLAN: ${{ needs.build.outputs.test_only == 'true' && format('{0}/ci-plan/ci-plan.json', runner.temp) || '' }}
           AVE_RUN_MXC_LINUX_BOUNDARY: "1"
           AVE_VITEST_MAX_WORKERS: "2"
         run: |
+          suite=src/permissions/__tests__/mxc-linux-filter-helper.native.test.ts
+          if [[ -n "$AVE_CI_TEST_ONLY_PLAN" ]]; then
+            selected=$(node scripts/lib/ci-test-only-selection.mjs "$suite")
+            if [[ -z "$selected" ]]; then
+              echo "::notice::test-only diff: 0 files for this job"
+              exit 0
+            fi
+            unset AVE_CI_TEST_ONLY_PLAN
+          fi
           previous=$(cat /proc/sys/kernel/yama/ptrace_scope)
           trap 'sudo sysctl -w kernel.yama.ptrace_scope="$previous"' EXIT
           sudo sysctl -w kernel.yama.ptrace_scope=0
           command -v cargo
           bun run test:vitest -- run --reporter=default --reporter=json --outputFile="$RUNNER_TEMP/linux-bridge-scope-zero.json" \
-            src/permissions/__tests__/mxc-linux-filter-helper.native.test.ts -t "native Linux proxy bridge"
+            "$suite" -t "native Linux proxy bridge"
           jq -e '[.testResults[].assertionResults[] | select(.title | test("every route into its bridge|non-dumpable step")) | .status]
             | length == 2 and all(. == "passed")' "$RUNNER_TEMP/linux-bridge-scope-zero.json"
 
