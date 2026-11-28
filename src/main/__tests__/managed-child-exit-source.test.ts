@@ -50,7 +50,8 @@ const COVERED_CALLERS = ["src/hooks/script-hook-runner.ts", "src/observation/lib
 /** Reviewed owner call sites per covered caller: root handles, nested handles, path records and never-spawned releases. */
 const OWNER_CALL_SITES: Readonly<Record<string, Readonly<Record<string, number>>>> = {
   "src/hooks/script-hook-runner.ts": { root: 1, nested: 0, paths: 0, abandon: 3 },
-  "src/observation/libreoffice-process.ts": { root: 2, nested: 4, paths: 6, abandon: 4 },
+  // paths 7: the boot sweep also records the stale profile's own pipe (#761 P3-2).
+  "src/observation/libreoffice-process.ts": { root: 2, nested: 4, paths: 7, abandon: 4 },
 };
 
 function ownerCallSites(source: string): Record<string, number> {
