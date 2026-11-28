@@ -5,6 +5,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { z } from "zod";
 import { isMissingPathError, writeUtf8FileAtomicSync } from "../lib/atomic-file.js";
+import { reportedBirthTimeNs } from "../lib/file-identity.js";
 import { renameFileOnceSync } from "../lib/transient-fs-lock-retry.js";
 import { withFileLock } from "../lib/with-file-lock.js";
 import { createLogger } from "../lib/logger.js";
@@ -16,7 +17,8 @@ import { atOrUnder, type PosixFilesystemGrants, type PosixPolicyLookups } from "
 import { setWatchedPlaceholderOccupant } from "./windows-watched-rows.js";
 
 // `birth`: the birth time in ns where the filesystem reports one. A folder removed and made again can take the same
-// inode number at once; its birth time differs. Without one the identity is device and inode only (stated limit).
+// inode number at once; its birth time differs. Without one the identity is device and inode only (stated limit): a
+// filesystem that reports none, or a host whose birth times are its change times (no statx; `reportedBirthTimeNs`).
 const DirectoryIdentity = z.object({
   device: z.string().regex(/^\d+$/u), inode: z.string().regex(/^\d+$/u), birth: z.string().regex(/^\d+$/u).optional(),
 });
@@ -39,7 +41,8 @@ type PidMarker = z.infer<typeof PidMarker>;
 function directoryIdentity(path: string): DirectoryIdentity | undefined {
   const entry = lstatSync(path, { bigint: true, throwIfNoEntry: false });
   if (!entry?.isDirectory() || realpathSync.native(path) !== path) return undefined;
-  return { device: String(entry.dev), inode: String(entry.ino), ...(entry.birthtimeNs > 0n ? { birth: String(entry.birthtimeNs) } : {}) };
+  const birth = reportedBirthTimeNs(entry);
+  return { device: String(entry.dev), inode: String(entry.ino), ...(birth === undefined ? {} : { birth: String(birth) }) };
 }
 
 /**
