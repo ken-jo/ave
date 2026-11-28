@@ -925,6 +925,7 @@ export class ReadDocumentTool extends FileTool<typeof ReadDocumentInputSchema> {
 export class OpenDocumentTool extends FileTool<typeof OpenDocumentInputSchema> {
   readonly name = "open_document";
   readonly unattendedEffect = "safe";
+  readonly requiresAttendedStage = true;
   readonly description =
     "Present a local CSV, TSV, XLSX, XLS, ODS, PDF, PPTX, DOCX, ODT, HWP or HWPX to the user. " +
     "HWP and HWPX require the optional document engine and compatible import runtime, and are not supported on macOS yet. " +

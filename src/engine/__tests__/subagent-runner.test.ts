@@ -16,7 +16,7 @@ import { openFeatureNamespace } from "../../main/storage/feature-namespace.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import { createDynamicTool } from "../../tools/base.js";
 import { createReadToolResultChunkTool } from "../../tools/tool-result-chunk.js";
-import { ReadFileTool, WriteFileTool } from "../../tools/file-tools.js";
+import { OpenDocumentTool, ReadDocumentTool, ReadFileTool, WriteFileTool } from "../../tools/file-tools.js";
 import { sessionAuthorityWithheld } from "../../shared/turn-extension-policy.js";
 import { BROWSER_TOOL } from "../../shared/browser-tools.js";
 import { workBoardOriginSessionId } from "../../shared/work-board-types.js";
@@ -3796,6 +3796,8 @@ it("advertises only safe declared tools from a scheduled stage envelope", async 
   const dir = mkdtempSync(join(tmpdir(), "ave-scheduled-tool-scope-"));
   const registry = new ToolRegistry();
   registry.register(new ReadFileTool());
+  registry.register(new ReadDocumentTool());
+  registry.register(new OpenDocumentTool());
   registry.register(new WriteFileTool());
   for (const [name, source, unattendedEffect] of [
     ["mcp_declared", "mcp", "safe"],
@@ -3831,7 +3833,7 @@ it("advertises only safe declared tools from a scheduled stage envelope", async 
         registerUnattendedStage(childSessionId, {
           runKey: "report-run", stageId: "report", workspaceRoot: dir, isolation: { proven: true },
           envelope: {
-            tools: ["read_file", "write_file", "builtin_egress"], readRoots: [], writePaths: ["report.txt"],
+            tools: ["read_file", "read_document", "open_document", "write_file", "builtin_egress"], readRoots: [], writePaths: ["report.txt"],
             commands: [], network: [], mcpReadOnlyTools: ["mcp_declared", "mcp_unknown", "mcp_outward"], mcpGenerationTools: [],
             pluginGenerationTools: [{ name: "plugin_declared", effect: "generate", dataSent: false }],
             outputs: [], budget: { rounds: 1, minutes: 1, costUsd: 0 },
@@ -3840,7 +3842,7 @@ it("advertises only safe declared tools from a scheduled stage envelope", async 
       },
     });
     expect(result.ok).toBe(true);
-    expect(provider.observedToolNames[0]?.sort()).toEqual(["mcp_declared", "plugin_declared", "read_file", "write_file"]);
+    expect(provider.observedToolNames[0]?.sort()).toEqual(["mcp_declared", "plugin_declared", "read_document", "read_file", "write_file"]);
   } finally {
     if (sessionId) endUnattendedStage(sessionId);
     hasProviderSpy.mockRestore();

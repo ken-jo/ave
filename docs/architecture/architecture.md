@@ -2685,7 +2685,7 @@ Schedule attachment and fire use the pinned template version's capability envelo
 
 An all-read-only version runs on every OS with the fixed-category local readers named in its confirmed envelope. Reads stay within the stage workspace and declared read roots, and egress is denied. Any other version needs a contained shell plan with measured direct-IP blocking. The host checks its proof at stage admission and again at session link. A failed link ends the stage with the recorded proof failure. If a linked stage loses proof, the stage and its descendants lose their unattended tool authority for that attempt.
 
-Scheduled tool schemas contain only tools with safe envelope evidence. Stage delegation and requested-output intake are available in attended runs through their existing host-issued stage scopes. A scheduled stage can still reach its human gate.
+Scheduled tool schemas contain only headless-capable tools with safe envelope evidence. Stage delegation and requested-output intake are available in attended runs through their existing host-issued stage scopes. A scheduled stage can still reach its human gate.
 
 A contained scheduled shell writes in its stage workspace and its invocation's private home. Inside the host home, reads can reopen the workspace, the declared read roots and exact local directories found on the host's PATH. The PATH directories are read-only and cannot pierce the protected floor or user denies. The run evidence and audit record the admitted PATH directories. Saved-session history stays denied. The launch environment disables the executable's system Git config and directs explicit system-config lookups to the null device. Filesystem denies also cover known system config paths and an absolute host override.
 

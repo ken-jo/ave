@@ -77,7 +77,7 @@ export interface Tool {
   readonly description: string;
   readonly source: ToolSource;
   readonly category: ToolCategory;
-  /** This builtin has an effect beyond reading local data even when routed as a read. */
+  /** This tool needs attended stage authority, such as a foreground session. */
   readonly requiresAttendedStage?: true;
   readonly unattendedEffect?: import("../permissions/tool-effect-evidence.js").ToolEffectEvidence;
   readonly effectAnnotations?: import("../permissions/tool-effect-evidence.js").ExternalEffectAnnotations;
