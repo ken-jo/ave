@@ -48,9 +48,14 @@ import {
   prepareAbsentProtectedWatch, resetWatchedRows, restoreWatchedQuarantine, pruneWatchedRows, sweepWatchedRows, WATCHED_ROW_VIOLATION, watchAbsentProtectedRow, watchedProtectedRows,
 } from "../windows-watched-rows.js";
 
-// What the ranker records for an absent name beneath an existing folder.
+// What the ranker records for an absent name beneath an existing folder: the Windows helper's hex volume serial and
+// file id, or on Linux the bubblewrap ranker's decimal device and inode and the folder's birth time.
 function ranked(path: string, anchor: string): MxcWatchedRow {
   const entry = lstatSync(anchor, { bigint: true });
+  if (process.platform === "linux") {
+    return { path, anchor, volumeSerial: entry.dev.toString(), fileId: entry.ino.toString(),
+      ...(entry.birthtimeNs > 0n ? { birth: entry.birthtimeNs.toString() } : {}) };
+  }
   return { path, anchor, volumeSerial: entry.dev.toString(16), fileId: entry.ino.toString(16) };
 }
 
@@ -71,6 +76,11 @@ const RECEIPT_WORDING = {
     recover: "예상하지 못한 항목이 있다면 보호 경로 밖으로 옮기세요",
   },
 } as const;
+
+// The refusal names the platform's own sandbox: a Linux holder start, or a Windows sandbox write.
+function refusedWording(values: { path: string }): string {
+  return t(process.platform === "linux" ? "sandboxPolicy.linuxProtectedWriteRefused" : "sandboxPolicy.windowsProtectedWriteRefused", values);
+}
 
 describe("watched protected rows", () => {
   let container: string;
@@ -341,7 +351,7 @@ describe("watched protected rows", () => {
     await expect(claim.release()).resolves.toBeUndefined();
     expect(lstatSync(hooks).isDirectory()).toBe(true);
     expect(listWatchedQuarantine()).toEqual([]);
-    expect(() => claim.start()).toThrow(t("sandboxPolicy.windowsProtectedWriteRefused", { path: hooks }));
+    expect(() => claim.start()).toThrow(refusedWording({ path: hooks }));
     expect(watchedProtectedRows()).not.toContain(hooks);
   });
 
@@ -392,7 +402,7 @@ describe("watched protected rows", () => {
     expect(rankAdmittedMxcLists(lists)).toEqual({ readwrite: [root], readonly: [], denied: children });
     // A launch ranked before the parent appeared is refused at its start instead of running on the stale ranking.
     expect(() => claimMxcWatchedRows(running.watched ?? [], { commandId: "stale" }).start())
-      .toThrow(t("sandboxPolicy.windowsProtectedWriteRefused", { path: commands }));
+      .toThrow(refusedWording({ path: commands }));
     mkdirSync(hooks);
     await expect(claim.release()).resolves.toContain(WATCHED_ROW_VIOLATION);
     expect(listWatchedQuarantine().map(entry => entry.original)).toEqual([hooks]);
@@ -403,18 +413,21 @@ describe("watched protected rows", () => {
     mkdirSync(other);
     const first = join(workspace, ".ave", "commands");
     const second = join(other, ".ave", "hooks");
-    const refused = t("sandboxPolicy.windowsProtectedWriteRefused", { path: second });
+    const refused = refusedWording({ path: second });
     const unregistered = () => {
       expect(watchedProtectedRows()).not.toEqual(expect.arrayContaining([first]));
       expect(watchedProtectedRows()).not.toEqual(expect.arrayContaining([second]));
       expect(hasWatchedWork()).toBe(false);
     };
-    // The identity check cannot be made.
-    pin.fail = path => path === other ? new Error("helper unavailable") : undefined;
-    const claim = claimMxcWatchedRows([ranked(first, workspace), ranked(second, other)], { commandId: "unchecked" });
-    expect(() => claim.start()).toThrow(refused);
-    unregistered();
-    pin.fail = undefined;
+    // The identity check cannot be made. Windows only: there the identity comes from the path helper, which can fail;
+    // on Linux it is the folder's own lstat, covered by the stale-object case below.
+    if (process.platform !== "linux") {
+      pin.fail = path => path === other ? new Error("helper unavailable") : undefined;
+      const claim = claimMxcWatchedRows([ranked(first, workspace), ranked(second, other)], { commandId: "unchecked" });
+      expect(() => claim.start()).toThrow(refused);
+      unregistered();
+      pin.fail = undefined;
+    }
     // The second row's folder is not the object the ranker admitted.
     const stale = { ...ranked(second, other), fileId: ranked(first, workspace).fileId };
     expect(() => claimMxcWatchedRows([ranked(first, workspace), stale], { commandId: "other-object" }).start()).toThrow(refused);
@@ -428,7 +441,7 @@ describe("watched protected rows", () => {
   it("refuses the start when the parent appeared, or the folder was replaced, after ranking", () => {
     const hooks = join(workspace, ".ave", "hooks");
     const row = ranked(hooks, workspace);
-    const refused = t("sandboxPolicy.windowsProtectedWriteRefused", { path: hooks });
+    const refused = refusedWording({ path: hooks });
     mkdirSync(join(workspace, ".ave"));
     expect(() => claimMxcWatchedRows([row], { commandId: "late-parent" }).start()).toThrow(refused);
     rmSync(join(workspace, ".ave"), { recursive: true });
