@@ -10,13 +10,16 @@ import {
   writeFileSync,
 } from "node:fs";
 import { createServer } from "node:net";
-import { homedir, tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, onTestFinished } from "vitest";
+import { homedir, tmpdir, userInfo } from "node:os";
+import { dirname, join, posix as posixPath, win32 as winPath } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 
+import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
+import * as devFlags from "../../boot/dev-flags.js";
+import * as hostResources from "../../main/host-resources.js";
 import { MxcProcessContractError } from "../mxc-extension-errors.js";
 import {
-  AVE_APP_ID, createMxcRunStaging, currentMxcRuntimeHost, establishMxcRuntimeRoot, mxcCacheHome, MxcRuntimeRootError,
+  AVE_APP_ID, canonicalWhereItExists, createMxcRunStaging, currentMxcRuntimeHost, establishMxcRuntimeRoot, mxcCacheHome, MxcRuntimeRootError,
   _forgetMxcRuntimeRootForTest, mxcRunSocketPath, mxcRuntimeRootFloorPath, mxcStagingParent, removeMxcRunStaging,
   requireMxcContainerStartRoot, requireMxcRuntimeRoot, sweepMxcRunStaging,
   type MxcRuntimeHost,
@@ -72,7 +75,132 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   rmSync(scratch, { recursive: true, force: true });
+});
+
+describe("runtime root paths with a simulated platform", () => {
+  it.each([
+    ["win32", String.raw`C:\scratch\run`, winPath],
+    ["darwin", "/scratch/run", posixPath],
+    ["linux", "/scratch/run", posixPath],
+  ] as const)("keeps the %s test cache when a test simulates a packaged host", (platform, sandboxBase, flavor) => {
+    const nativePlatform = process.platform;
+    const cache = flavor.join(sandboxBase, "mxc-cache");
+    try {
+      setProcessPlatform(platform);
+      vi.stubEnv("AVE_TEST_SANDBOX_BASE", sandboxBase);
+      vi.stubEnv("LOCALAPPDATA", String.raw`C:\account\AppData\Local`);
+      vi.stubEnv("HOME", "/account");
+      vi.stubEnv("XDG_CACHE_HOME", "/account/.cache");
+      expect(currentMxcRuntimeHost().cacheHome).toBe(cache);
+
+      devFlags.setIsPackaged(true);
+      expect(currentMxcRuntimeHost().cacheHome).toBe(cache);
+      expect(mxcRuntimeRootFloorPath()).toBe(mxcRuntimeRootFloorPath(cache, platform));
+    } finally {
+      devFlags._resetForTest();
+      setProcessPlatform(nativePlatform);
+    }
+  });
+
+  it.each([
+    ["darwin", String.raw`C:\scratch\run`, posixPath],
+    ["linux", String.raw`C:\scratch\run`, posixPath],
+    ["win32", "/scratch/run", winPath],
+  ] as const)("preserves the %s cache spelling for the absolute base %s", (platform, sandboxBase, flavor) => {
+    const nativePlatform = process.platform;
+    try {
+      setProcessPlatform(platform);
+      vi.stubEnv("AVE_TEST_SANDBOX_BASE", sandboxBase);
+      const cache = flavor.join(sandboxBase, "mxc-cache");
+      expect(currentMxcRuntimeHost().cacheHome).toBe(cache);
+      expect(mxcRuntimeRootFloorPath()).toBe(mxcRuntimeRootFloorPath(cache, platform));
+    } finally {
+      setProcessPlatform(nativePlatform);
+    }
+  });
+});
+
+it.each([undefined, "", "relative", "C:relative", "relative/cache"] as const)(
+  "refuses a missing or invalid test sandbox base (%s)",
+  (value) => {
+    vi.stubEnv("AVE_TEST_SANDBOX_BASE", value);
+    expect(() => mxcRuntimeRootFloorPath()).toThrow(/absolute AVE_TEST_SANDBOX_BASE/u);
+  },
+);
+
+it.runIf(posix)("keeps the startup root when a test switches to packaged resources", () => {
+  vi.stubEnv("AVE_TEST_SANDBOX_BASE", scratch);
+  const resources = vi.spyOn(hostResources, "getConfiguredHostResources")
+    .mockReturnValue({ resourcePath: scratch, isPackaged: false });
+  try {
+    const root = establishMxcRuntimeRoot();
+    resources.mockReturnValue({ resourcePath: scratch, isPackaged: true });
+    expect(requireMxcRuntimeRoot()).toBe(root);
+    expect(mxcRuntimeRootFloorPath()).toBe(root);
+  } finally {
+    resources.mockRestore();
+    _forgetMxcRuntimeRootForTest(join(scratch, "mxc-cache"));
+  }
+});
+
+describe.runIf(darwin)("macOS test runtime root isolation", () => {
+  const accountCache = () => mxcCacheHome("darwin", {}, userInfo().homedir);
+
+  it.each(["directory", "symlink"] as const)("resolves the account cache (%s) in a packaged launch with inherited test flags", (layout) => {
+    const accountHome = join(scratch, "account");
+    const cache = join(accountHome, "Library", "Caches");
+    mkdirSync(dirname(cache), { recursive: true });
+    if (layout === "symlink") {
+      symlinkSync(base, cache);
+    } else {
+      mkdirSync(cache);
+    }
+    const packaged = vi.spyOn(devFlags, "isPackagedElectronProcess").mockReturnValue(true);
+    try {
+      vi.stubEnv("HOME", accountHome);
+      vi.stubEnv("VITEST", "true");
+      vi.stubEnv("AVE_E2E", "1");
+      vi.stubEnv("NODE_ENV", "production");
+      vi.stubEnv("AVE_HOME_ISOLATION_GUARD_ACTIVE", "1");
+      vi.stubEnv("AVE_TEST_SANDBOX_BASE", undefined);
+      expect(mxcRuntimeRootFloorPath()).toBe(join(realpathSync.native(cache), AVE_APP_ID, "mxc-runtime"));
+      expect(currentMxcRuntimeHost().cacheHome).toBe(cache);
+    } finally {
+      packaged.mockRestore();
+    }
+  });
+
+  it("starts the worker with an isolated HOME for fixtures that use the OS directly", () => {
+    const real = realpathSync.native(userInfo().homedir).toLowerCase();
+    const cache = canonicalWhereItExists(accountCache()).toLowerCase();
+    const workerHome = realpathSync.native(homedir()).toLowerCase();
+    expect(workerHome).not.toBe(real);
+    expect(workerHome).not.toBe(cache);
+    expect(workerHome.startsWith(`${cache}/`)).toBe(false);
+  });
+
+  it("uses an isolated runtime root even when HOME names the real account", () => {
+    vi.stubEnv("HOME", userInfo().homedir);
+    vi.stubEnv("AVE_TEST_SANDBOX_BASE", scratch);
+    const root = mxcRuntimeRootFloorPath();
+    expect(root).toBe(join(scratch, "mxc-cache", AVE_APP_ID, "mxc-runtime"));
+    expect(root).not.toContain(accountCache());
+  });
+
+  it("refuses the real account cache, including a link to it", () => {
+    const alias = join(scratch, "cache-alias");
+    symlinkSync(accountCache(), alias);
+    for (const cache of [accountCache(), alias]) {
+      expect(mxcRuntimeRootFloorPath(cache)).toBe(mxcRuntimeRootFloorPath(accountCache()));
+      expect(() => establishMxcRuntimeRoot(hostOf({ cacheHome: cache }))).toThrow(/real account cache/u);
+      _forgetMxcRuntimeRootForTest(cache);
+      vi.stubEnv("AVE_TEST_SANDBOX_BASE", cache);
+      expect(() => establishMxcRuntimeRoot()).toThrow(/real account cache/u);
+      _forgetMxcRuntimeRootForTest(join(cache, "mxc-cache"));
+    }
+  });
 });
 
 describe.runIf(posix)("container start runtime root", () => {
@@ -405,8 +533,9 @@ describe.runIf(posix)("run staging layout", () => {
     removeMxcRunStaging(run);
   });
 
-  it("leaves a socket name room under this account's real cache directory", () => {
-    const prefix = join(mxcCacheHome(process.platform, process.env, homedir()), AVE_APP_ID, "mxc-runtime", "s", "01234567");
+  it("leaves a socket name room under a typical account cache directory", () => {
+    const account = process.platform === "darwin" ? "/Users/example" : "/home/example";
+    const prefix = join(mxcCacheHome(process.platform, {}, account), AVE_APP_ID, "mxc-runtime", "s", "01234567");
     const limit = process.platform === "darwin" ? 103 : 107;
     // What is left for the file name after the directory and its separator.
     expect(limit - Buffer.byteLength(prefix) - 1).toBeGreaterThanOrEqual("control.sock".length);

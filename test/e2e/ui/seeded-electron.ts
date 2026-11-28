@@ -6,13 +6,14 @@ import { createRequire } from "node:module";
 import { expect } from "@playwright/test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, resolve } from "node:path";
+import { tmpdir, userInfo } from "node:os";
+import { dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { LLM_VENDOR_DEFAULTS, type LLMVendor,
 } from "../../../src/shared/llm-vendor-defaults.js";
 import { DEFAULT_APPEARANCE } from "../../../src/shared/appearance-settings.js";
 import { cleanupTmpDir } from "../../../src/__tests__/support/tmp-dir-teardown.js";
+import { canonicalPath } from "../../../src/__tests__/support/test-tmp-root.js";
 import { MAIN_CHAT_GROUP_ID } from "../../../src/contract/app-contract.js";
 import { launchBaseEnv, windowsProfileEnv } from "./windows-e2e-profile.js";
 export { withNativeFocusDiagnostics } from "./native-focus.js";
@@ -64,12 +65,24 @@ export const E2E_CHROMIUM_SWITCHES: readonly string[] = process.platform === "da
 
 /** The E2E runtime signal every e2e launch carries (`isE2eTestRuntime` in src/boot/dev-flags.ts). Among other things it keeps the app from claiming the OS
  * `ave://` handler (src/main/ave-protocol-registration.ts), so a spec never depends on the launch being unpackaged to leave the installed app's deep links alone. */
-export const E2E_RUNTIME_ENV = Object.freeze({ AVE_E2E: "1", NODE_ENV: "test" });
+export const E2E_RUNTIME_ENV = Object.freeze({ AVE_E2E: "1", NODE_ENV: "test", AVE_HOME_ISOLATION_GUARD_ACTIVE: "1" });
 
 /** The only way an e2e spec launches Electron (test/scripts/e2e-electron-launch.test.ts keeps it that way): Playwright's launch with {@link
- * E2E_CHROMIUM_SWITCHES} in front and {@link E2E_RUNTIME_ENV} over the spec's env (Playwright's default env is `process.env`, so a spec that passes none keeps it), through {@link launchBaseEnv}. */
+ * E2E_CHROMIUM_SWITCHES} in front and {@link E2E_RUNTIME_ENV} over the spec's env, through {@link launchBaseEnv}. */
 export async function launchElectron(options: Parameters<typeof electron.launch>[0]): ReturnType<typeof electron.launch> {
   const baseEnv = launchBaseEnv(options?.env ?? process.env);
+  if (process.platform === "darwin") {
+    const home = baseEnv.HOME;
+    const realHome = userInfo().homedir;
+    if (!options?.env || !home || !isAbsolute(home)) throw new Error("macOS E2E launches require an explicit, isolated HOME");
+    const realCache = canonicalPath(resolve(realHome, "Library", "Caches")).toLowerCase();
+    const candidate = canonicalPath(home).toLowerCase();
+    const candidateCache = canonicalPath(resolve(home, "Library", "Caches")).toLowerCase();
+    const inCache = (path: string) => path === realCache || path.startsWith(`${realCache}/`);
+    if (candidate === canonicalPath(realHome).toLowerCase() || inCache(candidate) || inCache(candidateCache)) {
+      throw new Error("macOS E2E launches cannot use the real account home or cache");
+    }
+  }
   const executablePath = resolveE2eExecutable(options);
   // A custom runtime path bypasses automatic loader injection; preserve startup coordination and background rendering switches.
   const runtimeArgs = executablePath && !options?.executablePath
