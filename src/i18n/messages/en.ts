@@ -1170,7 +1170,7 @@ export const en = {
   "be_memoryWrite.authorizationKeyRejected": "memory_write: title/content holds the value of an Authorization-like key (the word \"authorization\" followed within the same or next line by : or =, such as Authorization:, authorization_header=, authorization_url= or \"authorization flow: PKCE\"). Such values are treated as credentials and are never stored, even when the value is a plain URL or prose. Rephrase the fact without that key and value.",
 
   // be_mxcExtensionErrors
-  "be_mxcExtensionErrors.workerTransportUnsupported": "This extension's worker uses a connection a Windows extension container cannot carry: workers need stdio control v1. Update the extension ({code})",
+  "be_mxcExtensionErrors.workerTransportUnsupported": "This extension's worker uses a connection an extension container cannot carry: workers need stdio control v1. Update the extension ({code})",
   "be_mxcExtensionErrors.nativeEntryRequired": "This process type has not been updated for extension containers yet, so it was not started ({code})",
   "be_mxcExtensionErrors.readinessRefused": "No extension backend has admitted this start, so it was refused; it does not run unconfined ({code})",
   "be_mxcRuntimeRoot.elevatedOwned": "the folder {path} was created while Ave ran as administrator, so a normal run cannot use it. Delete that folder and restart Ave, or run Ave as administrator again if that is how you set it up",

@@ -39,6 +39,9 @@ import { installIncompatibleSecurityModule } from "../../../__tests__/support/wi
 import { createHostApiFactory } from "../../../boot/steps/plugin-runtime/host-api-factory.js";
 import { configureHostResources } from "../../../main/host-resources.js";
 import { initializeAsrtSandbox, isAsrtSandboxActive, resetAsrtSandbox } from "../../../permissions/asrt-sandbox.js";
+import { MAC_HOLDER_ROUTE, provenMacHolderRoute, type ProvenMacHolderRoute } from "../../../__tests__/support/mac-holder-route.js";
+import { MxcNativeEntryRequiredError } from "../../../permissions/mxc-extension-errors.js";
+import { prepareMxcPluginChildLaunch } from "../mxc-plugin-child-launch.js";
 import { windowsPowerShellEnv } from "../../../shared/windows-powershell-env.js";
 import {
   __resetSandboxRequestedAtBootForTest,
@@ -67,6 +70,9 @@ import { pluginChildStartKey } from "../../../permissions/extension-start-consen
 
 useVerifiedAveHomePrivacy();
 
+// macOS with its holder route on runs plugin children as holders, which never run an executable from a project folder.
+vi.mock("../../../main/default-workspace-root.js", async (actual) =>
+  (await import("../../../__tests__/support/holder-test-workspace.js")).holderTestWorkspaceRoot(await actual()));
 vi.mock("node:os", async (importOriginal) => {
   const original = await importOriginal<typeof import("node:os")>();
   return {
@@ -211,6 +217,8 @@ beforeAll(async () => {
   cpSync(FIXTURE_SOURCE, pluginRoot, { recursive: true });
   mkdirSync(pluginDataDir, { recursive: true, mode: 0o700 });
   mkdirSync(resolvePluginHostStorageDir(pluginDataDir), { recursive: true, mode: 0o700 });
+  // The runtime makes the socket directory before a start (runtime/sandbox.ts); a holder start reads its floor there.
+  mkdirSync(resolvePluginSocketDir(pluginDataDir), { recursive: true, mode: 0o700 });
   const manifest = flattenAgentPluginsManifest(JSON.parse(readFileSync(join(pluginRoot, "plugin.json"), "utf-8")));
   staged = {
     root,
@@ -253,7 +261,11 @@ afterAll(async () => {
   if (stagedRoot !== undefined) rmSync(stagedRoot, { recursive: true, force: true });
 });
 
+let holderRoute: ProvenMacHolderRoute | undefined;
+
 afterEach(async () => {
+  await holderRoute?.release();
+  holderRoute = undefined;
   if (isAsrtSandboxActive()) await resetAsrtSandbox();
 });
 
@@ -342,6 +354,17 @@ function contextFor(installed: Installed, host: ProductionHost, config: Record<s
   };
 }
 
+/** The runtime's own wiring under a selected macOS container plan (runtime/index.ts): an entry child is a holder. The
+ * registration is the runtime's lifecycle bookkeeping, which this suite does not exercise. */
+function holderWiring(installed: Installed): Pick<Parameters<typeof createOutOfProcessPluginFactory>[0], "prepareMxcChild" | "registerSandboxEnvelope"> {
+  if (!MAC_HOLDER_ROUTE || installed.launch.kind !== "entry") return {};
+  holderRoute ??= provenMacHolderRoute();
+  return {
+    prepareMxcChild: prepareMxcPluginChildLaunch,
+    registerSandboxEnvelope: () => ({ assertCurrent: () => {}, dispose: () => {}, quarantine: () => {}, terminating: () => {} }),
+  };
+}
+
 /** The production factory supplies both wrapped and explicitly unwrapped fixture children. */
 async function spawnInstalled(
   installed: Installed,
@@ -360,6 +383,7 @@ async function spawnInstalled(
     launch: installed.launch,
     takeExtensionStart: () => unwrappedStart,
     ...(installed.launch.kind === "entry" ? { childEntryPath: pluginChildEntryPath() } : {}),
+    ...(wrapped ? holderWiring(installed) : {}),
     observeChild: (child) => {
       observed = child;
       child.onStdout((chunk) => {
@@ -833,6 +857,7 @@ describe("the four escapes, against the production factory under the real wrap",
         manifest: staged.fixture.manifest,
         launch: staged.fixture.launch,
         childEntryPath: pluginChildEntryPath(),
+        ...holderWiring(staged.fixture),
         observeChild: () => {
           observed = true;
         },
@@ -967,8 +992,9 @@ describe("the four escapes, against the production factory under the real wrap",
     },
     120_000,
   );
-  // Recheck filesystem and socket confinement through the non-JavaScript process fixture; process entries exclude Windows.
-  it.runIf(process.platform === "darwin" || process.platform === "linux")(
+  // Recheck filesystem and socket confinement through the non-JavaScript process fixture; process entries run only where
+  // the wrap confines them (Linux, and macOS before its holder route), and are refused where holders run plugins.
+  it.runIf(process.platform === "linux" || (process.platform === "darwin" && !MAC_HOLDER_ROUTE))(
     "1a and 2 from a Python child: the same reads and the same socket are refused",
     async () => {
       if (!(await sandboxCasesRun())) return;
@@ -1022,6 +1048,24 @@ describe("the four escapes, against the production factory under the real wrap",
     },
     600_000,
   );
+  // Owner card 2026-11-28, "Windows처럼 거부": macOS with its holder route on refuses a `process` plugin before anything runs.
+  // The start gate decides first, as on Windows, so the refusal is its native-entry error.
+  it.runIf(MAC_HOLDER_ROUTE)("refuses the Python process plugin on the macOS holder route before anything is spawned", async () => {
+    if (!(await sandboxCasesRun())) return;
+    const pluginRoot = installPythonSmoke(join(staged.aveHome, "plugins", PYTHON_SMOKE_ID));
+    const pluginDataDir = join(pluginRoot, "data");
+    mkdirSync(pluginDataDir, { recursive: true, mode: 0o700 });
+    mkdirSync(resolvePluginHostStorageDir(pluginDataDir), { recursive: true, mode: 0o700 });
+    const manifest = flattenAgentPluginsManifest(JSON.parse(readFileSync(join(pluginRoot, "plugin.json"), "utf-8")));
+    const launch = { kind: "process" as const, ...resolveProcessLaunch(manifest, pluginRoot, pluginDataDir) };
+    let observed = false;
+    await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
+    holderRoute ??= provenMacHolderRoute();
+    const factory = createOutOfProcessPluginFactory({ manifest, launch, observeChild: () => { observed = true; } });
+    const installed: Installed = { pluginId: PYTHON_SMOKE_ID, pluginRoot, pluginDataDir, manifest, launch };
+    await expect(factory(contextFor(installed, productionHost(installed, {}), {}))).rejects.toBeInstanceOf(MxcNativeEntryRequiredError);
+    expect(observed).toBe(false);
+  }, 600_000);
 });
 
 // Positive controls must report before escape assertions; shutdown observations may overlap child work.

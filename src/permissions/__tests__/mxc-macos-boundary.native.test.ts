@@ -816,6 +816,59 @@ req.end();
     expect(existsSync(join(quoted, "ran"))).toBe(false);
   });
 
+  it("N14: holders and a container shell run side by side; neither one's stop touches the other's processes", async () => {
+    const { spawnMxcBundledHolder } = await import("../../sandbox/wrap-bundled-command.js");
+    const { verifyHolderSweepHelper } = await import("../holder-label-sweep.js");
+    const { __setProvenSeatbeltHolderRouteForTest } = await import("../seatbelt-holder-boot.js");
+    const { closeHeldHolderLeases, measureSeatbeltHolderLaunchers } = await import("../seatbelt-holder-launch.js");
+    const { __resetMacExtensionPlanForTest, setMacExtensionPlan, setMacHolderCapability } = await import("../sandbox-capability.js");
+    startEgressRelayService({ ask: async () => false });
+    __setProvenSeatbeltHolderRouteForTest({ helper: verifyHolderSweepHelper(resolve("resources")), launchers: measureSeatbeltHolderLaunchers() });
+    setMacHolderCapability({ state: "ready" });
+    setMacExtensionPlan({ platform: "darwin", requestedBackend: "mxc", selectedBackend: "mxc", readiness: "ready", reason: "ready", egressIdentity: "shared" });
+    const holders: Awaited<ReturnType<typeof spawnMxcBundledHolder>>[] = [];
+    const firstLine = (stream: NodeJS.ReadableStream) => new Promise<string>((done, fail) => {
+      let text = "";
+      const timer = setTimeout(() => fail(new Error(`no line: ${text}`)), 15_000);
+      stream.on("data", (chunk: Buffer | string) => { text += chunk.toString(); if (text.includes("\n")) { clearTimeout(timer); done(text.split("\n")[0] ?? ""); } });
+    });
+    try {
+      for (const name of ["a", "b"]) {
+        const write = join(root, `holder-${name}`);
+        mkdirSync(write);
+        holders.push(await spawnMxcBundledHolder({
+          label: `test:n14-${name}`, command: "/bin/sh", args: ["-c", "/bin/sleep 57 & echo $!; wait"], baseEnv: { PATH: "/usr/bin:/bin" }, holderEnv: {},
+          allowRead: [], allowWrite: [write], ownedReadRoots: [],
+          egressOwner: { kind: "worker", role: "mcp-server", pluginId: undefined, instanceId: `n14-${name}` } as never,
+        }));
+      }
+      const holderChildren = await Promise.all(holders.map(started => firstLine(started.process.stdout).then(Number)));
+      // A shell command that leaves a background process: its own cleanup ends it, and touches no holder.
+      const quick = await run(await prepare("/bin/sleep 57 & echo bg:$!"));
+      expect(quick.code, quick.stderr).toBe(0);
+      const shellBackground = Number(/bg:(\d+)/u.exec(quick.stdout)?.[1]);
+      await vi.waitFor(() => expect(() => process.kill(shellBackground, 0)).toThrow(), { timeout: 10_000, interval: 50 });
+      for (const pid of [...holders.map(started => started.process.id), ...holderChildren]) expect(() => process.kill(pid, 0)).not.toThrow();
+      // A running shell command survives a holder's stop and its label sweep.
+      const long = (await prepare("echo sh:$$; exec /bin/sleep 57")).start("test:n14-shell", hostShellGrantAuthorizer(undefined));
+      const shellPid = Number((await firstLine(long.child.stdout)).replace("sh:", ""));
+      const [first, second] = holders;
+      const [firstChild, secondChild] = holderChildren;
+      if (!first || !second || firstChild === undefined || secondChild === undefined) throw new Error("two holders expected");
+      await first.release();
+      await vi.waitFor(() => expect(() => process.kill(firstChild, 0)).toThrow(), { timeout: 5_000, interval: 50 });
+      expect(() => process.kill(shellPid, 0)).not.toThrow();
+      expect(() => process.kill(secondChild, 0)).not.toThrow();
+      long.child.kill("SIGKILL");
+      await long.completion.catch(() => {});
+    } finally {
+      await Promise.allSettled(holders.map(started => started.release()));
+      await closeHeldHolderLeases();
+      __setProvenSeatbeltHolderRouteForTest(undefined);
+      __resetMacExtensionPlanForTest();
+    }
+  }, 60_000);
+
   it("cancels a real BashTool call on the container route: its invocation is revoked and nothing survives", async () => {
     startEgressRelayService({ ask: async () => false });
     const invocationsBefore = liveEgressInvocationCount();

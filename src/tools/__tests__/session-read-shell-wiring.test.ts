@@ -23,6 +23,7 @@ import { getConfiguredSessionReadPolicy } from "../../permissions/sensitive-path
 import { sessionStorePath } from "../../shared/session-store-path.js";
 import { prepareMxcPosixShellLaunch } from "../mxc-posix-shell-launch.js";
 import { PowerShellTool, spawnWithSandbox } from "../shell-tools.js";
+import { isContainerHolderRouteEnabled } from "../../shared/container-platform.js";
 import { prepareSandboxFixture } from "./support/prepared-shell.js";
 
 vi.mock("../../permissions/asrt-sandbox.js", async (importOriginal) => ({
@@ -103,8 +104,12 @@ async function invoke(dialect: "bash" | "powershell", extraAllowedDirectories: r
   });
 }
 
+// The hook plan still issues the wrap on Linux, and on macOS before its holder route; after it a macOS hook is a holder.
+const hookPlanWraps = (platform: NodeJS.Platform): boolean => !(platform === "darwin" && isContainerHolderRouteEnabled("darwin"));
+const wrappedDialects = (["bash", "powershell"] as const).filter(dialect => dialect === "bash" || hookPlanWraps(process.platform));
+
 describe.skipIf(process.platform === "win32")("saved-session native shell policy wiring", () => {
-  it.each(["bash", "powershell"] as const)("%s keeps ancestor write scope and broad HOME reads", async (dialect) => {
+  it.each(wrappedDialects)("%s keeps ancestor write scope and broad HOME reads", async (dialect) => {
     const ancestor = dirname(root);
     const alias = join(root, "ancestor-link");
     symlinkSync(ancestor, alias);
@@ -119,9 +124,9 @@ describe.skipIf(process.platform === "win32")("saved-session native shell policy
     expect(filesystem.denyWrite).toContain(sessions);
   });
 
-  it.each([
+  it.each(([
     ["bash", "linux", false], ["powershell", "linux", false], ["bash", "darwin", true], ["powershell", "darwin", true],
-  ] as const)("%s on %s: the wrap grants a protected write root only where the grant stays write-only", async (dialect, platform, granted) => {
+  ] as const).filter(([dialect, platform]) => dialect === "bash" || hookPlanWraps(platform)))("%s on %s: the wrap grants a protected write root only where the grant stays write-only", async (dialect, platform, granted) => {
     // A bubblewrap write grant is a read-write bind over the deny's mask, so on Linux it would reopen reads the
     // protected floor hides. The shell hands its roots to the wrap unchanged; the wrap's shared layer decides.
     const protectedRoot = join(root, ".ssh", "work"); mkdirSync(protectedRoot, { recursive: true });
@@ -136,7 +141,7 @@ describe.skipIf(process.platform === "win32")("saved-session native shell policy
     expect(allowWrite.includes(protectedRoot)).toBe(granted);
   });
 
-  it.each(["bash", "powershell"] as const)("%s pairs the configured read grant with nested exclusions and write protection", async (dialect) => {
+  it.each(wrappedDialects)("%s pairs the configured read grant with nested exclusions and write protection", async (dialect) => {
     const result = await invoke(dialect);
     expect(result.output).toContain("fixture wrapper boundary");
     expect(wrapToolCommand).toHaveBeenCalledTimes(1);
@@ -162,7 +167,7 @@ describe.skipIf(process.platform === "win32")("saved-session native shell policy
     expect(spawn).toHaveBeenCalledTimes(dialect === "powershell" ? 1 : 0);
   });
 
-  it.each(["bash", "powershell"] as const)("%s grants nothing when the sessions directory escapes through a link", async (dialect) => {
+  it.each(wrappedDialects)("%s grants nothing when the sessions directory escapes through a link", async (dialect) => {
     const outside = join(root, "ungranted"); mkdirSync(outside);
     rmdirSync(sessions); symlinkSync(outside, sessions);
     expect(getConfiguredSessionReadPolicy()).toEqual({ allowRead: [], denyRead: [] });
@@ -173,6 +178,13 @@ describe.skipIf(process.platform === "win32")("saved-session native shell policy
     expect(filesystem.allowRead).not.toContain(outside);
     expect(filesystem.allowRead).not.toContain(profile);
     expect(filesystem.denyWrite).toContain(sessions);
+  });
+
+  it.runIf(!hookPlanWraps("darwin"))("never hands PowerShell the wrap through a macOS hook plan on the holder route", async () => {
+    setProcessPlatform("darwin");
+    const result = await invoke("powershell");
+    expect(result.output).toContain("one-shot host approval permit");
+    expect(wrapToolCommand).not.toHaveBeenCalled();
   });
 
   it("chooses the proved macOS container for a PowerShell shell tool", async () => {

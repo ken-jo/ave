@@ -505,6 +505,87 @@ describe.runIf(NATIVE)("macOS holder boundary (native)", () => {
     await vi.waitFor(() => expect(() => process.kill(escaped, 0)).toThrow(), { timeout: 5_000, interval: 50 });
   }, 60_000);
 
+  // N5: a stand-in host proves the route (the real boot check, boot sweep and watcher), starts two holders, one with a
+  // setsid escape, and is killed with SIGKILL. The watcher's sweep ends the escape. Control: without the watcher it lives.
+  it.each([["the watcher", true, false], ["no watcher (control)", false, false], ["the watcher killed once first (N5c)", true, true]] as const)("N5: a host killed with SIGKILL, %s", async (_name, watcher, killWatcherFirst) => {
+    const { spawnSacrificialHost } = await import("../../__tests__/support/sacrificial-host.js");
+    const report = join(root, `n5-${String(watcher)}.json`);
+    // The stand-in host's own Ave home (its instance lock and boot sweep scope) and its own runtime base.
+    const hostHome = join(root, "n5-home");
+    const hostBase = join(root, "n5-base");
+    mkdirSync(hostHome, { mode: 0o700 }); mkdirSync(hostBase, { mode: 0o700 });
+    const source = `
+      const [wrap, boot, launch, capability, runtime, relay, sweep, lock, resources, report, watcher] = process.argv.slice(1);
+      const { writeFileSync } = await import("node:fs");
+      const { establishMxcRuntimeRoot } = await import(runtime);
+      const { startEgressRelayService } = await import(relay);
+      const { setMacExtensionPlan, setMacHolderCapability } = await import(capability);
+      const { spawnMxcBundledHolder } = await import(wrap);
+      establishMxcRuntimeRoot();
+      startEgressRelayService({ ask: async () => false });
+      if (watcher === "true") {
+        await (await import(lock)).acquireHostInstanceLock();
+        const { startSeatbeltHolderBootServices } = await import(boot);
+        await startSeatbeltHolderBootServices({ resourcePath: resources, home: process.env.AVE_HOME, publish: () => {} });
+      } else {
+        const { __setProvenSeatbeltHolderRouteForTest } = await import(boot);
+        const { verifyHolderSweepHelper } = await import(sweep);
+        const { measureSeatbeltHolderLaunchers } = await import(launch);
+        __setProvenSeatbeltHolderRouteForTest({ helper: verifyHolderSweepHelper(resources), launchers: measureSeatbeltHolderLaunchers() });
+      }
+      setMacHolderCapability({ state: "ready" });
+      setMacExtensionPlan({ platform: "darwin", requestedBackend: "mxc", selectedBackend: "mxc", readiness: "ready", reason: "ready", egressIdentity: "shared" });
+      const pids = [];
+      for (const [name, script] of [["plain", "exec /bin/sleep 57"], ["escape", "/usr/bin/perl -e 'use POSIX; POSIX::setsid(); exec \\"/bin/sleep\\", \\"57\\"' & echo $!; exec /bin/sleep 57"]]) {
+        const write = report + "-" + name;
+        (await import("node:fs")).mkdirSync(write);
+        const started = await spawnMxcBundledHolder({ label: "test:n5-" + name, command: "/bin/sh", args: ["-c", script], baseEnv: { PATH: "/usr/bin:/bin" },
+          holderEnv: {}, allowRead: [], allowWrite: [write], ownedReadRoots: [], egressOwner: { kind: "worker", role: "mcp-server", pluginId: undefined, instanceId: "n5-" + name } });
+        pids.push(started.process.id);
+        if (name === "escape") pids.push(await new Promise(done => started.process.stdout.once("data", chunk => done(Number(String(chunk).trim())))));
+      }
+      writeFileSync(report, JSON.stringify(pids));
+      setInterval(() => {}, 1000);
+    `;
+    const mod = (path: string) => resolve(path);
+    const host = spawnSacrificialHost(source, [mod("src/sandbox/wrap-bundled-command.ts"), mod("src/permissions/seatbelt-holder-boot.ts"),
+      mod("src/permissions/seatbelt-holder-launch.ts"), mod("src/permissions/sandbox-capability.ts"), mod("src/permissions/mxc-runtime-root.ts"),
+      mod("src/permissions/egress-relay/relay.ts"), mod("src/permissions/holder-label-sweep.ts"), mod("src/main/host-instance-lock.ts"),
+      RESOURCES, report, String(watcher)],
+      // A spawned process has no test seam: its own HOME keeps its runtime root (under HOME's cache) out of the account's.
+      { HOME: hostBase, AVE_HOME: hostHome, AVE_TEST_MXC_RUNTIME_ROOT: "null" });
+    let pids: number[] = [];
+    try {
+      await vi.waitFor(() => { pids = JSON.parse(readFileSync(report, "utf8")) as number[]; }, { timeout: 30_000, interval: 100 });
+      const escaped = pids[2];
+      if (escaped === undefined) throw new Error("the escape's pid was not reported");
+      expect(() => process.kill(escaped, 0)).not.toThrow();
+      if (killWatcherFirst) {
+        // The host's watcher is its helper in watch mode; kill it, and the host keeps one running again within 2 s.
+        const watchers = () => execFileSync("/bin/ps", ["-axo", "pid=,ppid=,command="], { encoding: "utf8" }).split("\n")
+          .map(row => row.trim().split(/\s+/u)).filter(([, ppid, command, mode]) => Number(ppid) === host.pid && command?.endsWith("ave-holder-sweep") && mode === "watch")
+          .map(([pid]) => Number(pid));
+        const [first] = watchers();
+        if (first === undefined) throw new Error("the host's watcher is not running");
+        process.kill(first, "SIGKILL");
+        await vi.waitFor(() => expect(watchers().filter(pid => pid !== first)).toHaveLength(1), { timeout: 2_000, interval: 50 });
+        // Both holders kept running.
+        for (const pid of pids) expect(() => process.kill(pid, 0)).not.toThrow();
+      }
+      host.kill("SIGKILL");
+      if (watcher) {
+        await vi.waitFor(() => expect(() => process.kill(escaped, 0)).toThrow(), { timeout: 5_000, interval: 50 });
+        for (const pid of pids) await vi.waitFor(() => expect(() => process.kill(pid, 0)).toThrow(), { timeout: 5_000, interval: 50 });
+      } else {
+        await new Promise(done => setTimeout(done, 2_000));
+        expect(() => process.kill(escaped, 0)).not.toThrow();
+      }
+    } finally {
+      host.kill("SIGKILL");
+      for (const pid of pids) { try { process.kill(pid, "SIGKILL"); } catch { /* gone */ } }
+    }
+  }, 60_000);
+
   it("N5b: the watcher killed while two holders run: it comes back, both still stop verified, a new start works", async () => {
     const { startHolderWatcher } = await import("../seatbelt-holder-boot.js");
     const watcher = startHolderWatcher(verifyHolderSweepHelper(RESOURCES), { respawnMinMs: 200 });
@@ -532,6 +613,75 @@ describe.runIf(NATIVE)("macOS holder boundary (native)", () => {
       expect(await watcher.stop()).toBe(true);
     }
   }, 30_000);
+
+  // N18: the boot sweep is scoped to the instance's own Ave home. Stand-in hosts, each with its own home and HOME.
+  it("N18: one host's boot sweep leaves another home's holder alone; the same home cannot get the lock; a later run of the same home sweeps its leftover", async () => {
+    const { spawnSacrificialHost } = await import("../../__tests__/support/sacrificial-host.js");
+    const source = `
+      const [lock, wrap, boot, launch, capability, runtime, relay, sweep, resources, report, mode] = process.argv.slice(1);
+      const { writeFileSync, mkdirSync } = await import("node:fs");
+      try { await (await import(lock)).acquireHostInstanceLock(); }
+      catch (error) { writeFileSync(report, JSON.stringify({ lock: "refused", code: error.code ?? error.name })); process.exit(0); }
+      const { verifyHolderSweepHelper } = await import(sweep);
+      if (mode === "sweep") {
+        const { runHolderBootSweep } = await import(boot);
+        writeFileSync(report, JSON.stringify({ swept: await runHolderBootSweep(verifyHolderSweepHelper(resources), process.env.AVE_HOME) }));
+        process.exit(0);
+      }
+      (await import(runtime)).establishMxcRuntimeRoot();
+      (await import(relay)).startEgressRelayService({ ask: async () => false });
+      (await import(boot)).__setProvenSeatbeltHolderRouteForTest({ helper: verifyHolderSweepHelper(resources), launchers: (await import(launch)).measureSeatbeltHolderLaunchers() });
+      const { setMacExtensionPlan, setMacHolderCapability } = await import(capability);
+      setMacHolderCapability({ state: "ready" });
+      setMacExtensionPlan({ platform: "darwin", requestedBackend: "mxc", selectedBackend: "mxc", readiness: "ready", reason: "ready", egressIdentity: "shared" });
+      const write = report + "-write"; mkdirSync(write);
+      const started = await (await import(wrap)).spawnMxcBundledHolder({ label: "test:n18", command: "/bin/sleep", args: ["57"], baseEnv: { PATH: "/usr/bin:/bin" },
+        holderEnv: {}, allowRead: [], allowWrite: [write], ownedReadRoots: [], egressOwner: { kind: "worker", role: "mcp-server", pluginId: undefined, instanceId: "n18" } });
+      writeFileSync(report, JSON.stringify({ pid: started.process.id }));
+      setInterval(() => {}, 1000);
+    `;
+    const mod = (path: string) => resolve(path);
+    const modules = [mod("src/main/host-instance-lock.ts"), mod("src/sandbox/wrap-bundled-command.ts"), mod("src/permissions/seatbelt-holder-boot.ts"),
+      mod("src/permissions/seatbelt-holder-launch.ts"), mod("src/permissions/sandbox-capability.ts"), mod("src/permissions/mxc-runtime-root.ts"),
+      mod("src/permissions/egress-relay/relay.ts"), mod("src/permissions/holder-label-sweep.ts"), RESOURCES];
+    const homes = { a: join(root, "home-a"), b: join(root, "home-b") };
+    for (const dir of Object.values(homes)) mkdirSync(dir, { mode: 0o700 });
+    let run = 0;
+    const host = (home: string, mode: "holder" | "sweep") => {
+      const name = `n18-${++run}`;
+      const base = join(root, `${name}-base`);
+      mkdirSync(base, { mode: 0o700 });
+      const report = join(root, `${name}.json`);
+      const child = spawnSacrificialHost(source, [...modules, report, mode], { HOME: base, AVE_HOME: home, AVE_TEST_MXC_RUNTIME_ROOT: "null" });
+      const result = async () => { let value: Record<string, unknown> = {}; await vi.waitFor(() => { value = JSON.parse(readFileSync(report, "utf8")); }, { timeout: 30_000, interval: 100 }); return value; };
+      return { child, result };
+    };
+    const hosts: ReturnType<typeof host>[] = [];
+    const pids: number[] = [];
+    try {
+      const a = host(homes.a, "holder"); hosts.push(a);
+      const aPid = (await a.result()).pid as number;
+      pids.push(aPid);
+      // Another home's boot sweep: A's holder is untouched.
+      const b = host(homes.b, "sweep"); hosts.push(b);
+      expect(await b.result()).toEqual({ swept: true });
+      expect(() => process.kill(aPid, 0)).not.toThrow();
+      // Same home while A runs: no lock, so no sweep; A's holder is untouched.
+      const same = host(homes.a, "sweep"); hosts.push(same);
+      expect(await same.result()).toMatchObject({ lock: "refused" });
+      expect(() => process.kill(aPid, 0)).not.toThrow();
+      // Control: once A is gone, the next run of home A sweeps what A left.
+      a.child.kill("SIGKILL");
+      await new Promise(done => a.child.once("exit", done));
+      expect(() => process.kill(aPid, 0)).not.toThrow();
+      const later = host(homes.a, "sweep"); hosts.push(later);
+      expect(await later.result()).toEqual({ swept: true });
+      await vi.waitFor(() => expect(() => process.kill(aPid, 0)).toThrow(), { timeout: 5_000, interval: 50 });
+    } finally {
+      for (const started of hosts) started.child.kill("SIGKILL");
+      for (const pid of pids) { try { process.kill(pid, "SIGKILL"); } catch { /* gone */ } }
+    }
+  }, 90_000);
 
   it("N13: a kernel-refused start runs nothing and leaves no staging tree", async () => {
     const staging = join(cache, "ai.agent-connector.ave", "mxc-runtime", "staging");

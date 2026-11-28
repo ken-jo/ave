@@ -108,11 +108,15 @@ const runnable = () => ({ id: "hook", hookType: "pre" as const, source: "config"
   hookPath: script, command: ["node", script], configDir: generationRoot, fileDependencies: [script],
   confinement: { kind: "bundled" as const, pluginId: "hook-plugin", dataDir, generationRoot } });
 
+// A POSIX user hook under the shell sandbox's wrap: Linux, where a hook never selects the container. A macOS hook is a
+// holder once its holder route is on (script-hook-runner-mxc and seatbelt-holder-boundary.native cover that route).
+const HOOK_WRAP_PLATFORM = "linux" as const;
+
 // User hooks require the shell sandbox and full confinement capability; worker-only confinement does not apply.
 function activateShellSandbox(): void {
   sandboxActive = true;
   setShellSandboxRequestedAtBoot(true);
-  setActiveSandboxCapability({ kind: "asrt", confidence: "verified", platform: "darwin", reason: "test shell sandbox",
+  setActiveSandboxCapability({ kind: "asrt", confidence: "verified", platform: HOOK_WRAP_PLATFORM, reason: "test shell sandbox",
     confines: { filesystem: true, process: true, network: true } });
 }
 
@@ -122,7 +126,7 @@ afterAll(async () => { await cleanupTmpDir(root); });
 describe("bundled hook runner", () => {
   it("applies the active wrapper from the config directory with the original workspace write scope", async () => {
     writeFileSync(script, "process.stdout.write(JSON.stringify({action:'allow',reason:'wrapped user hook'}))");
-    vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    vi.spyOn(process, "platform", "get").mockReturnValue(HOOK_WRAP_PLATFORM);
     activateShellSandbox();
     wrap.mockResolvedValueOnce({ argv: [fixtureNode, script], env: {} });
     const { confinement: _confinement, ...userHook } = runnable();
@@ -140,7 +144,7 @@ describe("bundled hook runner", () => {
 
   it("never grants a secret-path read merely because a command uses it as an anchor", async () => {
     writeFileSync(script, "process.stdout.write(JSON.stringify({action:'allow',reason:'wrapped'}))");
-    vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    vi.spyOn(process, "platform", "get").mockReturnValue(HOOK_WRAP_PLATFORM);
     activateShellSandbox();
     wrap.mockResolvedValueOnce({ argv: [fixtureNode, script], env: {} });
     const protectedAnchor = join(homedir(), ".ssh", "fixture-private.cjs");
@@ -154,7 +158,7 @@ describe("bundled hook runner", () => {
   });
 
   it("refuses user hook execution if the active wrapper fails", async () => {
-    vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    vi.spyOn(process, "platform", "get").mockReturnValue(HOOK_WRAP_PLATFORM);
     activateShellSandbox();
     wrap.mockRejectedValueOnce(new Error("user hook wrap failed"));
     const { confinement: _confinement, ...userHook } = runnable();
@@ -164,7 +168,7 @@ describe("bundled hook runner", () => {
 
   it("refuses a user hook whose permission is revoked during sandbox preparation", async () => {
     writeFileSync(script, "process.stdout.write(JSON.stringify({action:'allow',reason:'should not run'}))");
-    vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    vi.spyOn(process, "platform", "get").mockReturnValue(HOOK_WRAP_PLATFORM);
     activateShellSandbox();
     let allowed = true;
     wrap.mockImplementationOnce(async () => {
@@ -186,7 +190,7 @@ describe("bundled hook runner", () => {
     const { confinement: _confinement, ...userHook } = runnable();
     // The platform is simulated, so the plain spawn gets an absolute program instead of a host PATH lookup.
     const node = resolveHostProgram("node");
-    vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    vi.spyOn(process, "platform", "get").mockReturnValue(HOOK_WRAP_PLATFORM);
     const result = await runOneHookScript({ ...userHook, command: [node, script] }, payload, { cwd: dataDir });
     expect(result.decision, result.reason).toBe("allow");
     expect(wrap).not.toHaveBeenCalled();
@@ -215,7 +219,7 @@ process.stdin.on('end', () => process.stdout.write(JSON.stringify({action:'allow
 
   it("denies a blocking event when wrapping fails before spawn", async () => {
     sandboxActive = true;
-    vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    vi.spyOn(process, "platform", "get").mockReturnValue(HOOK_WRAP_PLATFORM);
     wrap.mockRejectedValueOnce(new Error("wrap failed"));
     const result = await runOneHookScript(runnable(), payload);
     expect(result).toMatchObject({ decision: "deny", reason: expect.stringContaining("sandbox unavailable") });
@@ -224,7 +228,7 @@ process.stdin.on('end', () => process.stdout.write(JSON.stringify({action:'allow
 
   it("releases the egress invocation and the wrap when the launcher argv is missing", async () => {
     sandboxActive = true;
-    vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    vi.spyOn(process, "platform", "get").mockReturnValue(HOOK_WRAP_PLATFORM);
     wrap.mockResolvedValueOnce({ argv: [], env: {} });
     vi.mocked(cleanupAsrtSandboxAfterCommand).mockClear();
     const result = await runOneHookScript(runnable(), payload);
@@ -237,7 +241,7 @@ process.stdin.on('end', () => process.stdout.write(JSON.stringify({action:'allow
   it.each([["pre", "deny"], ["UserPromptSubmit", "allow"], ["SessionStart", "allow"]] as const)(
     "keeps the %s hook's own verdict and removes its HOME when ASRT cleanup rejects after a confirmed exit", async (hookType, action) => {
       writeFileSync(script, `process.stdout.write(JSON.stringify({action:'${action}',reason:'own verdict'}))`);
-      vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+      vi.spyOn(process, "platform", "get").mockReturnValue(HOOK_WRAP_PLATFORM);
       activateShellSandbox();
       let home = "";
       wrap.mockImplementationOnce(async (_command, raw) => {
@@ -258,7 +262,7 @@ process.stdin.on('end', () => process.stdout.write(JSON.stringify({action:'allow
     ["no status byte", "process.exit(1)", false],
   ] as const)("names a sandbox setup failure only from the target status pipe: %s", async (_name, body, failed) => {
     writeFileSync(script, body);
-    vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    vi.spyOn(process, "platform", "get").mockReturnValue(HOOK_WRAP_PLATFORM);
     activateShellSandbox();
     wrap.mockResolvedValueOnce({ argv: [fixtureNode, script], env: {} });
     const { confinement: _confinement, ...userHook } = runnable();
@@ -268,7 +272,7 @@ process.stdin.on('end', () => process.stdout.write(JSON.stringify({action:'allow
   });
 
   it("runs the rest of a wrapped handle's release past a rejected ASRT cleanup and retries only that step", async () => {
-    vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    vi.spyOn(process, "platform", "get").mockReturnValue(HOOK_WRAP_PLATFORM);
     activateShellSandbox();
     wrap.mockResolvedValueOnce({ argv: ["node", script], env: {} });
     const cleanup = vi.mocked(cleanupAsrtSandboxAfterCommand);
@@ -303,7 +307,7 @@ process.stdin.on('end', () => process.stdout.write(JSON.stringify({action:'allow
   it("passes the data-only write grant and sensitive deny floors to the wrapper", async () => {
     writeFileSync(script, "process.stdout.write(JSON.stringify({action:'allow',reason:'wrapped'}))");
     sandboxActive = true;
-    vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    vi.spyOn(process, "platform", "get").mockReturnValue(HOOK_WRAP_PLATFORM);
     let staged: string[] = [];
     wrap.mockImplementationOnce(async (_command, raw) => {
       const home = (raw as { filesystem: { allowWrite: string[] } }).filesystem.allowWrite[1];

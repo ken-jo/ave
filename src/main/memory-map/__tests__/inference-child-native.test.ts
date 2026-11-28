@@ -8,7 +8,13 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { protectAveHomeFixture, useVerifiedAveHomePrivacy as installVerifiedAveHomePrivacy } from '../../../__tests__/support/ave-home-privacy.js';
 import { configureHostResources } from '../../host-resources.js';
-import { initializeAsrtSandbox, isAsrtSandboxActive, isOfflineProcessConfinementActive, registerWorkerUnixSocketDir, resetAsrtSandbox } from '../../../permissions/asrt-sandbox.js';
+import { initializeAsrtSandbox, isAsrtSandboxActive, isOfflineHolderConfinementActive, isOfflineProcessConfinementActive, registerWorkerUnixSocketDir, resetAsrtSandbox } from '../../../permissions/asrt-sandbox.js';
+import { verifyHolderSweepHelper } from '../../../permissions/holder-label-sweep.js';
+import { currentMxcRuntimeHost, establishMxcRuntimeRoot, _forgetMxcRuntimeRootForTest } from '../../../permissions/mxc-runtime-root.js';
+import { __resetMacExtensionPlanForTest, setMacHolderCapability } from '../../../permissions/sandbox-capability.js';
+import { __setProvenSeatbeltHolderRouteForTest } from '../../../permissions/seatbelt-holder-boot.js';
+import { measureSeatbeltHolderLaunchers } from '../../../permissions/seatbelt-holder-launch.js';
+import { isContainerHolderRouteEnabled } from '../../../shared/container-platform.js';
 import type { ApprovalDecision, ApprovalRequestInput } from '../../../permissions/approval-gate.js';
 import { EGRESS_DENY_REASONS } from '../../../permissions/egress-ask.js';
 import { createEgressAskRuntimeCallback, setWorkerEgressAllowlists } from '../../../permissions/egress-runtime.js';
@@ -35,6 +41,9 @@ vi.mock('node:os', async importOriginal => {
 installVerifiedAveHomePrivacy();
 
 const WRAP_PLATFORM = process.platform === 'darwin' || process.platform === 'linux' || process.platform === 'win32';
+// macOS with its holder route on runs the child as an offline holder (the real chain and label helper), not the wrap.
+const MAC_HOLDER = process.platform === 'darwin' && isContainerHolderRouteEnabled('darwin');
+let holderCache: string | undefined;
 const PROBE_SOURCE = fileURLToPath(new URL('./fixtures/inference-probe-child.ts', import.meta.url));
 let previousAveHome: string | undefined;
 let root: string | undefined;
@@ -97,6 +106,11 @@ beforeAll(async () => {
 
 afterAll(async () => {
   if (isAsrtSandboxActive()) await resetAsrtSandbox();
+  if (MAC_HOLDER) {
+    __setProvenSeatbeltHolderRouteForTest(undefined);
+    __resetMacExtensionPlanForTest();
+    if (holderCache !== undefined) _forgetMxcRuntimeRootForTest(holderCache);
+  }
   __resetSandboxRequestedAtBootForTest();
   const server = listener;
   if (server !== undefined) await new Promise<void>(resolve => server.close(() => resolve()));
@@ -137,7 +151,17 @@ describe.runIf(WRAP_PLATFORM)('memory map inference child (native)', () => {
       decisions.push(decision);
       return decision;
     });
-    expect(isOfflineProcessConfinementActive()).toBe(true);
+    if (MAC_HOLDER) {
+      vi.stubEnv('AVE_TEST_SANDBOX_BASE', root ?? '');
+      holderCache = currentMxcRuntimeHost().cacheHome;
+      establishMxcRuntimeRoot();
+      const resources = fileURLToPath(new URL('../../../../resources/', import.meta.url));
+      __setProvenSeatbeltHolderRouteForTest({ helper: verifyHolderSweepHelper(resources), launchers: measureSeatbeltHolderLaunchers() });
+      setMacHolderCapability({ state: 'ready' });
+      // The wrap's offline gate is closed: nothing can fall back to it.
+      expect(isOfflineProcessConfinementActive()).toBe(false);
+    }
+    expect(MAC_HOLDER ? isOfflineHolderConfinementActive() : isOfflineProcessConfinementActive()).toBe(true);
     if (unixRoot !== undefined && unixPath !== undefined) {
       await hostConnect({ path: unixPath });
       await registerWorkerUnixSocketDir(unixRoot, {});
@@ -161,7 +185,9 @@ describe.runIf(WRAP_PLATFORM)('memory map inference child (native)', () => {
     if (unixPath !== undefined) expect(report.unix).toMatch(/^(?:EACCES|EPERM)$/u);
     expect(report.proxy, JSON.stringify(report)).not.toMatch(/^HTTP\/1\.[01] 200/u);
     expect(listenerConnections.length, 'the listener recorded a connection from the inference child').toBe(before);
-    expect(decisions, JSON.stringify(report)).toContainEqual({ allow: false, reason: EGRESS_DENY_REASONS.offline });
+    // The wrap's proxy asks and denies; an offline holder has no proxy, so nothing is asked at all.
+    if (MAC_HOLDER) expect(decisions, JSON.stringify(report)).toEqual([]);
+    else expect(decisions, JSON.stringify(report)).toContainEqual({ allow: false, reason: EGRESS_DENY_REASONS.offline });
     expect(report.modelRead).toMatch(/^(?:EACCES|EPERM|ENOENT)$/u);
     if (process.platform === 'win32') expect(report.windowsSystemCwd).toBe(true);
     expect(report.runtime, 'the native runtime did not load inside the sandbox').toMatch(/^session-refused:.*protobuf parsing failed/iu);

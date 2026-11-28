@@ -1,5 +1,6 @@
 // Proxy refusals must reach the owning invocation's audit and shell annotation; an empty strict allowlist denies before DNS or any external connection.
 import { afterEach, describe, expect, it, type TestContext } from "vitest";
+import { isContainerHolderRouteEnabled } from "../../shared/container-platform.js";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -203,7 +204,9 @@ describe.runIf(nativePlatform)("proxy deny attribution (native)", () => {
     }
   }, 60_000);
 
-  it("audits a plugin worker's refused host under the worker", async (context) => {
+  // A worker reaches this proxy only where it is wrapped: Linux, and macOS before its holder route. On that route a worker
+  // is a holder beneath its plugin's holder and egresses through its relay lease (seatbelt-holder-boundary.native N8).
+  it.runIf(!(process.platform === "darwin" && isContainerHolderRouteEnabled("darwin")))("audits a plugin worker's refused host under the worker", async (context) => {
     await requireNativeCase(context);
     // Plugin-worker confinement is its own boot setting; without it the child would run unconfined and reach the network.
     setPluginWorkerConfinementRequestedAtBoot(true);

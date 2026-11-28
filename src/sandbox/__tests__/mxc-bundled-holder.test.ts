@@ -295,13 +295,13 @@ afterEach(() => {
 });
 
 describe("container holder selection", () => {
-  it("is selected only by a ready container plan on Windows", () => {
+  it("is selected only by a ready container plan where the holder route is on: Windows and macOS", () => {
     expect(isMxcExtensionBackendSelected()).toBe(true);
     state.plan = FALLBACK;
     expect(isMxcExtensionBackendSelected()).toBe(false);
     state.plan = READY;
     setProcessPlatform("darwin");
-    expect(isMxcExtensionBackendSelected()).toBe(false);
+    expect(isMxcExtensionBackendSelected()).toBe(true);
     setProcessPlatform("linux");
     expect(isMxcExtensionBackendSelected()).toBe(false);
   });
