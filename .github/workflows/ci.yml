@@ -2111,8 +2111,9 @@ jobs:
             unset AVE_CI_TEST_ONLY_PLAN
           fi
           slirp=$(command -v slirp4netns)
-          trap 'sudo mv "$slirp.hidden" "$slirp"' EXIT
+          # The trap only after the move: a failed move must not move a missing file back over the original.
           sudo mv "$slirp" "$slirp.hidden"
+          trap 'sudo mv "$slirp.hidden" "$slirp"' EXIT
           if command -v slirp4netns; then exit 1; fi
           bun run test:vitest -- run --reporter=default --reporter=json --outputFile="$RUNNER_TEMP/linux-holders-no-slirp.json" "${suites[@]}"
           jq -e '.numPassedTests > 0 and .numPendingTests == 0 and .numTodoTests == 0 and .numFailedTests == 0' \

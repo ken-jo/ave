@@ -259,5 +259,11 @@ describe.runIf(NATIVE)("native Linux proxy bridge", () => {
       "--features", "dumpable-bridge-control", "--target-dir", target], { stdio: "ignore", timeout: 300_000 });
     const result = await attack(join(target, "release", "apply-seccomp"));
     expect(verdicts(result.stdout)).toMatchObject({ fd: "ok", environ: "ok", root: "ok" });
+    // At ptrace_scope 0 (CI's scope-zero step) Yama no longer stands in: the control's attach succeeds, so the scope
+    // mattered and the refusals above at scope 0 are the non-dumpable step's alone. (Its seize then meets a tracee
+    // already attached, so only the attach is the measure.)
+    if (readFileSync("/proc/sys/kernel/yama/ptrace_scope", "utf8").trim() === "0") {
+      expect(verdicts(result.stdout)).toMatchObject({ attach: "ok" });
+    }
   }, 320_000);
 });
