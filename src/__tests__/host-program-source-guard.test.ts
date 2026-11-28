@@ -70,6 +70,7 @@ const LAUNCH_FILES = [
   "permissions/judge/external-judge.ts",
   "permissions/mxc-extension-process.ts",
   "permissions/mxc-linux.ts", // Linux container probe and canary: the hash-pinned launcher under the absolute resource path
+  "permissions/mxc-linux-holder-launch.ts", // Linux holder: the hash-pinned launcher's translation, then the system bwrap through the launch gate
   "permissions/mxc-policy-pipe.ts",
   "permissions/mxc-runtime-root.ts",
   "permissions/mxc-shell-supervisor-client.ts", // macOS shell supervisor: process.execPath as Node, safe env without loader overrides
