@@ -16,6 +16,7 @@ describe("Windows test shard runner", () => {
     const step = job.steps.find((entry: { name?: string }) => entry.name === "Run Windows regressions");
     expect(step.run).toBe("node .github/scripts/run-in-job.mjs bun run scripts/run-windows-test-list.mjs");
     expect(job.env.AVE_WINDOWS_TEST_SHARD).toBe(githubExpression("matrix.shard"));
+    expect(job.env.AVE_WINDOWS_TEST_TIERS).toBe(githubExpression("needs.build.outputs.windows_tiers"));
     expect(step.env.AVE_WINDOWS_TEST_PLAN).toBe(`${githubExpression("runner.temp")}/windows-ci/windows-plan.json`);
   });
   it("prepares once and preserves the complete shard across bounded commands", () => {
@@ -61,6 +62,8 @@ describe("Windows test shard runner entry point", () => {
     ["a list argument", { AVE_WINDOWS_TEST_SHARD: "1", AVE_WINDOWS_TEST_PLAN: "plan.json" }, ["config/windows-native-tests.txt"],
       "takes its plan and shard from the environment"],
     ["a non-numeric shard", { AVE_WINDOWS_TEST_SHARD: "1/5", AVE_WINDOWS_TEST_PLAN: "plan.json" }, [], "requires AVE_WINDOWS_TEST_PLAN"],
+    ["a missing build tier declaration", { AVE_WINDOWS_TEST_SHARD: "1", AVE_WINDOWS_TEST_PLAN: "plan.json" }, [],
+      "AVE_WINDOWS_TEST_TIERS must name the selected tiers"],
   ])("refuses %s before running any suite", (_name, env, args, message) => {
     const result = run(env, args);
     expect(result.status).not.toBe(0);
@@ -69,12 +72,12 @@ describe("Windows test shard runner entry point", () => {
   it("refuses an unknown shard ID and a plan that omits a collected suite", () => {
     withPlan(() => {}, path => {
       const unknown = String(WINDOWS_TEST_SHARDS.length + 1);
-      const result = run({ AVE_WINDOWS_TEST_PLAN: path, AVE_WINDOWS_TEST_SHARD: unknown });
+      const result = run({ AVE_WINDOWS_TEST_PLAN: path, AVE_WINDOWS_TEST_SHARD: unknown, AVE_WINDOWS_TEST_TIERS: "" });
       expect(result.status).not.toBe(0);
       expect(result.stderr).toContain(`Invalid Windows test shard: ${unknown}`);
     });
     withPlan(plan => { plan.shards[0]?.files.shift(); }, path => {
-      const result = run({ AVE_WINDOWS_TEST_PLAN: path, AVE_WINDOWS_TEST_SHARD: "1" });
+      const result = run({ AVE_WINDOWS_TEST_PLAN: path, AVE_WINDOWS_TEST_SHARD: "1", AVE_WINDOWS_TEST_TIERS: "" });
       expect(result.status).not.toBe(0);
       expect(result.stderr).toContain("Windows plan omits 1 collected suite(s)");
       expect(result.stdout).not.toContain("Windows shard 1:");

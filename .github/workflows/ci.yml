@@ -58,6 +58,7 @@ jobs:
       tier_job_native: ${{ steps.tiers.outputs.tier_job_native || 'false' }}
       vitest_tier_job: ${{ steps.tiers.outputs.vitest_tier_job || 'false' }}
       # A selected Windows tier runs even when the platform matrix is skipped.
+      windows_tiers: ${{ steps.tiers.outputs.windows_tiers }}
       windows_tier_tests: ${{ steps.docs-impact.outputs.docs_only != 'true' && steps.tiers.outputs.windows_tiers != '' }}
     env:
       # Parallel runners may share a home; each workspace owns its Bun cache.
@@ -1258,6 +1259,7 @@ jobs:
       # 45 s tests timed out.
       AVE_VITEST_MAX_WORKERS: "2"
       AVE_WINDOWS_TEST_SHARD: ${{ matrix.shard }}
+      AVE_WINDOWS_TEST_TIERS: ${{ needs.build.outputs.windows_tiers }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1366,6 +1368,7 @@ jobs:
       # 45 s tests timed out.
       AVE_VITEST_MAX_WORKERS: "2"
       AVE_WINDOWS_TEST_SHARD: ${{ matrix.shard }}
+      AVE_WINDOWS_TEST_TIERS: ${{ needs.build.outputs.windows_tiers }}
       AVE_WINDOWS_TEST_TIER: tiers
       AVE_VITEST_TIERS: default,native,census
     steps:

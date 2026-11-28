@@ -241,7 +241,7 @@ it("lets an empty Windows shard succeed only after validating the full assignmen
     const result = spawnSync(process.execPath, [runner], {
       cwd: repo.root, encoding: "utf8", env: {
         ...process.env, AVE_WINDOWS_TEST_PLAN: windowsPlan, AVE_WINDOWS_TEST_SHARD: "1",
-        AVE_WINDOWS_TEST_TIER: "default", AVE_CI_TEST_ONLY_PLAN: selection,
+        AVE_WINDOWS_TEST_TIER: "default", AVE_WINDOWS_TEST_TIERS: "", AVE_CI_TEST_ONLY_PLAN: selection,
       },
     });
     assert.ifError(result.error);
@@ -309,3 +309,27 @@ for (const [label, command, contents] of [
     assert.match(result.stderr, /test-only CI plan|affected CI selection must not be empty/u);
   });
 }
+
+it("rejects a complete census-only Windows artifact when the build also selected native", (t) => {
+  const repo = fixture(t);
+  const defaultFiles = [suite, mustRun, ...Array.from({ length: 3 }, (_, index) => `src/core/__tests__/extra-${index}.test.ts`)];
+  const census = ["head", "middle", "tail"].map(part => `src/permissions/__tests__/powershell-encoded-unicode/bash-${part}-first.test.ts`);
+  const native = "src/permissions/__tests__/mxc-linux-boundary.native.test.ts";
+  const shards = files => files.map((path, index) => ({ id: index + 1, files: [path] }));
+  for (const path of [...defaultFiles, ...census, native]) repo.file(path, "// suite\n");
+  repo.git("add", ".");
+  repo.file("windows.json", JSON.stringify({ shards: shards([...defaultFiles, ...census]), tiers: ["census"], tierShards: shards(census) }));
+  repo.file("ci-plan.json", JSON.stringify(testOnlyPlan([native], [mustRun])));
+  const runner = fileURLToPath(new URL("../../scripts/run-windows-test-list.mjs", import.meta.url));
+  for (const tier of ["default", "tiers"]) {
+    const result = spawnSync(process.execPath, [runner], {
+      cwd: repo.root, encoding: "utf8", env: {
+        ...process.env, AVE_WINDOWS_TEST_PLAN: join(repo.root, "windows.json"), AVE_WINDOWS_TEST_SHARD: "1",
+        AVE_WINDOWS_TEST_TIER: tier, AVE_WINDOWS_TEST_TIERS: "native,census", AVE_CI_TEST_ONLY_PLAN: join(repo.root, "ci-plan.json"),
+      },
+    });
+    assert.ifError(result.error);
+    assert.equal(result.status, 1, result.stdout);
+    assert.match(result.stderr, /tiers differ from the build selection/u);
+  }
+});

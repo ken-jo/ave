@@ -618,6 +618,10 @@ export function checkWindowsWorkflow(workflow, inspect) {
   }
   const tierJob = jobs[TIER_JOB];
   checkTierSelection(jobs, `${TIER_SELECTION} && ${prepared}`);
+  if (jobs.build.outputs.windows_tiers !== "${{ steps.tiers.outputs.windows_tiers }}"
+    || [job, tierJob].some(testJob => testJob.env?.AVE_WINDOWS_TEST_TIERS !== "${{ needs.build.outputs.windows_tiers }}")) {
+    throw new Error("Windows shards must validate against the build's selected tiers");
+  }
   checkValidationJobs(jobs, `(${platform} || ${TIER_SELECTION}) && ${prepared}`);
   if (job.env?.AVE_VITEST_MAX_WORKERS !== String(WINDOWS_TEST_WORKERS)) {
     throw new Error(`${CONTAINED_JOB}: worker count must match the Windows planner`);
