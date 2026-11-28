@@ -37,7 +37,6 @@ import { launcherPathFor, pinnedLauncherSha256 } from "./mxc-launcher.js";
 import { openMxcRawIpUdpListener, type MxcRawIpUdpArrival, type MxcRawIpUdpSend } from "./mxc-raw-ip-udp.js";
 import { createLogger } from "../lib/logger.js";
 import type { openInvocationProxyListener } from "./egress-invocation-listener.js";
-import { addRange, addressInSet } from "./egress-relay/address-set.js";
 
 // The stable MXC configuration schema version every request is written in. The launcher is `@microsoft/mxc-sdk` 1.1.0's, pinned by scripts/fetch-mxc.mjs.
 const MXC_CONFIG_SCHEMA_VERSION = "1.0.0";
@@ -437,11 +436,18 @@ function classifyMxcHostIpv6Route(line: string): MxcHostIpv6Route {
     if (!Array.isArray(prefixes)) return "unknown";
     const routes = new BlockList();
     for (const prefix of prefixes) {
-      if (typeof prefix !== "string" || !prefix.includes("/") || !isIPv6(prefix.split("/")[0] ?? "") || !addRange(routes, prefix)) {
+      if (typeof prefix !== "string") return "unknown";
+      const separator = prefix.indexOf("/");
+      if (separator < 0) return "unknown";
+      const address = prefix.slice(0, separator);
+      const length = prefix.slice(separator + 1);
+      const bits = Number(length);
+      if (address.includes("%") || !isIPv6(address) || !/^\d{1,3}$/.test(length) || bits > 128) {
         return "unknown";
       }
+      routes.addSubnet(address, bits, "ipv6");
     }
-    return addressInSet(routes, MXC_RAW_IP_T6_ADDRESS) ? "present" : "absent";
+    return routes.check(MXC_RAW_IP_T6_ADDRESS, "ipv6") ? "present" : "absent";
   } catch {
     return "unknown";
   }

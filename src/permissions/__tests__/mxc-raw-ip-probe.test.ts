@@ -267,23 +267,36 @@ describe("raw IP startup observation", () => {
     await expectUdpPortReleased(udpPort);
   });
 
-  it.each([
-    ['["::1/128","fe80::/64"]', "blocked"],
-    ['["::/0"]', "ipv6-unmeasured"],
-    ['["2001:db8::/48"]', "ipv6-unmeasured"],
-    ['["invalid"]', "ipv6-unmeasured"],
-    [undefined, "ipv6-unmeasured"],
-  ] as const)("classifies startup evidence with host IPv6 routes %s", async (routes, reason) => {
-    const result = await probeMxcPowerShellStart(makeDeps(async (_file, args) => {
-      if (args[0] !== "--config-base64") {
-        const hostOutput = routes === undefined ? "" : `AVE_MXC_IPV6_ROUTES ${routes}\r\n`;
-        return { code: 0, stdout: `${hostOutput}192.0.2.2:49152`, stderr: "" };
-      }
-      const { id, controlHost, proxyUrl } = probeScriptInputs(args);
-      expect(await requestProxyRefusal(proxyUrl, controlHost)).toBe(403);
-      return { code: 0, stdout: evidenceFrame(id, { ...REFUSED, t6: 10051, capabilitySids: ["S-1-15-3-3"] }), stderr: "" };
-    }), openInvocationProxyListener);
-    expect(result).toMatchObject({ state: "available", rawIpProbe: { reason } });
+  describe.each([10051, 10065, 10013])("startup evidence with T6 %i", (t6) => {
+    it.each([
+      { scenario: "scoped global prefix", prefix: "2001:db8:1::%12/48" },
+      { scenario: "missing frame" },
+      { scenario: "failed lookup", prefix: "2001:db8:1::/48", stderr: "Route lookup failed" },
+      { scenario: "unrelated route", prefix: "2001:db8:1::/48", structural: true },
+      { scenario: "default route", prefix: "::/0" },
+      { scenario: "exact T6 route", prefix: "2001:db8::1/128" },
+      { scenario: "out-of-range prefix length", prefix: "2001:db8:1::/129" },
+      { scenario: "malformed prefix length", prefix: "2001:db8:1::/48/64" },
+      { scenario: "IPv4 prefix", prefix: "192.0.2.0/24" },
+    ])("classifies host route evidence with $scenario", async ({ prefix, stderr = "", structural }) => {
+      const result = await probeMxcPowerShellStart(makeDeps(async (_file, args) => {
+        if (args[0] !== "--config-base64") {
+          const hostOutput = prefix === undefined ? "" : `AVE_MXC_IPV6_ROUTES ${JSON.stringify([prefix])}\r\n`;
+          return { code: 0, stdout: `${hostOutput}192.0.2.2:49152`, stderr };
+        }
+        const { id, controlHost, proxyUrl } = probeScriptInputs(args);
+        expect(await requestProxyRefusal(proxyUrl, controlHost)).toBe(403);
+        return { code: 0, stdout: evidenceFrame(id, { ...REFUSED, t6, capabilitySids: ["S-1-15-3-3"] }), stderr: "" };
+      }), openInvocationProxyListener);
+      expect(result.state).toBe("available");
+      const evidenceKind = t6 === 10013 ? "measured" : structural ? "structural" : undefined;
+      expect(result.state === "available" && result.rawIpProbe).toEqual({
+        ...(evidenceKind === undefined
+          ? { rawIp: "unknown", reason: "ipv6-unmeasured" }
+          : { rawIp: "blocked", reason: "blocked", evidenceKind }),
+        reachableTargets: [], udpArrival: "absent",
+      });
+    });
   });
 
   it("requires the exact control destination and a fresh evidence ID for each launch", async () => {
