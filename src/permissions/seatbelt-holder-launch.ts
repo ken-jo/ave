@@ -249,6 +249,8 @@ export interface SeatbeltHolderProcess {
   readonly pid: number;
   readonly stdin: Writable;
   readonly stdout: Readable;
+  /** Buffered from the ready byte on, so diagnostics written before the consumer attaches are kept. A consumer must read
+   * it: unread, it back-pressures the holder's writes once the pipe and the buffer fill. */
   readonly stderr: Readable;
   /** The holder's exit after it started. A stdin write that failed because it had exited never replaces this. */
   readonly completion: Promise<{ readonly code: number | null; readonly signal: NodeJS.Signals | null }>;

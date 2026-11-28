@@ -5,9 +5,16 @@ import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 
 const lock = vi.hoisted(() => ({ held: true }));
+// One case stretches the output drain, so a canary that held the holder's pipes would wait it out visibly.
+const drain = vi.hoisted(() => ({ ms: undefined as number | undefined }));
+vi.mock("../../shared/tool-timeout-policy.js", async (actual) => {
+  const real = await actual<typeof import("../../shared/tool-timeout-policy.js")>();
+  return { ...real, TOOL_TIMEOUT_POLICY: new Proxy(real.TOOL_TIMEOUT_POLICY, {
+    get: (target, key, receiver) => key === "mxcMacHolderOutputDrainMs" && drain.ms !== undefined ? drain.ms : Reflect.get(target, key, receiver),
+  }) };
+});
 vi.mock("../../shared/ave-home-configuration-access.js", () => ({ isAveHomeConfigurationOwner: () => lock.held }));
 vi.mock("../asrt-sandbox.js", () => ({
   seatbeltHolderFloorRows: () => [],
@@ -61,13 +68,17 @@ describe.runIf(NATIVE)("macOS holder boot sequence", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  it("passes all three controls on this machine", async () => {
-    const started = Date.now();
-    const proof = await proveSeatbeltHolderRoute({ resourcePath: RESOURCES, home });
-    expect(proof.state === "unproven" ? proof.detail : "proven").toBe("proven");
-    // Boot waits on this proof. A canary job that held the holder's pipes cost the 1 s drain and the 2 s grace (4.2 s).
-    expect(Date.now() - started).toBeLessThan(TOOL_TIMEOUT_POLICY.mxcMacHolderOutputDrainMs + TOOL_TIMEOUT_POLICY.mxcMacHolderTermGraceMs);
-  }, 20_000);
+  it("passes all three controls on this machine, without waiting out the output drain", async () => {
+    // Boot waits on this proof. A canary job that held the holder's pipes made each canary exit wait out the drain (4.2 s
+    // in all). Stretched to 30 s here, that cause cannot hide under a loaded host's slack: the proof must not come near it.
+    drain.ms = 30_000;
+    try {
+      const started = Date.now();
+      const proof = await proveSeatbeltHolderRoute({ resourcePath: RESOURCES, home });
+      expect(proof.state === "unproven" ? proof.detail : "proven").toBe("proven");
+      expect(Date.now() - started).toBeLessThan(15_000);
+    } finally { drain.ms = undefined; }
+  }, 45_000);
 
   it("is unproven when the helper never signals (C1), when it ends a non-member (C2), or when the stale identity is not refused (C3)", async () => {
     const never = resourcesWith({ copy: join(RESOURCES, "macos-holder-sweep", "arm64", "ave-holder-sweep-never-signals") });
