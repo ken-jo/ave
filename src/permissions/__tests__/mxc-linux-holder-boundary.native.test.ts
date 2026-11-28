@@ -430,6 +430,15 @@ describe.runIf(NATIVE)("native Linux holder row-2 admission", () => {
       expect(text === payload.toString()).toBe(true);
     });
 
+    it("a one-shot holder that ended before its start returned still hands over all it wrote, on both streams", async () => {
+      // The run ends before its ready byte's resident set can be read; its output must outlive that wait.
+      const holder = await bundledHolder("echo one-shot-out; echo one-shot-err >&2");
+      const [out, err] = await Promise.all([collect(holder.process.stdout), collect(holder.process.stderr)]);
+      expect(await holder.process.completion).toMatchObject({ exitCode: 0 });
+      expect(out).toBe("one-shot-out\n");
+      expect(err).toBe("one-shot-err\n");
+    });
+
     it("N18: a worker under a plugin child is released with it when the parent goes first, and a new one under it is refused", async () => {
       const parentData = join(root, "plugin-data");
       const workerData = join(root, "worker-data");

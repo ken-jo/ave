@@ -2,7 +2,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, copyFileSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { posix } from "node:path";
-import type { Readable, Writable } from "node:stream";
+import { PassThrough, type Readable, type Writable } from "node:stream";
 import { setTimeout as sleep } from "node:timers/promises";
 import { isMainThread } from "node:worker_threads";
 import {
@@ -425,12 +425,17 @@ export async function startLinuxHolder(call: LinuxHolderCall, options: StartLinu
   const replay = linuxHolderReplay(call);
   let observed: ReturnType<typeof observeManagedProcessGroup> | undefined;
   let spawned: ChildProcess | undefined;
+  // The caller's copies of the holder's output, piped from the spawn on. Node drains a child's unread stdout and stderr
+  // when it exits, and a short run can exit before the start returns (it is waited for below): unpiped, its output is lost.
+  const output = { stdout: new PassThrough(), stderr: new PassThrough() };
   await options.beforeRelease?.();
   const stdio: ("pipe" | "ignore")[] = ["pipe", "pipe", "pipe", "ignore", "pipe", "pipe", "pipe", "pipe"];
   const child = await spawnGatedManagedProcess(options.bwrap.path, replay.argv, { cwd: options.cwd, env: {}, stdio }, {
     label: options.label,
     onSpawn: (started) => {
       spawned = started;
+      started.stdout?.pipe(output.stdout);
+      started.stderr?.pipe(output.stderr);
       observed = observeManagedProcessGroup(started, options.resources);
       // A write after the holder exited fails with EPIPE; the exit result stands (the caller reads `completion`).
       started.stdin?.on("error", () => {});
@@ -489,6 +494,9 @@ export async function startLinuxHolder(call: LinuxHolderCall, options: StartLinu
   const dispose = (reason = "holder released"): Promise<ConfirmedExit> => disposing ??= (async () => {
     if (child.stdin?.writable) child.stdin.end();
     const finished = () => child.exitCode !== null || child.signalCode !== null;
+    // A holder that ended by itself keeps what it wrote: its owner releases it at completion, often before the caller
+    // read its output (a hook, a one-shot server). Its streams end on their own; only a stopped holder's are cut.
+    const endedByItself = finished();
     // 1. The holder's own TERM, so it can see it: TERM to bwrap ends the namespace before the holder runs its handler.
     //    Signalled only while it is still the process recorded at the ready byte, under the same parent.
     const holder = set.holder;
@@ -505,7 +513,7 @@ export async function startLinuxHolder(call: LinuxHolderCall, options: StartLinu
         try { process.kill(-child.pid, "SIGKILL"); } catch { /* gone */ }
       }
     }
-    for (const stream of [child.stdin, child.stdout, child.stderr]) stream?.destroy();
+    for (const stream of endedByItself ? [child.stdin] : [child.stdin, child.stdout, child.stderr, output.stdout, output.stderr]) stream?.destroy();
     // 5. Verified only when the group ended and every resident process is gone within the tree-kill bound.
     const receipt = await exit.confirmExit(reason);
     const deadline = Date.now() + TOOL_TIMEOUT_POLICY.processTreeKillMs;
@@ -540,8 +548,8 @@ export async function startLinuxHolder(call: LinuxHolderCall, options: StartLinu
     // Only a run that ended before its set could be read has no holder pid; the outer bwrap's then names that run.
     pid: set.holder === undefined ? child.pid as number : set.holder.pid,
     stdin: child.stdin as Writable,
-    stdout: child.stdout as Readable,
-    stderr: child.stderr as Readable,
+    stdout: output.stdout,
+    stderr: output.stderr,
     completion: closed,
   });
   return Object.freeze({ process: holderProcess, confinement: "linux-container" as const, dispose });
