@@ -243,7 +243,7 @@ export interface PermissionCheckContext {
   floor?: PermissionDecisionRequest["floor"];
   exfiltration?: PermissionDecisionRequest["exfiltration"];
   admissionDenial?: PermissionDecisionRequest["admissionDenial"];
-  paths?: readonly (NonNullable<PermissionDecisionRequest["paths"]>[number] & { runtimePath?: string })[];
+  paths?: PermissionDecisionRequest["paths"];
   shellReadOnlyProven?: boolean;
   shellAnalysisLimited?: true;
   shellEscalated?: boolean;
@@ -1949,17 +1949,17 @@ export class PermissionManager {
       protectedControlEntryFor(spelling) === "application-home" && isOwnStageWorkspacePath(context.sessionId, spelling));
     // Reads: every stage workspace, and the run folders around them, is a protected path for every principal. Only the session bound to a
     // workspace, or a grandchild bound to the same one, reads inside it.
-    const otherStageRead = (evidence: PermissionPathEvidence): boolean => !activeBrokerGuest && evidence.effect === "read"
+    const otherStageRead = (evidence: PermissionPathEvidence, target: string): boolean => !activeBrokerGuest && evidence.effect === "read"
       && [evidence.lexical, evidence.canonical].some(isStageWorkspacesPath)
-      && ![evidence.lexical, evidence.canonical].every(spelling => isOwnStageWorkspacePath(context.sessionId, spelling));
-    const withoutOwnStageFloor = <T extends PermissionPathEvidence>(evidence: T): T =>
-      evidence.protectedControl === "application-home" && ownStagePath(evidence.lexical, evidence.canonical) ? { ...evidence, protectedControl: undefined }
-        : evidence.protectedControl === undefined && otherStageRead(evidence) ? { ...evidence, protectedControl: "application-home" } : evidence;
+      && ![evidence.lexical, target].every(spelling => isOwnStageWorkspacePath(context.sessionId, spelling));
+    const withoutOwnStageFloor = (evidence: PermissionPathEvidence, target = evidence.runtimePath ?? evidence.lexical): PermissionPathEvidence =>
+      evidence.protectedControl === "application-home" && ownStagePath(evidence.lexical, target) ? { ...evidence, protectedControl: undefined }
+        : evidence.protectedControl === undefined && otherStageRead(evidence, target) ? { ...evidence, protectedControl: "application-home" } : evidence;
     const evidenceForPath = createPermissionPathEvidence(projectRulesCwd ?? requestedRuleSubject?.cwd ?? process.cwd(), undefined, {
       inspectHostFiles: !activeBrokerGuest,
     });
     for (const path of context.paths ?? []) {
-      const evidence = withoutOwnStageFloor(evidenceForPath(path));
+      const evidence = withoutOwnStageFloor(evidenceForPath(path), path.runtimePath);
       if (evidence.admissionDenial) admissionDenial ??= { code: "credential-store", reason: evidence.admissionDenial };
       if (evidence.projectEscape) floor ??= { code: "project-escape", reason: "The target escapes the project boundary." };
       if (evidence.protectedControl) floor ??= { code: "protected-path", reason: evidence.protectedControl };
@@ -2136,7 +2136,10 @@ export class PermissionManager {
           : command !== undefined && unattendedPowerShell?.ok && unattendedPowerShell.opaque === null && unattendedPowerShell.commands.length === 1
             ? [command] : undefined,
       } : {}),
-      headless: context.headless === true || context.approvalSurface === "unavailable", ownerAway: context.ownerUnattended, paths: [...(context.paths ?? []), ...(shellPaths?.paths ?? []), ...(powerShellPaths?.paths ?? [])].map(({lexical,canonical,effect}) => ({lexical,canonical,effect})),
+      headless: context.headless === true || context.approvalSurface === "unavailable", ownerAway: context.ownerUnattended,
+      paths: [...(context.paths ?? []), ...(shellPaths?.paths ?? []), ...(powerShellPaths?.paths ?? [])].map(({ lexical, canonical, runtimePath, effect }) => ({
+        lexical, canonical, effect, ...(runtimePath === undefined ? {} : { runtimePath }),
+      })),
       admissionDenial, floor, exfiltration, rules, secretRead, manualRerun: context.manualRerun,
       ...(shellAnalysisLimited ? { shellAnalysisLimited: true as const } : {}),
       ...(pathFacts.protectedEntry !== undefined || pathFacts.secretPattern !== undefined ? { pathFacts } : {}),

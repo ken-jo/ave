@@ -41,7 +41,7 @@ import { agentPluginDataRoot } from "../marketplace/content/agent-plugin-data.js
 import { AVE_HOME_ISOLATION_GUARD_ACTIVE, checkSandboxStampTargets, testSandboxPrivateBase } from "../shared/ave-home-test-guard.js";
 import { expandLeadingTilde, leadingTildeHome } from "../shared/home-tilde.js";
 import { holdSandboxGitWrites } from "../shared/host-git.js";
-import { projectLocalWindowsFilesystemPath, resolvePhysicalFilesystemPath } from "../shared/shell-filesystem-path.js";
+import { projectLocalWindowsFilesystemPath, relativeNativePath, resolvePhysicalFilesystemPath, tryNativeRealpath } from "../shared/shell-filesystem-path.js";
 import { admitLocalPath, admitLocalRoute, assertLocalityDecisionUsable, localFs, matcherMemo, rethrowLocalityFailure, withLocalityDecision } from "../shared/local-path-io.js";
 import { admitObligations, consumeObligations, ObligationRefusedError, type ObligationRow, type ObligationSource, obligationWithin, POSIX_CRON_DENIES, posixOnlyDenyPaths, requireEnforceable, windowsObligationsApply } from "./admitted-obligation.js";
 import { compileGlobMatcher, globMatch } from "../lib/glob-matcher.js";
@@ -1709,16 +1709,16 @@ function aveHomeReadBoundaryMasks(): string[] {
 
 // The Ave home root covering `path` when `path` is that root or lies outside every re-allowed child.
 export function aveHomeReadBoundaryCovering(path: string): string | undefined {
-  return withLocalityDecision(() => aveHomeReadBoundaryMatcher()(canonicalizePathForMatch(path)));
+  return withLocalityDecision(() => aveHomeReadBoundaryMatcher()(canonicalizePathForMatch(path), path));
 }
 
-function aveHomeReadBoundaryMatcher(): (canonicalPath: string) => string | undefined {
+function aveHomeReadBoundaryMatcher(): (canonicalPath: string, path: string) => string | undefined {
   // The deepest root decides: an Ave home relocated beneath another spelling is judged by its own re-allowed children.
   const roots = aveHomeReadBoundaryRoots()
     .map((root) => ({ root, key: caseFoldForMatch(canonicalizePathForMatch(root)).replace(/\/+$/, "") }))
     .sort((left, right) => right.key.length - left.key.length);
   const sessionId = currentAveHomeBoundarySnapshot()?.sessionId;
-  return (canonicalPath) => {
+  return (canonicalPath, path) => {
     const folded = caseFoldForMatch(canonicalPath);
     const owner = roots.find(({ key }) => folded === key || folded.startsWith(`${key}/`));
     if (owner === undefined) return undefined;
@@ -1726,7 +1726,7 @@ function aveHomeReadBoundaryMatcher(): (canonicalPath: string) => string | undef
     const segments = folded.slice(owner.key.length + 1).split("/");
     if (!isAveHomeReadReallowed(segments)) return owner.root;
     // Beneath `worktrees` the ceiling row is open only to the session this composition is for, and only for the stage workspace it is bound to.
-    return segments[0] === "worktrees" && !isBoundStageWorkspacePath(sessionId, canonicalPath) ? owner.root : undefined;
+    return segments[0] === "worktrees" && !isBoundStageWorkspacePath(sessionId, resolvePathForPolicy(path)) ? owner.root : undefined;
   };
 }
 
@@ -1801,15 +1801,22 @@ function userDenyInside(entry: string, root: string): "certain" | "maybe" | unde
 export function getUnattendedPathReadRoots(homes: readonly string[], path: string, floor = getProtectedReadDenyPaths()): string[] {
   return withLocalityDecision(() => {
     const floorCovers = protectedReadDenyMatcher(floor);
-    const insideHome = (root: string): boolean => homes.some(home =>
-      isGrantPathWithin(home, root) && !isGrantPathWithin(root, home));
+    const physicalHomes = homes.flatMap(home => {
+      const physical = tryNativeRealpath(home);
+      return physical === undefined ? [] : [physical];
+    });
+    const insideHome = (roots: readonly string[], path: string): boolean => roots.some(root => {
+      const child = relativeNativePath(root, path);
+      return child !== undefined && child !== "";
+    });
+    const lexicalHomes = homes.map(home => resolve(home));
     const roots = new Set<string>();
     for (const candidate of path.split(delimiter)) {
-      if (!isAbsolute(candidate) || !insideHome(candidate)) continue;
+      if (!isAbsolute(candidate) || !insideHome(lexicalHomes, resolve(candidate))) continue;
       try {
         const local = admitLocalRoute(candidate).verdict;
         const physical = localFs.realpathNative(local);
-        if (!insideHome(physical) || !localFs.stat(local).isDirectory()) continue;
+        if (!insideHome(physicalHomes, physical) || !localFs.stat(local).isDirectory()) continue;
         if (floorCovers(candidate) || floorCovers(physical) || floor.some(deny => userDenyInside(deny, physical))) continue;
         if (aveHomeReadBoundaryCovering(physical) !== undefined) continue;
         roots.add(physical);
@@ -1887,6 +1894,7 @@ function composeBuiltinShellReadPolicy(readPaths: readonly string[], sandboxHome
   // On Windows the HOME must be one this process created and still holds, not merely a path of that shape.
   const held = sandboxHome !== undefined && (process.platform !== "win32" || liveSandboxProcessHomes.has(sandboxHome));
   const ownHome = held ? canonicalizePathForMatch(sandboxHome) : undefined;
+  const nativeOwnHome = profile && held ? tryNativeRealpath(sandboxHome) : undefined;
   // Refusing saved-session access restates private roots too. Those roots still
   // allow this invocation's own HOME; an explicit protected deny keeps priority.
   const protectedDenies = new Set(getProtectedReadDenyPaths());
@@ -1913,13 +1921,15 @@ function composeBuiltinShellReadPolicy(readPaths: readonly string[], sandboxHome
     const resolved = canonicalizePathForMatch(path);
     const key = caseFoldForMatch(resolved);
     if (canonicalHomes.includes(key)) return false;
-    if (profile?.toolchainReadRoots?.includes(path) && key !== caseFoldForMatch(path.replace(/\\/g, "/"))) return false;
+    if (profile?.toolchainReadRoots?.includes(path) && tryNativeRealpath(path) !== path) return false;
     if (gitDenyCovering(resolved) !== undefined) return false;
     // An explicit working directory must not reopen protected user data or a custom deny when removing a broader ancestor changes native rule order.
     if (sessionDenyCovering(resolved) !== undefined) return false;
     // Inside the Ave home only a re-allowed child is granted.
-    if (boundaryCovering(resolved) !== undefined) return false;
-    const insideOwnHome = ownHome !== undefined && (resolved === ownHome || resolved.startsWith(`${ownHome}/`));
+    if (boundaryCovering(resolved, path) !== undefined) return false;
+    const insideOwnHome = profile
+      ? nativeOwnHome !== undefined && relativeNativePath(nativeOwnHome, resolvePathForPolicy(path)) !== undefined
+      : ownHome !== undefined && (resolved === ownHome || resolved.startsWith(`${ownHome}/`));
     if (!insideOwnHome && privateRootCovering(resolved) !== undefined) return false;
     return true;
   });
@@ -2081,7 +2091,7 @@ function withholdUnder(
   return paths.filter((path) => {
     const resolved = canonicalizePathForMatch(path);
     const user = userCovering(resolved);
-    const denied = user ?? floorCovering(resolved) ?? boundaryCovering(resolved);
+    const denied = user ?? floorCovering(resolved) ?? boundaryCovering(resolved, path);
     if (denied === undefined) return true;
     if (user === undefined && canonicalPierces.some((pierce) => resolved === pierce || resolved.startsWith(`${pierce}/`))) return true;
     // Withheld silently, a later EACCES/EROFS/ENOENT in the child would have no visible cause.

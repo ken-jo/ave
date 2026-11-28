@@ -20,7 +20,8 @@ export interface PermissionDecisionRequest {
   sessionId?: string;
   ownerAway?: boolean;
   automationPause?: { kind: "consecutive" | "total"; reason: string };
-  paths?: readonly { lexical: string; canonical: string; effect: "read" | "write" }[];
+  // The canonical key is for policy matching. Envelope membership requires the native resolved runtimePath.
+  paths?: readonly { lexical: string; canonical: string; runtimePath?: string; effect: "read" | "write" }[];
   admissionDenial?: { code: string; reason: string };
   floor?: { code: PermissionFloorCode; reason: string };
   shellAnalysisLimited?: true;

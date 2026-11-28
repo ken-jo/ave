@@ -41,7 +41,9 @@ it("only brings exact local PATH directories within home into the profile", () =
   writeFileSync(ordinaryFile, "");
   const alias = join(home, "escaping-link");
   symlinkSync(join(root, "outside"), alias, "junction");
-  const candidates = [home, credentialParent, credential, tools, tools, alias, ordinaryFile, "", "bin", join(home, "missing")];
+  const backslashSibling = `${home}\\bin`;
+  if (process.platform !== "win32") mkdirSync(backslashSibling);
+  const candidates = [backslashSibling, home, credentialParent, credential, tools, tools, alias, ordinaryFile, "", "bin", join(home, "missing")];
   expect(shellReadPolicy.getUnattendedPathReadRoots([home], candidates.join(delimiter), [credential])).toEqual([tools]);
 });
 
@@ -72,4 +74,27 @@ it("denies home, omits saved history and reopens only the profile and the invoca
   expect(shellWritePolicy.deriveSandboxWritePaths({
     allowedDirectories: [other, tmpdir()], ownerPluginSandboxRoot: join(root, "plugin"),
   }, SESSION)).toEqual([workspace]);
+});
+
+it.skipIf(process.platform === "win32")("withholds a toolchain root redirected to a backslash sibling", () => {
+  const sibling = `${home}\\toolchain`;
+  mkdirSync(sibling);
+  const outside = join(sibling, "bin");
+  mkdirSync(outside);
+  rmSync(tools, { recursive: true });
+  symlinkSync(outside, tools, "dir");
+  registerUnattendedStage(SESSION, {
+    runKey: "run", stageId: "stage", workspaceRoot: workspace,
+    envelope: {
+      tools: [], readRoots: [], writePaths: [], commands: [], network: [], mcpReadOnlyTools: [],
+      mcpGenerationTools: [], pluginGenerationTools: [], outputs: [], budget: { rounds: 1, minutes: 1, costUsd: 0 },
+    },
+    isolation: { proven: true, profile: {
+      readDenyRoots: [home], readRoots: [workspace, tools], writeRoots: [workspace], toolchainReadRoots: [tools],
+    } },
+  });
+  const snapshot = createAveHomeBoundarySnapshot(SESSION);
+  const policy = shellReadPolicy.getBuiltinShellReadPolicy([], home, undefined, snapshot, "mxc");
+  expect(policy.allowRead).toContain(workspace);
+  expect(policy.allowRead).not.toContain(tools);
 });

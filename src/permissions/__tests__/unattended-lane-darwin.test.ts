@@ -1,38 +1,45 @@
-import assert from "node:assert/strict";
-import { expect, it, vi } from "vitest";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { expect, it } from "vitest";
 import type { PermissionDecisionRequest } from "../decision-pipeline.js";
+import { resolvePathForPolicy } from "../sensitive-paths.js";
 import { decideUnattended } from "../unattended-lane.js";
 
-vi.mock(import("node:path"), async importOriginal => {
-  const paths = await importOriginal();
-  return { ...paths, isAbsolute: paths.posix.isAbsolute, relative: paths.posix.relative, sep: paths.posix.sep };
-});
-
-it.each([
-  ["/Users/alice/ws/report.txt", "/users/alice/ws/report.txt", "allow"],
-  ["/Users/alice/references/report.txt", "/users/alice/references/report.txt", "allow"],
-  ["/users/alice/ws/report.txt", "/users/alice/ws/report.txt", "deny"],
-  ["/Users/alice/ws/report.txt", "/users/alice/outside/report.txt", "deny"],
-] as const)("checks both spellings of a darwin read: %s → %s", (lexical, canonical, outcome) => {
-  const platform = Object.getOwnPropertyDescriptor(process, "platform");
-  assert.ok(platform, "Expected a process.platform descriptor");
-  Object.defineProperty(process, "platform", { ...platform, value: "darwin" });
+it.skipIf(process.platform === "win32")("judges native spelling independently of the folded macOS policy key", () => {
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "ave-unattended-case-")));
   try {
+    const workspaceRoot = join(root, "Workspace");
+    const references = join(root, "References");
+    const declared = join(root, "Declared");
+    mkdirSync(workspaceRoot);
+    mkdirSync(references);
+    symlinkSync(references, declared, "dir");
+    const input = join(workspaceRoot, "report.txt");
+    const reference = join(declared, "report.txt");
     const request: PermissionDecisionRequest = {
       mode: "default", headless: true, tool: { name: "read_file", kind: "read", source: "builtin" },
-      paths: [{ lexical, canonical, effect: "read" }],
       unattendedEffect: "safe",
       unattended: {
-        runKey: "run", stageId: "stage", workspaceRoot: "/Users/alice/ws", isolation: { proven: true },
+        runKey: "run", stageId: "stage", workspaceRoot, isolation: { proven: false }, readOnly: true,
         envelope: {
-          tools: ["read_file"], readRoots: ["/Users/alice/references"], writePaths: [],
+          tools: ["read_file"], readRoots: [declared], writePaths: [],
           commands: [], network: [], mcpReadOnlyTools: [], mcpGenerationTools: [], pluginGenerationTools: [],
           outputs: [], budget: { rounds: 1, minutes: 1, costUsd: 0 },
         },
       },
     };
-    expect(decideUnattended(request).outcome).toBe(outcome);
+    const check = (lexical: string, runtimePath: string | undefined, canonical = runtimePath?.toLowerCase() ?? lexical.toLowerCase()) =>
+      decideUnattended({ ...request, paths: [{ lexical, canonical, runtimePath, effect: "read" }] }).outcome;
+    expect(check(input, input)).toBe("allow");
+    expect(check(reference, resolvePathForPolicy(reference))).toBe("allow");
+    expect(check(input.toLowerCase(), input)).toBe("deny");
+    expect(check(input, join(root, "outside", "report.txt"))).toBe("deny");
+    expect(check(input, undefined)).toBe("deny");
+    // Supply the result realpath would return if both siblings existed on a case-sensitive volume.
+    const caseVariant = join(root, "workspace", "report.txt");
+    expect(check(input, caseVariant)).toBe("deny");
   } finally {
-    Object.defineProperty(process, "platform", platform);
+    rmSync(root, { recursive: true, force: true });
   }
 });

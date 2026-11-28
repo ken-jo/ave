@@ -1,18 +1,17 @@
 import { lstatSync } from "node:fs";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { isAbsolute, join, resolve, sep } from "node:path";
 import { aveHome } from "../shared/ave-home.js";
 import { admitLocalRoute, localFs, matcherMemo, withLocalityDecision } from "../shared/local-path-io.js";
-import { inspectPhysicalFilesystemPath } from "../shared/shell-filesystem-path.js";
+import { inspectPhysicalFilesystemPath, relativeNativePath, tryNativeRealpath } from "../shared/shell-filesystem-path.js";
 
 /** Host-minted, memory only: a session id to the one real stage folder it works in. Never a path-prefix rule. */
 const bindings = new Map<string, string>();
 
-const fold = (path: string): string => process.platform === "win32" || process.platform === "darwin" ? path.toLowerCase() : path;
-const segmentsOf = (path: string): string[] => path.split(/[\\/]+/u).filter(Boolean);
-/** The segments of `path` below `root` under the platform's case rule; empty for the root itself, null outside it. */
+const segmentsOf = (path: string): string[] => (sep === "\\" ? path.split(/[\\/]+/u) : path.split(sep)).filter(Boolean);
+/** The native segments below the root, with its exact spelling. */
 function below(root: string, path: string): string[] | null {
-  const rel = relative(fold(root), fold(path));
-  return rel.startsWith("..") || isAbsolute(rel) ? null : segmentsOf(rel);
+  const rel = relativeNativePath(root, path);
+  return rel === undefined ? null : segmentsOf(rel);
 }
 
 /** `worktrees/<project>/<run>/<stage>` as the provider lays it out; a `_` name is never a stage folder. */
@@ -62,10 +61,7 @@ export function isOwnStageWorkspacePath(sessionId: string | undefined, path: str
   return withLocalityDecision(() => {
     const root = sessionId === undefined ? undefined : bindings.get(sessionId);
     if (root === undefined || !isAbsolute(path) || segmentsOf(path).includes("..")) return false;
-    if (process.platform === "win32") {
-      const currentRoot = tryLocalRealpath(root);
-      if (currentRoot === undefined || fold(currentRoot) !== fold(root)) return false;
-    }
+    if (process.platform === "win32" && tryNativeRealpath(root) !== root) return false;
     let physical: string;
     try {
       const inspected = inspectPhysicalFilesystemPath(path, root, Number.POSITIVE_INFINITY);
@@ -79,20 +75,14 @@ export function isOwnStageWorkspacePath(sessionId: string | undefined, path: str
   });
 }
 
-/** Whether a canonical path lies inside the stage workspace this session is bound to; the sandbox ceiling opens nothing else beneath `worktrees`. */
+/** Whether a native resolved path lies inside the stage workspace this session is bound to. */
 export function isBoundStageWorkspacePath(sessionId: string | undefined, path: string): boolean {
   return withLocalityDecision(() => {
     const root = sessionId === undefined ? undefined : bindings.get(sessionId);
     if (root === undefined || below(root, path) === null) return false;
     if (process.platform !== "win32") return true;
-    const currentRoot = tryLocalRealpath(root);
-    return currentRoot !== undefined && fold(currentRoot) === fold(root);
+    return tryNativeRealpath(root) === root;
   });
-}
-
-function tryLocalRealpath(path: string): string | undefined {
-  try { return localFs.realpathNative(admitLocalRoute(path).verdict); }
-  catch { return undefined; }
 }
 
 /** Whether an absolute path, as spelled, is `<home>/worktrees` or lies beneath it, for the home's given and physical spelling. */
@@ -105,11 +95,13 @@ export function createStageWorkspacesMatcher(): (path: string) => boolean {
     if (homes === undefined) {
       const home = resolve(aveHome());
       homes = [home];
-      const physical = tryLocalRealpath(home);
+      const physical = tryNativeRealpath(home);
       if (physical !== undefined) homes.push(physical);
       memo.set("homes", homes);
     }
-    return homes.some(home => below(home, resolve(path))?.[0] === "worktrees");
+    // This matcher applies a protection floor, including to case variants.
+    const fold = (value: string): string => process.platform === "win32" || process.platform === "darwin" ? value.toLowerCase() : value;
+    return homes.some(home => below(fold(home), fold(resolve(path)))?.[0] === "worktrees");
   });
   if (process.platform !== "win32") match(resolve(aveHome()));
   return match;

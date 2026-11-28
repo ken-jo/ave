@@ -1,5 +1,5 @@
 /** The stage scheduler on the parts boot chooses (`workflowEngineExtensions`): run state is the board store's run file. */
-import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { delimiter, dirname, join } from "node:path";
 import { expect, it, type MockInstance, vi } from "vitest";
 import { aveHome } from "../../shared/ave-home.js";
@@ -68,22 +68,41 @@ it.each([{ tools: [] }, { tools: ["read_file"] }])("enforces the proof-free sche
   const outside = join(h.dir, "outside");
   try {
     await h.runThenEnd(async () => {
+      mkdirSync(declared);
       const envelope = { ...readEnvelope, tools, readRoots: [declared] };
       const { itemId, source } = await pinIsolationSchedule(h, { ...auto("a"), envelope });
       const run = h.start(itemId, source);
       const [child] = await h.untilLive(1);
       const sessionId = child.sessionId;
-      const check = (target: string, name = "read_file", canonical = target) => manager.checkDetailed(name, "builtin", "read", undefined, {
-        sessionId, reportUnattendedDenials: false,
-        paths: [{ lexical: target, canonical: caseFoldForMatch(foldCanonicalPathSeparators(resolvePathForPolicy(canonical))), effect: "read" }],
-      });
+      const check = (target: string, name = "read_file", runtimePath = resolvePathForPolicy(target)) => {
+        const path = { lexical: target, canonical: caseFoldForMatch(foldCanonicalPathSeparators(runtimePath)), runtimePath, effect: "read" as const };
+        return manager.checkDetailed(name, "builtin", "read", undefined, {
+          sessionId, reportUnattendedDenials: false, paths: [path],
+        });
+      };
       const inWorkspace = join(child.input.projectRoot ?? "", "input.txt");
       const permitted = tools.length ? "allow" : "deny";
       expect.soft(child.input.toolScope).toEqual(tools.length ? exactToolScope(tools) : DENY_ALL_TOOL_SCOPE);
       expect.soft(check(inWorkspace)).toMatchObject({ decision: permitted });
       expect.soft(check(join(declared, "input.txt"))).toMatchObject({ decision: permitted });
       expect.soft(check(join(outside, "input.txt"))).toMatchObject({ decision: "deny", reasonCode: "outside-envelope" });
-      expect.soft(check(inWorkspace, "read_file", join(outside, "linked.txt"))).toMatchObject({ decision: "deny", reasonCode: "outside-envelope" });
+      if (process.platform !== "win32") {
+        mkdirSync(outside);
+        const outsideFile = join(outside, "linked.txt");
+        const outsideLink = join(dirname(inWorkspace), "outside-link.txt");
+        writeFileSync(outsideFile, "");
+        symlinkSync(outsideFile, outsideLink);
+        expect.soft(check(outsideLink)).toMatchObject({ decision: "deny", reasonCode: "outside-envelope" });
+
+        const sibling = `${dirname(inWorkspace)}\\sibling.txt`;
+        const siblingLink = join(dirname(inWorkspace), "sibling-link.txt");
+        writeFileSync(sibling, "");
+        symlinkSync(sibling, siblingLink);
+        expect(realpathSync.native(siblingLink)).toBe(sibling);
+        expect.soft(check(siblingLink)).toMatchObject({ decision: "deny", reasonCode: "outside-envelope" });
+      } else {
+        expect.soft(check(inWorkspace, "read_file", join(outside, "linked.txt"))).toMatchObject({ decision: "deny", reasonCode: "outside-envelope" });
+      }
       expect.soft(check(inWorkspace, "grep_files")).toMatchObject({ decision: "deny", reasonCode: "outside-envelope" });
       expect.soft(manager.checkDetailed("web_fetch", "builtin", "network", undefined, {
         sessionId, reportUnattendedDenials: false, unattendedNetwork: { host: "fixture.invalid", port: 443, sandboxed: true, connection: true },

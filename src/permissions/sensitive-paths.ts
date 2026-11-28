@@ -670,6 +670,7 @@ export interface PermissionPathEvidence {
   // Absolute spellings: preserve the operand and resolve its physical target once before calling.
   lexical: string;
   canonical: string;
+  runtimePath?: string;
   effect: PathEffect;
   // Matching secret pattern or host namespace identifier, rather than a permission outcome.
   secret: string | null;
