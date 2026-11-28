@@ -457,6 +457,8 @@ describe.runIf(NATIVE)("macOS holder boundary (native)", () => {
       expect(hits).toEqual([`http://allowed.example:${upstreamPort + 1}/ok`]);
       await vi.waitFor(() => expect(direct).toBe(1), { timeout: 5_000, interval: 25 });
       expect(tailnetHits).toBe(0);
+      // The relay did ask (for the denied host), so its silence about the Tailnet port is a refusal, not a relay that never asks.
+      expect(asked.some(entry => entry.startsWith("denied.example:")), JSON.stringify(asked)).toBe(true);
       expect(asked.some(entry => entry.endsWith(`:${tailnetPort}`))).toBe(false);
     } finally {
       releaseTailnet();
@@ -526,7 +528,7 @@ describe.runIf(NATIVE)("macOS holder boundary (native)", () => {
     writeFileSync(verdict, '#!/bin/sh\nread -r line\ncase "$line" in *read_file*) printf \'{"action":"deny","reason":"saw read_file"}\';; *) printf \'{"action":"allow"}\';; esac\n');
     const pidFile = join(dataDir, "escaped.pid");
     const stuck = join(generationRoot, "stuck.sh");
-    writeFileSync(stuck, `#!/bin/sh\n/usr/bin/perl -e 'use POSIX; POSIX::setsid(); exec "/bin/sleep", "59"' & echo $! > '${pidFile}'\nexec /bin/sleep 59\n`);
+    writeFileSync(stuck, `#!/bin/sh\n/usr/bin/perl -e 'use POSIX; POSIX::setsid(); exec "/bin/sleep", "57"' & echo $! > '${pidFile}'\nexec /bin/sleep 57\n`);
     chmodSync(verdict, 0o755); chmodSync(stuck, 0o755);
     const payload = { hookType: "pre", event: "pre", toolName: "read_file", source: "builtin", category: "read", input: {},
       sessionId: "native-hook", trustOrigin: "user-keyboard" } as const;
