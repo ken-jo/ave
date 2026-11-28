@@ -752,6 +752,10 @@ export async function detectHostMxcLinuxHolderSupport(resources: HostResources, 
   const found = directories.map(directory => posix.join(directory, "bwrap")).find(executable);
   if (found === undefined || !trustedTool(found)) return unavailable("tools-missing", ["bwrap"]);
   const bwrap = linuxHolderBwrap(found);
+  // The canary's own tools (review #758 P3-6): without one its check would pass for want of the tool, or fail as if
+  // the holder had. Named as missing, with each one.
+  const canaryTools = LINUX_HOLDER_CANARY_TOOLS.filter(tool => !executable(tool));
+  if (canaryTools.length > 0) return unavailable("tools-missing", canaryTools);
   const helperSha256 = filterPins[helperArch];
   let captureFolder: string;
   try { captureFolder = establishLinuxCaptureFolder(root, helper, helperSha256); } catch { return unavailable("capture-folder-untrusted"); }
@@ -782,6 +786,18 @@ export function linuxHolderBwrap(found: string): ProvenLinuxHolderRoute["bwrap"]
   return { path, identity: measurePosixExecutableIdentity(path) };
 }
 
+/** The bridge check: a CONNECT through the bridge, answered with the host listener's refusal. */
+const LINUX_HOLDER_BRIDGE_CHECK = [
+  'exec 3<>"/dev/tcp/127.0.0.1/$1" || exit 1',
+  `printf 'CONNECT %s:443 HTTP/1.1\r\nHost: %s:443\r\n\r\n' "$2" "$2" >&3`,
+  'IFS= read -r line <&3 || exit 1',
+  `case "$line" in "HTTP/1."?" ${INVOCATION_PROXY_REFUSED_STATUS} "*) exit 0 ;; esac`,
+  "exit 1",
+].join("\n");
+
+/** What the holder canary runs inside the holder, by the absolute path the script names. */
+const LINUX_HOLDER_CANARY_TOOLS = ["/bin/bash", "/usr/bin/timeout", "/usr/bin/unshare"] as const;
+
 /** A canary hook the native tests use to add an interface to the holder's namespace while it runs (N22). */
 interface LinuxHolderCanaryTestOverrides {
   readonly whileRunning?: (holderPid: number) => Promise<void>;
@@ -795,6 +811,7 @@ async function runLinuxHolderCanary(
   const scratch = await mkdtemp(posix.join(root, "holder-canary-"));
   const nonce = randomBytes(16).toString("hex");
   let nonceRecorded = false;
+  let bridgeRecorded = false;
   let proxy: Awaited<ReturnType<typeof openInvocationProxySocketListener>> | undefined;
   let targets: Awaited<ReturnType<typeof openLinuxRawIpHostTargets>>;
   let hostConnected = false;
@@ -815,7 +832,10 @@ async function runLinuxHolderCanary(
     // loopback destination and reports that refusal here. It forwards nothing, since the canary holds no egress grant.
     proxy = await openInvocationProxySocketListener({
       socketPath: posix.join(scratch, "proxy.sock"), upstream: () => undefined,
-      onRefused: (destination) => { if (destination === `${nonce}.localhost`) nonceRecorded = true; },
+      onRefused: (destination) => {
+        if (destination === `${nonce}.localhost`) nonceRecorded = true;
+        if (destination === `${nonce}-bridge.localhost`) bridgeRecorded = true;
+      },
     });
     await new Promise<void>((resolve, reject) => {
       unix.once("error", reject);
@@ -836,9 +856,13 @@ async function runLinuxHolderCanary(
         `if (printf x > ${quote(posix.join(sealed, "new"))}); then exit 13; fi`,
         // The bridge: the proxy variables name it, and it reaches the host's socket.
         `[ "$HTTPS_PROXY" = http://127.0.0.1:${LINUX_HOLDER_BRIDGE_PORT} ] || exit 14`,
-        `/usr/bin/timeout ${connectTimeout} /bin/bash -c 'exec 3<>/dev/tcp/127.0.0.1/${LINUX_HOLDER_BRIDGE_PORT}' || exit 16`,
+        // Through the bridge to the host's listener, which must answer and record the request: an accepting port alone
+        // proves nothing about the far end (review #758 P3-6).
+        `/usr/bin/timeout ${connectTimeout} /bin/bash -c ${quote(LINUX_HOLDER_BRIDGE_CHECK)} bridge ${LINUX_HOLDER_BRIDGE_PORT} ${nonce}-bridge.localhost || exit 16`,
         `${quote(route.programs.helper)} --check-unix-socket u || exit 18`,
-        "if unshare -Ur /bin/true; then exit 19; fi",
+        // The control first: unshare exists and runs here; only then does its refusal of a user namespace count.
+        "/usr/bin/unshare --version > /dev/null || exit 20",
+        "if /usr/bin/unshare -Ur /bin/true; then exit 19; fi",
       ];
       const proberArguments = linuxRawIpProberArguments({
         nonce, host: targets?.address, closedPort: targets?.closedPort, udpPort: udp?.port, arrivalPort: targets?.tcp.port,
@@ -886,7 +910,7 @@ async function runLinuxHolderCanary(
       await holder.dispose("holder canary ended");
       const control = await readFile(posix.join(working, "control"), "utf8").catch(() => "");
       const printed = Buffer.concat(stdout).toString("utf8");
-      if (exit.code !== 0 || hostConnected || printed !== "boundary-control\n" || control !== printed) {
+      if (exit.code !== 0 || hostConnected || !bridgeRecorded || printed !== "boundary-control\n" || control !== printed) {
         throw new MxcHolderStartRefusedError("holder-start-failed", `the holder canary's checks failed (${exit.signal ?? `exit ${exit.code}`})`);
       }
       const output = await readFile(posix.join(working, "raw-ip.out"), "utf8").then(parseLinuxRawIpProbeOutput, (error: unknown) => {
@@ -912,5 +936,5 @@ async function runLinuxHolderCanary(
   }
 }
 
-export { runLinuxHolderCanary as _runLinuxHolderCanaryForTest };
+export { LINUX_HOLDER_BRIDGE_CHECK as _LINUX_HOLDER_BRIDGE_CHECK_FOR_TEST, runLinuxHolderCanary as _runLinuxHolderCanaryForTest };
 export { detectMxcLinuxShellSupport as _detectMxcLinuxShellSupportForTest, runLinuxCanary as _runLinuxCanaryForTest, trustedLinuxPath as _trustedLinuxPathForTest };

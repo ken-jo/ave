@@ -1,8 +1,24 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readdirSync, realpathSync, rmSync } from "node:fs";
+import { createServer } from "node:net";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { _runLinuxHolderCanaryForTest, detectHostMxcLinuxHolderSupport, detectHostMxcLinuxShellSupport } from "../mxc-linux.js";
+import {
+  _LINUX_HOLDER_BRIDGE_CHECK_FOR_TEST, _runLinuxHolderCanaryForTest, detectHostMxcLinuxHolderSupport, detectHostMxcLinuxShellSupport,
+} from "../mxc-linux.js";
+
+// Paths the canary must find missing, though the host has them (review #758 P3-6).
+const missing = vi.hoisted(() => new Set<string>());
+vi.mock("node:fs", async (actual) => {
+  const fs = await actual<typeof import("node:fs")>();
+  return {
+    ...fs,
+    accessSync: ((path: string, mode?: number) => {
+      if (missing.has(String(path))) throw Object.assign(new Error(`ENOENT: ${String(path)}`), { code: "ENOENT" });
+      return fs.accessSync(path, mode);
+    }) as typeof fs.accessSync,
+  };
+});
 import { currentMxcRuntimeHost, establishMxcRuntimeRoot, requireMxcContainerStartRoot, _forgetMxcRuntimeRootForTest } from "../mxc-runtime-root.js";
 
 const NATIVE = process.env.AVE_RUN_MXC_LINUX_BOUNDARY === "1";
@@ -74,6 +90,17 @@ describe.runIf(NATIVE)("native Linux holder canary (design 6.3)", () => {
       .resolves.toEqual({ support: { state: "unavailable", reason: "binary-missing" } });
   });
 
+  // Review #758 P3-6: a tool the canary's checks run is a named prerequisite, not a check that passes for want of it.
+  it.each([["/usr/bin/unshare"], ["/bin/bash"], ["/usr/bin/timeout"]])("names %s missing instead of passing or failing its check", async (tool) => {
+    establishMxcRuntimeRoot();
+    missing.add(tool);
+    try {
+      await expect(detectHostMxcLinuxHolderSupport(resources)).resolves.toEqual({ support: { state: "unavailable", reason: "tools-missing", detail: [tool] } });
+    } finally {
+      missing.delete(tool);
+    }
+  });
+
   it("is unknown when the namespace holds a second interface while it runs (N22)", async () => {
     establishMxcRuntimeRoot();
     const proven = await detectHostMxcLinuxHolderSupport(resources);
@@ -89,5 +116,28 @@ describe.runIf(NATIVE)("native Linux holder canary (design 6.3)", () => {
     });
     expect(verdict).toMatchObject({ rawIp: "unknown", reason: "no-evidence" });
     expect(leftovers()).toEqual([]);
+  });
+});
+
+// Review #758 P3-6: the bridge check needs the host listener's answer; a port that only accepts is no bridge.
+describe.runIf(process.platform !== "win32")("the holder canary's bridge check", () => {
+  async function check(answer: string | undefined): Promise<number | null> {
+    const server = createServer(socket => { if (answer !== undefined) socket.end(answer); });
+    await new Promise<void>(done => server.listen(0, "127.0.0.1", done));
+    const port = (server.address() as { port: number }).port;
+    try {
+      return await new Promise(done => {
+        const child = spawn("/bin/bash", ["-c", _LINUX_HOLDER_BRIDGE_CHECK_FOR_TEST, "bridge", String(port), "n-bridge.localhost"], { timeout: 3_000, stdio: "ignore" });
+        child.once("exit", done);
+      });
+    } finally {
+      server.close();
+    }
+  }
+
+  it("passes on the host listener's refusal, and not on a port that accepts and says nothing", async () => {
+    expect(await check("HTTP/1.1 403 Forbidden\r\n\r\n")).toBe(0);
+    expect(await check("HTTP/1.1 200 OK\r\n\r\n")).toBe(1);
+    expect(await check("")).toBe(1);
   });
 });
