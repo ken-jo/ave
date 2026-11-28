@@ -23,6 +23,7 @@ import { raceWithTimeout } from "../shared/abortable-deadline.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { errorMessage } from "../shared/error-message.js";
 import { isContainerHolderRouteEnabled } from "../shared/container-platform.js";
+import { provenLinuxHolderRoute } from "../permissions/linux-holder-route.js";
 import { createLogger } from "../lib/logger.js";
 import {
   liveMxcHolderWritableRoots,
@@ -347,6 +348,8 @@ export function hostRuntimeReads(command: string): string[] {
 /** The selected boot plan routes extension holders to containers. A checking or rejected plan is refused by the guard. */
 export function isMxcExtensionBackendSelected(): boolean {
   if (!isContainerHolderRouteEnabled(process.platform)) return false;
+  // Linux has no extension plan: the holder route this app run's boot canary proved is the selection.
+  if (process.platform === "linux") return provenLinuxHolderRoute() !== undefined;
   const plan = getExtensionBackendPlan();
   return plan?.selectedBackend === "mxc" && plan.readiness === "ready";
 }

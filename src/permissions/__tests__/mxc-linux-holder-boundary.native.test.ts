@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createServer as createUnixServer } from "node:net";
 import { join, resolve } from "node:path";
@@ -20,6 +20,13 @@ import { startEgressRelayService, stopEgressRelayService } from "../egress-relay
 import { setProvenLinuxHolderRoute } from "../linux-holder-route.js";
 import { currentMxcRuntimeHost, establishMxcRuntimeRoot, requireMxcContainerStartRoot, _forgetMxcRuntimeRootForTest } from "../mxc-runtime-root.js";
 import { forgetIssuedContainerHome, recordIssuedContainerHome } from "../sandbox-home-registry.js";
+import { spawnMxcBundledHolder, type MxcBundledHolder } from "../../sandbox/wrap-bundled-command.js";
+
+vi.mock("../../shared/container-platform.js", async (actual) => {
+  const real = await actual<typeof import("../../shared/container-platform.js")>();
+  // The route is switched on here, before the product switch: the proof is injected, the chain is real.
+  return { ...real, isContainerHolderRouteEnabled: (platform: NodeJS.Platform) => platform === "linux" || real.isContainerHolderRouteEnabled(platform) };
+});
 
 const NATIVE = process.env.AVE_RUN_MXC_LINUX_BOUNDARY === "1";
 const BWRAP = "/usr/bin/bwrap";
@@ -389,4 +396,61 @@ describe.runIf(NATIVE)("native Linux holder row-2 admission", () => {
     }, tree)).rejects.toThrow("Extension parent backend is no longer admitted");
     expect(existsSync(markers()) ? readdirSync(markers()) : []).toEqual([]);
   });
+
+  describe("the holder callers' adapter (H14)", () => {
+    const bundled: MxcBundledHolder[] = [];
+    afterEach(async () => { await Promise.allSettled(bundled.splice(0).map(holder => holder.release())); });
+    async function bundledHolder(script: string, over: Partial<Parameters<typeof spawnMxcBundledHolder>[0]> = {}): Promise<MxcBundledHolder> {
+      const holder = await spawnMxcBundledHolder({
+        label: "test:linux-bundled", command: "/bin/sh", args: ["-c", script], baseEnv: { PATH }, holderEnv: {},
+        allowRead: [], allowWrite: [data], ownedReadRoots: [],
+        egressOwner: { kind: "worker", role: "mcp-server", pluginId: undefined, instanceId: "h14" } as never, ...over,
+      });
+      bundled.push(holder);
+      return holder;
+    }
+
+    it("N1: an MCP-style server starts in the container in its own staging HOME, with fds 0/1/2 only, byte-exact both ways", async () => {
+      const holder = await bundledHolder("fds=; for fd in 3 4 5 6 7 8 9; do [ -e /dev/fd/$fd ] && fds=\"$fds$fd\"; done; echo \"$HOME|$TMPDIR|fds=$fds\"; exec /bin/cat");
+      expect(holder.confinement).toBe("linux-container");
+      const [home, temp, fds] = (await line(holder.process.stdout)).split("|") as [string, string, string];
+      expect(home).toMatch(/\/staging\/[0-9a-f]{32}\/home$/u);
+      expect(temp).toBe(home.replace(/home$/u, "temp"));
+      expect(fds).toBe("fds=");
+      const payload = Buffer.alloc(16 * 1024 * 1024, 0x61);
+      const echoed = collect(holder.process.stdout);
+      holder.process.stdin.end(payload);
+      const text = await echoed;
+      expect(text.length).toBe(payload.length);
+      expect(text === payload.toString()).toBe(true);
+    });
+
+    it("N18: a worker under a plugin child is released with it when the parent goes first, and a new one under it is refused", async () => {
+      const parentData = join(root, "plugin-data");
+      const workerData = join(root, "worker-data");
+      mkdirSync(parentData);
+      mkdirSync(workerData);
+      // The plugin child is started by its own adapter straight through row 2, as in the product.
+      const tree = staging();
+      const parent = await spawnHolder("echo parent; exec /bin/cat", {
+        label: "plugin-child:p18", egressOwner: { kind: "worker", role: "plugin-child", pluginId: "p18" } as never,
+        allowWrite: [parentData, tree.folder], filesystemOwnership: { readRoots: [], writeRoots: [parentData, tree.folder], hostStorageRoots: [] },
+      }, tree);
+      expect(await line(parent.process.stdout)).toBe("parent");
+      const worker = await bundledHolder("echo worker; exec /bin/sleep 3318", {
+        label: "worker:p18:w", egressOwner: { kind: "worker", role: "worker", pluginId: "p18", instanceId: "w" } as never,
+        workerTransport: "output-only-v1", parent, allowWrite: [workerData],
+      });
+      expect(await line(worker.process.stdout)).toBe("worker");
+      const running = (): boolean => execFileSync("/bin/ps", ["-Ao", "args="]).toString().includes("sleep 3318");
+      expect(running()).toBe(true);
+      await parent.release();
+      await vi.waitFor(() => expect(running()).toBe(false), { timeout: 5_000, interval: 50 });
+      await expect(bundledHolder("true", {
+        label: "worker:p18:w2", egressOwner: { kind: "worker", role: "worker", pluginId: "p18", instanceId: "w2" } as never,
+        workerTransport: "output-only-v1", parent, allowWrite: [workerData],
+      })).rejects.toThrow("Extension parent backend is no longer admitted");
+    });
+  });
+
 });
