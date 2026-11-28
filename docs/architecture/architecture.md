@@ -3674,9 +3674,10 @@ arrival control passed, and only `lo`; anything less is `unknown`.
 
 **Limits.** A file deny binds the file present at spawn (above). A revocation
 between the gate and the ready byte is caught by the post-start recheck, which
-stops the holder. The offline host children (local inference, the document
-engine) stay on the existing sandbox on Linux, because the document engine needs
-a Unix socket the holder's filter refuses.
+stops the holder. Local inference stays on the existing offline sandbox on
+Linux. The document engine is not a confined child on any platform: LibreOffice
+runs as the app the user installed (owner decision 2026-11-28, see
+[document observation engine](document-observation-engine.md)).
 
 ### Windows agent shells in Microsoft Execution Containers
 
