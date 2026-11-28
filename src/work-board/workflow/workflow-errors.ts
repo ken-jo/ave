@@ -1,7 +1,7 @@
 import type { EnvelopeToolRef } from "../../shared/workflow-template-types.js";
 
 export type WorkflowInvariantCode =
-  | "run-not-authorised" | "workspace-missing" | "lane-blocked" | "version-missing" | "graph-mismatch" | "stage-not-in-version"
+  | "run-not-authorised" | "workspace-missing" | "version-missing" | "graph-mismatch" | "stage-not-in-version"
   | "stage-not-ready" | "attempt-out-of-range" | "run-stopped" | "duplicate-stage-child" | "outputs-unavailable" | "graph-invalid"
   | "run-state-failed" | "run-write-held";
 

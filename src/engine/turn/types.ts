@@ -306,6 +306,8 @@ export interface ConversationLoopDeps {
   allowedPluginIds?: ReadonlySet<string>;
   // Background writes must ask and cannot rely on automatic or cached allows.
   headless?: boolean;
+  // A stage's registry contains only MCP tools admitted by its envelope.
+  unattendedMcpEnabled?: true;
   // Routine loops: the answer's closing <summary> block is for the result card only, so history stores the answer without it.
   stripRoutineSummary?: boolean;
   // Approval UI capability is independent of routine tool scope.

@@ -7,7 +7,7 @@ import { ChangeSignal } from "../lib/change-signal.js";
 import { createLogger } from "../lib/logger.js";
 import { UUID_PATTERN } from "../shared/uuid.js";
 import { isRecord } from "../shared/is-record.js";
-import { attachmentScopeMatches, isTemplateScope, hasTemplateKeys, canonicalTemplateGraph, validateStageForConfirm, isAllReadOnlyVersion, graphHashOf, isGraphHash, isTemplateId, isTemplateVersion, parseTemplateDraft, qualifyUnattended, requireTemplate, WorkflowTemplateError } from "../work-board/template-graph.js";
+import { attachmentScopeMatches, everyStageHasEnvelope, isTemplateScope, hasTemplateKeys, validateStageForConfirm, graphHashOf, isGraphHash, isTemplateId, isTemplateVersion, parseTemplateDraft, qualifyUnattended, requireTemplate, WorkflowTemplateError } from "../work-board/template-graph.js";
 import type { ToolEffectResolver } from "../permissions/tool-effect-evidence.js";
 import { WorkDecisionAuthorityError } from "../work-board/work-decision-authority.js";
 import { parseTemplateConfirmInput } from "../work-board/work-decision-input.js";
@@ -17,6 +17,12 @@ import { isWorkflowTemplateProposalId, type ScheduleAttachment, type ScheduleAtt
 interface ScheduleRunAuthority {
   record: WorkflowTemplateRecord | null;
   attachment: ScheduleAttachment | null;
+}
+
+interface ActiveScheduleAttachment {
+  attachment: ScheduleAttachment;
+  template: WorkflowTemplate;
+  needsNewVersion: boolean;
 }
 
 interface TemplatesFile { version: 1; templates: WorkflowTemplateRecord[] }
@@ -235,7 +241,7 @@ export class WorkflowTemplateStore {
       return { version: structuredClone(confirmed), unattended: qualifyUnattended(confirmed, effects) };
     });
   }
-  async attachSchedule(input: ScheduleAttachmentInput, proof: HostDecisionProof, approvedScope: TemplateScope, options?: { requireCurrent: true }): Promise<ScheduleAttachment> {
+  async attachSchedule(input: ScheduleAttachmentInput, proof: HostDecisionProof, approvedScope: TemplateScope, options?: { requireCurrent?: true; effects?: ToolEffectResolver }): Promise<ScheduleAttachment> {
     requireTemplate(hasTemplateKeys(input, ["scheduleId", "templateId", "version", "graphHash"]) && isTemplateId(input.scheduleId) && isTemplateId(input.templateId) && isTemplateVersion(input.version) && isGraphHash(input.graphHash));
     assertHostDecisionProof(proof, { allowTailnet: true });
     requireTemplate(isTemplateScope(approvedScope));
@@ -246,7 +252,11 @@ export class WorkflowTemplateStore {
       const version = record.versions.find(v => v.version === input.version);
       requireTemplate(version, "unknown-version");
       requireTemplate(version.graphHash === input.graphHash, "graph-hash-mismatch");
-      requireTemplate(isAllReadOnlyVersion(canonicalTemplateGraph(version)), "schedule-requires-read-only");
+      const qualification = qualifyUnattended(version, options?.effects ?? null);
+      if (!qualification.ok) {
+        if ("tool" in qualification) throw new WorkflowTemplateError(qualification.code, qualification.code, undefined, undefined, qualification.tool);
+        throw new WorkflowTemplateError("schedule-requires-read-only");
+      }
       requireTemplate(attachmentScopeMatches({ approvedScope }, record.template).ok, "scope-changed");
       const attachment: ScheduleAttachment = { ...input, approvedScope: structuredClone(approvedScope), id: randomUUID(), ...decisionActor(proof, "user"), at: proof.decidedAt };
       for (const r of file.templates) for (const prior of r.scheduleAttachments ?? []) if (prior.scheduleId === input.scheduleId && prior.detachedAt === undefined) prior.detachedAt = proof.decidedAt;
@@ -266,11 +276,14 @@ export class WorkflowTemplateStore {
     requireTemplate(isTemplateId(scheduleId));
     return structuredClone((await this.readFile()).templates.flatMap(r => r.scheduleAttachments ?? []).filter(a => a.scheduleId === scheduleId));
   }
-  async listActiveScheduleAttachments(scheduleIds: ReadonlySet<string>): Promise<Map<string, { attachment: ScheduleAttachment; template: WorkflowTemplate }>> {
-    const bySchedule = new Map<string, { attachment: ScheduleAttachment; template: WorkflowTemplate }>();
-    for (const { template, scheduleAttachments } of (await this.readFile()).templates) {
+  async listActiveScheduleAttachments(scheduleIds: ReadonlySet<string>): Promise<Map<string, ActiveScheduleAttachment>> {
+    const bySchedule = new Map<string, ActiveScheduleAttachment>();
+    for (const { template, versions, scheduleAttachments } of (await this.readFile()).templates) {
       for (const attachment of scheduleAttachments ?? []) {
-        if (attachment.detachedAt === undefined && scheduleIds.has(attachment.scheduleId)) bySchedule.set(attachment.scheduleId, { attachment, template });
+        if (attachment.detachedAt !== undefined || !scheduleIds.has(attachment.scheduleId)) continue;
+        const version = versions[attachment.version - 1];
+        requireTemplate(version, "unknown-version");
+        bySchedule.set(attachment.scheduleId, { attachment, template, needsNewVersion: !everyStageHasEnvelope(version) });
       }
     }
     return bySchedule;

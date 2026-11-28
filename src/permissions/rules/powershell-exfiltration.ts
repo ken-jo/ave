@@ -1393,8 +1393,9 @@ function inspectPowerShellPermissionPathsInDecision(input: PowerShellCommandInpu
     const modeled = modelShellPath(value, { dialect: "powershell", location: base });
     const lexical = absolute ? value : base + "/" + value;
     let canonical = modeled.normalizedPath;
+    let runtimePath: string | undefined;
     if (modeled.nativePath !== undefined) {
-      try { canonical = resolveShellFilesystemPath(modeled.nativePath, base); }
+      try { canonical = runtimePath = resolveShellFilesystemPath(modeled.nativePath, base); }
       catch (error) {
         const network = error instanceof Error && "code" in error && error.code === "ENETWORKSHAREPATH";
         if (network && (effect === "write" || deleting)) {
@@ -1408,7 +1409,11 @@ function inspectPowerShellPermissionPathsInDecision(input: PowerShellCommandInpu
         unproven = true; if (effect === "write") unknownProtectedWrite ??= "The shell write target cannot be resolved away from protected paths.";
       }
     } else { unproven = true; if (effect === "write") unknownProtectedWrite ??= "The shell write target cannot be resolved away from protected paths."; }
-    paths.push({ ...evidenceForPath({ lexical, canonical, effect }), ...(deleting ? { deleteIntent: true as const } : {}) });
+    paths.push({
+      ...evidenceForPath({ lexical, canonical, effect }),
+      ...(runtimePath === undefined ? {} : { runtimePath }),
+      ...(deleting ? { deleteIntent: true as const } : {}),
+    });
   };
   if (evidencePipelines === undefined) for (const redirect of redirectFacts ?? []) {
     const binding = permissionArgumentBinding(redirect.target, {});

@@ -58,10 +58,10 @@ it("confirm refuses a typed list without mutating the draft", async () => {
 it("retains stable attachment ids and detach history with readers", async () => {
   const store = new WorkflowTemplateStore(join(dir, "templates.json")); const r = await store.draft(null, { ...graph(), name: "Template", scope: { kind: "all" } }); const { version: v } = await store.confirmDraft(r.template.id, { expectedGraphHash: requiredValue(r.draft).graphHash, expectedDraftRevision: requiredValue(r.draft).revision }, { who: "user", origin: "local-desktop" }, unknownToolEffects); const request = { templateId: v.templateId, version: 1, graphHash: v.graphHash, scheduleId: "daily" };
   await expect(store.attachSchedule(request, { origin: "local-desktop", auditId: "forged", decidedAt: new Date().toISOString() } as never, { kind: "all" })).rejects.toMatchObject({ code: "invalid-input" });
-  const a = await store.attachSchedule(request, mintHostDecisionProof("local-desktop"), { kind: "all" }); expect(a.id).toBeTruthy(); expect(await store.getAttachment(a.id)).toEqual(a); expect(await store.listByTemplate(v.templateId)).toEqual([a]); expect(await store.listByRoutine("daily")).toEqual([a]);
+  const a = await store.attachSchedule(request, mintHostDecisionProof("local-desktop"), { kind: "all" }, { effects: { effectOf: () => "safe" } }); expect(a.id).toBeTruthy(); expect(await store.getAttachment(a.id)).toEqual(a); expect(await store.listByTemplate(v.templateId)).toEqual([a]); expect(await store.listByRoutine("daily")).toEqual([a]);
   await expect(store.detachSchedule(a.id, { origin: "local-desktop" } as never)).rejects.toMatchObject({ code: "invalid-input" });
   expect(await store.detachSchedule(a.id, mintHostDecisionProof("local-desktop"))).toBe(true); const detached = await store.getAttachment(a.id); expect(detached).toMatchObject({ ...a, detachedAt: expect.any(String) }); expect(await store.detachSchedule(a.id, mintHostDecisionProof("local-desktop"))).toBe(false);
-  const b = await store.attachSchedule(request, mintHostDecisionProof("local-desktop"), { kind: "all" }); expect(b.id).not.toBe(a.id); expect(await store.listByRoutine("daily")).toEqual([detached, b]);
+  const b = await store.attachSchedule(request, mintHostDecisionProof("local-desktop"), { kind: "all" }, { effects: { effectOf: () => "safe" } }); expect(b.id).not.toBe(a.id); expect(await store.listByRoutine("daily")).toEqual([detached, b]);
 });
 
 it("uses transitive upstream inputs and binds their stage references", () => {

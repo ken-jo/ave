@@ -32,7 +32,14 @@ export function WorkflowStageEvidence({ stage, stageName, retry }: {
   });
   return (
     <div className="space-y-3">
+      {stage.blocked && <p className="text-destructive">{t(`workflowTemplates.stageBlock.${stage.blocked.reason ?? stage.blocked.code}`)}</p>}
       {stage.failureReason && <p className="text-destructive">{t(stage.failureReason)}</p>}
+      {!!stage.toolchainReadRoots?.length && <section className="space-y-1">
+        <h4 className="font-semibold">{t("workflowTemplates.toolchainReadRoots")}</h4>
+        <ul className="list-disc pl-5">{[...new Set(stage.toolchainReadRoots)].map(root =>
+          <li key={root}>{revealHiddenCharacters(root, { lineBreaks: true })}</li>)}
+        </ul>
+      </section>}
       {stage.breaker && <p>
         {t(stage.breaker.open ? "workflowTemplates.breakerOpen" : "workflowTemplates.breakerClosed", {
           consecutive: stage.breaker.consecutive, total: stage.breaker.total,

@@ -494,6 +494,13 @@ function regularFileAncestor(path: string): string | undefined {
   throw new Error("Sandbox Git configuration ancestor limit exceeded");
 }
 
+export function defaultSystemGitConfigPaths(): string[] {
+  if (process.platform === "win32") return [];
+  return process.platform === "darwin"
+    ? ["/etc/gitconfig", "/usr/local/etc/gitconfig", "/opt/homebrew/etc/gitconfig"]
+    : ["/etc/gitconfig"];
+}
+
 function addInheritedGitConfigHookPaths(workingDirectories: readonly string[], paths: Set<string>, routingPins: Set<string>, budget: GitDiscoveryBudget): void {
   const home = process.env.HOME ?? process.env.USERPROFILE;
   const userConfigDirectory = !process.env.GIT_CONFIG_GLOBAL && home
@@ -506,9 +513,9 @@ function addInheritedGitConfigHookPaths(workingDirectories: readonly string[], p
   }
   const configs = new Set([
     // Git for Windows reads its system file below its own install (a machine root), never `etc` on the current drive.
-    ...(process.env.GIT_CONFIG_NOSYSTEM === "1" || (process.platform === "win32" && process.env.GIT_CONFIG_SYSTEM === undefined)
-      ? [] : [process.env.GIT_CONFIG_SYSTEM ?? "/etc/gitconfig"]),
-    ...(process.platform === "darwin" && process.env.GIT_CONFIG_SYSTEM === undefined ? ["/usr/local/etc/gitconfig", "/opt/homebrew/etc/gitconfig"] : []),
+    ...(process.env.GIT_CONFIG_SYSTEM === undefined
+      ? defaultSystemGitConfigPaths().filter(path => path !== "/etc/gitconfig" || process.env.GIT_CONFIG_NOSYSTEM !== "1")
+      : process.env.GIT_CONFIG_NOSYSTEM === "1" ? [] : [process.env.GIT_CONFIG_SYSTEM]),
     ...(process.env.GIT_CONFIG_GLOBAL ? [process.env.GIT_CONFIG_GLOBAL] : home ? [join(home, ".gitconfig"), join(userConfigDirectory!, "config")] : []),
   ]);
   const explicitConfigs = new Set([process.env.GIT_CONFIG_GLOBAL, process.env.GIT_CONFIG_SYSTEM]);

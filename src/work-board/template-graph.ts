@@ -9,7 +9,7 @@ import type { EnvelopeToolRef, UnattendedQualification } from "../shared/workflo
 import type { ToolEffectResolver } from "../permissions/tool-effect-evidence.js";
 
 export class WorkflowTemplateError extends Error {
-  constructor(readonly code: WorkflowTemplateErrorCode, message: string = code, readonly refusals?: EnvelopeRefusal[], readonly field?: string) { super(message); this.name = "WorkflowTemplateError"; }
+  constructor(readonly code: WorkflowTemplateErrorCode, message: string = code, readonly refusals?: EnvelopeRefusal[], readonly field?: string, readonly tool?: EnvelopeToolRef) { super(message); this.name = "WorkflowTemplateError"; }
 }
 export function requireTemplate(condition: unknown, code: WorkflowTemplateErrorCode = "invalid-input", field?: string): asserts condition {
   if (!condition) throw new WorkflowTemplateError(code, code, undefined, field);
@@ -96,12 +96,12 @@ function canonicalEnvelope(raw: unknown): StageEnvelope {
   return { tools: stringList(raw.tools), writePaths, readRoots: stringList(raw.readRoots), network: uniqueNetwork, commands: stringList(raw.commands), mcpReadOnlyTools: stringList(raw.mcpReadOnlyTools), mcpGenerationTools: generationTools(raw.mcpGenerationTools), pluginGenerationTools: generationTools(raw.pluginGenerationTools), outputs: outputs as StageEnvelope["outputs"], budget: { rounds: budget.rounds as number, minutes: budget.minutes, costUsd: budget.costUsd } };
 }
 
-// Lift this interim restriction when unattended evaluation and isolation are available.
+// This route uses host read tools and requires no shell isolation.
 export function isAllReadOnlyVersion(graph: TemplateGraph): boolean {
   return !graph.setupCommands?.length && graph.stages.every(stage => stage.toolScope === "read" && !stage.allowSubAgents && !stage.requestedOutputs?.length && (!stage.envelope || (stage.envelope.mcpReadOnlyTools.length === 0 && stage.envelope.outputs.length === 0 && stage.envelope.network.length === 0 && stage.envelope.writePaths.length === 0 && stage.envelope.commands.length === 0 && stage.envelope.mcpGenerationTools.length === 0 && stage.envelope.pluginGenerationTools.length === 0)));
 }
 
-function everyStageHasEnvelope(graph: TemplateGraph): boolean {
+export function everyStageHasEnvelope(graph: TemplateGraph): boolean {
   return graph.stages.every(stage => stage.envelope !== undefined);
 }
 
@@ -126,7 +126,8 @@ export function qualifyUnattended(graph: TemplateGraph, effects: ToolEffectResol
       }
     }
   }
-  return everyStageHasEnvelope(graph) ? { ok: true } : { ok: false, code: "unattended-not-read-only" };
+  return everyStageHasEnvelope(graph) && (effects !== null || isAllReadOnlyVersion(graph))
+    ? { ok: true } : { ok: false, code: "unattended-not-read-only" };
 }
 
 // Absent or empty optional collections are omitted; required members retain their canonical defaults.

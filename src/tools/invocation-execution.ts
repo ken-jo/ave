@@ -213,6 +213,7 @@ export interface ExecutionStageContext {
   refreshApprovedInvocation?: ExecuteOptions["refreshApprovedInvocation"];
   /** The file targets and project anchors the authorization judged; verified at handler admission. */
   fileTargetSeal?: TargetSeal;
+  authorizeGrepCandidate?: ToolExecutionContext["authorizeGrepCandidate"];
   imageTargetPath?: string;
   abortSignal: AbortSignal | undefined;
   hostShellExecutionPermitBinding: HostShellExecutionPermitBinding | undefined;
@@ -1273,6 +1274,7 @@ export async function executeAuthorizedToolInvocation(
     const ctx: ToolExecutionContext = {
       ...executionContext,
       ...(context.fileTargetSeal === undefined ? {} : { fileTargetSeal: context.fileTargetSeal }),
+      ...(context.authorizeGrepCandidate === undefined ? {} : { authorizeGrepCandidate: context.authorizeGrepCandidate }),
       ...(context.imageTargetPath === undefined ? {} : { imageTargetPath: context.imageTargetPath }),
       ...(approvalMemory?.kind === "key" ? { metadata: {
         ...executionContext.metadata, [APPROVAL_MEMORY_SCOPE_METADATA_KEY]: approvalMemory.scope,

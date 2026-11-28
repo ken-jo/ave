@@ -1788,7 +1788,11 @@ function findShellPathPolicyViolationInDecision(
     }
     if (evidence) {
       const lexical = isAbsolute(path) ? path : `${cwd ?? sandboxRoot}/${path}`;
-      evidence.push({ ...evidenceForPath!({ lexical, canonical: absolute, runtimePath: absolute, effect }), ...(deleting ? { deleteIntent: true as const } : {}) });
+      evidence.push({
+        ...evidenceForPath!({ lexical, canonical: absolute, runtimePath: absolute, effect }),
+        runtimePath: absolute,
+        ...(deleting ? { deleteIntent: true as const } : {}),
+      });
       return;
     }
     if (pending) { pending.push({ absolute, label, effect }); return; }

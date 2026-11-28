@@ -4,6 +4,19 @@ import {
 } from "./local-path-io.js";
 import { isWindowsNetworkOrDevicePath, modelShellPath, type ShellPathModel } from "./shell-native-path.js";
 
+/** Compare native absolute paths without changing the filesystem's spelling. */
+export function relativeNativePath(root: string, target: string): string | undefined {
+  if (!isAbsolute(root) || !isAbsolute(target)) return undefined;
+  if (root === target) return "";
+  const prefix = root.endsWith(sep) ? root : root + sep;
+  return target.startsWith(prefix) ? target.slice(prefix.length) : undefined;
+}
+
+export function tryNativeRealpath(path: string): string | undefined {
+  try { return localFs.realpathNative(admitLocalRoute(path).verdict); }
+  catch { return undefined; }
+}
+
 function rejectNetworkOrDevicePath(path: string, platform: NodeJS.Platform = process.platform): void {
   if (isWindowsNetworkOrDevicePath(path, platform)) {
     throw Object.assign(new Error(`Shell path requires network or device authority: ${path}`), { code: "ENETWORKSHAREPATH", path });

@@ -15,7 +15,12 @@ import { createHostGit } from "../../work-board/workflow/host-git.js";
 import { bindStageWorkspace, unbindStageWorkspace } from "../../permissions/stage-workspace-binding.js";
 import type { PermissionManager } from "../../permissions/permission-manager.js";
 import { createRunScopeHooks } from "../../permissions/run-scope.js";
-import { unattendedLaneHooks } from "../../permissions/unattended-lane-registry.js";
+import { getHostShellExecutionPlan, onSandboxStatusChanged } from "../../permissions/sandbox-capability.js";
+import { getUnattendedPathReadRoots, protectedReadDenyMatcher } from "../../permissions/asrt-sandbox.js";
+import { proveUnattendedIsolation } from "../../permissions/unattended-isolation.js";
+import { policyHomeAnchors } from "../../shared/policy-home.js";
+import { MAX_STAGE_TOOLCHAIN_ROOTS } from "../../shared/workflow-template-types.js";
+import { activateUnattendedAdmission, reproveUnattendedStages, unattendedLaneHooks } from "../../permissions/unattended-lane-registry.js";
 import type { ToolEffectResolver } from "../../permissions/tool-effect-evidence.js";
 import type { StageRunEngineDeps } from "../../work-board/workflow/stage-run-engine.js";
 
@@ -28,9 +33,9 @@ type WorkflowEngineExtensions = Pick<
   "runs" | "workspace" | "workspaceBinding" | "authoriseRunSource" | "passConditions" | "unattendedAllowed" | "lane" | "outputs" | "runScope"
 >;
 
-/** The one place the stage scheduler's replaceable parts are chosen. Each later part swaps its own line here and nowhere else. Run state
- * is the board store's covered run file. Every stage works in its own folder under the home's `worktrees`, bound to its session, and with
- * no lane only an all-read-only version may run unattended. A run's "Allow for this run" grants and its stage sessions' reviewer
+/** The stage scheduler's host dependencies. Run state
+ * is the board store's covered run file. Every stage works in its own folder under the home's `worktrees`, bound to its session.
+ * A run's "Allow for this run" grants and its stage sessions' reviewer
  * breakers are held by the permission manager and end as the run tells it. */
 export function workflowEngineExtensions(store: WorkBoardStore, templates: Pick<WorkflowTemplateStore, "getAttachment" | "resolveVersion">, permissionManager: PermissionManager, outputAdapter: GovernedOutputAdapter, effects: ToolEffectResolver | null = null): WorkflowEngineExtensions {
   const runs = boardRunState(store);
@@ -101,6 +106,7 @@ export function workflowEngineExtensions(store: WorkBoardStore, templates: Pick<
     ask();
   };
   store.onItemRemoved = ask;
+  onSandboxStatusChanged(reproveUnattendedStages);
   return {
     runs,
     workspace,
@@ -108,15 +114,10 @@ export function workflowEngineExtensions(store: WorkBoardStore, templates: Pick<
     workspaceBinding: { bind: bindStageWorkspace, unbind: unbindStageWorkspace },
     authoriseRunSource,
     passConditions: createPassConditionRegistry(),
-    unattendedAllowed: version => {
-      const qualification = qualifyUnattended(version, effects);
-      if (!qualification.ok && "tool" in qualification) return qualification;
-      // The interim lane admits only read-only graphs and does not require an envelope.
-      return isAllReadOnlyVersion(version) ? { ok: true } : { ok: false, code: "unattended-not-read-only" };
-    },
+    unattendedAllowed: version => qualifyUnattended(version, effects),
     lane: {
       ...unattendedLaneHooks,
-      admit: async ({ runKey }) => {
+      admit: async ({ runKey, stageId, envelope, workspaceRoot }) => {
         const unavailable = { ok: false, code: "lane-unavailable" } as const;
         const [, item, runId] = /^work-board:([1-9]\d*)#([^#]+)$/.exec(runKey) ?? [];
         const itemId = Number(item);
@@ -126,7 +127,43 @@ export function workflowEngineExtensions(store: WorkBoardStore, templates: Pick<
           if (!run || run.settled !== undefined || run.runStartedBy.kind !== "schedule-attachment") return unavailable;
           const version = await templates.resolveVersion(run.pin);
           assertPinnedVersion(version, run.pin);
-          return isAllReadOnlyVersion(version) ? { ok: true } : unavailable;
+          if (!envelope) return { ok: false, code: "envelope-missing" };
+          if (isAllReadOnlyVersion(version)) return {
+            ok: true,
+            activate: () => activateUnattendedAdmission(runKey, stageId, { envelope, workspaceRoot }),
+          };
+          let toolchainRoots: readonly string[] | undefined;
+          const prove = () => {
+            const plan = getHostShellExecutionPlan("default", "shell");
+            try {
+              const homes = policyHomeAnchors();
+              const covered = protectedReadDenyMatcher();
+              const proof = proveUnattendedIsolation({
+                plan, envelope, workspaceRoot, home: homes[0], toolchainRoots: toolchainRoots ?? [],
+                floorCovers: path => covered(path) !== undefined,
+              });
+              if (!proof.proven) return proof;
+              toolchainRoots ??= getUnattendedPathReadRoots(homes, process.env.PATH ?? "");
+              if (toolchainRoots.length > MAX_STAGE_TOOLCHAIN_ROOTS || toolchainRoots.some(root => root.length > 4096)) {
+                return { proven: false, reason: "read-narrowing-unavailable" } as const;
+              }
+              return { proven: true, profile: {
+                ...proof.profile, readDenyRoots: homes, readRoots: [workspaceRoot, ...envelope.readRoots, ...toolchainRoots],
+                toolchainReadRoots: toolchainRoots,
+              } } as const;
+            } catch {
+              return { proven: false, reason: "read-narrowing-unavailable" } as const;
+            }
+          };
+          const proof = prove();
+          if (!proof.proven) return { ok: false, code: "isolation-unproven", reason: proof.reason };
+          return {
+            ok: true,
+            toolchainReadRoots: proof.profile.toolchainReadRoots,
+            activate: () => activateUnattendedAdmission(runKey, stageId, {
+              envelope, workspaceRoot, prove,
+            }),
+          };
         } catch {
           return unavailable;
         }

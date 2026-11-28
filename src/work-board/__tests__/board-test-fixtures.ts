@@ -97,6 +97,7 @@ export function boardParentToolRegistry(): ToolRegistry {
       description: name,
       source: pluginId ? "plugin" : "builtin",
       category,
+      ...(!pluginId && category === "read" ? { unattendedEffect: "safe" as const } : {}),
       ...(category === "meta" ? { decisionOverride: "ask" as const } : {}),
       ...(pluginId ? { pluginId } : {}),
       jsonSchema: { type: "object" },

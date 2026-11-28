@@ -1,3 +1,4 @@
+import { emptyStageEnvelope } from "../../work-board/workflow/__tests__/stage-fixtures.js";
 import { unknownToolEffects } from "../../__tests__/support/tool-effect-resolver.js";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -73,12 +74,12 @@ it("validates the same exact output declaration shape in the run record", () => 
   expect(() => assertWorkflowRunRecord(run)).toThrow(expect.objectContaining({ code: "invalid-template-run" }));
 });
 it.each([{ kind: "all" }, { kind: "project", projectRoot: "/projects/a" }] as TemplateScope[])("records the approved scope snapshot %j", async approvedScope => {
-  const store = new WorkflowTemplateStore(join(dir, "templates.json")); const value = input(); value.scope = approvedScope; const version = await confirmVersion(store, value);
+  const store = new WorkflowTemplateStore(join(dir, "templates.json")); const value = input(); value.scope = approvedScope; value.stages[0].envelope = emptyStageEnvelope(); const version = await confirmVersion(store, value);
   const attachment = await store.attachSchedule({ scheduleId: "daily", templateId: version.templateId, version: version.version, graphHash: version.graphHash }, mintHostDecisionProof("local-desktop"), approvedScope);
   expect(attachment).toHaveProperty("approvedScope", approvedScope); expect(await store.getAttachment(attachment.id)).toEqual(attachment);
 });
 it("refuses a scope changed between authorization and attachment without writing", async () => {
-  const file = join(dir, "templates.json"); const store = new WorkflowTemplateStore(file); const version = await confirmVersion(store); const before = await readFile(file, "utf8");
+  const file = join(dir, "templates.json"); const store = new WorkflowTemplateStore(file); const value = input(); value.stages[0].envelope = emptyStageEnvelope(); const version = await confirmVersion(store, value); const before = await readFile(file, "utf8");
   await expect(store.attachSchedule({ templateId: version.templateId, version: 1, graphHash: version.graphHash, scheduleId: "daily" }, mintHostDecisionProof("local-desktop"), { kind: "project", projectRoot: "/projects/a" })).rejects.toMatchObject({ code: "scope-changed" });
   expect(await readFile(file, "utf8")).toBe(before);
 });
@@ -116,7 +117,7 @@ it.each(["scope-changed", "project-mismatch", "scope-not-authorised", "output-no
   for (const catalog of [en, ko]) expect(Reflect.get(catalog, `reasonCodes.${code}`)).toEqual(expect.stringMatching(/\S/));
 });
 it("keeps the attachment pin but refuses its scope after a new confirmation", async () => {
-  const store = new WorkflowTemplateStore(join(dir, "templates.json")); const version = await confirmVersion(store);
+  const store = new WorkflowTemplateStore(join(dir, "templates.json")); const value = input(); value.stages[0].envelope = emptyStageEnvelope(); const version = await confirmVersion(store, value);
   const attachment = await store.attachSchedule({ templateId: version.templateId, version: 1, graphHash: version.graphHash, scheduleId: "daily" }, mintHostDecisionProof("local-desktop"), { kind: "all" });
   const changed = input(); changed.scope = { kind: "project", projectRoot: "/projects/a" }; await confirmVersion(store, changed, version.templateId);
   const record = await store.get(version.templateId); const stored = requiredValue(await store.getAttachment(attachment.id));

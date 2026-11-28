@@ -1,6 +1,5 @@
-import { constants } from "node:fs";
-import { open } from "node:fs/promises";
 import { judgedPathNamesOpenedFile } from "../permissions/sensitive-paths.js";
+import { openSealedReadTarget, type TargetSeal } from "../permissions/target-seal.js";
 import { sniffComposerImageFormat } from "../shared/composer-image-input.js";
 import { IMAGE_PREPARATION_POLICY } from "../shared/image-preparation-policy.js";
 
@@ -18,9 +17,9 @@ export function requireSupportedImage(bytes: Uint8Array): "png" | "jpeg" | "gif"
  * caller judged; the bytes are returned only if it still names the very file read, looked up after the read with the
  * handle still open (`judgedPathNamesOpenedFile`). The open refuses a link in the last name where the platform can.
  */
-export async function readImageInput(path: string, signal: AbortSignal): Promise<Buffer> {
+export async function readImageInput(path: string, signal: AbortSignal, seal?: TargetSeal): Promise<Buffer> {
   signal.throwIfAborted();
-  const handle = await open(path, constants.O_RDONLY | constants.O_NONBLOCK | (constants.O_NOFOLLOW ?? 0));
+  const handle = await openSealedReadTarget(path, seal);
   try {
     signal.throwIfAborted();
     const info = await handle.stat();

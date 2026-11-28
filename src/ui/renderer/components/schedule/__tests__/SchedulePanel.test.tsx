@@ -582,3 +582,18 @@ it("updates a failed schedule row when the host writes the breaker pause", async
   expect(view.queryByRole("button", { name: t("workflowSchedule.runNow") })).toBeNull();
   view.unmount();
 });
+
+it.each(["en", "ko"] as const)("shows the pinned version requirement in %s", async locale => {
+  setLocale(locale);
+  const attached = routine({ execution: "template-run", attachmentId: "attached", templateAttention: "needs-new-version" });
+  const api = makeApi({ routines: [attached] });
+  const view = render(<SchedulePanel api={api} project={project} now={() => NOW} />);
+  try {
+    expect(await view.findByText(t("workflowSchedule.needsNewVersion"))).toBeVisible();
+    expect(view.queryByText(t("workflowSchedule.needsReattach"))).toBeNull();
+    expect(view.queryByRole("button", { name: t("workflowSchedule.runNow") })).toBeNull();
+  } finally {
+    view.unmount();
+    setLocale("ko");
+  }
+});

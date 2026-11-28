@@ -65,6 +65,7 @@ export function AttachWorkflowScheduleDialog({ api, routine, onClose, onAttached
       else if (result.error === "user-keyboard-required") setError(t("workflowSchedule.keyboardRequired"));
       else {
         const known = result.error === "schedule-requires-read-only" || result.error === "scope-changed"
+          || result.error === "tool-effect-unknown" || result.error === "outward-effect-tool"
           || result.error === "scope-not-authorised" || result.error === "template-archived" || result.error === "not-current-version";
         setError(known ? t(`reasonCodes.${result.error}`) : t("workflowSchedule.unavailable"));
       }

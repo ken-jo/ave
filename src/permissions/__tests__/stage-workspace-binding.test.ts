@@ -125,6 +125,13 @@ describe("stage workspace binding", () => {
     expect(isBoundStageWorkspacePath(STAGE, join(own, "notes.txt"))).toBe(true);
   });
 
+  it.skipIf(process.platform === "win32")("keeps a backslash sibling behind the read floor", () => {
+    const outside = `${own}\\sibling`;
+    mkdirSync(outside);
+    expect(isOwnStageWorkspacePath(STAGE, outside)).toBe(false);
+    expect(inSession(STAGE, () => aveHomeReadBoundaryCovering(outside))).toBe(home);
+  });
+
   it("a read and a write inside the bound workspace are not a protected-path floor", async () => {
     expect(boundStageWorkspace(STAGE)).toBe(own);
     expect(await floors(STAGE, join(own, "notes.txt"))).toEqual(CARVED);
@@ -196,7 +203,12 @@ describe("stage workspace binding", () => {
     expect(facts.pipelineRequest?.floor?.code).toBe("project-escape");
     // A lexical spelling inside the workspace whose physical target is elsewhere is not carved out either.
     const split = manager.checkDetailed("write_file", "builtin", "write", null, {
-      sessionId: STAGE, paths: [{ lexical: join(own, "notes.txt"), canonical: join(home, "config", "settings.json"), effect: "write" }],
+      sessionId: STAGE, paths: [{
+        lexical: join(own, "notes.txt"),
+        canonical: join(home, "config", "settings.json"),
+        runtimePath: join(home, "config", "settings.json"),
+        effect: "write",
+      }],
       fileWritePolicy: { insideProject: true, checkpointAvailable: true, directoryApproved: false },
     });
     expect(split.pipelineRequest?.floor?.code).toBe("protected-path");

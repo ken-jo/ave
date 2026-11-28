@@ -550,6 +550,7 @@ vi.mock("../../permissions/sandbox-capability.js", () => ({
   setSandboxBootOutcome: vi.fn(() => h.rec("sandboxGateDecided")),
   markSandboxGatePendingAtBoot: vi.fn(() => h.rec("sandboxGatePending")),
   markSandboxHomesUnavailable: vi.fn(),
+  onSandboxStatusChanged: vi.fn<typeof import("../../permissions/sandbox-capability.js").onSandboxStatusChanged>(h.disposer),
   setWindowsSandboxSubstrate: vi.fn(),
   getWindowsSandboxSubstrate: vi.fn(() => null),
 }));
@@ -605,6 +606,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { bootstrap, type AppServices } from "../../boot.js";
 import { configureHostResources, getHostResources } from "../../main/host-resources.js";
 import { aveScratchDir, removeAveScratchDirIfEmpty } from "../../shared/ave-scratch.js";
+import { onSandboxStatusChanged } from "../../permissions/sandbox-capability.js";
+import { reproveUnattendedStages } from "../../permissions/unattended-lane-registry.js";
 import { wireAnnouncementCheck } from "../steps/post-boot.js";
 import { wireModelCatalogRefresh } from "../steps/model-catalog-refresh.js";
 
@@ -740,6 +743,7 @@ describe("bootstrap() integration lock", () => {
     writeFileSync(legacyAuditPath, "broken audit record");
     mkdirSync(legacySealPath, { recursive: true });
     const win = fakeWindow();
+    vi.mocked(onSandboxStatusChanged).mockClear();
     services = await bootWithWindow(win, "interactive");
   }, 180_000);
 
@@ -966,6 +970,7 @@ describe("bootstrap() integration lock", () => {
     expect(services.pluginRuntime).toBeDefined();
     expect(services.toolRegistry).toBeDefined();
     expect(services.settingsService).toBeDefined();
+    expect(onSandboxStatusChanged).toHaveBeenCalledExactlyOnceWith(reproveUnattendedStages);
   });
 
   it("keeps rationale interactive while wiring the subscription runtime across execution loops", () => {

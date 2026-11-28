@@ -131,7 +131,9 @@ import type {
 } from "../shared/subagent-events.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
 import { sessionAuthorityWithheld, turnExtensionPolicyContext, withholdSessionAuthorityForLifetime } from "../shared/turn-extension-policy.js";
-import { endUnattendedStage, inheritUnattendedStage, registeredUnattendedStageOf } from "../permissions/unattended-lane-registry.js";
+import { admittedUnattendedStage, endUnattendedStage, inheritUnattendedStage, registeredUnattendedStageOf } from "../permissions/unattended-lane-registry.js";
+import { createToolEffectResolver, unattendedEnvelopeTool } from "../permissions/tool-effect-evidence.js";
+import type { StageEnvelope } from "../shared/workflow-template-types.js";
 const log = createLogger("ave");
 
 function maskSubAgentText(text: string): string {
@@ -2427,6 +2429,8 @@ export class SubAgentRunner {
     /** The parent behind this run, when it has one that could answer for it. `null` leaves the child's approvals on the path they took before tier 2 existed: straight to the user. */
     approvalProvenance: SubAgentApprovalProvenance | null;
     unattendedStage?: boolean;
+    unattendedEnvelope?: StageEnvelope;
+    unattendedReadOnly?: boolean;
     stageOutputTool?: Tool;
     stageSpawnEnabled?: boolean;
     parentStage?: { registry: ToolRegistry; activePluginIds: ReadonlySet<string> };
@@ -2438,6 +2442,11 @@ export class SubAgentRunner {
     // intersects with it. `agent_send` is dropped here and re-registered below, because it is the parent channel rather than a source tool: see SubAgentToolScope.
     const scope = args.toolScope;
     const registry = args.parentStage?.registry ?? this.deps.toolRegistry;
+    const envelope = args.unattendedEnvelope;
+    const effects = createToolEffectResolver(registry);
+    const allowedByLane = (tool: Tool): boolean => envelope
+      ? (!args.unattendedReadOnly || isUnattendedReadTool(tool)) && unattendedEnvelopeTool(tool, envelope, effects)
+      : !args.unattendedStage || isUnattendedReadTool(tool);
     const exposeAgentSend = !args.unattendedStage && args.parentStage === undefined && (args.includeAgentSend === true
       || (scope.kind === "exactly" && scope.names.includes("agent_send")));
     const allowlist = scope.kind === "parent-all"
@@ -2454,7 +2463,7 @@ export class SubAgentRunner {
             !SUB_AGENT_TOOL_BLOCKLIST.has(name) && name !== "agent_send");
     const scopedRegistry = registry.createScopedView(baseToolNames.filter(name => {
       const tool = registry.findByName(name);
-      if (!tool || (args.unattendedStage && !isUnattendedReadTool(tool))) return false;
+      if (!tool || !allowedByLane(tool)) return false;
       return args.parentStage === undefined || tool.source !== "plugin"
         || (tool.pluginId !== undefined && args.parentStage.activePluginIds.has(tool.pluginId));
     }));
@@ -2462,30 +2471,26 @@ export class SubAgentRunner {
       for (const name of STAGE_SUB_AGENT_TOOLS) {
         const tool = registry.findByName(name);
         if (tool?.source !== "builtin") continue;
-        // An admitted unattended stage already has the pinned authority to delegate and stop its own work.
-        // The meta policy still evaluates admission, deny rules and forced floors. Descendant effects are checked separately.
-        scopedRegistry.register(args.unattendedStage && tool.category === "meta"
-          ? { ...tool, decisionOverride: "always-allow-with-audit" }
-          : tool);
+        scopedRegistry.register(tool);
       }
     }
-    if (args.stageOutputTool) scopedRegistry.register(args.stageOutputTool);
+    if (!args.unattendedStage && args.stageOutputTool) scopedRegistry.register(args.stageOutputTool);
     const recoveryTool = createReadToolResultChunkTool();
     if (args.parentStage === undefined && scopedRegistry.size > 0 && !scopedRegistry.findByName(recoveryTool.name)
-      && (!args.unattendedStage || isUnattendedReadTool(recoveryTool))) scopedRegistry.register(recoveryTool);
+      && allowedByLane(recoveryTool)) scopedRegistry.register(recoveryTool);
     if (exposeAgentSend) {
       const agentSend = this.deps.toolRegistry.findByName("agent_send");
       if (agentSend) scopedRegistry.register({ ...agentSend, modelVisible: true });
     }
     const scopedTools = scopedRegistry.listAll();
     const forcedActivePluginIds = new Set(
-      allowlist || args.parentStage
+      allowlist || args.parentStage || envelope
         ? scopedTools
             .filter((tool) => tool.source === "plugin" && tool.pluginId)
             .map((tool) => tool.pluginId as string)
         : [],
     );
-    const forcedActiveToolNames = allowlist
+    const forcedActiveToolNames = allowlist || envelope
       ? new Set(scopedTools.map((tool) => tool.name))
       : undefined;
 
@@ -2527,6 +2532,7 @@ export class SubAgentRunner {
       memoryManager: this.deps.subAgentMemoryManager,
       approvalGate: wrappedApprovalGate,
       ...(args.unattendedStage ? { headless: true, approvalSurface: "unavailable" as const } : {}),
+      unattendedMcpEnabled: envelope ? true : undefined,
       // Sub-agent runs are fire-and-forget; no post-turn hook chain to keep the parent session unaffected.
       postTurnHookChain: undefined,
       // The child's sessions live in the sub-agent namespace; the parent's predicate scans the window's main loops and must not judge them.
@@ -2839,10 +2845,9 @@ export class SubAgentRunner {
         callbacks,
       );
     }
-    const stageAuthority = input.stageSubAgents;
+    const stageAuthority = input.unattendedStage ? undefined : input.stageSubAgents;
     const bindStageSubAgent = callbacks?.onStageSubAgentLinked;
-    if (stageAuthority && (stageAuthority.max !== MAX_STAGE_SUB_AGENTS || !bindStageSubAgent
-      || (input.unattendedStage && stageAuthority.runKey !== input.unattendedStage.runKey))) {
+    if (stageAuthority && (stageAuthority.max !== MAX_STAGE_SUB_AGENTS || !bindStageSubAgent)) {
       throw new Error("Invalid workflow stage sub-agent authority");
     }
     const stageStop = stageAuthority ? new AbortController() : undefined;
@@ -2893,12 +2898,19 @@ export class SubAgentRunner {
           input.maxRounds ?? this.configuredRoundBudget() ?? MAX_TURNS_DEFAULT;
         const cappedRounds = normalizeRoundBudget(requestedRounds);
 
+        const unattended = input.unattendedStage;
+        const linkedLane = registeredUnattendedStageOf(childSessionId);
+        if (unattended && admittedUnattendedStage(unattended.runKey, unattended.stageId) && !linkedLane) {
+          throw new Error("Unattended stage session was not registered");
+        }
         const { childDeps, grantedScope } = this.buildChildDeps({
-          toolScope: input.toolScope,
+          toolScope: linkedLane && !linkedLane.readOnly && !linkedLane.isolation.proven ? DENY_ALL_TOOL_SCOPE : input.toolScope,
           title: input.title,
           profileModel: input.profileModel,
           includeAgentSend: true,
           unattendedStage: input.unattendedStage !== undefined,
+          unattendedEnvelope: linkedLane && (linkedLane.readOnly || linkedLane.isolation.proven) ? linkedLane.envelope : undefined,
+          unattendedReadOnly: linkedLane?.readOnly,
           stageOutputTool: input.stageOutputTool,
           stageSpawnEnabled: stageAuthority !== undefined,
           ...(stageParent ? { parentStage: { registry: stageParent.stage.child.deps.toolRegistry, activePluginIds: stageParent.activePluginIds } } : {}),

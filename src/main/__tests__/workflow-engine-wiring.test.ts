@@ -1,17 +1,25 @@
 /** The stage scheduler on the parts boot chooses (`workflowEngineExtensions`): run state is the board store's run file. */
-import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { delimiter, dirname, join } from "node:path";
 import { expect, it, type MockInstance, vi } from "vitest";
 import { aveHome } from "../../shared/ave-home.js";
 import { workflowEngineExtensions } from "../../boot/steps/workflow-engine-extensions.js";
-import { unattendedStageOf } from "../../permissions/unattended-lane-registry.js";
-import { turnExtensionPolicyContext } from "../../shared/turn-extension-policy.js";
-import type { StageEnvelope } from "../../shared/workflow-template-types.js";
+import { endUnattendedStage, inheritUnattendedStage, unattendedStageOf } from "../../permissions/unattended-lane-registry.js";
+import { DENY_ALL_TOOL_SCOPE, exactToolScope } from "../../engine/subagent-runner.js";
+import type { StageEnvelope, TemplateStage } from "../../shared/workflow-template-types.js";
 import type { RemovedRun } from "../workflow-run-store.js";
-import { runScopePermissions, setPath, stageOf } from "../../work-board/workflow/__tests__/stage-fixtures.js";
+import { emptyStageEnvelope, runScopePermissions, setPath, stageOf } from "../../work-board/workflow/__tests__/stage-fixtures.js";
 import type { StageWorkspaceProvider } from "../../work-board/workflow/stage-workspace.js";
 import { gitFixture } from "../../work-board/workflow/__tests__/stage-git-fixture.js";
 import { stageRunHarness, unavailableOutputAdapter } from "../../work-board/workflow/__tests__/stage-run-harness.js";
+import * as sandboxCapability from "../../permissions/sandbox-capability.js";
+import * as shellPolicy from "../../permissions/asrt-sandbox.js";
+import { caseFoldForMatch, foldCanonicalPathSeparators, resolvePathForPolicy } from "../../permissions/sensitive-paths.js";
+import { createToolEffectResolver, type ToolEffectResolver } from "../../permissions/tool-effect-evidence.js";
+import { buildHostShellExecutionPlan } from "../../permissions/host-shell-execution-plan.js";
+import { projectWorkflowRun } from "../../work-board/workflow/run-read-projection.js";
+import { collectPermissionEvents } from "../../__tests__/support/permission-events.js";
+import { boardParentToolRegistry } from "../../work-board/__tests__/board-test-fixtures.js";
 import { RUN_FILE } from "../../work-board/workflow/workspace-layout.js";
 
 /** The project root a discard was given for each run. */
@@ -23,7 +31,7 @@ const readEnvelope: StageEnvelope = {
   outputs: [], budget: { rounds: 1, minutes: 1, costUsd: 0 },
 };
 
-it("refuses a qualified non-read-only schedule at spawn with lane-unavailable", async () => {
+it("refuses a stage without an envelope in a mixed schedule before spawn", async () => {
   const h = await stageRunHarness({
     script: () => ({ summary: "started" }),
     wiring: (store, harness) => ({
@@ -45,37 +53,67 @@ it("refuses a qualified non-read-only schedule at spawn with lane-unavailable", 
     await h.start(id, { ...source, pin });
     expect.soft(h.children).toHaveLength(0);
     expect((await h.item(id)).stageRuns[0]).toMatchObject({
-      stageId: "a", status: "failed", blocked: { code: "lane-unavailable" },
+      stageId: "a", status: "failed", blocked: { code: "envelope-missing" },
     });
   });
 });
 
-it("runs a read-only schedule with an envelope under the interim permission policy", async () => {
-  const manager = runScopePermissions();
+it.each([{ tools: [] }, { tools: ["read_file"] }])("enforces the proof-free schedule envelope for tools $tools", async ({ tools }) => {
+  const plan = vi.spyOn(sandboxCapability, "getHostShellExecutionPlan").mockImplementation(() => {
+    throw new Error("Proof must not be consulted");
+  });
+  const { h, manager } = await isolationHarness();
   manager.setMode("allow");
-  const h = await stageRunHarness({
-    wiring: (store, harness) => ({
-      ...workflowEngineExtensions(store, harness.templates, manager, unavailableOutputAdapter, { effectOf: () => "safe" }),
-      workspace: harness.workspace, workspaceBinding: undefined,
-    }),
-  });
-  await h.runThenEnd(async () => {
-    const version = await h.confirm([{ ...auto("a"), envelope: readEnvelope }]);
-    const { source } = await h.attach(version);
-    const id = await h.addItem(version);
-    const run = h.start(id, source);
-    const [child] = await h.untilLive(1);
-    expect.soft(child.input.unattendedStage).toMatchObject({ stageId: "a" });
-    expect.soft(unattendedStageOf(child.sessionId)).toBeUndefined();
-    const permission = turnExtensionPolicyContext.run({
-      allowExternalHooks: false, unattendedStage: true, withholdSessionAuthority: true,
-    }, () => manager.checkDetailed("read_file", "builtin", "read", undefined, { sessionId: child.sessionId }));
-    expect.soft(permission).toMatchObject({
-      decision: "allow", reasonCode: "ordinary-read", pipelineRequest: { headless: true, mode: "strict" },
+  const declared = join(h.dir, "reference");
+  const outside = join(h.dir, "outside");
+  try {
+    await h.runThenEnd(async () => {
+      mkdirSync(declared);
+      const envelope = { ...readEnvelope, tools, readRoots: [declared] };
+      const { itemId, source } = await pinIsolationSchedule(h, { ...auto("a"), envelope });
+      const run = h.start(itemId, source);
+      const [child] = await h.untilLive(1);
+      const sessionId = child.sessionId;
+      const check = (target: string, name = "read_file", runtimePath = resolvePathForPolicy(target)) => {
+        const path = { lexical: target, canonical: caseFoldForMatch(foldCanonicalPathSeparators(runtimePath)), runtimePath, effect: "read" as const };
+        return manager.checkDetailed(name, "builtin", "read", undefined, {
+          sessionId, reportUnattendedDenials: false, paths: [path],
+        });
+      };
+      const inWorkspace = join(child.input.projectRoot ?? "", "input.txt");
+      const permitted = tools.length ? "allow" : "deny";
+      expect.soft(child.input.toolScope).toEqual(tools.length ? exactToolScope(tools) : DENY_ALL_TOOL_SCOPE);
+      expect.soft(check(inWorkspace)).toMatchObject({ decision: permitted });
+      expect.soft(check(join(declared, "input.txt"))).toMatchObject({ decision: permitted });
+      expect.soft(check(join(outside, "input.txt"))).toMatchObject({ decision: "deny", reasonCode: "outside-envelope" });
+      if (process.platform !== "win32") {
+        mkdirSync(outside);
+        const outsideFile = join(outside, "linked.txt");
+        const outsideLink = join(dirname(inWorkspace), "outside-link.txt");
+        writeFileSync(outsideFile, "");
+        symlinkSync(outsideFile, outsideLink);
+        expect.soft(check(outsideLink)).toMatchObject({ decision: "deny", reasonCode: "outside-envelope" });
+
+        const sibling = `${dirname(inWorkspace)}\\sibling.txt`;
+        const siblingLink = join(dirname(inWorkspace), "sibling-link.txt");
+        writeFileSync(sibling, "");
+        symlinkSync(sibling, siblingLink);
+        expect(realpathSync.native(siblingLink)).toBe(sibling);
+        expect.soft(check(siblingLink)).toMatchObject({ decision: "deny", reasonCode: "outside-envelope" });
+      } else {
+        expect.soft(check(inWorkspace, "read_file", join(outside, "linked.txt"))).toMatchObject({ decision: "deny", reasonCode: "outside-envelope" });
+      }
+      expect.soft(check(inWorkspace, "grep_files")).toMatchObject({ decision: "deny", reasonCode: "outside-envelope" });
+      expect.soft(manager.checkDetailed("web_fetch", "builtin", "network", undefined, {
+        sessionId, reportUnattendedDenials: false, unattendedNetwork: { host: "fixture.invalid", port: 443, sandboxed: true, connection: true },
+      }).decision).toBe("deny");
+      child.finish({ summary: "done" });
+      expect(await run).toMatchObject({ status: "completed", output: "done" });
+      expect(plan).not.toHaveBeenCalled();
     });
-    child.finish(permission.decision === "allow" ? { summary: "done" } : { ok: false, error: permission.reason });
-    expect(await run).toMatchObject({ status: "completed", output: "done" });
-  });
+  } finally {
+    plan.mockRestore();
+  }
 });
 
 it("with the production parts and a workspace provider, an authorised template run starts, is stored in the run file and completes", async () => {
@@ -162,7 +200,7 @@ it("the production parts give a discard the project of each run whose record wen
     const A = "/projects/a";
     const B = "/projects/b";
     const version = await h.confirm([stageOf("a")]);
-    const onB = await h.confirm([stageOf("a")], { scope: { kind: "project", projectRoot: B } });
+    const onB = await h.confirm([stageOf("a", { envelope: emptyStageEnvelope() })], { scope: { kind: "project", projectRoot: B } });
     const attachment = await h.attach(onB, { kind: "project", projectRoot: B });
     const card = await h.addItem(version, A);
     const scheduled = await h.addItem(onB, B);
@@ -422,3 +460,166 @@ it("a discard that fails keeps every project it was given", () => withHeldDiscar
   await announce([["next", "/projects/c"]]);
   expect(discards[1]?.given).toEqual(new Map([["first", "/projects/a"], ["second", "/projects/b"], ["next", "/projects/c"]]));
 }));
+
+function isolationPlan(rawIp: "blocked" | "unknown") {
+  return {
+    ...buildHostShellExecutionPlan({
+      platform: process.platform,
+      requestedSandbox: true,
+      activeCapability: { kind: "asrt", confidence: "verified", platform: process.platform, reason: "Test boundary",
+        confines: { filesystem: true, process: true, network: true } },
+    }),
+    substrate: "mxc" as const,
+    egressProtocolCoverage: { dns: "brokered" as const, rawIp },
+  };
+}
+
+async function isolationHarness(onSpawn?: () => void, effects: ToolEffectResolver | null = { effectOf: () => "safe" }, script?: () => { summary: string }) {
+  const manager = runScopePermissions();
+  manager.setUnattendedToolEffectResolver(createToolEffectResolver(boardParentToolRegistry()));
+  const h = await stageRunHarness({
+    onSpawn, script,
+    wiring: (store, harness) => ({
+      ...workflowEngineExtensions(store, harness.templates, manager, unavailableOutputAdapter, effects),
+      workspace: harness.workspace, workspaceBinding: undefined,
+    }),
+  });
+  return { h, manager };
+}
+
+async function pinIsolationSchedule(h: Awaited<ReturnType<typeof stageRunHarness>>, stage: TemplateStage) {
+  const version = await h.confirm([stage]);
+  const { source } = await h.attach(version);
+  return { version, source, itemId: await h.addItem(version) };
+}
+
+it.each([
+  ["boundary-unverified", { egressProtocolCoverage: { dns: "brokered", rawIp: "unknown" } }, false],
+  ["sandbox-unavailable", { sandboxed: false }, false],
+  ["platform-not-qualified", { substrate: "asrt" }, false],
+  ["read-narrowing-unavailable", {}, true],
+] as const)("persists and projects %s when admission refuses before spawn", async (reason, patch, narrow) => {
+  const plan = vi.spyOn(sandboxCapability, "getHostShellExecutionPlan").mockReturnValue({ ...isolationPlan("blocked"), ...patch });
+  const { h } = await isolationHarness();
+  try {
+    await h.runThenEnd(async () => {
+      const envelope = narrow ? { ...readEnvelope, readRoots: [join(h.dir, "protected")] } : readEnvelope;
+      const floor = vi.spyOn(shellPolicy, "protectedReadDenyMatcher");
+      if (narrow) floor.mockReturnValue(path => path === envelope.readRoots[0] ? path : undefined);
+      try {
+        const { itemId, source, version } = await pinIsolationSchedule(h, { ...auto("a"), toolScope: "all", envelope });
+        await h.start(itemId, source);
+        expect(h.children).toHaveLength(0);
+        const { record } = await h.item(itemId);
+        if (!record) throw new Error("Missing stored run");
+        const blocked = { code: "isolation-unproven", reason };
+        expect(record.stageRuns[0]).toMatchObject({ status: "failed", blocked });
+        expect(projectWorkflowRun(record, version).stages[0]?.blocked).toMatchObject(blocked);
+      } finally {
+        floor.mockRestore();
+      }
+    });
+  } finally {
+    plan.mockRestore();
+  }
+});
+
+it("refuses the link before a stage can complete on prose when isolation proof is lost", async () => {
+  const plan = vi.spyOn(sandboxCapability, "getHostShellExecutionPlan").mockReturnValue(isolationPlan("blocked"));
+  const model = vi.fn(() => ({ summary: "Stage complete" }));
+  const { h } = await isolationHarness(() => plan.mockReturnValue(isolationPlan("unknown")), undefined, model);
+  try {
+    await h.runThenEnd(async () => {
+      const { itemId, source, version } = await pinIsolationSchedule(h, { ...auto("a"), toolScope: "all", envelope: readEnvelope });
+      await h.start(itemId, source);
+      const { record } = await h.item(itemId);
+      if (!record) throw new Error("Missing stored run");
+      const blocked = { code: "isolation-unproven", reason: "boundary-unverified" };
+      expect(record.stageRuns[0]).toMatchObject({ status: "failed", blocked });
+      expect(projectWorkflowRun(record, version).stages[0]?.blocked).toMatchObject(blocked);
+      expect(model).not.toHaveBeenCalled();
+      expect(h.events.some(event => event.phase === "executing" && event.runSessionId !== undefined)).toBe(false);
+      expect(unattendedStageOf("child-1")).toBeUndefined();
+    });
+  } finally {
+    plan.mockRestore();
+  }
+});
+
+it("registers a linked stage and permanently denies reads after live proof loss", async () => {
+  const plan = vi.spyOn(sandboxCapability, "getHostShellExecutionPlan").mockReturnValue(isolationPlan("blocked"));
+  const { h, manager } = await isolationHarness(() => {
+    expect(unattendedStageOf("child-1")).toBeUndefined();
+  });
+  const notify = () => sandboxCapability.setActiveSandboxCapability(sandboxCapability.detectSandboxCapability());
+  try {
+    await h.runThenEnd(async () => {
+      const { itemId, source } = await pinIsolationSchedule(h, { ...auto("a"), toolScope: "all", envelope: readEnvelope });
+      const run = h.start(itemId, source);
+      const [child] = await h.untilLive(1);
+      const entry = unattendedStageOf(child.sessionId);
+      expect(entry?.isolation.proven).toBe(true);
+      const grandchild = "isolation-grandchild";
+      expect(inheritUnattendedStage(grandchild, child.sessionId)).toBe(true);
+      try {
+        const check = (sessionId: string) => manager.checkDetailed("read_file", "builtin", "read", undefined, { sessionId });
+        expect(check(child.sessionId).decision).toBe("allow");
+        plan.mockReturnValue(isolationPlan("unknown"));
+        notify();
+        expect(check(child.sessionId)).toMatchObject({ decision: "deny", reasonCode: "isolation-unproven" });
+        expect(check(grandchild)).toMatchObject({ decision: "deny", reasonCode: "isolation-unproven" });
+        plan.mockReturnValue(isolationPlan("blocked"));
+        notify();
+        expect(check(grandchild)).toMatchObject({ decision: "deny", reasonCode: "isolation-unproven" });
+        child.finish();
+        await run;
+        expect(unattendedStageOf(child.sessionId)).toBeUndefined();
+      } finally {
+        endUnattendedStage(grandchild);
+      }
+    });
+  } finally {
+    plan.mockRestore();
+  }
+});
+
+it("records the exact admitted PATH folder in audit and run evidence", async () => {
+  const plan = vi.spyOn(sandboxCapability, "getHostShellExecutionPlan").mockReturnValue(isolationPlan("blocked"));
+  const { h } = await isolationHarness();
+  const capture = collectPermissionEvents();
+  const home = join(realpathSync.native(h.dir), "profile");
+  const bin = join(home, "toolchain", "bin");
+  mkdirSync(bin, { recursive: true });
+  vi.stubEnv("HOME", home);
+  vi.stubEnv("PATH", [home, bin].join(delimiter));
+  try {
+    await h.runThenEnd(async () => {
+      const { itemId, source, version } = await pinIsolationSchedule(h, { ...auto("a"), toolScope: "all", envelope: readEnvelope });
+      const run = h.start(itemId, source);
+      const [child] = await h.untilLive(1);
+      const { record } = await h.item(itemId);
+      if (!record) throw new Error("Missing stored run");
+      expect(projectWorkflowRun(record, version).stages[0]?.toolchainReadRoots).toEqual([expect.stringContaining("toolchain")]);
+      expect(capture.events).toContainEqual(expect.objectContaining({
+        event: "unattended_stage_toolchain_reads", roots: JSON.stringify(record.stageRuns[0]?.toolchainReadRoots),
+      }));
+      child.finish();
+      await run;
+    });
+  } finally {
+    capture.restore();
+    plan.mockRestore();
+    vi.unstubAllEnvs();
+  }
+});
+
+it("refuses an all-tools scheduled version when boot has no effect resolver", async () => {
+  const { h } = await isolationHarness(undefined, null);
+  await h.runThenEnd(async () => {
+    const { itemId, source } = await pinIsolationSchedule(h, {
+      ...auto("a"), toolScope: "all", envelope: emptyStageEnvelope(),
+    });
+    expect(await h.start(itemId, source)).toMatchObject({ status: "error", reasonCode: "unattended-not-read-only" });
+    expect(h.children).toHaveLength(0);
+  });
+});

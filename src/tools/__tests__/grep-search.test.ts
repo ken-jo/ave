@@ -191,6 +191,16 @@ describe("grep_files ripgrep engine", () => {
     expect(result.output).toContain(`${join(workDir, "src", "b.py")}\n  1: needle gamma`);
   });
 
+  it.each(["empty directory", "filtered listing", "denied candidates"])("reports invalid regex for a scheduled %s", async (scenario) => {
+    const empty = join(workDir, "empty");
+    mkdirSync(empty);
+    const root = scenario === "empty directory" ? empty : workDir;
+    const input = GrepFilesInputSchema.parse({ pattern: "(", ...(scenario === "filtered listing" && { include: "*.no-such-extension" }) });
+    const result = await searchWithRipgrep(root, input, undefined, undefined, undefined,
+      (lexical) => scenario !== "denied candidates" || lexical === root);
+    expect(result).toMatchObject({ isError: true, output: expect.stringContaining("regex parse error") });
+  });
+
   it("treats binary and UTF-16 files as the search of the tree does", async () => {
     const folder = join(workDir, "encoded");
     mkdirSync(folder);

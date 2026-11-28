@@ -1,6 +1,6 @@
-import { constants } from "node:fs";
-import { lstat, open } from "node:fs/promises";
+import { lstat } from "node:fs/promises";
 import { judgedPathNamesOpenedFile } from "../permissions/sensitive-paths.js";
+import { openSealedReadTarget, type TargetSeal } from "../permissions/target-seal.js";
 import { PREVIEW_DOCUMENT_LIMITS } from "../shared/preview-document.js";
 import { TableDocumentError } from "./table-document-error.js";
 
@@ -23,17 +23,17 @@ export async function readJudgedDocumentInput(
   judged: string,
   signal?: AbortSignal,
   maxBytes = PREVIEW_DOCUMENT_LIMITS.maxFileBytes,
+  seal?: TargetSeal,
 ): Promise<Buffer> {
-  return (await readOpenedDocument(judged, signal, maxBytes, true)).data;
+  return (await readOpenedDocument(judged, signal, maxBytes, true, seal)).data;
 }
 
-async function readOpenedDocument(path: string, signal: AbortSignal | undefined, maxBytes: number, judged: boolean) {
+async function readOpenedDocument(path: string, signal: AbortSignal | undefined, maxBytes: number, judged: boolean, seal?: TargetSeal) {
   signal?.throwIfAborted();
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > PREVIEW_DOCUMENT_LIMITS.maxFileBytes) {
     throw new TableDocumentError("too-large", "Invalid preview byte limit.");
   }
-  const handle = await open(path, constants.O_RDONLY
-    | (process.platform === "win32" ? 0 : constants.O_NONBLOCK | constants.O_NOFOLLOW));
+  const handle = await openSealedReadTarget(path, seal);
   try {
     signal?.throwIfAborted();
     // Windows has no O_NOFOLLOW, so prove the descriptor is the checked

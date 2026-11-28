@@ -120,6 +120,7 @@ export type WorkflowTemplateErrorCode =
 export type WorkflowTemplateIpcResult<T> = { ok: true; value: T } | { ok: false; refusals?: EnvelopeRefusal[]; error: WorkflowTemplateErrorCode | "unauthorized-frame" | "no-store" | "user-gesture-required" | "user-keyboard-required" | "storage-error" };
 
 export const STAGE_TOOL_CALLS_REFUSED = "be_workBoard.stageToolCallsRefused";
+export const MAX_STAGE_TOOLCHAIN_ROOTS = 256;
 
 export interface WorkItemStageRun {
   stageId: string;
@@ -129,11 +130,12 @@ export interface WorkItemStageRun {
   failureReason?: typeof STAGE_TOOL_CALLS_REFUSED;
   taint?: "file-content" | "agent-message";
   workspace?: { root: string; kind: "git" | "folder"; baseCommit?: string; sealCommit?: string; manifest?: OutputFile[] };
-  blocked?: { code: LaneBlockCode; at: string };
+  blocked?: { code: LaneBlockCode; at: string; reason?: IsolationUnproven };
+  toolchainReadRoots?: string[];
   requestedOutputs?: RequestedOutput[];
   outputExecutions?: OutputExecution[];
   usage?: { rounds: number; startedAt: string; denials: number; costUsd?: number };
-  deniedCalls?: { toolName: string; code: "outside-envelope" | "no-approver" }[];
+  deniedCalls?: { toolName: string; code: "outside-envelope" }[];
   childSessionId?: string;
   startedAt?: string;
   endedAt?: string;
@@ -151,6 +153,10 @@ export type RunAuthoritySource = { kind: "local-create-and-run"; pin: RunPin; pr
   | { kind: "tailnet-create-and-run"; pin: RunPin; projectRoot?: string }
   | { kind: "schedule-attachment"; attachmentId: string; pin: RunPin; firedAt: string };
 export interface RunWorkspace { kind: "git" | "folder"; runRoot: string; branch?: string; baseCommit?: string; outputDir?: string }
+export const ISOLATION_UNPROVEN_REASONS = [
+  "sandbox-unavailable", "platform-not-qualified", "boundary-unverified", "read-narrowing-unavailable",
+] as const;
+export type IsolationUnproven = typeof ISOLATION_UNPROVEN_REASONS[number];
 type LaneBlockCode = "envelope-missing" | "isolation-unproven" | "lane-unavailable";
 interface OutputFile { path: string; sha256: string; size: number }
 export interface RequestedOutput { id: string; decl: RequestedOutputDecl; args: string; files?: OutputFile[]; summary: string }

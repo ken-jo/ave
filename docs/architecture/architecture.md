@@ -2680,6 +2680,22 @@ Owner-away cards wait without a timeout by default; optional `permissions.ownerA
 Permission-policy file precedence, conservative handling of administrative read
 failures, and edit locking follow [Policy Files](permission-policy-design.md#policy-files).
 
+### Scheduled stage isolation
+
+Schedule attachment and fire use the pinned template version's capability envelopes and the live tool effect resolver. A version without an envelope on every stage needs a new confirmation and attachment. Existing attachments remain readable with their original pins.
+
+An all-read-only version runs on every OS with the fixed-category local readers named in its confirmed envelope. The envelope admits read targets in the stage workspace and declared read roots, and egress is denied. Any other version needs a contained shell plan with measured direct-IP blocking. The host checks its proof at stage admission and again at session link. A failed link ends the stage with the recorded proof failure. If a linked stage loses proof, the stage and its descendants lose their unattended tool authority for that attempt.
+
+On POSIX, scheduled file-content readers bind the admitted file identity to the opened handle before reading.
+
+On every supported OS, scheduled `grep_files` authorizes each candidate and verifies its opened handle's identity before reading content. Its descendant traversal uses names resolved at decision time under the owner's ruling, "판정 시 해석 + 경쟁은 한계". A same-user path swap can affect traversal. Enumeration skips ignore-file loading, and potential private-key paths are refused by name.
+
+For scheduled POSIX host writes, `list_files` and `glob_files`, the permission decision follows symlinks using native filesystem resolution and refuses targets outside the envelope. For `list_files` and `glob_files`, this decision covers only the traversal root. A same-user path swap between the decision and the operation is a known limit of these write and listing checks. The owner adopted the decision-time approach used by reference hosts in the 2026-11-28 ruling, "판정 시 해석 + 경쟁은 한계".
+
+Scheduled tool schemas contain only headless-capable tools with safe envelope evidence. Stage delegation and requested-output intake are available in attended runs through their existing host-issued stage scopes. A scheduled stage can still reach its human gate.
+
+A contained scheduled shell writes in its stage workspace and its invocation's private home. Inside the host home, reads can reopen the workspace, the declared read roots and exact local directories found on the host's PATH. The PATH directories are read-only and cannot pierce the protected floor or user denies. The run evidence and audit record the admitted PATH directories. Saved-session history stays denied. The launch environment disables the executable's system Git config and directs explicit system-config lookups to the null device. Filesystem denies also cover known system config paths and an absolute host override.
+
 On Windows, sandbox write denies beneath machine roots (`ProgramData`, the
 program-files roots and the system directory) are omitted unless a grant
 strictly beneath the machine root contains the target: ordinary ACLs already

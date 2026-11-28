@@ -52,7 +52,7 @@ import { createTailnetWorkDecisions } from "../../main/tailnet-work-decisions.js
 import { watchPermissionEvents } from "../../__tests__/support/permission-events.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import { itemDigestOf } from "../../main/work-board-store.js";
-import { stageOf } from "../../work-board/workflow/__tests__/stage-fixtures.js";
+import { emptyStageEnvelope, stageOf } from "../../work-board/workflow/__tests__/stage-fixtures.js";
 import { stageRunHarness } from "../../work-board/workflow/__tests__/stage-run-harness.js";
 
 const CAPABILITY = "ave.example.com/cap/conversation-observer";
@@ -3138,9 +3138,10 @@ describe("phone work reviews", () => {
   it("renders the destination template, active pin and failure from the paired schedule snapshot", async () => {
     const h = await stageRunHarness();
     await h.runThenEnd(async () => {
-      const prior = h.pinOf(await h.confirm([stageOf("prior")]));
+      const prior = h.pinOf(await h.confirm([stageOf("prior", { envelope: emptyStageEnvelope() })]));
+      const stages = graph.stages.map(stage => ({ ...stage, envelope: emptyStageEnvelope() }));
       for (const name of ["Quarterly report", "Publish digest"]) {
-        const { template, draft } = await h.templates.draft(null, { name, scope: templateScope, ...graph, setupCommands: [] });
+        const { template, draft } = await h.templates.draft(null, { name, scope: templateScope, stages, edges: graph.edges });
         if (!draft) throw new Error("Missing workflow draft");
         await h.templates.confirmDraft(template.id, { expectedGraphHash: draft.graphHash, expectedDraftRevision: draft.revision },
           { who: "owner", origin: "local-desktop" }, unknownToolEffects);

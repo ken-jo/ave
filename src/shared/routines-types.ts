@@ -81,7 +81,7 @@ export interface RoutineRecord {
   /** Projected from the active attachment. The template store owns the pin. */
   attachmentId?: string;
   /** Projected schedule-list state, independent of the last fire. */
-  templateAttention?: "attachment-missing" | "attachment-unavailable" | "scope-changed";
+  templateAttention?: "attachment-missing" | "attachment-unavailable" | "scope-changed" | "needs-new-version";
   /** Latest scheduled-template skip, persisted with its reason. */
   lastTemplateSkip?: TemplateRoutineSkip;
   /** System prompt injected when execution === "llm-session". */

@@ -49,7 +49,9 @@ describe("stage workspace session contract", () => {
       expect(call).toBeLessThan(route.indexOf("const boundarySnapshot = createAveHomeBoundarySnapshot(sessionId);"));
     }
     expect(bashSection.match(/boundarySessionOf\(ctx\)/gu)).toHaveLength(1);
-    expect(powershellSection.match(/boundarySessionOf\(ctx\)/gu)).toHaveLength(3);
+    // The parser and the workload each capture the session once and use it for both policies.
+    expect(powershellSection.match(/boundarySessionOf\(ctx\)/gu)).toHaveLength(2);
+    expect(shellTools.match(/deriveSandboxWritePaths\(\{[\s\S]*?\}, sessionId\)/gu)).toHaveLength(3);
     expect(powershellSection).toContain("launch = await boundarySnapshot.run(() => prepareMxcShellLaunch({");
   });
 });

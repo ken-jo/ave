@@ -29,7 +29,7 @@ import { listAuthorizedWorkspaceRoots } from "./workspace-authorized-roots.js";
 import { createRequire } from "node:module";
 import { type AveHomeBoundarySnapshot, currentAveHomeBoundarySnapshot, inAveHomeBoundarySnapshot } from "./ave-home-boundary-snapshot.js";
 import { EOL, homedir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve, sep, win32 } from "node:path";
+import { delimiter, dirname, isAbsolute, join, relative, resolve, sep, win32 } from "node:path";
 import { admitWindowsReparse, pinWindowsPaths, windowsObjectKey, type WindowsPathFacts } from "../shared/windows-path-facts.js";
 import { isHomeAnchor, policyHomeAnchors } from "../shared/policy-home.js";
 import { aveHome, assertAveHomePrivacyForConfinement, getAveHomePrivacyFailure, isAveHomePrivacyApprovable, AVE_HOME_BOUNDARY_UNVERIFIED_ERROR_CODE } from "../shared/ave-home.js";
@@ -41,13 +41,14 @@ import { agentPluginDataRoot } from "../marketplace/content/agent-plugin-data.js
 import { AVE_HOME_ISOLATION_GUARD_ACTIVE, checkSandboxStampTargets, testSandboxPrivateBase } from "../shared/ave-home-test-guard.js";
 import { expandLeadingTilde, leadingTildeHome } from "../shared/home-tilde.js";
 import { holdSandboxGitWrites } from "../shared/host-git.js";
-import { projectLocalWindowsFilesystemPath, resolvePhysicalFilesystemPath } from "../shared/shell-filesystem-path.js";
+import { projectLocalWindowsFilesystemPath, relativeNativePath, resolvePhysicalFilesystemPath, tryNativeRealpath } from "../shared/shell-filesystem-path.js";
 import { admitLocalPath, admitLocalRoute, assertLocalityDecisionUsable, localFs, matcherMemo, rethrowLocalityFailure, withLocalityDecision } from "../shared/local-path-io.js";
 import { admitObligations, consumeObligations, ObligationRefusedError, type ObligationRow, type ObligationSource, obligationWithin, POSIX_CRON_DENIES, posixOnlyDenyPaths, requireEnforceable, windowsObligationsApply } from "./admitted-obligation.js";
 import { compileGlobMatcher, globMatch } from "../lib/glob-matcher.js";
 import { llmRouteBaseUrls } from "../shared/llm-vendor-defaults.js";
 import { isAveHomeReadReallowed } from "./ave-home-read-boundary.js";
 import { isBoundStageWorkspacePath } from "./stage-workspace-binding.js";
+import { unattendedShellProfileOf } from "./unattended-lane-registry.js";
 import { canonicalizePathForMatch, caseFoldForMatch, getConfiguredSessionReadPolicy, getRuntimeSensitiveKeyPaths, MAX_WALK_UP, resolvePathForPolicy, SENSITIVE_PATH_ENTRIES, sensitiveEntryOnSandboxFloor } from "./sensitive-paths.js";
 import { hardenLinuxSandboxWrap } from "./linux-sandbox-wrap.js";
 import { assertMacSandboxWrapperSize, hardenMacSandboxGitMetadata, macAppOwnedDirectoryWriteRules, macWriteRootLinkedNameRules, macWriteRootNameRules } from "./macos-sandbox-wrap.js";
@@ -61,7 +62,7 @@ import { findHostProgram, hostProgramSearchDirectories } from "../shared/host-pr
 import { t } from "../i18n/index.js";
 import { hostDirectoryFloorPierces } from "../plugins/sandbox-authority.js";
 import { resolvePluginPaths } from "../plugins/plugin-paths.js";
-import { assertSandboxWritePolicySize, buildMandatorySandboxWritePolicy, compactSandboxWriteDenies, isGrantPathWithin, restrictSandboxGitControlSnapshot, type SandboxGitControlSnapshot, windowsDenyOperandKey } from "./sandbox-write-policy.js";
+import { assertSandboxWritePolicySize, buildMandatorySandboxWritePolicy, compactSandboxWriteDenies, defaultSystemGitConfigPaths, isGrantPathWithin, restrictSandboxGitControlSnapshot, type SandboxGitControlSnapshot, windowsDenyOperandKey } from "./sandbox-write-policy.js";
 export { isGrantPathWithin } from "./sandbox-write-policy.js";
 import { egressInvocationOwner, onEgressInvocationReleased, openEgressInvocation } from "./egress-invocations.js";
 import {
@@ -1708,16 +1709,16 @@ function aveHomeReadBoundaryMasks(): string[] {
 
 // The Ave home root covering `path` when `path` is that root or lies outside every re-allowed child.
 export function aveHomeReadBoundaryCovering(path: string): string | undefined {
-  return withLocalityDecision(() => aveHomeReadBoundaryMatcher()(canonicalizePathForMatch(path)));
+  return withLocalityDecision(() => aveHomeReadBoundaryMatcher()(canonicalizePathForMatch(path), path));
 }
 
-function aveHomeReadBoundaryMatcher(): (canonicalPath: string) => string | undefined {
+function aveHomeReadBoundaryMatcher(): (canonicalPath: string, path: string) => string | undefined {
   // The deepest root decides: an Ave home relocated beneath another spelling is judged by its own re-allowed children.
   const roots = aveHomeReadBoundaryRoots()
     .map((root) => ({ root, key: caseFoldForMatch(canonicalizePathForMatch(root)).replace(/\/+$/, "") }))
     .sort((left, right) => right.key.length - left.key.length);
   const sessionId = currentAveHomeBoundarySnapshot()?.sessionId;
-  return (canonicalPath) => {
+  return (canonicalPath, path) => {
     const folded = caseFoldForMatch(canonicalPath);
     const owner = roots.find(({ key }) => folded === key || folded.startsWith(`${key}/`));
     if (owner === undefined) return undefined;
@@ -1725,7 +1726,7 @@ function aveHomeReadBoundaryMatcher(): (canonicalPath: string) => string | undef
     const segments = folded.slice(owner.key.length + 1).split("/");
     if (!isAveHomeReadReallowed(segments)) return owner.root;
     // Beneath `worktrees` the ceiling row is open only to the session this composition is for, and only for the stage workspace it is bound to.
-    return segments[0] === "worktrees" && !isBoundStageWorkspacePath(sessionId, canonicalPath) ? owner.root : undefined;
+    return segments[0] === "worktrees" && !isBoundStageWorkspacePath(sessionId, resolvePathForPolicy(path)) ? owner.root : undefined;
   };
 }
 
@@ -1736,7 +1737,7 @@ export function getBuiltinShellSessionReadPolicy(
   return withLocalityDecision(() => inAveHomeBoundarySnapshot(undefined, () => getBuiltinShellSessionReadPolicyInSnapshot(...args)));
 }
 
-function getBuiltinShellSessionReadPolicyInSnapshot(userDataDir = _baseTrustedSettings?.userDataDir): {
+function getBuiltinShellSessionReadPolicyInSnapshot(userDataDir = _baseTrustedSettings?.userDataDir, withholdSavedSessions = false): {
   readonly allowRead: readonly string[];
   readonly denyRead: readonly string[];
   readonly withheldSessionReadRoot?: string;
@@ -1751,7 +1752,7 @@ function getBuiltinShellSessionReadPolicyInSnapshot(userDataDir = _baseTrustedSe
   const otherDenies = [...floorDenies, ...userDenies];
   // Windows shell confinement keeps the saved-session store denied for every command.
   // Elsewhere, a session allowance must stay outside other protected namespaces and trusted custom denies.
-  const withheldSessionReadRoot = windowsObligationsApply() ? sessionRoot : undefined;
+  const withheldSessionReadRoot = withholdSavedSessions || windowsObligationsApply() ? sessionRoot : undefined;
   const floorCovers = sessionRoot !== undefined && readDenyCovering(floorDenies)(sessionRoot) !== undefined;
   const userCover = sessionRoot === undefined || withheldSessionReadRoot !== undefined ? undefined : userReadDenyCovering(userDenies)(sessionRoot);
   if (sessionRoot !== undefined && (withheldSessionReadRoot !== undefined || floorCovers || userCover !== undefined)) {
@@ -1795,6 +1796,36 @@ function userDenyInside(entry: string, root: string): "certain" | "maybe" | unde
   if (!reachesWith((match) => (/[/\\]|^\[[!^]/u.test(match) ? "**" : "?"))) return undefined;
   // Any class leaves what the deny withholds inexact in the shared grammar, wherever it sits.
   return /[[\]]/u.test(spelling) ? "maybe" : "certain";
+}
+
+export function getUnattendedPathReadRoots(homes: readonly string[], path: string, floor = getProtectedReadDenyPaths()): string[] {
+  return withLocalityDecision(() => {
+    const floorCovers = protectedReadDenyMatcher(floor);
+    const physicalHomes = homes.flatMap(home => {
+      const physical = tryNativeRealpath(home);
+      return physical === undefined ? [] : [physical];
+    });
+    const insideHome = (roots: readonly string[], path: string): boolean => roots.some(root => {
+      const child = relativeNativePath(root, path);
+      return child !== undefined && child !== "";
+    });
+    const lexicalHomes = homes.map(home => resolve(home));
+    const roots = new Set<string>();
+    for (const candidate of path.split(delimiter)) {
+      if (!isAbsolute(candidate) || !insideHome(lexicalHomes, resolve(candidate))) continue;
+      try {
+        const local = admitLocalRoute(candidate).verdict;
+        const physical = localFs.realpathNative(local);
+        if (!insideHome(physicalHomes, physical) || !localFs.stat(local).isDirectory()) continue;
+        if (floorCovers(candidate) || floorCovers(physical) || floor.some(deny => userDenyInside(deny, physical))) continue;
+        if (aveHomeReadBoundaryCovering(physical) !== undefined) continue;
+        roots.add(physical);
+      } catch {
+        // An unverified PATH entry opens no read root.
+      }
+    }
+    return [...roots];
+  });
 }
 
 // The user-deny notices already shown, per session setup and Ave session: each rule is named once per read it withholds from.
@@ -1856,11 +1887,14 @@ export function getBuiltinShellReadPolicy(
 }
 
 function composeBuiltinShellReadPolicy(readPaths: readonly string[], sandboxHome: string | undefined, backend: "mxc" | undefined): ReturnType<typeof getBuiltinShellReadPolicy> {
-  const sessions = getBuiltinShellSessionReadPolicy();
+  const profile = unattendedShellProfileOf(currentAveHomeBoundarySnapshot()?.sessionId);
+  if (profile && backend !== "mxc") throw new Error("Unattended shell requires a container");
+  const sessions = getBuiltinShellSessionReadPolicyInSnapshot(undefined, profile !== undefined);
   const privateRoots = appOwnedSandboxPrivateRoots();
   // On Windows the HOME must be one this process created and still holds, not merely a path of that shape.
   const held = sandboxHome !== undefined && (process.platform !== "win32" || liveSandboxProcessHomes.has(sandboxHome));
   const ownHome = held ? canonicalizePathForMatch(sandboxHome) : undefined;
+  const nativeOwnHome = profile && held ? tryNativeRealpath(sandboxHome) : undefined;
   // Refusing saved-session access restates private roots too. Those roots still
   // allow this invocation's own HOME; an explicit protected deny keeps priority.
   const protectedDenies = new Set(getProtectedReadDenyPaths());
@@ -1873,18 +1907,34 @@ function composeBuiltinShellReadPolicy(readPaths: readonly string[], sandboxHome
   const sessionDenyCovering = (path: string): string | undefined => floorDenyCovering(path) ?? userDenyCovering(path)?.rule;
   const privateRootCovering = readDenyCovering(privateRoots);
   const boundaryCovering = aveHomeReadBoundaryMatcher();
-  const allowRead = [...readPaths, ...sessions.allowRead].filter((path) => {
+  const homeDenies = profile?.readDenyRoots ?? [];
+  // Keep filesystem denies for known host configs alongside the container environment's system-config suppression.
+  const systemGitConfig = process.env.GIT_CONFIG_SYSTEM;
+  const gitDenies = profile ? [...defaultSystemGitConfigPaths(),
+    ...(systemGitConfig && isAbsolute(systemGitConfig) ? [systemGitConfig] : [])] : [];
+  const gitDenyCovering = readDenyCovering(gitDenies);
+  const canonicalHomes = homeDenies.map(home => caseFoldForMatch(canonicalizePathForMatch(home)));
+  const underHome = readDenyCovering(homeDenies);
+  const ambientReads = profile ? readPaths.filter(path =>
+    path === sandboxHome || underHome(canonicalizePathForMatch(path)) === undefined) : readPaths;
+  const allowRead = [...ambientReads, ...sessions.allowRead, ...(profile?.readRoots ?? [])].filter((path) => {
     const resolved = canonicalizePathForMatch(path);
+    const key = caseFoldForMatch(resolved);
+    if (canonicalHomes.includes(key)) return false;
+    if (profile?.toolchainReadRoots?.includes(path) && tryNativeRealpath(path) !== path) return false;
+    if (gitDenyCovering(resolved) !== undefined) return false;
     // An explicit working directory must not reopen protected user data or a custom deny when removing a broader ancestor changes native rule order.
     if (sessionDenyCovering(resolved) !== undefined) return false;
     // Inside the Ave home only a re-allowed child is granted.
-    if (boundaryCovering(resolved) !== undefined) return false;
-    const insideOwnHome = ownHome !== undefined && (resolved === ownHome || resolved.startsWith(`${ownHome}/`));
+    if (boundaryCovering(resolved, path) !== undefined) return false;
+    const insideOwnHome = profile
+      ? nativeOwnHome !== undefined && relativeNativePath(nativeOwnHome, resolvePathForPolicy(path)) !== undefined
+      : ownHome !== undefined && (resolved === ownHome || resolved.startsWith(`${ownHome}/`));
     if (!insideOwnHome && privateRootCovering(resolved) !== undefined) return false;
     return true;
   });
   // The container can state the full home boundary without the profile-wide side effects of an ACL stamp.
-  const denyRead = Object.freeze([...sessions.denyRead, ...privateRoots, ...(backend === "mxc" ? aveHomeReadBoundaryRoots() : [])]);
+  const denyRead = Object.freeze([...sessions.denyRead, ...privateRoots, ...homeDenies, ...gitDenies, ...(backend === "mxc" ? aveHomeReadBoundaryRoots() : [])]);
   composedShellReadDenies.set(denyRead, {
     user: Object.freeze([...(_baseTrustedSettings?.denyRead ?? [])]),
   });
@@ -2041,7 +2091,7 @@ function withholdUnder(
   return paths.filter((path) => {
     const resolved = canonicalizePathForMatch(path);
     const user = userCovering(resolved);
-    const denied = user ?? floorCovering(resolved) ?? boundaryCovering(resolved);
+    const denied = user ?? floorCovering(resolved) ?? boundaryCovering(resolved, path);
     if (denied === undefined) return true;
     if (user === undefined && canonicalPierces.some((pierce) => resolved === pierce || resolved.startsWith(`${pierce}/`))) return true;
     // Withheld silently, a later EACCES/EROFS/ENOENT in the child would have no visible cause.

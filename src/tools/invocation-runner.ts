@@ -13,7 +13,8 @@ import { isConfinedHostShellExecution, isWindowsContainerShell } from "../permis
 import { dispatchReviewerForHeadless, dispatchReviewerForInteractiveAuto } from "./pipeline/reviewer-dispatch.js";
 import { criticalDeleteTargetFor } from "../permissions/sensitive-paths.js";
 import { windowsObligationsApply } from "../permissions/admitted-obligation.js";
-import { assertWindowsTarget, fileTargetSealFailureKey, observeWindowsTarget, sealsHold, TargetIdentityChangedError, type TargetSeal } from "../permissions/target-seal.js";
+import { assertWindowsTarget, fileTargetSealFailureKey, observeWindowsTarget, sealReadTargets, sealsHold, TargetIdentityChangedError, type TargetSeal } from "../permissions/target-seal.js";
+import { fileIdentityKey, type FileIdentity } from "../lib/file-identity.js";
 import { hookChainFromDispatch } from "./pipeline/audit-entries.js";
 import { runScriptHook, scriptHookRefusal } from "./invocation-services.js";
 import { HookInputMutationRequest, attachHookControlContext, hookInfluenceContext } from "../hooks/hook-influence.js";
@@ -2579,6 +2580,7 @@ async function runToolInvocationAttempt(
       ? []
       : extractTargetFilePaths(tool, finalInput, executionCwd);
     const pathEffect = requiredTier(invocationCategory);
+    const scheduledGrep = canonicalFileTool?.name === "grep_files" && registeredUnattendedStageOf(sessionId) !== undefined;
     const nativeFileWrite = isCanonicalFileTool(tool) && invocationCategory === "write" && !brokeredFileRouteSelected;
     const initialPathJudgment = () => withLocalityDecision(() => {
       const expected = targetFilePaths.map((path) => resolveFileTarget(path));
@@ -2619,6 +2621,10 @@ async function runToolInvocationAttempt(
       }
       const createFileSeal = (mutated: ReadonlySet<string>): TargetSeal => ({
         pathFor: (path) => pathsByOperand.get(targetKey(path)),
+        ...(scheduledGrep ? { assertOpenedRead: (path: string, opened: FileIdentity) => {
+          const observation = expected.find(({ target }) => target.runtimePath === path)?.observation;
+          if (observation?.ancestor !== path || observation.identity !== fileIdentityKey(opened)) throw new TargetIdentityChangedError();
+        } } : {}),
         ...(nativeFileWrite ? { entryFor: (path: string) => entries.get(targetKey(path)) } : {}),
         verify: () => withLocalityDecision(() => {
           const current = expected.map(({ target, observation }) => resolveFileTarget(target.filePath, observation !== undefined));
@@ -2650,6 +2656,11 @@ async function runToolInvocationAttempt(
       }
     } else {
       unsealedRuleSubject = scopedRuleSubjectFor(tool, finalInput, executionCwd);
+      if (canonicalFileTool !== undefined && pathEffect === "read" && targetFilePaths.length > 0 &&
+          registeredUnattendedStageOf(sessionId) !== undefined) {
+        try { fileTargetSeal = sealReadTargets(targetFilePaths); }
+        catch { return await denyUnresolvedFileTargets("Cannot resolve file target"); }
+      }
       for (const filePath of targetFilePaths) {
         let runtimePath: string;
         try {
@@ -2660,7 +2671,7 @@ async function runToolInvocationAttempt(
             if (resolved.includes("\\")) throw new Error("Ambiguous write path");
             runtimePath = resolved;
           } else {
-            runtimePath = resolvePathForPolicy(filePath);
+            runtimePath = fileTargetSeal?.pathFor?.(filePath) ?? resolvePathForPolicy(filePath);
           }
         } catch {
           return await denyUnresolvedFileTargets("Cannot resolve write target");
@@ -2674,7 +2685,7 @@ async function runToolInvocationAttempt(
       return (operands.length > 0 ? operands : [target.filePath]).map((path) => {
         const expanded = expandLeadingTilde(path);
         // A leading `.` names the working directory itself; spelling it as a dot component would make a share cwd ambiguous.
-        const relative = expanded.replace(/^(?:\.(?:[\\/]+|$))+/u, "");
+        const relative = expanded.replace(isWindows ? /^(?:\.(?:[\\/]+|$))+/u : /^(?:\.(?:\/+|$))+/u, "");
         return { lexical: isAbsolute(expanded) ? expanded : relative === "" ? executionCwd : executionCwd + "/" + relative, canonical: target.canonicalPath, runtimePath: target.runtimePath,
           effect: canonicalFileTool !== undefined ? canonicalFilePathEffect(tool, finalInput, target.filePath, executionCwd) : requiredTier(invocationCategory) };
       });
@@ -2795,7 +2806,7 @@ async function runToolInvocationAttempt(
           return editDecision.decision === "allow" && manager.checkScopedRules(editSubject, executionCwd).decision === "allow";
         });
       } catch (error) {
-        if (!isWindows) throw error;
+        if (!isWindows && fileTargetSeal === undefined) throw error;
         return await denyFileTargets(changedTargetReason);
       }
       if (savedEditAllowed) {
@@ -2831,7 +2842,7 @@ async function runToolInvocationAttempt(
       let currentFileScope: ReturnType<typeof checkCurrentFileScope>;
       try { currentFileScope = checkCurrentFileScope(); }
       catch (error) {
-        if (!isWindows) throw error;
+        if (!isWindows && fileTargetSeal === undefined) throw error;
         return await denyFileTargets(changedTargetReason);
       }
       const { scopeTargets, pathScope } = currentFileScope;
@@ -2962,7 +2973,7 @@ async function runToolInvocationAttempt(
       targetFilePath,
       linkedTargets,
       canonicalTargets,
-      ...(isWindows && canonicalTargets.length > 0 ? { assertFileTargetsUnchanged } : {}),
+      ...((isWindows && canonicalTargets.length > 0 || fileTargetSeal !== undefined) ? { assertFileTargetsUnchanged } : {}),
       approvalCacheKey,
       executionCwd,
       auditCurrentToolCall,
@@ -2981,7 +2992,7 @@ async function runToolInvocationAttempt(
     if ("tool_use_id" in authorization || authorization.outcome === "rationale-required") {
       return authorization;
     }
-    if (isWindows && canonicalTargets.length > 0) {
+    if (fileTargetSeal !== undefined) {
       try { withLocalityDecision(() => assertFileTargetsUnchanged()); }
       catch (error) { return await denyFileTargets(t(fileTargetSealFailureKey(error))); }
     }
@@ -3097,6 +3108,7 @@ async function runToolInvocationAttempt(
       approvedPolicyEpoch: authorization.approvedPolicyEpoch,
       permissionRecheckResult: authorization.permissionRecheckResult,
       checkCurrentPermission: authorization.checkCurrentPermission,
+      authorizeGrepCandidate: authorization.authorizeGrepCandidate,
       replayRootBinding: opts.replayRootBinding,
       approvedInvocation: opts.approvedInvocation,
       refreshApprovedInvocation: opts.refreshApprovedInvocation,
@@ -3153,7 +3165,7 @@ async function runToolInvocationAttempt(
     const blockedSandbox = sandboxBlockForResult(executedResult);
     if (blockedSandbox !== undefined && hostShellToolName !== undefined && hostShellExecutionPlan?.mode === "asrt"
       && executedResult.is_error === true && blockedSandbox.command === finalInput.command && !abortSignal?.aborted
-      && rationaleResumeContext === undefined) {
+      && rationaleResumeContext === undefined && registeredUnattendedStageOf(sessionId) === undefined) {
       // A recorded filesystem refusal creates a new exact host request. Every permission stage runs again.
       // The retry is its own attempt with its own terminal row; this attempt already wrote one.
       const retryServices = { ...services, invocationTerminal: services.invocationTerminal.nextAttempt() };

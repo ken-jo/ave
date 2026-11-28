@@ -300,6 +300,7 @@ export function SchedulePanel({ api, project, onOpenSession, focusRoutineId, onF
     const status = breakerPaused ? t("schedulePanel.pausedByScheduleBreaker", { when: formatMediumDateTime(breakerPaused) })
       : routine.templateAttention === "attachment-missing" ? t("workflowSchedule.needsReattachOrDelete")
       : routine.templateAttention === "attachment-unavailable" ? t("workflowSchedule.attachmentUnavailable")
+      : routine.templateAttention === "needs-new-version" ? t("workflowSchedule.needsNewVersion")
       : routine.templateAttention === "scope-changed" ? t("workflowSchedule.needsReattach")
       : routine.lastTemplateSkip?.code === "run-unsettled" ? t("workflowSchedule.skippedUnsettled")
       : routine.lastTemplateSkip?.code === "attachment-replaced" ? t("workflowSchedule.skippedReplaced")

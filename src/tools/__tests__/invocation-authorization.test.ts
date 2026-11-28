@@ -6,7 +6,7 @@ import { listApprovals, __resetSessionStoreForTest } from "../../permissions/use
 import { SHELL_RULE_CANONICAL_VERSION } from "../../shared/shell-rule-version.js";
 import { beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { configureHostResources } from "../../main/host-resources.js";
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
@@ -26,9 +26,10 @@ import { endUnattendedStage, onUnattendedDenied, registerUnattendedStage } from 
 import * as shellFilesystemPath from "../../shared/shell-filesystem-path.js";
 import { withCodeCheckpoint } from "../../memory/code-checkpoints.js";
 import { createToolEffectResolver } from "../../permissions/tool-effect-evidence.js";
+import { emptyStageEnvelope } from "../../work-board/workflow/__tests__/stage-fixtures.js";
 import * as sensitivePaths from "../../permissions/sensitive-paths.js";
 import * as targetSeal from "../../permissions/target-seal.js";
-import { ReadFileTool, WriteFileTool } from "../file-tools.js";
+import { ApplyPatchTool, CopyPathTool, DeleteFileTool, EditFileTool, GlobFilesTool, ListFilesTool, MoveFileTool, MultiEditTool, ReadFileTool, WriteFileTool } from "../file-tools.js";
 import { BashTool } from "../shell-tools.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
 import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
@@ -284,6 +285,75 @@ it.each([
     });
   } finally {
     unsubscribe();
+    endUnattendedStage(sessionId);
+  }
+});
+
+it.skipIf(process.platform === "win32")("refuses outside symlink targets at the scheduled write and list decision", async () => {
+  vi.stubEnv("AVE_HOME", join(directory, "state"));
+  const workspaceRoot = join(realpathSync.native(directory), "workspace");
+  const outside = join(realpathSync.native(directory), "outside");
+  mkdirSync(workspaceRoot);
+  mkdirSync(outside);
+  writeFileSync(join(workspaceRoot, "note.txt"), "original\n");
+  writeFileSync(join(outside, "note.txt"), "original\n");
+  symlinkSync(outside, join(workspaceRoot, "alias"));
+
+  const path = "alias/note.txt";
+  const destinationPath = "alias/new.txt";
+  const edit = { oldText: "original", newText: "updated" };
+  const copy = new CopyPathTool();
+  const move = new MoveFileTool();
+  const cases = [
+    { tool: new WriteFileTool(), input: { path: destinationPath, content: "updated" }, target: "new.txt" },
+    { tool: new EditFileTool(), input: { path, ...edit }, target: "note.txt" },
+    { tool: new MultiEditTool(), input: { path, replacements: [edit] }, target: "note.txt" },
+    { tool: new ApplyPatchTool(), input: { patch: `*** Begin Patch\n*** Update File: ${path}\n@@\n-original\n+updated\n*** End Patch` }, target: "note.txt" },
+    { tool: copy, input: { sourcePath: path, destinationPath: "copied.txt" }, target: "note.txt" },
+    { tool: copy, input: { sourcePath: "note.txt", destinationPath }, target: "new.txt" },
+    { tool: move, input: { sourcePath: path, destinationPath: "moved.txt" }, target: "note.txt" },
+    { tool: move, input: { sourcePath: "note.txt", destinationPath }, target: "new.txt" },
+    { tool: new DeleteFileTool(), input: { path }, target: "note.txt" },
+    { tool: new ListFilesTool(), input: { path: "alias" }, target: "" },
+    { tool: new GlobFilesTool(), input: { path: "alias", pattern: "*.txt" }, target: "" },
+  ];
+  const manager = new PermissionManager(join(directory, "permissions.json"));
+  const check = vi.spyOn(manager, "checkDetailed");
+  const registry = new ToolRegistry();
+  registry.registerBatch([...new Set(cases.map(({ tool }) => tool))]);
+  manager.setUnattendedToolEffectResolver(createToolEffectResolver(registry));
+  const executor = new ToolExecutor(registry, undefined, manager);
+  const sessionId = "scheduled-file-targets";
+  registerUnattendedStage(sessionId, {
+    runKey: "run", stageId: "stage", workspaceRoot, isolation: { proven: true },
+    envelope: { ...emptyStageEnvelope(), tools: [...new Set(cases.map(({ tool }) => tool.name))], writePaths: ["**"] },
+  });
+  try {
+    for (const [index, { tool, input, target }] of cases.entries()) {
+      const execute = vi.spyOn(tool, "execute").mockResolvedValue({ output: "executed", isError: false });
+      check.mockClear();
+      try {
+        const [result] = await withCodeCheckpoint({ sessionId, messageId: `target-${index}` }, () => executor.executeAll([
+          { id: `target-${index}`, name: tool.name, input },
+        ], { executionCwd: workspaceRoot, sessionId, permissionContext: userPermissionContext({ headless: true }) }));
+        expect(result, tool.name).toMatchObject({ is_error: true, hostRefused: true });
+        expect(execute, tool.name).not.toHaveBeenCalled();
+        expect(check.mock.results.map(call => call.value), tool.name).toContainEqual(expect.objectContaining({
+          decision: "deny", reasonCode: "forbidden-unattended",
+          pipelineRequest: expect.objectContaining({
+            unattended: expect.objectContaining({ stageId: "stage" }),
+            floor: expect.objectContaining({ code: "project-escape" }),
+            paths: expect.arrayContaining([expect.objectContaining({
+              lexical: join(workspaceRoot, "alias", target),
+              runtimePath: join(outside, target),
+            })]),
+          }),
+        }));
+      } finally {
+        execute.mockRestore();
+      }
+    }
+  } finally {
     endUnattendedStage(sessionId);
   }
 });

@@ -149,7 +149,7 @@ it("exposes exactly the scheduled read-only stage tools from the boot registry",
     expect(result.ok).toBe(true);
     expect(requests).toEqual([[
       "agent_list", "bash_output", "glob_files", "grep_files", "list_files", "memory_read", "memory_search",
-      "open_document", "read_document", "read_file", "read_tool_result_chunk", "render_html",
+      "read_document", "read_file", "read_tool_result_chunk", "render_html",
       "skill_list", "skill_load", "skill_read", "terminal_read", "tool_search", "view_image",
     ]]);
   } finally {

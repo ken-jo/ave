@@ -1,11 +1,12 @@
 import { unknownToolEffects } from "../../../__tests__/support/tool-effect-resolver.js";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setImmediate } from "node:timers/promises";
 import type {
-  RunAuthoritySource, StageJoin, TemplateScope, TemplateStage, TemplateVersion, TemplateVersionPin, WorkItemStageRun,
+  RunAuthoritySource, ScheduleAttachment, StageJoin, TemplateScope, TemplateStage, TemplateVersion, TemplateVersionPin, WorkItemStageRun, WorkflowTemplateRecord,
 } from "../../../shared/workflow-template-types.js";
 import { type WorkBoardRunEvent, type WorkItemResolved, workBoardOriginSessionId } from "../../../shared/work-board-types.js";
 import type { SubAgentActivityUpdate, SubAgentRunner, SubAgentRunSnapshot, SubAgentSpawnInput, SubAgentSpawnResult } from "../../../engine/subagent-runner.js";
@@ -23,6 +24,7 @@ import { createPassConditionRegistry } from "../stage-gates.js";
 import type { GovernedOutputAdapter } from "../requested-outputs.js";
 import type { StageWorkspaceProvider } from "../stage-workspace.js";
 import type { JoinConflict } from "../shipped-shapes.js";
+import { attachmentScopeMatches, everyStageHasEnvelope, isAllReadOnlyVersion, requireTemplate } from "../../template-graph.js";
 
 export interface FakeChild {
   input: SubAgentSpawnInput;
@@ -311,6 +313,8 @@ export async function stageRunHarness(opts: {
     if (runWork) runWorkObservers.push(runWork);
     const workflow = {
       templates, attachments: templates, runs: boardRunState(store), workspace, authoriseRunSource, passConditions: createPassConditionRegistry(),
+      // Unconfigured lifecycle fixtures also cover runs accepted under the historical attachment rules.
+      unattendedAllowed: version => isAllReadOnlyVersion(version) ? { ok: true } : { ok: false, code: "unattended-not-read-only" },
       scopeAuthorised: (scope: TemplateScope) => scope.kind === "all" || !unauthorised.has(scope.projectRoot),
       resolveProjectRoot: (root: string) => unauthorised.has(root) ? null : root,
       ...opts.workflow,
@@ -450,9 +454,30 @@ export async function stageRunHarness(opts: {
   }
   const local = (version: TemplateVersion, projectRoot?: string): RunAuthoritySource =>
     ({ kind: "local-create-and-run", pin: pinOf(version), ...(projectRoot ? { projectRoot } : {}) });
-  async function attach(version: TemplateVersion, approvedScope: TemplateScope = { kind: "all" }): Promise<{ id: string; source: RunAuthoritySource }> {
-    const attachment = await templates.attachSchedule({ scheduleId: "daily", ...pinOf(version) }, mintHostDecisionProof("local-desktop"), approvedScope);
-    return { id: attachment.id, source: { kind: "schedule-attachment", attachmentId: attachment.id, pin: pinOf(version), firedAt: "2026-11-16T00:00:00.000Z" } };
+  async function attach(version: TemplateVersion, approvedScope: TemplateScope = { kind: "all" }, scheduleId = "daily") {
+    const pin = pinOf(version);
+    const proof = mintHostDecisionProof("local-desktop");
+    let attachment: ScheduleAttachment;
+    // Lifecycle tests can start from attachments created before envelopes were required.
+    if (isAllReadOnlyVersion(version) && !everyStageHasEnvelope(version)) {
+      const filename = join(dir, "templates.json");
+      const file = JSON.parse(readFileSync(filename, "utf8")) as { templates: WorkflowTemplateRecord[] };
+      const record = file.templates.find(candidate => candidate.template.id === pin.templateId);
+      requireTemplate(record && attachmentScopeMatches({ approvedScope }, record.template).ok, "scope-changed");
+      for (const candidate of file.templates) {
+        for (const prior of candidate.scheduleAttachments ?? []) {
+          if (prior.scheduleId === scheduleId && !prior.detachedAt) prior.detachedAt = proof.decidedAt;
+        }
+      }
+      attachment = { ...pin, id: randomUUID(), scheduleId, approvedScope, who: "user", origin: "local-desktop", at: proof.decidedAt };
+      record.scheduleAttachments ??= [];
+      record.scheduleAttachments.push(attachment);
+      writeFileSync(filename, JSON.stringify(file));
+    } else {
+      attachment = await templates.attachSchedule({ scheduleId, ...pin }, proof, approvedScope, { effects: { effectOf: () => "safe" } });
+    }
+    const source: RunAuthoritySource = { kind: "schedule-attachment", attachmentId: attachment.id, pin, firedAt: "2026-11-16T00:00:00.000Z" };
+    return { id: attachment.id, source, attachment };
   }
   const detach = (id: string): Promise<boolean> => templates.detachSchedule(id, mintHostDecisionProof("local-desktop"));
   /** The stored run, read by its id from the run file whether or not a row still names it. */

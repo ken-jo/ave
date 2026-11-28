@@ -384,12 +384,13 @@ it("the third lane denial ends the stage and lists the calls", async () => {
     observer.report("another-session", "outside-envelope", "unrelated");
     observer.report(child.sessionId, "policy-denied", "ignored");
     observer.report(child.sessionId, "outside-envelope", "tool_one");
-    observer.report(child.sessionId, "no-approver", "tool_two");
+    observer.report(child.sessionId, "no-approver", "ignored");
+    observer.report(child.sessionId, "outside-envelope", "tool_two");
     expect(h.interrupts).toEqual([]);
     observer.report(child.sessionId, "outside-envelope", "tool_three");
     const calls = [
       { toolName: "tool_one", code: "outside-envelope" },
-      { toolName: "tool_two", code: "no-approver" },
+      { toolName: "tool_two", code: "outside-envelope" },
       { toolName: "tool_three", code: "outside-envelope" },
     ];
     expect(h.interrupts).toEqual([child.sessionId]);
@@ -420,7 +421,8 @@ it("a grandchild's rounds and denials count against its stage", async () => {
   let nestedResult: SubAgentSpawnResult | undefined;
   const requests: string[] = [];
   const read = createDynamicTool({
-    name: "read_fixture", description: "Read a fixture", source: "builtin", category: "read",
+    name: "read_file", description: "Read a fixture", source: "builtin", category: "read",
+    unattendedEffect: "safe",
     isReadOnly: () => true,
     jsonSchema: { type: "object", properties: { fixture: { type: "string" } }, required: ["fixture"] },
     execute: async (input, ctx) => {
@@ -471,7 +473,7 @@ it("a grandchild's rounds and denials count against its stage", async () => {
       },
     });
     await h.runThenEnd(async () => {
-      const started = await startScheduled(h, [autoStageOf("report", { envelope: ENVELOPE, allowSubAgents: true })]);
+      const started = await startScheduled(h, [autoStageOf("report", { envelope: { ...ENVELOPE, tools: [read.name] }, allowSubAgents: true })]);
       const result = await started.result;
       expect(requests).toEqual(["stage:first", "nested:first"]);
       expect(execute).toHaveBeenCalledTimes(2);
@@ -1109,6 +1111,7 @@ it.each([
       await expect(within(run.result, "Stop to settle during sealing", beforeUnblock)).resolves.toMatchObject({ status: "cancelled" });
       expect(await h.stageRun(run.itemId, "short")).toMatchObject({ status: "cancelled" });
       expect((await h.item(run.itemId)).record?.settled?.status).toBe("cancelled");
+      const afterCancellation = h.events.length;
       if (outage) {
         board = readFileSync(h.boardPath);
         writeFileSync(h.boardPath, "{");
@@ -1121,6 +1124,7 @@ it.each([
         await h.drainRunWork();
       }
       expect((await h.item(run.itemId)).record?.settled?.status).toBe("cancelled");
+      expect(h.events.slice(afterCancellation)).not.toContainEqual(expect.objectContaining({ phase: "executing" }));
       expect(await h.stageRun(run.itemId, "first")).toMatchObject(outcome === "success"
         ? { status: "passed", workspace: { sealCommit } }
         : { status: "failed", failure: "error" });

@@ -32,6 +32,12 @@ import { rawIpProbeShellLines } from "../mxc-macos-raw-ip.js";
 import { posixPolicyLookups } from "../mxc-posix.js";
 import { _mxcShellStandbyPidForTest, dropMxcShellStandbys, mxcShellSupervisorLocation, stageMxcShellRequest, startMxcShellSupervisor } from "../mxc-shell-supervisor-client.js";
 import { buildPolicyModel, policyFloorRow, policyGrantRow, type PolicyModel } from "../policy-model.js";
+import { getBuiltinShellReadPolicy, getProtectedReadDenyFloor } from "../asrt-sandbox.js";
+import { createAveHomeBoundarySnapshot } from "../ave-home-boundary-snapshot.js";
+import { endUnattendedStage, registerUnattendedStage } from "../unattended-lane-registry.js";
+import { deriveSandboxWritePaths } from "../sandbox-write-jail.js";
+import { emptyStageEnvelope } from "../../work-board/workflow/__tests__/stage-fixtures.js";
+import { shellPolicyModel } from "../../tools/mxc-shell-launch.js";
 
 const NATIVE = process.platform === "darwin" && process.arch === "arm64";
 // Darwin 25 is macOS 26. Its libsandbox compiles a carved profile deeply enough to overrun koffi's default 128 KiB
@@ -160,6 +166,59 @@ describe.runIf(NATIVE)("native macOS shell boundary", () => {
     ],
   });
   const bashMarker = "exec /bin/bash -c 'echo ran > marker'";
+
+  it("enforces unattended home, workspace, credential and egress boundaries in the container", async () => {
+    const sessionId = "native-unattended";
+    const home = join(root, "home");
+    const references = join(home, "references");
+    const toolchain = join(home, "toolchain", "bin");
+    const gitSystem = join(root, "system-gitconfig");
+    for (const folder of [references, toolchain]) mkdirSync(folder, { recursive: true });
+    writeFileSync(join(home, "private"), "private fixture");
+    writeFileSync(join(references, "input"), "declared");
+    writeFileSync(join(toolchain, "control"), "toolchain");
+    writeFileSync(gitSystem, '[credential]\n  helper = "!f() { echo username=fixture; echo password=fixture; }; f"\n');
+    const gitProbe = `printf 'protocol=https\\nhost=fixture.invalid\\n\\n' | GIT_TERMINAL_PROMPT=0 GIT_CONFIG_NOSYSTEM=0 GIT_CONFIG_SYSTEM=${quote(gitSystem)} /usr/bin/git credential fill`;
+    expect(execFileSync("/bin/bash", ["-c", gitProbe], { cwd: work, env: { PATH: "/usr/bin:/bin", HOME: home } }).toString()).toContain("username=fixture");
+    vi.stubEnv("HOME", home);
+    vi.stubEnv("GIT_CONFIG_SYSTEM", gitSystem);
+    const server = createServer(socket => socket.destroy());
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const address = server.address();
+      if (address === null || typeof address === "string") throw new Error("Expected a local test listener");
+      registerUnattendedStage(sessionId, {
+        runKey: "run", stageId: "stage", workspaceRoot: work,
+        envelope: {
+          tools: [], readRoots: [references], writePaths: [], commands: [], network: [], mcpReadOnlyTools: [],
+          mcpGenerationTools: [], pluginGenerationTools: [], outputs: [], budget: { rounds: 1, minutes: 1, costUsd: 0 },
+        },
+        isolation: { proven: true, profile: {
+          readDenyRoots: [home], readRoots: [work, references, toolchain], writeRoots: [work], toolchainReadRoots: [toolchain],
+        } },
+      });
+      const read = getBuiltinShellReadPolicy([work], home, undefined, createAveHomeBoundarySnapshot(sessionId), "mxc");
+      const result = await launch([
+        'echo workspace > marker && test "$(cat marker)" = workspace || exit 11',
+        `test "$(cat ${quote(join(references, "input"))})" = declared || exit 12`,
+        `test "$(cat ${quote(join(toolchain, "control"))})" = toolchain || exit 13`,
+        `if cat ${quote(join(home, "private"))}; then exit 14; fi`,
+        `if echo widened > ${quote(join(toolchain, "widened"))}; then exit 15; fi`,
+        'test -z "$SSH_AUTH_SOCK" || exit 16',
+        `if /usr/bin/nc -z -w 1 127.0.0.1 ${address.port}; then exit 17; fi`,
+        'if /usr/bin/security list-keychains >/dev/null 2>&1; then exit 18; fi',
+        `if ${gitProbe} >/dev/null 2>&1; then exit 19; fi`,
+      ].join("\n"), 20_000, shellPolicyModel({
+        allowRead: [root, ...read.allowRead], allowWrite: deriveSandboxWritePaths({ allowedDirectories: [root] }, sessionId),
+        denyRead: read.denyRead, denyWrite: [], floorPierces: read.floorPierces, protectedFloor: getProtectedReadDenyFloor(),
+      }));
+      expect(result, JSON.stringify(result)).toMatchObject({ code: 0, rejected: false, cleanupUnverified: false });
+    } finally {
+      endUnattendedStage(sessionId);
+      vi.unstubAllEnvs();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  }, LAUNCHER_START_TIMEOUT_MS);
   const powerShellMarker = () => `exec ${quote(POWERSHELL ?? "")} -NoProfile -NonInteractive -Command 'Set-Content -LiteralPath marker -Value ran'`;
 
   /** Replace the working directory after the supervisor's last check and before the child's, then run the marker. */
@@ -447,6 +506,36 @@ describe.runIf(NATIVE)("native product shell launch", () => {
   function run(launch: Awaited<ReturnType<typeof prepare>>) {
     return collectShell(launch.start("test:native-posix-shell", hostShellGrantAuthorizer(undefined)));
   }
+
+  it("suppresses system Git config outside the standard install paths only for scheduled shells", async () => {
+    startEgressRelayService({ ask: async () => false });
+    const systemConfig = join(root, "custom-prefix", "etc", "gitconfig");
+    mkdirSync(dirname(systemConfig), { recursive: true });
+    writeFileSync(systemConfig, '[credential]\n  helper = "!f() { echo username=fixture; echo password=fixture; }; f"\n');
+    const env = { GIT_CONFIG_SYSTEM: systemConfig, GIT_CONFIG_NOSYSTEM: "0", GIT_TERMINAL_PROMPT: "0", PATH: "/usr/bin:/bin" };
+    const command = [
+      "if /usr/bin/git config --system --get credential.helper >/dev/null 2>&1; then echo system-config-loaded; fi",
+      "printf 'protocol=https\\nhost=fixture.invalid\\n\\n' | /usr/bin/git credential fill 2>/dev/null || true",
+    ].join("\n");
+    const options = { allowRead: [dirname(systemConfig)], env, timeoutMs: LAUNCHER_START_TIMEOUT_MS };
+    const attended = await run(await prepare(command, options));
+    expect(attended).toMatchObject({ code: 0, rejected: false });
+    expect(attended.stdout).toContain("system-config-loaded");
+    expect(attended.stdout).toContain("username=fixture");
+
+    const sessionId = "scheduled-git";
+    registerUnattendedStage(sessionId, {
+      runKey: "run", stageId: "stage", workspaceRoot: project, envelope: emptyStageEnvelope(),
+      isolation: { proven: true, profile: { readDenyRoots: [home], readRoots: [project], writeRoots: [project] } },
+    });
+    try {
+      const boundary = createAveHomeBoundarySnapshot(sessionId);
+      const unattended = await run(await boundary.run(() => prepare(command, options)));
+      expect(unattended).toMatchObject({ code: 0, rejected: false, stdout: "" });
+    } finally {
+      endUnattendedStage(sessionId);
+    }
+  }, LAUNCHER_START_TIMEOUT_MS);
 
   function latestLease() {
     const lease = leases.at(-1);

@@ -1,3 +1,4 @@
+import { emptyStageEnvelope } from "../../work-board/workflow/__tests__/stage-fixtures.js";
 import { unknownToolEffects } from "../../__tests__/support/tool-effect-resolver.js";
 import { requiredValue } from "../../__tests__/support/required-value.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -126,12 +127,12 @@ describe("canonical graph hash", () => {
 it("persists a host-proven remote confirmation and attachment with the owner login", async () => {
   const auth = { refreshCurrent: async () => true, isCurrent: () => true };
   const proof = mintHostDecisionProof("tailnet-surface", { login: "owner@example.com", conversationId: "conversation", authority: auth });
-  const record = await store.draft(null, { ...input(), stages: input().stages.slice(0, 1), edges: [], name: "Remote workflow" });
+  const record = await store.draft(null, { ...input(), stages: [{ ...input().stages[0], envelope: emptyStageEnvelope() }], edges: [], name: "Remote workflow" });
   const draft = requiredValue(record.draft);
   const { version, unattended } = await store.confirmDraft(record.template.id, {
     expectedGraphHash: draft.graphHash, expectedDraftRevision: draft.revision,
   }, { who: "owner@example.com", origin: "tailnet-surface", proof }, unknownToolEffects);
-  expect(unattended).toEqual({ ok: false, code: "unattended-not-read-only" });
+  expect(unattended).toEqual({ ok: true });
   const attachProof = mintHostDecisionProof("tailnet-surface", { login: "owner@example.com", conversationId: "conversation", authority: auth });
   const attachment = await store.attachSchedule({
     templateId: version.templateId, version: version.version, graphHash: version.graphHash, scheduleId: "remote-schedule",

@@ -1,5 +1,7 @@
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import { requiredValue } from "../../__tests__/support/required-value.js";
 import { reviewerJudgeOutcomeForTest } from "../../__tests__/support/reviewer-judge.js";
 import { decidePermission, type PermissionDecisionRequest } from "../decision-pipeline.js";
@@ -9,14 +11,19 @@ import type { ToolEffectEvidence } from "../tool-effect-evidence.js";
 import { endUnattendedStage, onUnattendedDenied, registerUnattendedStage, type UnattendedStageEntry } from "../unattended-lane-registry.js";
 import { decideUnattended, type UnattendedDenyCode, UNATTENDED_DENY_MESSAGE } from "../unattended-lane.js";
 
-const workspaceRoot = resolve("stage-workspace");
+const root = realpathSync.native(mkdtempSync(resolve(tmpdir(), "ave-unattended-")));
+const workspaceRoot = resolve(root, "stage-workspace");
+const externalRoot = resolve(root, "external");
+mkdirSync(workspaceRoot);
+mkdirSync(externalRoot);
+afterAll(() => rmSync(root, { recursive: true, force: true }));
 const output = resolve(workspaceRoot, "output", "report.txt");
 const input = resolve(workspaceRoot, "input.txt");
-const external = resolve("external", "reference.txt");
+const external = resolve(externalRoot, "reference.txt");
 const entry: UnattendedStageEntry = {
   runKey: "run", stageId: "stage", workspaceRoot, isolation: { proven: true },
   envelope: {
-    tools: ["read_file", "write_file", "bash", "connect"], writePaths: ["output/**"], readRoots: [resolve("external")],
+    tools: ["read_file", "write_file", "bash", "connect"], writePaths: ["output/**"], readRoots: [externalRoot],
     network: [{ host: "example.com", port: 443 }], commands: ["render"],
     mcpReadOnlyTools: ["sources_read"], mcpGenerationTools: [{ name: "media_render", effect: "generate", dataSent: true }],
     pluginGenerationTools: [{ name: "assets_fetch", effect: "fetch", dataSent: false }],
@@ -26,14 +33,32 @@ const entry: UnattendedStageEntry = {
 const read: PermissionDecisionRequest = {
   mode: "allow", headless: false, unattended: entry,
   tool: { name: "read_file", kind: "read", source: "builtin" },
-  paths: [{ canonical: input, lexical: input, effect: "read" }],
+  paths: [{ canonical: input, lexical: input, runtimePath: input, effect: "read" }],
   unattendedEffect: "safe",
 };
 const write: PermissionDecisionRequest = {
   ...read, tool: { name: "write_file", kind: "file-write", source: "builtin" },
-  paths: [{ canonical: output, lexical: output, effect: "write" }],
+  paths: [{ canonical: output, lexical: output, runtimePath: output, effect: "write" }],
   fileWrite: { checkpointAvailable: true, insideProject: true },
 };
+
+it.runIf(process.platform === "win32")("accepts lexical case aliases only with a native target inside the declared root", () => {
+  const alias = workspaceRoot.toUpperCase();
+  const nativeRoot = realpathSync.native(workspaceRoot);
+  const nativeInput = resolve(nativeRoot, "input.txt");
+  const nativeOutput = resolve(nativeRoot, "output", "report.txt");
+  expect(alias).not.toBe(workspaceRoot);
+  expect(decideUnattended({ ...read, paths: [{
+    lexical: resolve(alias, "input.txt"), canonical: nativeInput.toLowerCase(), runtimePath: nativeInput, effect: "read",
+  }] }).outcome).toBe("allow");
+  expect(decideUnattended({ ...write, paths: [{
+    lexical: resolve(alias, "output", "report.txt"), canonical: nativeOutput.toLowerCase(), runtimePath: nativeOutput, effect: "write",
+  }] }).outcome).toBe("allow");
+  const outside = resolve(`${nativeRoot}-sibling`, "input.txt");
+  expect(decideUnattended({ ...read, paths: [{
+    lexical: resolve(alias, "input.txt"), canonical: outside.toLowerCase(), runtimePath: outside, effect: "read",
+  }] }).outcome).toBe("deny");
+});
 const shell: PermissionDecisionRequest = {
   ...read, tool: { name: "bash", kind: "shell", source: "builtin" },
   unattendedCommand: ["render report"], shell: { sandboxed: true, readOnlyProven: false, unproven: false, destructive: false },
@@ -52,7 +77,7 @@ describe("unattended permission decisions", () => {
     "isolation-unproven": { unattended: { ...entry, isolation: { proven: false } } },
     "rule-ask": { rules: { ask: "*" } },
     "exfiltration-guardrail": { exfiltration: { reason: "exfiltration" } },
-    "outside-envelope": { paths: [{ canonical: resolve("outside"), lexical: input, effect: "read" }] },
+    "outside-envelope": { paths: [{ canonical: resolve(root, "outside"), lexical: input, runtimePath: resolve(root, "outside"), effect: "read" }] },
     "reviewer-denied": { ...mcp, reviewer: { status: "success", level: "high" } },
   } satisfies Record<UnattendedDenyCode, Partial<PermissionDecisionRequest>>;
 
@@ -83,9 +108,9 @@ describe("unattended permission decisions", () => {
     { ...mcp, tool: { ...mcp.tool, name: "other" } },
     { ...mcp, tool: { ...mcp.tool, name: "other", source: "plugin" } },
     { ...read, unattended: { ...entry, envelope: { ...entry.envelope, readRoots: ["../external"] } },
-      paths: [{ lexical: external, canonical: external, effect: "read" }] },
+      paths: [{ lexical: external, canonical: external, runtimePath: external, effect: "read" }] },
     { ...write, fileWrite: { ...requiredValue(write.fileWrite), checkpointAvailable: false } },
-    { ...write, paths: [{ canonical: input, lexical: input, effect: "write" }] },
+    { ...write, paths: [{ canonical: input, lexical: input, runtimePath: input, effect: "write" }] },
     { ...shell, unattendedCommand: ["render report", "other"] },
     { ...network, unattendedNetwork: { ...requiredValue(network.unattendedNetwork), port: 80 } },
     { ...network, unattendedNetwork: { ...requiredValue(network.unattendedNetwork), sandboxed: false } },
@@ -95,7 +120,7 @@ describe("unattended permission decisions", () => {
 
   it("allows bounded reads, checkpointed writes, sandbox commands and sandbox connections", () => {
     expect(decidePermission(read).outcome).toBe("allow");
-    expect(decidePermission({ ...read, paths: [{ lexical: external, canonical: external, effect: "read" }] }).outcome).toBe("allow");
+    expect(decidePermission({ ...read, paths: [{ lexical: external, canonical: external, runtimePath: external, effect: "read" }] }).outcome).toBe("allow");
     expect(decidePermission(write)).toMatchObject({ outcome: "allow", requiresCodeCheckpoint: true });
     expect(decidePermission(shell).outcome).toBe("sandbox-auto");
     expect(decidePermission(network).outcome).toBe("allow");

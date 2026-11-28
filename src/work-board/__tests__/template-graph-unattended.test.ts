@@ -1,13 +1,34 @@
 import { expect, it } from "vitest";
 import { requiredValue } from "../../__tests__/support/required-value.js";
 import type { EnvelopeToolRef, StageEnvelope, TemplateGraph } from "../../shared/workflow-template-types.js";
-import { createToolEffectResolver } from "../../permissions/tool-effect-evidence.js";
+import { createToolEffectResolver, unattendedEnvelopeTool } from "../../permissions/tool-effect-evidence.js";
+import { mcpToolToTool } from "../../mcp/mcp-tool-adapter.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import { createWebFetchTool } from "../../tools/web-fetch.js";
 import { createWebSearchTool } from "../../tools/web-search.js";
 import { qualifyUnattended } from "../template-graph.js";
 
 const collections = ["tools", "mcpReadOnlyTools", "mcpGenerationTools", "pluginGenerationTools"] as const;
+
+it.each([
+  { visibility: undefined, exposed: true },
+  { visibility: ["model"] as const, exposed: true },
+  { visibility: ["app"] as const, exposed: false },
+])("keeps scheduled MCP model exposure independent of app visibility ($visibility)", ({ visibility, exposed }) => {
+  const registry = new ToolRegistry();
+  const reader = mcpToolToTool("sources", "sources_read", {
+    name: "read", description: "Read local fixture", inputSchema: { type: "object", properties: {} },
+    annotations: { readOnlyHint: true },
+    ...(visibility === undefined ? {} : { _meta: { ui: { visibility: [...visibility] } } }),
+  }, async () => ({ text: "fixture" }));
+  registry.register(reader);
+  const effects = createToolEffectResolver(registry);
+  const input = graph();
+  const envelope = requiredValue(input.stages[0].envelope);
+  for (const collection of collections) if (collection !== "mcpReadOnlyTools") envelope[collection] = [];
+  expect(qualifyUnattended(input, effects)).toEqual({ ok: true });
+  expect(unattendedEnvelopeTool(reader, envelope, effects)).toBe(exposed);
+});
 
 function graph(): TemplateGraph {
   const envelope: StageEnvelope = {
@@ -48,11 +69,12 @@ it.each(collections)("answers unknown for a null resolver with an entry in %s", 
   expect(qualifyUnattended(input, null)).toMatchObject({ ok: false, code: "tool-effect-unknown", tool: { collection } });
 });
 
-it("qualifies a version with an envelope on every stage and no envelope tools", () => {
+it("requires a resolver for an all-tools version even when it declares no tools", () => {
   const input = graph();
   const envelope = requiredValue(input.stages[0].envelope);
   for (const collection of collections) envelope[collection] = [];
-  expect(qualifyUnattended(input, null)).toEqual({ ok: true });
+  expect(qualifyUnattended(input, null)).toEqual({ ok: false, code: "unattended-not-read-only" });
+  expect(qualifyUnattended(input, { effectOf: () => "unknown" })).toEqual({ ok: true });
 });
 
 it.each(["web_fetch", "web_search"])("refuses to qualify %s without an unattended network route", name => {

@@ -2,15 +2,16 @@
 
 export interface GlobMatcherOptions {
   caseInsensitive?: boolean;
+  normalizeSeparators?: boolean;
 }
 
 export function globToRegExp(
   pattern: string,
   opts: GlobMatcherOptions = {},
 ): RegExp {
-  const normalized = normalizeGlobPath(pattern);
+  const normalized = opts.normalizeSeparators === false ? pattern : normalizeGlobPath(pattern);
   const flags = opts.caseInsensitive === true ? "i" : "";
-  return new RegExp(`^${globToRegExpSource(normalized)}$`, flags);
+  return new RegExp(`^${globToRegExpSource(normalized)}(?![\\s\\S])`, flags);
 }
 
 export function globMatch(
@@ -29,8 +30,8 @@ export function compileGlobMatcher(
   const caseInsensitive =
     opts.caseInsensitive ??
     (process.platform === "darwin" || process.platform === "win32");
-  const regex = globToRegExp(pattern, { caseInsensitive });
-  return (path) => regex.test(normalizeGlobPath(path));
+  const regex = globToRegExp(pattern, { ...opts, caseInsensitive });
+  return (path) => regex.test(opts.normalizeSeparators === false ? path : normalizeGlobPath(path));
 }
 
 // Reject literal names containing * or ? before storing glob grants: this grammar cannot escape them, so accepting them widens authority to siblings. Brackets and braces remain literal; backslashes normalize to separators.

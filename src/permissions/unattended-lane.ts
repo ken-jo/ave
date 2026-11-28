@@ -1,23 +1,13 @@
-import { isAbsolute, relative, sep } from "node:path";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 import { globMatch } from "../lib/glob-matcher.js";
+import { withLocalityDecision } from "../shared/local-path-io.js";
+import { relativeNativePath, tryNativeRealpath } from "../shared/shell-filesystem-path.js";
 import type { StageGenerationTool } from "../shared/workflow-template-types.js";
 import type { PermissionDecisionRequest, PermissionPipelineDecision } from "./decision-pipeline.js";
-import { caseFoldForMatch, foldCanonicalPathSeparators } from "./sensitive-paths.js";
 import type { UnattendedStageEntry } from "./unattended-lane-registry.js";
 
 export type UnattendedDenyCode = "outside-envelope" | "forbidden-unattended" | "isolation-unproven" | "rule-ask" | "exfiltration-guardrail" | "reviewer-denied";
 export const UNATTENDED_DENY_MESSAGE = "This call is outside what this scheduled run was confirmed to do; do not retry.";
-
-function relativeInside(root: string, target: string): string | undefined {
-  if (!isAbsolute(root) || !isAbsolute(target)) return undefined;
-  const child = relative(root, target);
-  if (isAbsolute(child) || child === ".." || child.startsWith(`..${sep}`)) return undefined;
-  return child.split(sep).join("/");
-}
-
-function canonicalEnvelopeRoot(root: string): string {
-  return caseFoldForMatch(foldCanonicalPathSeparators(root));
-}
 
 export function unattendedGenerationTool(request: PermissionDecisionRequest): StageGenerationTool | undefined {
   const envelope = request.unattended?.envelope;
@@ -26,10 +16,21 @@ export function unattendedGenerationTool(request: PermissionDecisionRequest): St
   return tools?.find(tool => tool.name === name);
 }
 
+function relativeLexicalPath(root: string, operand: string): string | undefined {
+  if (sep !== "\\") return relativeNativePath(root, operand);
+  // Windows accepts case aliases in the operand. The resolved target still needs exact native membership.
+  const child = relative(root, operand);
+  return isAbsolute(child) || child === ".." || child.startsWith(`..${sep}`) ? undefined : child;
+}
+
 function insideEnvelope(request: PermissionDecisionRequest, entry: UnattendedStageEntry): { inside: true } | { inside: false; why: string } {
   const { envelope, workspaceRoot } = entry;
   const { source, name, kind } = request.tool;
   const connection = request.unattendedNetwork;
+  if (entry.readOnly && (source !== "builtin" || kind !== "read" || connection !== undefined
+      || request.paths?.some(path => path.effect === "write"))) {
+    return { inside: false, why: "The stage permits only local reads." };
+  }
   if (connection !== undefined || source === "builtin" && kind === "network") {
     if (!connection?.sandboxed || !envelope.network.some(target =>
       target.host === connection.host && (target.port === undefined || target.port === connection.port))) {
@@ -52,15 +53,26 @@ function insideEnvelope(request: PermissionDecisionRequest, entry: UnattendedSta
   if (writes && source === "builtin" && !paths.some(path => path.effect === "write")) {
     return { inside: false, why: "Write has no verified target." };
   }
-  for (const path of paths) {
-    for (const [target, canonical] of [[path.lexical, false], [path.canonical, true]] as const) {
-      const matchRoot = canonical ? canonicalEnvelopeRoot : (root: string) => root;
-      const relativePath = relativeInside(matchRoot(workspaceRoot), target);
-      const covered = path.effect === "read"
-        ? relativePath !== undefined || envelope.readRoots.some(root => relativeInside(matchRoot(root), target) !== undefined)
-        : relativePath !== undefined && relativePath.length > 0 && envelope.writePaths.some(pattern => globMatch(relativePath, pattern));
-      if (!covered) return { inside: false, why: "Target is outside the envelope." };
-    }
+  if (paths.length > 0 && !withLocalityDecision(() => {
+    const roots = [workspaceRoot, ...envelope.readRoots].flatMap(root => {
+      const physical = isAbsolute(root) ? tryNativeRealpath(root) : undefined;
+      return physical === undefined ? [] : [{ lexical: resolve(root), physical, workspace: root === workspaceRoot }];
+    });
+    return paths.every(({ lexical, runtimePath, effect }) => {
+      if (!isAbsolute(lexical) || runtimePath === undefined) return false;
+      const operand = resolve(lexical);
+      if (effect === "read") {
+        return roots.some(root => relativeLexicalPath(root.lexical, operand) !== undefined)
+          && roots.some(root => relativeNativePath(root.physical, runtimePath) !== undefined);
+      }
+      const workspace = roots.find(root => root.workspace);
+      if (workspace === undefined) return false;
+      return [relativeLexicalPath(workspace.lexical, operand), relativeNativePath(workspace.physical, runtimePath)].every(child =>
+        child !== undefined && child !== "" && envelope.writePaths.some(pattern =>
+          globMatch(child.split(sep).join("/"), pattern, { caseInsensitive: false, normalizeSeparators: sep === "\\" })));
+    });
+  })) {
+    return { inside: false, why: "Target is outside the envelope." };
   }
   if (kind === "shell" && (!request.unattendedCommand?.length || !request.unattendedCommand.every(command =>
     envelope.commands.some(prefix => command === prefix || command.startsWith(`${prefix} `) || command.startsWith(`${prefix}\t`))))) {
@@ -75,7 +87,7 @@ function deny(code: UnattendedDenyCode): PermissionPipelineDecision {
 
 export function decideUnattended(request: PermissionDecisionRequest): PermissionPipelineDecision {
   if (request.floor) return deny("forbidden-unattended");
-  if (!request.unattended?.isolation.proven) return deny("isolation-unproven");
+  if (!request.unattended || (!request.unattended.readOnly && !request.unattended.isolation.proven)) return deny("isolation-unproven");
   if (request.rules?.ask !== undefined) return deny("rule-ask");
   if (request.exfiltration) return deny("exfiltration-guardrail");
   const shell = request.tool.kind === "shell";
