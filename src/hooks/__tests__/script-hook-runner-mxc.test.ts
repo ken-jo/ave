@@ -432,3 +432,43 @@ describe("macOS user hook under its admitted shell plan", () => {
     }
   });
 });
+
+// Linux with its holder route on: as on macOS, a user hook admitted under a container shell plan is a holder of its own,
+// whatever the extension setting, and never falls back to the wrap.
+describe("Linux user hook under its admitted shell plan", () => {
+  function linuxPlan(shellSubstrate: "asrt" | "mxc"): HostShellExecutionPlan {
+    return __issueHostShellExecutionPlanForTest(buildHostShellExecutionPlan({
+      platform: "linux", requestedSandbox: true, shellSubstrate,
+      activeCapability: { kind: "asrt", confidence: "verified", platform: "linux", reason: "confined shell fixture",
+        confines: { filesystem: true, process: true, network: true } },
+    }));
+  }
+  const linuxHook = (command: [string, ...string[]]): RunnableHook => ({ ...userHook(command), hookPath: command[0] });
+
+  beforeEach(() => {
+    setProcessPlatform("linux");
+    state.shell = { cmd: "/bin/sh", shellArgs: (script: string) => ["-c", script], windowsFlavor: undefined as unknown as string };
+  });
+  afterEach(() => {
+    state.shell = { cmd: "C:\\Program Files\\Git\\bin\\bash.exe", shellArgs: (script: string) => ["-c", script], windowsFlavor: "msys" };
+  });
+
+  it("is a holder of its own on a container plan with extension isolation off", async () => {
+    state.selected = false;
+    state.holderSpawn.mockResolvedValue(fakeHolder({ stdout: '{"action":"deny","reason":"linux"}' }).holder);
+    const result = await runOneHookScript(linuxHook([join(configDir, "pre.sh")]), PAYLOAD, admitUnder(linuxPlan("mxc")));
+    expect(result).toMatchObject({ decision: "deny", reason: "linux" });
+    expect(state.holderSpawn).toHaveBeenCalledTimes(1);
+    expect(state.holderSpawn.mock.calls[0]?.[0]).toMatchObject({ label: "hook:user", command: "/bin/sh", cwd: configDir,
+      allowWrite: [projectDir], egressOwner: { kind: "worker", role: "hook", pluginId: undefined } });
+    expect(state.legacySpawn).not.toHaveBeenCalled();
+  });
+
+  it("denies, never falls back to the wrap, when the Linux holder cannot start", async () => {
+    state.holderSpawn.mockRejectedValue(new Error("holder start refused"));
+    const result = await runOneHookScript(linuxHook(["/usr/bin/true"]), PAYLOAD, admitUnder(linuxPlan("mxc")));
+    expect(result).toMatchObject({ decision: "deny" });
+    expect(result.reason).toMatch(/^sandbox unavailable.*holder start refused/u);
+    expect(state.legacySpawn).not.toHaveBeenCalled();
+  });
+});
