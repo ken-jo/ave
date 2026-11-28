@@ -63,8 +63,8 @@ export function tableErrorKey(code: Exclude<PreviewDocumentError, "superseded">)
       return "documentEngine.previewUnavailable";
     case "engine-integrity-failed":
       return "documentEngine.previewIntegrity";
-    case "engine-confinement-unavailable":
-      return "documentEngine.previewConfinement";
+    case "engine-termination-unverified":
+      return "documentEngine.previewTerminationUnverified";
     case "engine-runtime-unavailable":
       return "documentEngine.previewRuntime";
     case "engine-format-unsupported-on-platform":

@@ -2207,7 +2207,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "documentEngine.busy": "다른 설정 작업이 아직 끝나지 않았습니다. 잠시 후 다시 시도하세요.",
   "documentEngine.previewUnavailable": "문서 엔진이 설정되지 않았습니다. LibreOffice를 설치하고 설정 → 채팅 → 문서 열기에서 설정한 뒤 새로고침하세요.",
   "documentEngine.previewIntegrity": "문서 엔진 확인에 실패했습니다. 설정에서 다시 설정하세요.",
-  "documentEngine.previewConfinement": "문서 엔진의 안전한 격리를 사용할 수 없어 문서를 변환하지 않았습니다.",
+  "documentEngine.previewTerminationUnverified": "문서 엔진이 종료되었는지 확인하지 못해 세션을 보류했습니다. 문서를 새로고침하면 새 세션을 시작합니다.",
   "documentEngine.previewRuntime": "필요한 문서 런타임을 사용할 수 없습니다. 앱 로그를 확인하고 다시 시도하세요.",
   "documentEngine.previewPlatformUnsupported": "macOS에서는 아직 HWP·HWPX 문서를 지원하지 않습니다. 다른 문서 형식은 계속 사용할 수 있습니다.",
   "documentEngine.previewFailed": "문서 엔진이 이 문서를 렌더링하지 못했습니다. 새로고침하여 다시 시도하세요.",

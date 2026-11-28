@@ -496,7 +496,7 @@ describe("private conversion process ownership", () => {
       child.emit("close", null, "SIGKILL");
       await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.processTreeKillMs);
       const verdict = await settlement;
-      expect(verdict).toMatchObject({ code: "engine-confinement-unavailable", message: "Document engine termination was not confirmed." });
+      expect(verdict).toMatchObject({ code: "engine-termination-unverified", message: "Document engine termination was not confirmed." });
       expect(group.kill).toHaveBeenCalledWith(-group.pid, 0);
       const launch = vi.mocked(spawnManaged).mock.calls.at(-1);
       if (!launch) throw new Error("Expected an acquired engine launch.");
@@ -524,7 +524,7 @@ describe("private conversion process ownership", () => {
       expect(verdict).toBeUndefined();
       await vi.advanceTimersByTimeAsync(1);
       await afterQueuedCallbacks();
-      expect(verdict).toMatchObject({ code: "engine-confinement-unavailable", message: "Document engine termination was not confirmed." });
+      expect(verdict).toMatchObject({ code: "engine-termination-unverified", message: "Document engine termination was not confirmed." });
       expect(group.kill).toHaveBeenCalledWith(-group.pid, "SIGKILL");
       const holder = residents()[0]?.holder;
       if (!holder) throw new Error("Expected the resident holder file.");

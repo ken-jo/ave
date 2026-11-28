@@ -2205,7 +2205,7 @@ export const en = {
   "documentEngine.busy": "Another setup operation is still finishing. Try again shortly.",
   "documentEngine.previewUnavailable": "The document engine is not set up. Install LibreOffice, set it up in Settings → Chat → Document opening, then reload.",
   "documentEngine.previewIntegrity": "The document engine failed verification. Set it up again from Settings.",
-  "documentEngine.previewConfinement": "Secure isolation for the document engine is unavailable. The document was not converted.",
+  "documentEngine.previewTerminationUnverified": "The document engine could not be confirmed stopped, so its session was held. Reload the document to start a new one.",
   "documentEngine.previewRuntime": "A required document runtime is unavailable. Check the application log before retrying.",
   "documentEngine.previewPlatformUnsupported": "HWP and HWPX documents are not supported on macOS yet. Other document formats keep working.",
   "documentEngine.previewFailed": "The document engine could not render this document. Reload to retry.",

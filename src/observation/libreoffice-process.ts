@@ -237,7 +237,7 @@ interface EngineSession {
 function failure(message: string): TableDocumentError { return new TableDocumentError("engine-failed", message); }
 
 function terminationUnconfirmed(): TableDocumentError {
-  return new TableDocumentError("engine-confinement-unavailable", "Document engine termination was not confirmed.");
+  return new TableDocumentError("engine-termination-unverified", "Document engine termination was not confirmed.");
 }
 
 /** A failed importer process is reported as an unavailable importer runtime, retaining the process diagnostic. */
