@@ -496,7 +496,7 @@ describe("macOS plugin child admission", () => {
       });
       // The runtime's bundle Contents, the entry's folder, the node_modules its external packages load from, and the
       // package.json Node reads for its scope; the checkout itself stays ungranted.
-      expect((spawn.mock.calls[0]![0] as MxcConfinedChildSpec).allowRead).toEqual(["/srv/kit",
+      expect((spawn.mock.calls[0]?.[0] as MxcConfinedChildSpec | undefined)?.allowRead).toEqual(["/srv/kit",
         `${checkout}/node_modules/electron/dist/Electron.app/Contents`, join(checkout, ".cache", "child"), join(checkout, "node_modules"), join(checkout, "package.json")]);
       child.link.terminate("done");
       await child.waitForExit();

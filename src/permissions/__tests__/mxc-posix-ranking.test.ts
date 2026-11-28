@@ -73,7 +73,7 @@ describe("POSIX container filesystem ranking", () => {
     const bundle = "/private/tmp/w1/node_modules/electron/dist/Electron.app";
     const frameworks = `${bundle}/Contents/Frameworks/Electron Framework.framework/Electron Framework`;
     const rank = (runtime: string, ...floors: PolicyFloorRow[]) => rankPosixContainerRows(
-      model([deny("/private/tmp/home/plugins"), ...floors], read("/"), read(runtime), read("/private/tmp/home/plugins/Kit")), "seatbelt", crowded);
+      model([deny("/private/tmp/ave-state/plugins"), ...floors], read("/"), read(runtime), read("/private/tmp/ave-state/plugins/Kit")), "seatbelt", crowded);
     const readable = (rows: readonly string[]) => rows.some(row => frameworks.startsWith(`${row}/`));
     // Control: the executable's folder alone leaves the frameworks beside it to the carve, which withheld them.
     const macos = rank(posixExecutableReadRoot(`${bundle}/Contents/MacOS/Electron`, "linux"));
