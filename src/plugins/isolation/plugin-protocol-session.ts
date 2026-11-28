@@ -1,4 +1,3 @@
-import type { AuditLogger } from "../../audit/audit-logger.js";
 // Own construction, snapshots and exactly-once session release between a child link and lifecycle callers.
 // Stop is nondestructive; teardown terminates only a still-live child.
 import { createLogger } from "../../lib/logger.js";
@@ -47,7 +46,6 @@ export interface PluginProtocolSessionSpec {
   /** The bound table is the whole authority; derive advertised methods from it without defaults. */
   readonly table: BoundHostApiDispatchTable;
   readonly auditLog?: (level: "info" | "warn" | "error", message: string, data?: unknown) => void;
-  readonly effectAudit?: Pick<AuditLogger, "logShadow">;
   /** Observe each undeclared params field after it is logged; it cannot alter the dispatcher's result. */
   readonly onUnknownField?: (report: UnknownFieldReport & { readonly pluginId: string }) => void;
   /** Run owner cleanup once after either teardown or natural child exit. */
@@ -243,7 +241,6 @@ export async function openPluginProtocolSession(
   let live = true;
   const transport = new PluginChildTransport({
     pluginId,
-    effectAudit: spec.effectAudit,
     // Wire liveness mirrors the authoritative HostApi guard; it does not create a second authority.
     isActive: () => live,
     // Report undeclared params once per method and field to reveal protocol skew.

@@ -30,7 +30,6 @@ export function createSandboxBootHarness(): SandboxBootHarness {
           getSecret: vi.fn(() => null),
           onChanged: vi.fn(() => () => {}),
         },
-        bootAuditLogger: { logSandboxGate, flush },
         approvalGate: { requestAndWait: vi.fn(async () => ({ choice: "deny-once" })) },
         buildWorkerEgressAllowlists: vi.fn(async () => ({ byExtension: new Map(), modelEndpointHosts: [] })),
       }) as unknown as BootContext,

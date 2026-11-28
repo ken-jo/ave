@@ -1,5 +1,5 @@
 import { join, win32 } from "node:path";
-import { expect, it, vi } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { setupCommittedAveHome } from "../../__tests__/support/committed-ave-home.js";
 import { deferred } from "../../__tests__/support/deferred.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
@@ -9,6 +9,7 @@ import * as allowedDirectories from "../../permissions/allowed-directories.js";
 import { ApprovalGate } from "../../permissions/approval-gate.js";
 import { foldCanonicalPathSeparators } from "../../permissions/sensitive-paths.js";
 import type { TailnetRequestedOutputDecision, TailnetWorkDecisionRequest } from "../../shared/tailnet-work-decisions.js";
+import { watchPermissionEvents } from "../../__tests__/support/permission-events.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import { autoStageOf, stageOf } from "../../work-board/workflow/__tests__/stage-fixtures.js";
 import { stageRunHarness } from "../../work-board/workflow/__tests__/stage-run-harness.js";
@@ -20,6 +21,9 @@ import { itemDigestOf, planHashOf } from "../work-board-store.js";
 import type { RemoteWorkDecisionEvidence } from "../workflow-template-decision.js";
 
 setupCommittedAveHome("tailnet-work-decisions-");
+
+const logCaptures: ReturnType<typeof watchPermissionEvents>[] = [];
+afterEach(() => { for (const capture of logCaptures.splice(0).reverse()) capture.mockRestore(); });
 
 const base = { id: "0f3b6ea5-4de9-444e-9aee-8a1691e2e005", scope: "7e63f524-3125-445f-a4c0-726cf9341848" };
 const login = "owner@example.com";
@@ -38,17 +42,18 @@ async function fixture(options: Parameters<typeof stageRunHarness>[0] = {}, appr
   const h = await stageRunHarness({ observeRunWork: true, ...options });
   const routines = new RoutinesStore(join(h.dir, "routines.json"));
   routines.bindTemplateAttachments(h.templates);
-  const log = vi.fn();
+  const log = vi.fn<(event: Record<string, unknown>) => void>();
+  logCaptures.push(watchPermissionEvents(event => { if (event.event === "remote_work_decision") log(event); }));
   const settings = DEFAULT_SETTINGS;
   const runtime = createTailnetWorkDecisions({
     workBoardStore: h.board, workBoardEngine: h.engine, workflowTemplateStore: h.templates, routinesStore: routines,
-    auditLogger: { log }, settingsService: { get: key => settings[key] }, toolRegistry: new ToolRegistry(), approvalGate,
+    settingsService: { get: key => settings[key] }, toolRegistry: new ToolRegistry(), approvalGate,
   });
   if (!runtime) throw new Error("Work decision runtime unavailable");
   return { h, routines, log, runtime, decide: (request: TailnetWorkDecisionRequest) => runtime.decide(request, evidence) };
 }
 
-it("decides the current stored plan and audits the verified login without the note", async () => {
+it("decides the current stored plan and logs the remote decision without private data", async () => {
   const { h, decide, log } = await fixture();
   await h.runThenEnd(async () => {
     const created = await h.board.create({ title: "Review work" });
@@ -62,10 +67,11 @@ it("decides the current stored plan and audits the verified login without the no
     expect(log).not.toHaveBeenCalled();
     await expect(decide({ ...request, input: { ...request.input, planHash: planHashOf(plan) } })).resolves.toEqual({ ok: true, kind: "plan", status: "rejected" });
     expect(log).toHaveBeenCalledOnce();
-    const data = log.mock.calls[0][0].output;
-    expect(data).not.toContain(privateNote);
-    expect(data).not.toContain(plan);
-    expect(JSON.parse(data)).toMatchObject({ origin: "tailnet-surface", login, runId });
+    const data = log.mock.calls[0][0];
+    expect(data).toMatchObject({ origin: "tailnet-surface", runId, decision: "rejected" });
+    expect(JSON.stringify(data)).not.toContain(privateNote);
+    expect(JSON.stringify(data)).not.toContain(plan);
+    expect(JSON.stringify(data)).not.toContain(login);
     expect(h.children).toHaveLength(0);
   });
 });
@@ -94,7 +100,7 @@ it.each(["stage", "join"] as const)("binds a remote %s decision to the current w
     }
     expect(log).toHaveBeenCalledOnce();
     expect(JSON.stringify(log.mock.calls)).not.toContain(privateNote);
-    expect(JSON.parse(log.mock.calls[0][0].output)).toMatchObject({ origin: "tailnet-surface", login, runId: binding.input.runId, decision: kind === "join" ? "reject" : "rejected" });
+    expect(log.mock.calls[0][0]).toMatchObject({ origin: "tailnet-surface", runId: binding.input.runId, decision: kind === "join" ? "reject" : "rejected" });
   });
 });
 
@@ -121,7 +127,7 @@ it("rejects a stale template revision and starts only the exact confirmed remote
     expect(child.input).not.toHaveProperty("remoteControllerAuthority");
     expect(log).toHaveBeenCalledTimes(2);
     const { confirmation } = await h.templates.resolveVersion(confirmed.pin);
-    expect(JSON.parse(log.mock.calls[0][0].output)).toMatchObject({ kind: "template-confirmation", auditId: confirmation.auditId });
+    expect(log.mock.calls[0][0]).toMatchObject({ kind: "template-confirmation", auditId: confirmation.auditId });
   });
 });
 
@@ -171,7 +177,7 @@ it("attaches a schedule with the exact pin and removes a routine created for a r
     const attachment = await h.templates.getAttachment(result.attachmentId);
     expect(attachment).toMatchObject({ ...pin, who: login, origin: "tailnet-surface", scheduleId: result.scheduleId, auditId: expect.any(String) });
     expect(log).toHaveBeenCalledOnce();
-    expect(JSON.parse(log.mock.calls[0][0].output)).toMatchObject({ kind: "schedule-attachment", auditId: attachment?.auditId });
+    expect(log.mock.calls[0][0]).toMatchObject({ kind: "schedule-attachment", auditId: attachment?.auditId });
   });
 });
 

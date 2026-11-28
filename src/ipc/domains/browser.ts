@@ -75,7 +75,6 @@ function bindWhenReady(sender: WebContents, windowId: number, request: BrowserTa
 }
 
 export function registerBrowserHandlers(deps: IpcDeps): void {
-  const { auditLogger } = deps;
   if (!cleanupRegistered) {
     registerShutdownHook("browser-workspace", disposeBrowserWorkspaceService);
     registerShutdownHook("browser-native-surfaces", () => nativeSurfaces?.dispose());
@@ -106,7 +105,7 @@ export function registerBrowserHandlers(deps: IpcDeps): void {
   ipcMain.on(CHANNELS.browser.nativeInput, (event, payload: unknown) => {
     const owner = mainWindowForContents(event.sender);
     if (!validateHostRendererSender(event) || !owner || !event.senderFrame || event.senderFrame !== event.sender.mainFrame) {
-      auditUnauthorized(auditLogger, CHANNELS.browser.nativeInput, event);
+      auditUnauthorized(CHANNELS.browser.nativeInput);
       return;
     }
     const input = parseBrowserNativeInput(payload);
@@ -115,7 +114,7 @@ export function registerBrowserHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.browser.nativeSurface, (event, payload: unknown): Promise<BrowserNativeSurfaceResult> | BrowserNativeSurfaceResult => {
     if (!validateHostRendererSender(event)) {
-      auditUnauthorized(auditLogger, CHANNELS.browser.nativeSurface, event);
+      auditUnauthorized(CHANNELS.browser.nativeSurface);
       return { ok: false, error: "unauthorized-frame" };
     }
     const owner = mainWindowForContents(event.sender);
@@ -161,7 +160,7 @@ export function registerBrowserHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.browser.bindTab, (e, payload: unknown): BrowserTabBindResult | Promise<BrowserTabBindResult> => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.browser.bindTab, e);
+      auditUnauthorized(CHANNELS.browser.bindTab);
       return { ok: false, error: "unauthorized-frame" };
     }
     const win = mainWindowForContents(e.sender);
@@ -189,7 +188,7 @@ export function registerBrowserHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.browser.completeFocus, (e, payload: unknown): { ok: boolean } => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.browser.completeFocus, e);
+      auditUnauthorized(CHANNELS.browser.completeFocus);
       return { ok: false };
     }
     const win = mainWindowForContents(e.sender);
@@ -200,7 +199,7 @@ export function registerBrowserHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.browser.refuseTabOp, (e, payload: unknown): { ok: boolean } => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.browser.refuseTabOp, e);
+      auditUnauthorized(CHANNELS.browser.refuseTabOp);
       return { ok: false };
     }
     const win = mainWindowForContents(e.sender);
@@ -211,7 +210,7 @@ export function registerBrowserHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.browser.stop, (e, payload: unknown) => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.browser.stop, e);
+      auditUnauthorized(CHANNELS.browser.stop);
       return { ok: false, error: "unauthorized-frame" };
     }
     const win = mainWindowForContents(e.sender);
@@ -222,7 +221,7 @@ export function registerBrowserHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.browser.pause, (e, payload: unknown) => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.browser.pause, e);
+      auditUnauthorized(CHANNELS.browser.pause);
       return { ok: false, error: "unauthorized-frame" };
     }
     const win = mainWindowForContents(e.sender);
@@ -233,7 +232,7 @@ export function registerBrowserHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.browser.resume, (e, payload: unknown) => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.browser.resume, e);
+      auditUnauthorized(CHANNELS.browser.resume);
       return { ok: false, error: "unauthorized-frame" };
     }
     const win = mainWindowForContents(e.sender);
@@ -244,7 +243,7 @@ export function registerBrowserHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.browser.getState, (e, payload: unknown) => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.browser.getState, e);
+      auditUnauthorized(CHANNELS.browser.getState);
       return { ok: false, error: "unauthorized-frame" };
     }
     const win = mainWindowForContents(e.sender);
@@ -254,7 +253,7 @@ export function registerBrowserHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.browser.getSessionBindings, (e, payload: unknown) => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.browser.getSessionBindings, e);
+      auditUnauthorized(CHANNELS.browser.getSessionBindings);
       return { ok: false, error: "unauthorized-frame" };
     }
     const win = mainWindowForContents(e.sender);
@@ -264,7 +263,7 @@ export function registerBrowserHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.surface.setActive, (e, payload: unknown) => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.surface.setActive, e);
+      auditUnauthorized(CHANNELS.surface.setActive);
       return { ok: false, error: "unauthorized-frame" };
     }
     const win = mainWindowForContents(e.sender);

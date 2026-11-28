@@ -2,7 +2,6 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { deferred } from "../../__tests__/support/deferred.js";
 import { makeMockWebContents } from "../../__tests__/test-helpers.js";
-import { AuditLogger } from "../../audit/audit-logger.js";
 import { ApprovalGate, IPC_APPROVAL_REQUEST, type ApprovalRequest } from "../../permissions/approval-gate.js";
 import { NO_APPROVER_MESSAGE } from "../../permissions/decision-pipeline.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
@@ -14,12 +13,10 @@ import { ToolRegistry } from "../registry.js";
 
 const resources = new PermissionTestResources();
 const gates: ApprovalGate[] = [];
-const audits: AuditLogger[] = [];
 
 afterEach(async () => {
   for (const gate of gates.splice(0)) gate.disposeAll();
   vi.useRealTimers();
-  for (const audit of audits.splice(0)) await audit.close();
   await resources.cleanup();
 });
 
@@ -41,9 +38,7 @@ async function fixture() {
   });
   const gate = new ApprovalGate(surface as never);
   gates.push(gate);
-  const audit = new AuditLogger(join(root, "audit"));
-  audits.push(audit);
-  const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, undefined, audit);
+  const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, undefined);
   const run = (headless = false) => executor.executeAll([
     { id: "owner-away-action", name: "network_probe", input: {} },
   ], {

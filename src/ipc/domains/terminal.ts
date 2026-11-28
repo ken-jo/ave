@@ -17,7 +17,6 @@ import { terminalFileEvidence } from "../../main/terminal/changed-file-evidence.
 const log = createLogger("terminal-ipc");
 
 export function registerTerminalHandlers(deps: IpcDeps): void {
-  const { auditLogger } = deps;
   setManualShellPreference(() => deps.settingsService.get("appearance").terminal.shell);
   // Host tabs' kept output is boot's: it installs the store with the run's sweep of closed tabs' output queued first
   // (boot/steps/terminal-scrollback-setup.ts). Registering the handlers reads no settings and touches no disk.
@@ -34,7 +33,7 @@ export function registerTerminalHandlers(deps: IpcDeps): void {
   };
   const authorized = (event: IpcMainInvokeEvent, channel: string): boolean => {
     if (validateHostRendererSender(event)) return true;
-    auditUnauthorized(auditLogger, channel, event);
+    auditUnauthorized(channel);
     return false;
   };
 
@@ -53,7 +52,7 @@ export function registerTerminalHandlers(deps: IpcDeps): void {
     const owner = (deps.getAppWindows?.() ?? [deps.getMainWindow()]).find((window) =>
       window && !window.isDestroyed() && window.id === ownerWindowId && window.webContents === event.sender);
     if (!owner || event.sender.isDestroyed() || event.senderFrame !== event.sender.mainFrame) {
-      auditUnauthorized(auditLogger, CHANNELS.terminal.spawn, event);
+      auditUnauthorized(CHANNELS.terminal.spawn);
       return { ok: false, reason: "unauthorized-frame", message: "sender is not an app window main frame" };
     }
     if (!terminalOwnedBy(payload.tabId, ownerWindowId)) return { ok: false, reason: "not-owner", message: "terminal belongs to another window" };
@@ -111,7 +110,7 @@ export function registerTerminalHandlers(deps: IpcDeps): void {
   ipcMain.handle(CHANNELS.terminal.preview, async (event, payload) => {
     if (!authorized(event, CHANNELS.terminal.preview)) return { ok: false, error: UNAUTHORIZED_FRAME.error };
     if (event.sender.isDestroyed() || event.senderFrame !== event.sender.mainFrame) {
-      auditUnauthorized(auditLogger, CHANNELS.terminal.preview, event);
+      auditUnauthorized(CHANNELS.terminal.preview);
       return { ok: false, error: UNAUTHORIZED_FRAME.error };
     }
     if (!payload || typeof payload.tabId !== "string" || !payload.tabId || Object.keys(payload).some((key) => key !== "tabId")) return { ok: false, error: "invalid-params" };
@@ -147,7 +146,7 @@ export function registerTerminalHandlers(deps: IpcDeps): void {
         && (deps.getAppWindows?.() ?? [deps.getMainWindow()]).some(owner => owner === window && owner.webContents === event.sender);
     };
     if (!liveOwner()) {
-      auditUnauthorized(auditLogger, CHANNELS.terminal.fileReviews, event);
+      auditUnauthorized(CHANNELS.terminal.fileReviews);
       return { ok: false, error: UNAUTHORIZED_FRAME.error };
     }
     if (!isTerminalSessionRef(payload) || payload.lane !== "manual") return { ok: false, error: "invalid-params" };

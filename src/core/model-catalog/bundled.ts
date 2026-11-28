@@ -8,9 +8,13 @@ import { verifyModelCatalogDocument } from "./document.js";
 
 const log = createLogger("model-catalog");
 
-async function loadBundledModelCatalog(): Promise<ModelCatalogDocument> {
+let bundledModelCatalog: ModelCatalogDocument | undefined;
+
+export async function loadBundledModelCatalog(): Promise<ModelCatalogDocument> {
+  if (bundledModelCatalog) return bundledModelCatalog;
   const { default: snapshot } = await import("./bundled-snapshot.json", { with: { type: "json" } });
-  return verifyModelCatalogDocument(snapshot);
+  bundledModelCatalog ??= verifyModelCatalogDocument(snapshot);
+  return bundledModelCatalog;
 }
 
 type ModelCatalogOrigin = "pinned" | "cache" | "bundled";

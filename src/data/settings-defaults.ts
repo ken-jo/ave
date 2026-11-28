@@ -92,11 +92,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
     enabled: false,
     crashReportingEnabled: false,
   },
-  audit: {
-    auditRotationMaxBytes: 10 * 1024 * 1024, // 10 MB
-    auditRetentionDays: 30,
-  },
-  // Owner decision 2026-10-20: the sandbox egress proxy follows the environment and the OS proxy settings unless Settings says otherwise.
   upstreamProxy: { ...DEFAULT_UPSTREAM_PROXY },
   diagnostics: {
     // Raw crash-dump binaries excluded by default; metadata-only in the bundle.

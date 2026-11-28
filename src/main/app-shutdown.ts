@@ -1,10 +1,9 @@
-import { beginToolInvocationAuditShutdown, drainToolInvocationAuditForExit, pendingToolInvocationCount, sealToolInvocations, unsettledTerminalTools } from "../tools/invocation-ledger.js";
+import { beginToolInvocationShutdown, drainToolInvocationsForExit, pendingToolInvocationCount, sealToolInvocations, unsettledTerminalTools } from "../tools/invocation-ledger.js";
 import type { BootHost } from "../boot/host-runtime.js";
 import { browserTabRegistry } from "./browser/browser-tab-registry.js";
 // Ordered teardown runs under a hard deadline so a wedged subsystem cannot hang app.quit(). Unordered cleanup belongs in registerShutdownHook instead of
 // separate before-quit listeners.
-import { createLogger, closeFileLogSink } from "../lib/logger.js";
-import { logger as rootPinoLogger } from "../lib/logger.js";
+import { createLogger, closeFileLogSink, flushLogDestinations } from "../lib/logger.js";
 import { runShutdownRoutines } from "./shutdown-routines.js";
 import { stopLocalApiServer } from "./local-api-server.js";
 import { stopTailnetObserverServer } from "./tailnet-surface-server.js";
@@ -148,30 +147,6 @@ export function createAppBeforeQuitHandler(options: {
   };
 }
 
-// Flush the final timeout diagnostic before hard exit, with its own short deadline so logging cannot defeat shutdown.
-async function flushLogger(): Promise<void> {
-  await new Promise<void>((resolve) => {
-    let settled = false;
-    const finish = () => {
-      if (settled) return;
-      settled = true;
-      resolve();
-    };
-    // Hard cap so a stuck transport can't defeat the timeout itself.
-    const cap = setTimeout(finish, 500);
-    cap.unref?.();
-    try {
-      rootPinoLogger.flush(() => {
-        clearTimeout(cap);
-        finish();
-      });
-    } catch {
-      clearTimeout(cap);
-      finish();
-    }
-  });
-}
-
 // Reset the OS sandbox runtime after every confined child is down and before the host closes: on Windows its reset spawns the private srt-win copy
 // to revoke the session's ACEs, and that copy's exit handler removes it only once the reset has finished.
 async function releaseOsSandboxForExit(): Promise<void> {
@@ -249,26 +224,26 @@ async function finishIncompleteBootShutdown(result: { status: "completed" | "fai
     await releaseOsSandboxAfterIncompleteShutdown(reason);
     log.error({ status: result.status }, "incomplete host bootstrap cleanup did not complete");
   }
-  await flushLogger();
+  await flushLogDestinations();
   closeFileLogSink();
   setAppShutdownCompleted(true);
   return result.status;
 }
 
-const FORCED_AUDIT_COMMIT_RESERVE_MS = 2_000;
+const FORCED_INVOCATION_COMMIT_RESERVE_MS = 2_000;
 
 export async function runAppShutdownCleanup(options: {
   reason: "before-quit" | "app-update-install";
   exitOnTimeout: boolean;
   resourceStartup?: { settled: Promise<void>; cancel(): void };
-  auditCommitReserveMs?: number;
+  invocationCommitReserveMs?: number;
 }): Promise<AppShutdownCleanupOutcome> {
   let svc = getServices();
   if ((!svc && !options.resourceStartup) || isAppShutdownCompleted()) return "skipped";
   if (appShutdownCleanupPromise) return appShutdownCleanupPromise;
 
   setAppShutdownStarted(true);
-  beginToolInvocationAuditShutdown();
+  beginToolInvocationShutdown();
   sealMxcHolderLifetimeAdmission(options.reason);
   sealManagedChildProcessAdmission(options.reason);
   const cleanupTimeoutMs = resolveShutdownCleanupTimeoutMs(
@@ -408,11 +383,9 @@ export async function runAppShutdownCleanup(options: {
     if (result.status !== "completed") heldStop.abort();
     if (!svc) return finishIncompleteBootShutdown(result);
 
-    const auditLogger = svc.auditLogger;
     const cardGates = [svc.approvalGate, svc.askUserQuestionGate];
-    const closeAuditAfterForceKill = async (): Promise<void> => {
-      // The graceful deadline also bounds audit draining. Claimed queued tools start inside the seal and queue their
-      // host-shutdown rows before the close below, which drains them; dropping the claims would lose those rows.
+    const drainAfterForceKill = async (): Promise<void> => {
+      // Start queued tool claims at the seal so the host can settle them.
       try { sealToolInvocations(); } catch (error) {
         log.warn("shutdown: tool invocation seal failed: %s", errorMessage(error));
       }
@@ -422,14 +395,12 @@ export async function runAppShutdownCleanup(options: {
           log.warn("shutdown: parked card cancel failed: %s", errorMessage(error));
         }
       }
-      // Executors still parked cannot resume: the host enqueues their terminal rows, the sink closes after every enqueued
-      // append, and a commit the reserve cannot cover is logged as its own audit failure before exit.
-      const outcome = await drainToolInvocationAuditForExit(
-        () => auditLogger.close(),
-        options.auditCommitReserveMs ?? FORCED_AUDIT_COMMIT_RESERVE_MS,
+      // Claim terminal outcomes for executors that are still parked.
+      const outcome = await drainToolInvocationsForExit(
+        options.invocationCommitReserveMs ?? FORCED_INVOCATION_COMMIT_RESERVE_MS,
       );
       if (outcome !== "committed") {
-        log.error({ outcome, ...unsettledTerminalTools() }, "permission audit terminal rows did not commit before exit");
+        log.error({ outcome, ...unsettledTerminalTools() }, "permission terminal rows did not settle before exit");
       }
     };
 
@@ -437,7 +408,7 @@ export async function runAppShutdownCleanup(options: {
       const pendingToolInvocations = pendingToolInvocationCount();
       // Force-kill BEFORE the log line so killedChildCount reflects what actually happened, not an optimistic pre-kill count.
       const killedChildCount = forceKillManagedChildProcesses(`${options.reason} cleanup timeout`);
-      await closeAuditAfterForceKill();
+      await drainAfterForceKill();
       await releaseOsSandboxAfterIncompleteShutdown(`${options.reason} cleanup timeout`);
       await shutdownHost?.close();
       log.error({
@@ -447,7 +418,7 @@ export async function runAppShutdownCleanup(options: {
         reason: options.reason,
       }, "shutdown cleanup timed out");
       // Flush the logger so the diagnostic above (and any preceding warn about which subsystem hung) makes it to disk before the process leaves.
-      await flushLogger();
+      await flushLogDestinations();
       // Close the file log sink last so no shutdown or timeout diagnostic is lost.
       closeFileLogSink();
       setAppShutdownCompleted(true);
@@ -463,7 +434,7 @@ export async function runAppShutdownCleanup(options: {
       // A failed lifecycle stage may have prevented a runtime-owned child from acknowledging its graceful stop. The normal stop ran in the cleanup finally
       // block; this is only the last-resort descendant-safe backstop.
       const killedChildCount = forceKillManagedChildProcesses(`${options.reason} cleanup failed`);
-      await closeAuditAfterForceKill();
+      await drainAfterForceKill();
       await releaseOsSandboxAfterIncompleteShutdown(`${options.reason} cleanup failed`);
       await shutdownHost?.close();
       log.error(
@@ -472,7 +443,7 @@ export async function runAppShutdownCleanup(options: {
         options.reason,
         errorMessage(result.error),
       );
-      await flushLogger();
+      await flushLogDestinations();
       // LAST step (failed path): close the file sink after the failure diagnostic has been flushed. See the timed-out branch above.
       closeFileLogSink();
       setAppShutdownCompleted(true);
@@ -481,7 +452,7 @@ export async function runAppShutdownCleanup(options: {
 
     await shutdownHost?.close();
     // LAST step (happy path): flush any remaining buffered logs, then close the production log file sink after every shutdown step has logged.
-    await flushLogger();
+    await flushLogDestinations();
     closeFileLogSink();
     setAppShutdownCompleted(true);
     return "completed";

@@ -1,3 +1,4 @@
+import { collectPermissionEvents, watchPermissionEvents } from "../../../__tests__/support/permission-events.js";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { localFs } from "../../../shared/local-path-io.js";
 import { configureHostResources } from "../../../main/host-resources.js";
@@ -62,10 +63,10 @@ import { registerPreviewHandlers, type PreviewReadFileResult } from "../preview.
 import { registerAttachHandlers } from "../attach.js";
 import { CHANNELS } from "../../../contract/app-contract.js";
 
-const auditLog = vi.fn();
+
 const appWindows: Array<{ isDestroyed: () => boolean; webContents: object }> = [];
 const fixtureSenders = new Set<EventEmitter>();
-const deps = { auditLogger: { log: auditLog }, getAppWindows: () => appWindows, getMainWindow: () => null } as never;
+const deps = { getAppWindows: () => appWindows, getMainWindow: () => null } as never;
 const OK_FRAME = "file:///app/index.html";
 const EVIL_FRAME = "https://evil.example.com/x";
 const dirLinkType = process.platform === "win32" ? "junction" : "dir";
@@ -129,7 +130,6 @@ beforeEach(() => {
   messageBox.mockReset();
   openPath.mockClear();
   additionalDirectories.value = [root];
-  auditLog.mockClear();
 });
 
 afterEach(() => {
@@ -386,11 +386,16 @@ describe("preview:read-document handler", () => {
     expect(res.document.sheet).toMatchObject({ index: 1, name: "Notes", rows: [["note"]] });
   });
 
-  it("audits a successful read with a redacted path", async () => {
-    await readDocument(OK_FRAME, join(root, "data", "people.csv"));
-    expect(auditLog).toHaveBeenCalledWith(expect.objectContaining({
-      input: expect.stringContaining(CHANNELS.preview.readDocument),
-    }));
+  it("logs a successful preview read without the file path", async () => {
+    const capture = collectPermissionEvents();
+    try {
+      await expect(readDocument(OK_FRAME, join(root, "data", "people.csv"))).resolves.toMatchObject({ ok: true });
+      expect(capture.events.filter((entry) => entry.event === "preview_read_allowed")).toEqual([
+        { event: "preview_read_allowed", sessionId: "preview-read", channel: CHANNELS.preview.readDocument },
+      ]);
+    } finally {
+      capture.restore();
+    }
   });
 
   it("rejects a non-host frame", async () => {
@@ -485,7 +490,9 @@ describe("read-only observation sender boundary", () => {
           return "\\Device\\HarddiskVolume1";
         });
         let reads = 0;
-        auditLog.mockImplementationOnce(() => {
+        const previewLogged = watchPermissionEvents((entry) => {
+          if (entry.event !== "preview_read_allowed") return;
+          previewLogged.mockRestore();
           setWindowsDriveQueryForTest(query);
           vi.spyOn(additionalDirectories, "value", "get").mockImplementation(() =>
             ++reads >= (kind === "text" ? 2 : 3) ? [root, `${drive}\\example`] : [root]);

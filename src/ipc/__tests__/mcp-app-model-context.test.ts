@@ -36,7 +36,6 @@ let mcpAppModelContext: McpAppModelContextStore;
 
 function makeDeps() {
   return {
-    auditLogger: { log: vi.fn() },
     getMainWindow: () => null,
     mcpAppModelContext,
     conversationLoop: { getSessionId: () => ACTIVE_SESSION, ...loopSpies },

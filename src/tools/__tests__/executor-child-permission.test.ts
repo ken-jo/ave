@@ -3,7 +3,6 @@ import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AuditLogger } from "../../audit/audit-logger.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { makeMockWebContents } from "../../__tests__/test-helpers.js";
 import { ApprovalGate, isHostApprovalRejectedDecision, IPC_APPROVAL_REQUEST, type ApprovalChoice, type ApprovalDecision, type ApprovalRequest } from "../../permissions/approval-gate.js";
@@ -21,15 +20,13 @@ import { ToolRegistry } from "../registry.js";
 const CHILD_SESSION = "sub-child-permission";
 const PARENT_SESSION = "conversation-parent";
 let root: string;
-let audit: AuditLogger;
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "ave-child-permission-"));
   vi.stubEnv("AVE_HOME", join(root, "state"));
   __resetSessionStoreForTest();
-  audit = new AuditLogger(join(root, "audit"));
 });
 afterEach(async () => {
-  await audit.close();
+
   __resetSessionStoreForTest();
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
@@ -69,7 +66,7 @@ async function childInvocation(options: {
   registry.register(tool);
   const manager = new PermissionManager(join(root, "permissions.json"));
   manager.setMode(options.mode ?? "default");
-  manager.setJudge({ settings: { ...DEFAULT_JUDGE_SETTINGS, chain: [] }, chain: [], breaker: manager.getJudgeBreaker(), audit },
+  manager.setJudge({ settings: { ...DEFAULT_JUDGE_SETTINGS, chain: [] }, chain: [], breaker: manager.getJudgeBreaker() },
     (id) => id === CHILD_SESSION ? PARENT_SESSION : id);
   if (options.storedGrant) {
     manager.setRules([{ pattern: tool.name, action: "allow" }]);
@@ -106,7 +103,7 @@ async function childInvocation(options: {
     });
   });
   const request = vi.spyOn(gate, "requestAndWait");
-  const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, undefined, audit);
+  const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, undefined);
   const [result] = await executor.executeAll([{ id: randomUUID(), name: tool.name, input }], {
     sessionId, executionCwd: root,
     permissionContext: { trustOrigin: "user-keyboard", additionalDirectories: [root], otherPrincipal, headless: options.headless },

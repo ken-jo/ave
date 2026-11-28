@@ -692,7 +692,6 @@ describe("invocation audit and sealed resume", () => {
       "permission-ask-audit",
       "approval-allow-once-cas-consume",
       "rate-limit",
-      "permission-audit-writable-fail-closed",
       "host-invocation-start-cas",
       "tool-start-emit-boundary",
       "during-execute-effect-gate-context",
@@ -714,7 +713,6 @@ describe("invocation audit and sealed resume", () => {
       ["permission-request-hook", "const permHook = await runScriptHook("],
       ["permission-ask-audit", "await auditCurrentPermissionAsk("],
       ["rate-limit", "services.rateLimiter.check(toolUse.name, trust)"],
-      ["permission-audit-writable-fail-closed", "services.auditLogger.assertPermissionAuditWritable()"],
       ["tool-start-emit-boundary", "    emitToolStart(callbacks, toolUse.name, finalInput, meta);\n\n    // ── Step 6: Execute"],
       ["during-execute-effect-gate-context", "runWithEffectGateContext("],
       ["tool-execute", "return runWithAgentObservationInvocation({ sessionId, toolUseId: toolUse.id },\n                () => {\n                  const denial = services.skillAdmissionCheck?.(sessionId, toolUse.name, finalInput);\n                  if (denial) throw new Error(denial);\n                  if (context.approvedInvocation && !context.approvedInvocation(tool, finalInput)) throw new Error(\"The approved output changed\");\n                  handlerAdmissionBlocked = false;\n                  return tool.execute(finalInput, ctx);"],
@@ -722,7 +720,7 @@ describe("invocation audit and sealed resume", () => {
       ["post-tool-use-hooks", "postFeedback = await services.hookRunner.runPostHooks("],
       ["post-failure-lifecycle", "\"PostToolUseFailure\","],
       ["post-exec-dlp-display-audit", "const dlpResult = maskExecutionOutput(content, settledToolDetail, pii)"],
-      ["final-permission-audit", "await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, auditContent"],
+      ["final-permission-audit", "await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, displayContent"],
       ["tool-end-emit", "callbacks?.onToolEnd?.(\n    toolUse.name,\n    displayContent"],
     ] as const;
     let sourceCursor = -1;
@@ -754,16 +752,16 @@ describe("invocation audit and sealed resume", () => {
       },
       {
         phase: "host-invocation-start-cas",
-        beforePhase: "permission-audit-writable-fail-closed",
+        beforePhase: "rate-limit",
         afterPhase: "tool-start-emit-boundary",
-        lowerSourceMarker: "services.auditLogger.assertPermissionAuditWritable()",
+        lowerSourceMarker: "services.rateLimiter.check(toolUse.name, trust)",
         upperSourceMarker: "    emitToolStart(callbacks, toolUse.name, finalInput, meta);\n\n    // ── Step 6: Execute",
       },
       {
         phase: "invocation-audit-terminal",
         beforePhase: "final-permission-audit",
         afterPhase: "tool-end-emit",
-        lowerSourceMarker: "await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, auditContent",
+        lowerSourceMarker: "await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, displayContent",
         upperSourceMarker: "callbacks?.onToolEnd?.(\n    toolUse.name,\n    displayContent",
       },
     ] as const;
@@ -1007,13 +1005,13 @@ describe("invocation audit and sealed resume", () => {
       sessionId: control.anchor.sessionId,
       control,
       authorized, expectedInvocationVersion: 1 as never,
-      persistAudit: () => {}, now: NOW,
+      now: NOW,
     })).rejects.toThrow(/invalid invocation-start CAS expectation/);
     const startCommit = await startStore.commitStart({
       sessionId: control.anchor.sessionId,
       control,
       authorized, expectedInvocationVersion: 0,
-      persistAudit: () => {}, now: NOW,
+      now: NOW,
     });
     if (!startCommit) throw new Error("expected invocation start lease");
     const { lease: startLease, startedInvocationAudit: started } = startCommit;
@@ -1034,7 +1032,7 @@ describe("invocation audit and sealed resume", () => {
       sessionId: control.anchor.sessionId,
       control,
       authorized, expectedInvocationVersion: 0,
-      persistAudit: () => {}, now: NOW,
+      now: NOW,
     })).toBeNull();
     expect(started).toMatchObject({ state: "started", version: 1,
       invocationStartLeaseId: startLease.leaseId });
@@ -1049,7 +1047,7 @@ describe("invocation audit and sealed resume", () => {
         sessionId: control.anchor.sessionId,
         control,
         authorized, expectedInvocationVersion: 0,
-        persistAudit: () => {}, now: NOW,
+        now: NOW,
       });
     }));
     expect(concurrent.filter((commit) => commit !== null)).toHaveLength(1);
@@ -1071,13 +1069,12 @@ describe("invocation audit and sealed resume", () => {
     expect(await startStore.commitTerminal({
       lease: startLease,
       terminal: completed,
-      persistAudit: () => {},
-    })).toBe(true);
+      })).toBe(true);
     expect(await startStore.commitStart({
       sessionId: control.anchor.sessionId,
       control,
       authorized, expectedInvocationVersion: 0,
-      persistAudit: () => {}, now: NOW,
+      now: NOW,
     })).toBeNull();
   });
 
@@ -1114,7 +1111,7 @@ describe("invocation audit and sealed resume", () => {
       sessionId: control.anchor.sessionId,
       control,
       authorized, expectedInvocationVersion: 0,
-      persistAudit: () => {}, now: NOW,
+      now: NOW,
     });
     if (!startCommit) throw new Error("expected start lease");
     const authorityEntry = createRationaleExecutionAuthorityEntry({

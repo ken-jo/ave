@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { collectPermissionEvents } from "../../../__tests__/support/permission-events.js";
+import { beforeEach, describe, expect, it, vi, onTestFinished } from "vitest";
 import { resolve } from "node:path";
 import { makeAppIpcInvoker } from "./test-helpers.js";
 
@@ -71,7 +72,6 @@ function makeDeps(opts: {
       replaceLlm: vi.fn(async (llm: unknown) => llm),
     },
     conversationLoop: { refreshProvider: vi.fn() },
-    auditLogger: { log: vi.fn() },
     getAppWindows: vi.fn(() => []),
     rewireReviewerAgent: rewire,
     refreshActiveLlmWildcard: vi.fn(),
@@ -187,6 +187,8 @@ describe("settings.update shortcut/startup reconcile", () => {
   });
 
   it("rejects activeChatRuntime through ordinary settings.update", async () => {
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
     const deps = makeDeps({ flip: "none" });
     const { registerSettingsHandlers } = await import("../settings.js");
     registerSettingsHandlers(deps as never);
@@ -200,9 +202,6 @@ describe("settings.update shortcut/startup reconcile", () => {
       error: "active-chat-runtime-requires-subscription-selection",
     });
     expect(deps.settingsService.patch).not.toHaveBeenCalled();
-    expect(deps.auditLogger.log).toHaveBeenCalledWith(expect.objectContaining({
-      sessionId: "subscription-runtime",
-      type: "warn",
-    }));
+    expect(capture.events).toContainEqual(expect.objectContaining({ event: "subscription_runtime_outcome", outcome: "rejected" }));
   });
 });

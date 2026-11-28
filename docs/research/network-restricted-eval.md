@@ -30,7 +30,7 @@ Scenario B was written for a profile-based macOS backend that left loopback, DNS
 | Endpoints | Public echo service; local loopback fixture; private corporate endpoint | Local fixture for unit level, public endpoint for end-to-end. The corporate option was rejected (needs a VPN in CI). Superseded by in-test listeners and `.invalid` hosts. |
 | Cadence | Gate every PR; nightly only; manual before release | Hybrid. Shipped as dedicated CI jobs (section 4.2). |
 | Verdict measurement | Snapshot file; differential analysis | Snapshot. Shipped (section 4.1). |
-| Audit sink | Per-feature file; one cross-cutting file | Shipped as a daily JSONL channel in `~/.ave/audit/`; see [section 3.6 of Sandbox isolation](./sandbox-isolation.md#36-s2-sandbox-audit-fields). |
+| Logging | Per-feature file or shared application log | Proxy outcomes use the [application log](./sandbox-isolation.md#36-sandbox-logging). |
 
 ## 4. What shipped
 

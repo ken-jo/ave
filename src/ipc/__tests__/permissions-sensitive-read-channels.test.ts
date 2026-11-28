@@ -1,4 +1,4 @@
-/** Read-only approval, audit, and hook-trust channels are reconnaissance-sensitive.
+/** Read-only approval and hook-trust channels are reconnaissance-sensitive.
  * Invoke real handlers with isolated app-resource senders to ensure host-only validation rejects them. */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { IpcMainInvokeEvent } from "electron";
@@ -29,27 +29,17 @@ const SENSITIVE_READ_CHANNELS: ReadonlyArray<readonly [string, string, unknown[]
   ["listScopedRules", PERMISSIONS.listScopedRules, []],
   ["egressGrantsList", PERMISSIONS.egressGrantsList, []],
   ["watchedQuarantineList", PERMISSIONS.watchedQuarantineList, []],
-  ["auditShow", PERMISSIONS.auditShow, [10]],
-  ["auditVerify", PERMISSIONS.auditVerify, []],
   ["hookTrustList", PERMISSIONS.hookTrustList, []],
-  ["egressDenialsRecent", PERMISSIONS.egressDenialsRecent, []],
 ];
 
 beforeEach(() => {
   handleMap.clear();
   // Enough of each dependency for a handler to run to completion once its guard has passed. The guard runs first, so the refusal cases never
   // reach any of this; it exists so the host-renderer cases can prove they got PAST the guard rather than merely not saying "unauthorized-frame".
-  const auditLogger = {
-    log: vi.fn(),
-    logWarn: vi.fn(),
-    flush: vi.fn(async () => undefined),
-    getAuditDir: vi.fn(() => "/nonexistent-audit-dir"),
-    getPermissionAuditSecret: vi.fn(() => null),
-  };
+
   registerPermissionsHandlers({
     conversationLoop: { permissionManager: undefined },
     approvalGate: undefined,
-    auditLogger,
     settingsService: {
       get: vi.fn(() => undefined),
       set: vi.fn(),

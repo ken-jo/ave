@@ -1,27 +1,14 @@
-import { describe, expect, it, vi } from "vitest";
+import { collectPermissionEvents } from "../../__tests__/support/permission-events.js";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { createCallLlm, createCallLlmForPlugin } from "../conversation.js";
 
 describe("createCallLlmForPlugin (Sprint 4-B §B-7)", () => {
   function makeFakeLoop(): { generateText: ReturnType<typeof vi.fn> } {
     return { generateText: vi.fn(async () => "ok") };
   }
-  function makeFakeAudit(): {
-    log: ReturnType<typeof vi.fn>;
-    entries: unknown[];
-  } {
-    const entries: unknown[] = [];
-    return {
-      log: vi.fn((e: unknown) => {
-        entries.push(e);
-      }),
-      entries,
-    };
-  }
-
   it("permits up to maxCalls within the window", async () => {
     const loop = makeFakeLoop();
-    const audit = makeFakeAudit();
-    const callLlm = createCallLlmForPlugin(loop as never, audit as never, {
+    const callLlm = createCallLlmForPlugin(loop as never, {
       maxCalls: 3,
       windowMs: 10_000,
     });
@@ -31,26 +18,23 @@ describe("createCallLlmForPlugin (Sprint 4-B §B-7)", () => {
     expect(loop.generateText).toHaveBeenCalledTimes(3);
   });
 
-  it("rejects the (maxCalls+1)-th call with rate-limit error and audits", async () => {
+  it("rejects the (maxCalls+1)-th call with an error and logs the quota refusal", async () => {
     const loop = makeFakeLoop();
-    const audit = makeFakeAudit();
-    const callLlm = createCallLlmForPlugin(loop as never, audit as never, {
+    const callLlm = createCallLlmForPlugin(loop as never, {
       maxCalls: 2,
       windowMs: 10_000,
     });
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
     await callLlm("p1", "a");
     await callLlm("p1", "b");
     await expect(callLlm("p1", "c")).rejects.toThrow(/rate-limit exceeded/);
-    const msgs = audit.entries
-      .map((e) => (e as { input?: string }).input ?? "")
-      .join("|");
-    expect(msgs).toMatch(/rate-limit exceeded/);
+    expect(capture.events).toContainEqual({ event: "plugin_llm_rate_limited", pluginId: "p1", sessionId: "plugin" });
   });
 
   it("buckets are per-plugin: one plugin's saturation does not block another", async () => {
     const loop = makeFakeLoop();
-    const audit = makeFakeAudit();
-    const callLlm = createCallLlmForPlugin(loop as never, audit as never, {
+    const callLlm = createCallLlmForPlugin(loop as never, {
       maxCalls: 1,
       windowMs: 10_000,
     });
@@ -59,24 +43,21 @@ describe("createCallLlmForPlugin (Sprint 4-B §B-7)", () => {
     await expect(callLlm("p2", "c")).resolves.toBe("ok");
   });
 
-  it("emits an audit entry per successful call including promptLen", async () => {
+  it("logs a successful call with the plugin identifier", async () => {
     const loop = makeFakeLoop();
-    const audit = makeFakeAudit();
-    const callLlm = createCallLlmForPlugin(loop as never, audit as never, {
+    const callLlm = createCallLlmForPlugin(loop as never, {
       maxCalls: 5,
       windowMs: 10_000,
     });
-    await callLlm("p1", "hello world");
-    const msgs = audit.entries
-      .map((e) => (e as { input?: string }).input ?? "")
-      .join("|");
-    expect(msgs).toMatch(/promptLen=11/);
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
+    await expect(callLlm("p1", "secret-prompt-canary")).resolves.toBe("ok");
+    expect(capture.events).toEqual([{ event: "plugin_llm_called", pluginId: "p1", sessionId: "plugin" }]);
   });
 
   it("passes abort signal through to ConversationLoop.generateText", async () => {
     const loop = makeFakeLoop();
-    const audit = makeFakeAudit();
-    const callLlm = createCallLlmForPlugin(loop as never, audit as never, {
+    const callLlm = createCallLlmForPlugin(loop as never, {
       maxCalls: 5,
       windowMs: 10_000,
     });
@@ -92,8 +73,7 @@ describe("createCallLlmForPlugin (Sprint 4-B §B-7)", () => {
 
   it("maps plugin maxTokens only to the internal outputTokenLimit", async () => {
     const loop = makeFakeLoop();
-    const audit = makeFakeAudit();
-    const callLlm = createCallLlmForPlugin(loop as never, audit as never);
+    const callLlm = createCallLlmForPlugin(loop as never);
     const controller = new AbortController();
 
     await callLlm("p1", "hello", {

@@ -1,3 +1,4 @@
+import { logPermissionEvent, permissionLogId } from "../../lib/permission-log.js";
 import { hasRationaleUserQuote } from "../../shared/rationale-user-quote.js";
 import {
   admitApprovalAnswer,
@@ -70,7 +71,6 @@ import {
 import {
   type HostConsumedAllowOnceReceipt,
   type HostInvocationStartCas,
-  type InvocationAuditRecord,
   type RationaleGenerationProviderFailureCause,
   type RationaleTicketStateRecord,
 } from "./rationale-ticket-lifecycle.js";
@@ -194,14 +194,6 @@ export interface RationaleHostCoordinatorOptions {
   readonly anchorRoundCas: HostAnchorRoundCas;
   /** Shared persistent/CAS boundary; never reset per coordinator instance. */
   readonly hostInvocationStartCas: HostInvocationStartCas;
-  /** Required audit sink. Missing or failing persistence blocks invocation start. */
-  readonly onInvocationAudit: (record: InvocationAuditRecord) => Promise<void> | void;
-  /** Required synchronous audit sink. Failure blocks modal publication. */
-  readonly onProjectionAudit: (
-    sessionId: string,
-    projection: RationaleUiAuditProjection,
-    at: number,
-  ) => unknown;
   /** Shared host generation guard; stale coordinators must not open authority. */
   readonly isCurrent?: () => boolean;
   readonly now?: () => number;
@@ -294,7 +286,6 @@ interface TicketContext {
   response: RationaleResponse | null;
   reevaluation: ReviewerScopeReevaluation | null;
   projection: RationaleUiAuditProjection | null;
-  projectionAuditCommitted: boolean;
   terminalTicket: RationaleTicketStateRecord | null;
   receipt: HostConsumedAllowOnceReceipt | null;
   issuedResumeRequest: SealedRationaleResumeRequest | null;
@@ -333,14 +324,6 @@ export class RationaleHostCoordinator implements RationaleHostRuntime, Rationale
   readonly #getSandboxGeneration: () => string | number;
   readonly #anchorRoundCas: HostAnchorRoundCas;
   readonly hostInvocationStartCas: HostInvocationStartCas;
-  readonly #onInvocationAudit: (
-    record: InvocationAuditRecord,
-  ) => Promise<void> | void;
-  readonly #onProjectionAudit: (
-    sessionId: string,
-    projection: RationaleUiAuditProjection,
-    at: number,
-  ) => unknown;
   readonly #now: () => number;
   readonly #isCurrent: () => boolean;
   readonly #contexts = new Map<string, TicketContext>();
@@ -349,9 +332,6 @@ export class RationaleHostCoordinator implements RationaleHostRuntime, Rationale
   readonly #retiringContexts = new Map<string, TicketContext>();
 
   constructor(options: RationaleHostCoordinatorOptions) {
-    if (typeof options.onProjectionAudit !== "function") {
-      throw new TypeError("rationale host coordinator requires projection audit");
-    }
     this.requestAnchor = options.requestAnchor;
     this.#onReviewerChoiceResolved = options.onReviewerChoiceResolved;
     const userRoleTexts = Object.freeze([...(options.userRoleTexts ?? [])]);
@@ -366,8 +346,6 @@ export class RationaleHostCoordinator implements RationaleHostRuntime, Rationale
     this.#getSandboxGeneration = options.getSandboxGeneration;
     this.#anchorRoundCas = options.anchorRoundCas;
     this.hostInvocationStartCas = options.hostInvocationStartCas;
-    this.#onInvocationAudit = options.onInvocationAudit;
-    this.#onProjectionAudit = options.onProjectionAudit;
     this.#now = options.now ?? Date.now;
     this.#isCurrent = options.isCurrent ?? (() => true);
   }
@@ -588,15 +566,10 @@ export class RationaleHostCoordinator implements RationaleHostRuntime, Rationale
   ): boolean => this.#isCoordinatorCurrent() &&
     this.#ticketStore.isAuthenticConsumedAllowOnceReceipt(receipt, now);
 
-  readonly onInvocationAudit = async (
-    record: InvocationAuditRecord,
-  ): Promise<void> => {
-    await this.#onInvocationAudit(record);
-    const context = this.#contexts.get(record.ticketId);
-    if (context?.humanWaitLease && (record.state === "completed" || record.state === "failed" || record.state === "unknown-after-crash")) {
-      this.#deleteContext(record.ticketId);
-    }
+  readonly onInvocationFinished = (ticketId: string): void => {
+    if (this.#contexts.get(ticketId)?.humanWaitLease) this.#deleteContext(ticketId);
   };
+
   readonly materializeRationaleControl = (
     candidate: RationaleControlCandidate,
   ): RationaleRuntimeMaterialization | null => {
@@ -678,7 +651,6 @@ export class RationaleHostCoordinator implements RationaleHostRuntime, Rationale
       response: null,
       reevaluation: null,
       projection: null,
-      projectionAuditCommitted: false,
       terminalTicket: null,
       receipt: null,
       issuedResumeRequest: null,
@@ -902,8 +874,7 @@ export class RationaleHostCoordinator implements RationaleHostRuntime, Rationale
         now: settledAt,
         autoApproved: true,
       });
-      // Projection audit failure must block receipt publication and prevent sealing a resume.
-      this.#commitProjectionAudit(context.sessionId, autoProjection, settledAt);
+      this.#logProjection(context.sessionId, autoProjection);
       context.snapshot = resolved;
       context.response = autoResponse;
       context.reevaluation = reevaluation;
@@ -912,7 +883,6 @@ export class RationaleHostCoordinator implements RationaleHostRuntime, Rationale
       context.reviewerAuthorized = true;
       context.terminalTicket = receipt.ticket;
       context.projection = autoProjection;
-      context.projectionAuditCommitted = true;
       this.#resolveReviewerChoice(context, "allow");
       return {
         status: "ready",
@@ -946,9 +916,8 @@ export class RationaleHostCoordinator implements RationaleHostRuntime, Rationale
     context.snapshot = pending;
     context.response = response;
     context.reevaluation = reevaluation;
-    this.#commitProjectionAudit(context.sessionId, projection, settledAt);
+    this.#logProjection(context.sessionId, projection);
     context.projection = projection;
-    context.projectionAuditCommitted = true;
     if (generatedResponse?.choice === "accept") {
       const denied = this.#ticketStore.acceptDenial(createRationaleTicketCasExpectation(pending), settledAt);
       if (!denied) return null;
@@ -958,7 +927,7 @@ export class RationaleHostCoordinator implements RationaleHostRuntime, Rationale
       const terminalProjection = createRationaleUiAuditProjection({
         control: context.control, response, reevaluation, ticket: denied.ticket, now: settledAt,
       });
-      this.#commitProjectionAudit(context.sessionId, terminalProjection, settledAt);
+      this.#logProjection(context.sessionId, terminalProjection);
       context.projection = terminalProjection;
     }
     return {
@@ -989,7 +958,6 @@ export class RationaleHostCoordinator implements RationaleHostRuntime, Rationale
       context.approvalStarted ||
       context.snapshot.ticket.state !== "user_pending" ||
       context.projection === null ||
-      !context.projectionAuditCommitted ||
       !Number.isFinite(requestedAt)
     ) {
       return null;
@@ -1019,7 +987,7 @@ export class RationaleHostCoordinator implements RationaleHostRuntime, Rationale
       if (!rejected) { this.abort(ticketId, requestedAt); throw new Error("Changed policy request could not be retired"); }
       const projection = createRationaleUiAuditProjection({ control: context.control, response: context.response,
         reevaluation: context.reevaluation, ticket: rejected.ticket, now: requestedAt });
-      this.#commitProjectionAudit(context.sessionId, projection, requestedAt);
+      this.#logProjection(context.sessionId, projection);
       await this.#recordTerminalDenial(context, "Permission policy changed before approval; the action was not executed.");
       this.#deleteContext(ticketId);
       return { outcome: "denied", reason: "Permission policy changed before approval; the action was not executed.", ticket: rejected.ticket, projection };
@@ -1105,7 +1073,7 @@ export class RationaleHostCoordinator implements RationaleHostRuntime, Rationale
       const projection = createRationaleUiAuditProjection({ control: context.control,
         response: context.response, reevaluation: context.reevaluation, ticket: denied.ticket,
         now: input.now ?? this.#now() });
-      this.#commitProjectionAudit(context.sessionId, projection, input.now ?? this.#now());
+      this.#logProjection(context.sessionId, projection);
       context.projection = projection;
       await this.#recordTerminalDenial(context, context.control.eligibilityContext.headless ? NO_APPROVER_MESSAGE : error.reason);
       this.#deleteContext(ticketId);
@@ -1164,7 +1132,7 @@ export class RationaleHostCoordinator implements RationaleHostRuntime, Rationale
           context.terminalTicket = denied.ticket;
           const projection = createRationaleUiAuditProjection({ control: context.control,
             response: context.response, reevaluation: context.reevaluation, ticket: denied.ticket, now: decidedAt });
-          this.#commitProjectionAudit(context.sessionId, projection, decidedAt);
+          this.#logProjection(context.sessionId, projection);
           context.projection = projection;
           await this.#recordTerminalDenial(context, reason);
           this.#deleteContext(ticketId);
@@ -1190,7 +1158,7 @@ export class RationaleHostCoordinator implements RationaleHostRuntime, Rationale
         ticket: receipt.ticket,
         now: decidedAt,
       });
-      this.#commitProjectionAudit(context.sessionId, projection, decidedAt);
+      this.#logProjection(context.sessionId, projection);
       this.#receiptProvenance.set(receipt, provenance);
       context.receipt = receipt;
       context.terminalTicket = receipt.ticket;
@@ -1232,7 +1200,7 @@ export class RationaleHostCoordinator implements RationaleHostRuntime, Rationale
       ticket: terminal.ticket,
       now: decidedAt,
     });
-    this.#commitProjectionAudit(context.sessionId, projection, decidedAt);
+    this.#logProjection(context.sessionId, projection);
     const recording = this.#recordTerminalDenial(context,
       context.control.eligibilityContext.headless || approvalOutcome === "unavailable"
         ? NO_APPROVER_MESSAGE
@@ -1465,18 +1433,17 @@ export class RationaleHostCoordinator implements RationaleHostRuntime, Rationale
     }
   }
 
-  #commitProjectionAudit(
-    sessionId: string,
-    projection: RationaleUiAuditProjection,
-    at: number,
-  ): void {
-    const result = this.#onProjectionAudit(sessionId, projection, at);
-    if (
-      result !== null &&
-      (typeof result === "object" || typeof result === "function") &&
-      typeof (result as { then?: unknown }).then === "function"
-    ) {
-      throw new TypeError("rationale projection audit must complete synchronously");
-    }
+  #logProjection(sessionId: string, projection: RationaleUiAuditProjection): void {
+    logPermissionEvent("rationale_projection", {
+      sessionId: permissionLogId(sessionId),
+      ticketId: permissionLogId(projection.ticketId),
+      toolName: permissionLogId(projection.toolName),
+      reviewerOutcome: projection.reviewerOutcome,
+      rationaleStatus: projection.rationaleStatus,
+      scopeAlignment: projection.scopeAlignment,
+      modalFallbackRequired: projection.modalFallbackRequired,
+      terminalReason: projection.terminalReason ?? undefined,
+      autoApproved: projection.autoApproved,
+    });
   }
 }

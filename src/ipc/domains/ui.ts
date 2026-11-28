@@ -300,13 +300,12 @@ function buildNativeContextMenu(
   return Menu.buildFromTemplate(template);
 }
 
-export function registerUiHandlers(deps: IpcDeps): void {
-  const { auditLogger } = deps;
+export function registerUiHandlers(_deps: IpcDeps): void {
 
   ipcMain.handle(UI.nativeContextMenu, (event, payload: unknown) => {
     const window = hostWindowForUiEvent(event);
     if (!window) {
-      auditUnauthorized(auditLogger, UI.nativeContextMenu, event);
+      auditUnauthorized(UI.nativeContextMenu);
       return UNAUTHORIZED_FRAME;
     }
 
@@ -323,7 +322,7 @@ export function registerUiHandlers(deps: IpcDeps): void {
   ipcMain.handle(UI.dynamicMenu, (event, payload: unknown) => {
     const window = hostWindowForUiEvent(event);
     if (!window) {
-      auditUnauthorized(auditLogger, UI.dynamicMenu, event);
+      auditUnauthorized(UI.dynamicMenu);
       return UNAUTHORIZED_FRAME;
     }
 

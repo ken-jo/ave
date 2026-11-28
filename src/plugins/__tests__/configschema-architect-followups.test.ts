@@ -283,10 +283,8 @@ function makeServicesForListSecretKeys(secretsMap: Record<string, string | null>
     approvalGate: makeMockApprovalGate() as any,
     mcpManager: { listServers: vi.fn(() => []), killSwitch: vi.fn(), setPackageTransactionProbe: vi.fn() } as any,
     toolRegistry: { setDenyRules: vi.fn(), size: 0 } as any,
-    auditLogger: { log: vi.fn() } as any,
     idleScheduler: undefined,
     bashAstValidator: {} as any,
-    auditService: {} as any,
     postTurnHookChain: {} as any,
   };
 }

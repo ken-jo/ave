@@ -1,6 +1,7 @@
-/** Use AuditLogger for security events; attach ordinary file logging at boot through a mutable stream target. */
+/** Attach file logging at boot through a mutable stream target. */
 import pino from "pino";
 import prettyStream from "pino-pretty";
+import { createAsyncLogDestination } from "./async-log-destination.js";
 import { createLogFileSink, type LogFileSink, type LogFileSinkOptions } from "./log-file-sink.js";
 import { isPackagedElectronProcess } from "../boot/dev-flags.js";
 import { execModeRequested } from "../main/exec-mode.js";
@@ -15,20 +16,25 @@ const useJsonFormat =
 
 /** The mutable file target permits boot attachment without reconstructing the logger. */
 let fileSink: LogFileSink | null = null;
+let fileSinkUnavailable = false;
+let unavailableFileDrops = 0;
+let reportingLoss = false;
+let lossReportScheduled = false;
+let flushing = false;
 
 const LOG_LEVEL = process.env.LOG_LEVEL ?? ((isProduction || isPackagedElectron) ? "info" : "debug");
 
 /** One-shot execution owns stdout for JSON events; choose stderr from argv at import time before host services exist. */
 const execHeadless = execModeRequested(process.argv);
 
+const prettyOptions = { colorize: true, translateTime: "SYS:HH:MM:ss.l", ignore: "pid,hostname" };
+
 function createConsoleStream(): NodeJS.WritableStream {
   return useJsonFormat
     ? (execHeadless ? process.stderr : process.stdout)
     : // Use a pretty-print stream rather than a worker transport whose entry cannot resolve inside packaged archives.
       prettyStream({
-        colorize: true,
-        translateTime: "SYS:HH:MM:ss.l",
-        ignore: "pid,hostname",
+        ...prettyOptions,
         ...(execHeadless ? { destination: process.stderr } : {}),
       });
 }
@@ -46,7 +52,13 @@ export const transport = !isTest && !useJsonFormat
 
 const fileStream = {
   write(chunk: string): void {
-    fileSink?.write(chunk);
+    try {
+      if (fileSink) fileSink.write(chunk, !reportingLoss);
+      else if (fileSinkUnavailable && !reportingLoss) {
+        unavailableFileDrops++;
+        scheduleLossReport();
+      }
+    } catch { /* Logging cannot affect the caller. */ }
   },
 };
 
@@ -85,23 +97,97 @@ export function initFileLogSink(options: LogFileSinkOptions = {}): LogFileSink |
       fileSink.destroy();
       fileSink = null;
     }
-    fileSink = createLogFileSink(options);
+    fileSink = createLogFileSink(options, scheduleLossReport);
+    fileSinkUnavailable = false;
     return fileSink;
   } catch {
     fileSink = null;
+    fileSinkUnavailable = true;
     return null;
   }
 }
 
 export function closeFileLogSink(): void {
-  if (fileSink) {
-    fileSink.destroy();
-    fileSink = null;
+  const sink = fileSink;
+  fileSink = null;
+  fileSinkUnavailable = false;
+  try { sink?.destroy(); } catch { /* Logging cannot affect shutdown. */ }
+}
+
+let bestEffortLogger: pino.Logger | undefined;
+let permissionConsole: ReturnType<typeof createAsyncLogDestination> | undefined;
+
+function getBestEffortLogger(): pino.Logger {
+  if (!bestEffortLogger) {
+    const destination = createAsyncLogDestination({
+      fd: execHeadless ? 2 : 1,
+      sync: false,
+      maxLength: 1024 * 1024,
+    }, scheduleLossReport);
+    permissionConsole = destination;
+    const pretty = useJsonFormat ? undefined : prettyStream.prettyFactory(prettyOptions);
+    const consoleStream = { write: (chunk: string) => destination.write(pretty ? pretty(chunk) : chunk, !reportingLoss) };
+    bestEffortLogger = pino({ level: LOG_LEVEL, redact }, pino.multistream([
+      { stream: consoleStream, level: LOG_LEVEL as pino.Level },
+      { stream: fileStream as NodeJS.WritableStream, level: LOG_LEVEL as pino.Level },
+    ]));
+  }
+  return bestEffortLogger;
+}
+
+function scheduleLossReport(): void {
+  if (flushing || lossReportScheduled || (!unavailableFileDrops && !fileSink?.dropped && !permissionConsole?.dropped)) return;
+  lossReportScheduled = true;
+  setImmediate(() => {
+    lossReportScheduled = false;
+    if (!flushing) reportLogLoss();
+  }).unref();
+}
+
+function reportLogLoss(consoleUnconfirmed = 0, fileUnconfirmed = 0): boolean {
+  const consoleDropped = permissionConsole?.takeDropped() ?? 0;
+  const fileDropped = (fileSink?.takeDropped() ?? 0) + unavailableFileDrops;
+  unavailableFileDrops = 0;
+  if (!consoleDropped && !fileDropped && !consoleUnconfirmed && !fileUnconfirmed) return false;
+  reportingLoss = true;
+  try {
+    getBestEffortLogger().warn({
+      event: "app_log_loss", consoleDropped, fileDropped, consoleUnconfirmed, fileUnconfirmed,
+    }, "app_log_loss");
+  } catch {
+    // A broken destination cannot affect logging callers.
+  } finally {
+    reportingLoss = false;
+  }
+  return true;
+}
+
+export async function flushLogDestinations(): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<void>((resolve) => { timer = setTimeout(resolve, 500); });
+  const flush = () => Promise.all([fileSink?.flush(), permissionConsole?.flush()]);
+  flushing = true;
+  try {
+    await Promise.race([
+      Promise.all([flush(), new Promise<void>((resolve) => {
+        try { logger.flush(() => resolve()); } catch { resolve(); }
+      })]),
+      deadline,
+    ]);
+    // Pending records still have unwritten bytes.
+    if (reportLogLoss(permissionConsole?.pending, fileSink?.pending)) {
+      await Promise.race([flush(), deadline]);
+    }
+  } catch {
+    // A broken destination cannot change shutdown status.
+  } finally {
+    clearTimeout(timer);
+    flushing = false;
   }
 }
 
 /** Use console proxies only in unpackaged tests; packaged runs retain structured production logging. */
-export function createLogger(module: string): pino.Logger {
+export function createLogger(module: string, bestEffort = false): pino.Logger {
   if (isTest) {
     const prefix = `[${module}]`;
     const consoleFn = (level: "warn" | "error" | "info" | "debug") =>
@@ -133,5 +219,5 @@ export function createLogger(module: string): pino.Logger {
     } as unknown as pino.Logger;
   }
 
-  return logger.child({ module });
+  return (bestEffort ? getBestEffortLogger() : logger).child({ module });
 }

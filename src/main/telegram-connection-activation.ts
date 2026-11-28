@@ -1,6 +1,6 @@
 import type { SecretEncryption } from "../data/secret-document-store.js";
 // Read encrypted credentials at activation time instead of holding them in longer-lived connection state.
-import type { SecretStore } from "../audit/hmac-chain.js";
+import type { SecretStore } from "../lib/protected-secret-store.js";
 import type { ConversationSurfaceRuntime } from "../engine/conversation-surface-runtime.js";
 import type { ConversationCommandPort } from "./conversation-command-port.js";
 import { createTelegramBotApiClient } from "./telegram-bot-api-client.js";

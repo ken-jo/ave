@@ -1,7 +1,7 @@
 // Stub DNS to exercise private-address rejection even for allow-listed names.
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { DEFAULT_TAILNET_OBSERVER_PORT } from "../../shared/tailnet-observer-config.js";
-import { REDIRECT_STATUSES, type HostFetchTransport } from "../host-fetch-guard.js";
+import { REDIRECT_STATUSES, type HostFetchHopOptions, type HostFetchTransport } from "../host-fetch-guard.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { CredentialLeaseRegistry } from "../../plugins/secret-access/credential-lease-registry.js";
 import { directHostFetchTransport } from "../../__tests__/support/host-fetch-transport.js";
@@ -432,7 +432,7 @@ function hopOptions(
   transport: typeof fetch,
 ) {
   const denials: Array<{ reason: string; detail: string }> = [];
-  const hops: string[] = [];
+  const hops: Parameters<NonNullable<HostFetchHopOptions["auditHop"]>>[0][] = [];
   return {
     options: {
       pluginId: "p",
@@ -441,7 +441,7 @@ function hopOptions(
       transport,
       allowedDomains: ["api.example.com", "sso.example.com"],
       allowPrivateNetworks: false,
-      auditHop: (line: string) => hops.push(line),
+      auditHop: (hop: (typeof hops)[number]) => hops.push(hop),
       auditDeny: (reason: string, detail: string) => denials.push({ reason, detail }),
     },
     denials,
@@ -659,7 +659,7 @@ describe("runHostFetchHops — redirect policy", () => {
       "https://api.example.com/a",
       "https://sso.example.com/token",
     ]);
-    expect(hops).toEqual(["host_fetch https://sso.example.com method=GET effect=read hop=1"]);
+    expect(hops).toEqual([{ method: "GET", effect: "read", hop: 1 }]);
   });
 
   it("follow REFUSES a hop to a host outside the allow-list — the gate runs per hop", async () => {
@@ -1108,10 +1108,11 @@ describe("runHostFetchHops exact-hop authorization", () => {
   it("a denied redirect permission never reaches its transport", async () => {
     publicDns();
     const { transport, calls } = scriptedTransport([redirect(302, "https://sso.example.com/next"), new Response("unused")]);
-    const { options } = hopOptions(await firstAllow("https://api.example.com/start"), { redirect: "follow" }, transport);
+    const { options, hops } = hopOptions(await firstAllow("https://api.example.com/start"), { redirect: "follow" }, transport);
     await expect(runHostFetchHops({ ...options, authorizeHop: async (hop) => {
       if (hop.index === 1) throw new Error("Destination permission denied");
     } })).rejects.toThrow("Destination permission denied");
+    expect(hops).toEqual([]);
     expect(calls).toHaveLength(1);
   });
 

@@ -1,3 +1,4 @@
+import { logPermissionEvent, permissionLogReasonCode } from "../lib/permission-log.js";
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import type { AgentActionApprovalFailure } from "../permissions/agent-action-approver.js";
@@ -309,6 +310,8 @@ export class A2ARemoteClient {
   }
 
   private audit(operation: A2ARemoteOperation, outcome: A2ARemoteClientAuditEvent["outcome"], code: string): void {
+    logPermissionEvent("remote_agent_operation", { operation, outcome, reasonCode: permissionLogReasonCode(code) },
+      outcome === "approval-denied" || outcome === "unauthorized" || outcome === "outcome-unknown" ? "warn" : "info");
     try {
       this.options.audit?.({ type: "a2a-remote-operation", operation, outcome, code });
     } catch {

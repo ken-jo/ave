@@ -31,7 +31,6 @@ function makeDeps() {
     },
     conversationLoop: { refreshProvider: vi.fn() },
     sideChatConversationLoop: { refreshProvider: vi.fn() },
-    auditLogger: { log: vi.fn() },
     getAppWindows: vi.fn(() => []),
   };
 }

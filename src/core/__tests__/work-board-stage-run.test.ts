@@ -1,7 +1,8 @@
 /** A template run end to end over a real board and template store: which stages spawn, from which version, under which authority. */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { expect, it, vi } from "vitest";
+import { expect, it, vi, onTestFinished } from "vitest";
+import { collectPermissionEvents } from "../../__tests__/support/permission-events.js";
 import { boardRunState, isAwaitingStageReview } from "../../work-board/workflow/run-state.js";
 import { autoStageOf, stageOf } from "../../work-board/workflow/__tests__/stage-fixtures.js";
 import { stageRunHarness } from "../../work-board/workflow/__tests__/stage-run-harness.js";
@@ -369,6 +370,8 @@ it("a run whose project is no longer an authorised workspace project is refused 
   expect((await h.item(refused)).runId).toBeUndefined();
   expect(h.children).toHaveLength(0);
 
+  const capture = collectPermissionEvents();
+  onTestFinished(capture.restore);
   h.unauthorised.clear();
   const id = await h.addItem(version, A);
   const run = h.start(id, h.local(version, A));
@@ -383,7 +386,7 @@ it("a run whose project is no longer an authorised workspace project is refused 
   expect(h.statusOf(settled, "b")).toBe("cancelled");
   expect(h.children).toHaveLength(1);
   expect(await h.settleEvent()).toMatchObject({ phase: "cancelled", reasonCode: "scope-not-authorised" });
-  expect(h.audits).toEqual([expect.objectContaining({ itemId: id, event: "work-run:authority-refused", code: "scope-not-authorised" })]);
+  expect(capture.events).toContainEqual({ event: "workflow_authority_refused", itemId: id, runId: settled.runId, reasonCode: "scope-not-authorised" });
 }));
 
 it("detaching between two stages lets the live stage child finish, refuses the next spawn attachment-detached and settles the run cancelled", () => withHarness(async (h) => {

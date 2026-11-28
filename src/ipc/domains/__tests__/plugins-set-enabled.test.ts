@@ -1,4 +1,5 @@
-import { afterEach, describe, it, expect, vi, beforeEach } from "vitest";
+import { collectPermissionEvents } from "../../../__tests__/support/permission-events.js";
+import { afterEach, describe, it, expect, vi, beforeEach, onTestFinished } from "vitest";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -119,7 +120,6 @@ async function setup() {
       hasStoredSecret: vi.fn(async () => false),
       getSecret: vi.fn(async () => null),
     },
-    auditLogger: { log: vi.fn() },
     getMainWindow: vi.fn(() => appWindows[0]),
     getAppWindows: vi.fn(() => appWindows),
     pluginBundleLifecycle,
@@ -170,7 +170,9 @@ beforeEach(() => {
 
 describe("ave:plugins:call", () => {
   it("rejects isolated app-resource frames from the host renderer call channel", async () => {
-    const { deps, callFromUi } = await setup();
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
+    const { callFromUi } = await setup();
     const handler = handlers.get("ave:plugins:call");
     expect(handler).toBeDefined();
     const pluginShellEvent = { senderFrame: { url: "ave-mcp-app://s-66697874757265/proxy.html?t=fixture" } };
@@ -181,7 +183,7 @@ describe("ave:plugins:call", () => {
 
     expect(res).toEqual({ ok: false, error: "unauthorized-frame" });
     expect(callFromUi).not.toHaveBeenCalled();
-    expect(deps.auditLogger.log).toHaveBeenCalled();
+    expect(capture.events).toContainEqual(expect.objectContaining({ event: "ipc_sender_refused" }));
   });
 
   it("passes host renderer user action state to callFromUi", async () => {
@@ -599,25 +601,29 @@ describe("ave:plugins:set-enabled", () => {
   });
 
   it("rejects a disallowed sender frame (validateSender)", async () => {
-    const { deps, setPluginEnabled } = await setup();
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
+    const { setPluginEnabled } = await setup();
     const handler = handlers.get("ave:plugins:set-enabled");
     expect(handler).toBeDefined();
     const hostileEvent = { senderFrame: { url: "https://evil.example/" } };
     const res = await handler!(hostileEvent, "com.example.meeting", false);
     expect(res).toEqual({ ok: false, error: "unauthorized-frame" });
     expect(setPluginEnabled).not.toHaveBeenCalled();
-    expect(deps.auditLogger.log).toHaveBeenCalled();
+    expect(capture.events).toContainEqual(expect.objectContaining({ event: "ipc_sender_refused" }));
   });
 
   it("rejects plugin UI shell file frames for this host-internal mutation", async () => {
-    const { deps, setPluginEnabled } = await setup();
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
+    const { setPluginEnabled } = await setup();
     const handler = handlers.get("ave:plugins:set-enabled");
     expect(handler).toBeDefined();
     const pluginShellEvent = { senderFrame: { url: "ave-mcp-app://s-66697874757265/proxy.html?t=fixture" } };
     const res = await handler!(pluginShellEvent, "com.example.meeting", false);
     expect(res).toEqual({ ok: false, error: "unauthorized-frame" });
     expect(setPluginEnabled).not.toHaveBeenCalled();
-    expect(deps.auditLogger.log).toHaveBeenCalled();
+    expect(capture.events).toContainEqual(expect.objectContaining({ event: "ipc_sender_refused" }));
   });
 
   it("maps a deployment-guard denial to disable-not-permitted without broadcasting", async () => {

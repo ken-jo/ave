@@ -15,7 +15,7 @@ import { formatJudgeModel, type JudgeModelRef } from "../../permissions/judge/ju
 import { judgeModelCatalogFrom } from "../../permissions/judge/judge-model-catalog.js";
 import { wireJudgeAgent } from "./judge-wiring.js";
 import {
-  bindManifestIntegrityAudit,
+  bindManifestIntegrityLogging,
   manifestIntegrityState,
 } from "../../permissions/manifest-integrity.js";
 import { createLogger } from "../../lib/logger.js";
@@ -33,7 +33,6 @@ export async function wireReviewerAndPermissions(ctx: BootContext): Promise<void
     llmFetch,
     singleHopNetworkFetch,
     getMainWindow,
-    bootAuditLogger,
     subscriptionProviderFactory,
   } = ctx;
 
@@ -201,7 +200,6 @@ export async function wireReviewerAndPermissions(ctx: BootContext): Promise<void
       providerForModel: (model) => reviewerStreamProviderFor(secrets, model.vendor, model.model, model.route),
       selectedModelCacheScope,
       networkFetch: singleHopNetworkFetch,
-      audit: bootAuditLogger,
       resolveRootSessionId: ctx.resolveRootSessionId,
     });
     ctx.rationaleScopeReviewer = reviewerResult.rationaleScopeReviewer;
@@ -230,7 +228,7 @@ export async function wireReviewerAndPermissions(ctx: BootContext): Promise<void
   });
 
   // Audit integrity violations and notify through the live window getter so reloads do not strand events.
-  bindManifestIntegrityAudit(bootAuditLogger);
+  bindManifestIntegrityLogging();
   manifestIntegrityState.onViolation((pluginId, toolName, attempted) => {
     try {
       getMainWindow()?.webContents.send(PERMISSIONS.manifestViolation, {

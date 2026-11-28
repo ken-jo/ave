@@ -20,8 +20,7 @@ export function vendorHasCatalogProvider(vendor: LLMVendor): boolean {
 }
 
 /** Sort by release then id and deduplicate; unmapped vendors return no catalog choices. */
-export function catalogChatModelIds(vendor: LLMVendor): readonly string[] {
-  const catalog = activeModelCatalog();
+export function catalogChatModelIds(vendor: LLMVendor, catalog = activeModelCatalog()): readonly string[] {
   let byVendor = chatModelIdsByCatalog.get(catalog);
   if (!byVendor) {
     byVendor = new Map();

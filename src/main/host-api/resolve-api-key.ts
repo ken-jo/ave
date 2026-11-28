@@ -1,9 +1,9 @@
+import { logPermissionEvent, permissionLogId } from "../../lib/permission-log.js";
 // Use the shared secret gate; check static grants before active-vendor state to avoid leaking it through denial reasons. Normalize public vendor aliases
 // at entry and release resolved bearers in finally or on cancellation.
 import type { SettingsService } from "../../data/settings-store.js";
 import type { HostSecretGrantEvidence } from "../../plugins/secret-access/grants.js";
 import type { PluginManifest, PluginRegistryTrust } from "../../plugins/types.js";
-import type { AuditLogger } from "../../audit/audit-logger.js";
 import { shouldBlockPluginSecretRead } from "../../plugins/secret-shape.js";
 import {
   hostSecretKeyForVendor,
@@ -55,8 +55,6 @@ export interface ResolveApiKeyDeps {
   // Canonical sha256 of the running `plugin.json` document; null when the manifest was not read from one.
   manifestSha256: string | null;
   settingsService: Pick<SettingsService, "get" | "getSecret">;
-  auditLogger: Pick<AuditLogger, "log">;
-  // Permission revocation releases outstanding bearers even when the caller’s own abort signal never fires.
   getPluginRevokeSignal?: (pluginId: string) => AbortSignal;
   // The host-owned registry entry Tier 3 trusts; read only when Tier 3 runs.
   readRegistryEntry: () => Promise<PluginRegistryTrust | undefined>;
@@ -75,17 +73,13 @@ export function normalizeVendor(v: string): string {
   return VENDOR_ALIAS_MAP[v] ?? v;
 }
 
-function audit(deps: ResolveApiKeyDeps, level: "info" | "warn", message: string): void {
-  try {
-    deps.auditLogger.log({
-      timestamp: new Date().toISOString(),
-      sessionId: "plugin",
-      type: level,
-      input: `[plugin:${deps.pluginId}] ${message}`,
-    });
-  } catch {
-    // audit must not break host
-  }
+function logCredentialAccess(deps: ResolveApiKeyDeps, fields: {
+  decision: "allow" | "deny";
+  credentialSource?: "plugin-namespace" | "host-secret-grant";
+  tier?: Extract<SecretGateOutcome, { kind: "deny" }>["tier"];
+  reason?: Extract<SecretGateOutcome, { kind: "deny" }>["reason"] | "endpoint-url-in-api-key-like-secret" | "no-host-vendor";
+}): void {
+  logPermissionEvent("plugin_secret_access", { pluginId: permissionLogId(deps.pluginId), ...fields }, fields.decision === "deny" ? "warn" : "info");
 }
 
 // release drops the captured string reference and makes bearer throw; immutable JavaScript strings cannot be zeroed in place.
@@ -160,14 +154,6 @@ export async function resolveApiKey(
   if (typeof normalizedVendor !== "string" || normalizedVendor.length === 0) {
     return { ok: false, reason: "no-host-vendor" };
   }
-  // Audit log records BOTH the requested public name and the normalized host name so operators see the alias resolution.
-  if (typeof requestedVendor === "string" && requestedVendor !== normalizedVendor) {
-    audit(
-      deps,
-      "info",
-      `resolveApiKey vendor_alias requested=${requestedVendor} normalized=${normalizedVendor}`,
-    );
-  }
   const vendor = normalizedVendor;
   const readGateSettings = () => ({
     llmProvider: defaultActiveProvider,
@@ -191,20 +177,14 @@ export async function resolveApiKey(
   const ownNamespaceKey = `plugin.${deps.pluginId}.llm.apiKey.${vendor}`;
   const ownValue = await deps.settingsService.getSecret(ownNamespaceKey);
   if (shouldBlockPluginSecretRead({ pluginId: deps.pluginId, storageKey: ownNamespaceKey, value: ownValue })) {
-    audit(
-      deps,
-      "warn",
-      `resolveApiKey deny source=plugin-namespace reason=endpoint-url-in-api-key-like-secret vendor=${vendor} purpose=${request.purpose}`,
-    );
+    logCredentialAccess(deps, {
+      decision: "deny", credentialSource: "plugin-namespace", reason: "endpoint-url-in-api-key-like-secret",
+    });
 
     return { ok: false, reason: "no-host-vendor" };
   }
   if (typeof ownValue === "string" && ownValue.length > 0) {
-    audit(
-      deps,
-      "info",
-      `resolveApiKey allow source=plugin-namespace vendor=${vendor} purpose=${request.purpose}`,
-    );
+    logCredentialAccess(deps, { decision: "allow", credentialSource: "plugin-namespace" });
 
     return makeSuccess(vendor, ownNamespaceKey, "plugin-own", ownValue, mergedSignal);
   }
@@ -221,17 +201,13 @@ export async function resolveApiKey(
     readSettings: readGateSettings,
   });
   if (gateOutcome.kind === "deny") {
-    audit(
-      deps,
-      "warn",
-      `resolveApiKey deny reason=${gateOutcome.reason} vendor=${vendor} (${gateOutcome.tier})`,
-    );
+    logCredentialAccess(deps, { decision: "deny", reason: gateOutcome.reason, tier: gateOutcome.tier });
 
     if (gateOutcome.tier === "tier-4") {
       return { ok: false, reason: "vendor-mismatch" };
     }
     // Tier-2/Tier-3 deny — map the gate's reasons (`not-allowlisted` and the grant's refusals) to the public contract's narrow `not-whitelisted` slot. The
-    // precise reason lives in the audit log.
+    // structured log records the gate reason.
     return { ok: false, reason: "not-whitelisted" };
   }
   if (deps._onCredentialIssuanceStageForTest) await deps._onCredentialIssuanceStageForTest("after-gate");
@@ -239,15 +215,11 @@ export async function resolveApiKey(
   const value = await deps.settingsService.getSecret(llmKey);
   if (deps._onCredentialIssuanceStageForTest) await deps._onCredentialIssuanceStageForTest("after-secret-read");
   if (typeof value !== "string" || value.length === 0) {
-    audit(deps, "info", `resolveApiKey deny reason=no-host-vendor vendor=${vendor}`);
+    logCredentialAccess(deps, { decision: "deny", reason: "no-host-vendor" });
 
     return { ok: false, reason: "no-host-vendor" };
   }
-  audit(
-    deps,
-    "info",
-    `resolveApiKey allow source=${grantAuditSource(gateOutcome.via)} vendor=${vendor} purpose=${request.purpose}`,
-  );
+  logCredentialAccess(deps, { decision: "allow", credentialSource: grantCredentialSource(gateOutcome.via) });
 
   // azure-foundry needs a baseUrl alongside the bearer — the public contract already exposes it. Reach into the per-vendor settings block when the vendor
   // is azure-foundry; otherwise leave baseUrl unset.
@@ -280,11 +252,9 @@ export function apiKeyIdentities(
   ];
 }
 
-// Name the gate path that produced a grant, for the `resolveApiKey allow` audit line. Exhaustively matched on the gate's `via`, so a new allow path is a
-// compile-time error here rather than a silently wrong audit line.
-function grantAuditSource(
+function grantCredentialSource(
   via: Extract<SecretGateOutcome, { kind: "allow" }>["via"],
-): string {
+): "plugin-namespace" | "host-secret-grant" {
   switch (via) {
     case "own-namespace":
       return "plugin-namespace";

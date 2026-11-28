@@ -15,7 +15,7 @@ const log = createLogger("ave");
 
 import type { ReleasePrepInput, ReleasePrepOutput } from "./post-boot.js";
 export function prepareDesktopRelease(input: ReleasePrepInput): ReleasePrepOutput {
-  const { mainWindow, settingsService, bootAuditLogger, networkFetch } = input;
+  const { mainWindow, settingsService, networkFetch } = input;
   let telemetry: TelemetryService | undefined;
   let pluginTelemetry: PluginTelemetryClient | undefined;
   let autoUpdaterStop: (() => void) | undefined;
@@ -43,7 +43,6 @@ export function prepareDesktopRelease(input: ReleasePrepInput): ReleasePrepOutpu
       settings: () => settingsService.get("telemetry"),
       appVersion: app.getVersion(),
       isPackaged: app.isPackaged,
-      auditLogger: bootAuditLogger,
       fetchImpl: networkFetch,
     });
     telemetry.start();
@@ -99,7 +98,6 @@ export function prepareDesktopRelease(input: ReleasePrepInput): ReleasePrepOutpu
       // Live, not the boot window: that one may be closed while others stay open.
       getWindows: getMainWindows,
       getDialogParent: getMainWindow,
-      auditLogger: bootAuditLogger,
       isEnabled: () => settingsService.get("updates")?.autoCheckEnabled ?? true,
       getSkippedVersion: () => settingsService.get("updates")?.skippedVersion,
       setSkippedVersion: async (version) => {

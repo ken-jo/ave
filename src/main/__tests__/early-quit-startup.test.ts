@@ -14,7 +14,7 @@ const createDesktopBootHost = vi.fn();
 
 vi.mock("../../lib/logger.js", () => ({
   createLogger: () => ({ info: vi.fn(), warn: vi.fn(), error: logError }),
-  logger: { flush: (done: () => void) => done() },
+  flushLogDestinations: async () => {},
   closeFileLogSink: () => calls.push("log-close"),
 }));
 vi.mock("../browser/browser-tab-registry.js", () => ({ browserTabRegistry: { flushBindingWrites: async () => {} } }));

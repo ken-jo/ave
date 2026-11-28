@@ -479,7 +479,6 @@ async function main() {
       isConversationBusy: () => conversationSurfaceRuntime.activity.isBusy(),
       // An own-device pairing the owner never clicked to approve is still a
       // grant, so it lands in the same audit log every other one does.
-      auditLogger: services.auditLogger,
       log: (message) => log.info(message),
     });
     if (observer) {

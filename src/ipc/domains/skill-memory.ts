@@ -31,7 +31,7 @@ export function registerSkillMemoryHandlers(deps: IpcDeps): void {
   const skillMemory = () => deps.conversationLoop.deps?.skillMemory;
   ipcMain.handle(list, async (event, ...args: unknown[]): Promise<Awaited<ReturnType<SkillMemoryApi["list"]>> | typeof UNAUTHORIZED_FRAME> => {
     if (!isSkillMemoryOwnerFrame(event)) {
-      auditUnauthorized(deps.auditLogger, list, event);
+      auditUnauthorized(list);
       return UNAUTHORIZED_FRAME;
     }
     if (args.length > 0) return { ok: false };
@@ -47,7 +47,7 @@ export function registerSkillMemoryHandlers(deps: IpcDeps): void {
   });
   ipcMain.handle(decide, async (event, raw: unknown, ...extra: unknown[]) => {
     if (!isAttendedSkillMemoryOwner(event)) {
-      auditUnauthorized(deps.auditLogger, decide, event);
+      auditUnauthorized(decide);
       return UNAUTHORIZED_FRAME;
     }
     const parsed = Decision.safeParse(raw);

@@ -18,14 +18,13 @@ import { resolveContextWindowForRoute } from "../../shared/context-budget.js";
 const log = createLogger("ipc-dev");
 
 export function registerDevHandlers(deps: IpcDeps): void {
-  const { auditLogger } = deps;
 
   ipcMain.handle(CHANNELS.dev.setPreflightOverride, (e, raw: unknown) => {
     if (getIsPackaged()) {
       return { ok: false, error: "production-disabled" } as const;
     }
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.dev.setPreflightOverride, e);
+      auditUnauthorized(CHANNELS.dev.setPreflightOverride);
       return UNAUTHORIZED_FRAME;
     }
     const n: number | null = raw === null ? null : Number(raw);
@@ -42,7 +41,7 @@ export function registerDevHandlers(deps: IpcDeps): void {
       return { ok: false, error: "production-disabled" } as const;
     }
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.dev.getPreflightStatus, e);
+      auditUnauthorized(CHANNELS.dev.getPreflightStatus);
       return UNAUTHORIZED_FRAME;
     }
     const llm = deps.settingsService.get("llm");

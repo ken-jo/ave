@@ -1,3 +1,4 @@
+import { logPermissionEvent, permissionLogId, permissionLogReasonCode } from "../lib/permission-log.js";
 /** Spawn isolated child history with scoped tools, a host-assigned round budget, labeled approval prompts, and streamed status.
  * Only an opted-in workflow stage can expose agent_spawn inside a child loop. */
 import { rethrowLocalityFailure, withLocalityDecision } from "../shared/local-path-io.js";
@@ -78,7 +79,7 @@ import type {
   A2AStagedQuestionDelivery,
 } from "./a2a-agent-message-bus.js";
 import type { A2AAgentMailboxEntry } from "./a2a-agent-message-mailbox.js";
-import { sanitizeA2ALabel } from "./a2a-subagent-message-codec.js";
+
 import { parseWorkBoardOriginSessionId } from "../shared/work-board-types.js";
 import { hasControlChars } from "../shared/display-safe-text.js";
 import {
@@ -1825,39 +1826,26 @@ export class SubAgentRunner {
   }
 
   private auditWorkBoardSteer(
-    type: "info" | "warn",
+    level: "info" | "warn",
     input: { originSessionId: string; childSessionId: string; messageId: string },
-    outcome: string,
+    disposition: string,
   ): void {
-    this.deps.parentDeps?.auditLogger?.log({
-      timestamp: new Date().toISOString(),
-      sessionId: "unknown",
-      type,
-      input: [
-        "work-board:steer:", outcome,
-        ":origin=", sanitizeA2ALabel(input.originSessionId),
-        ":child=", sanitizeA2ALabel(input.childSessionId),
-        ":message=", input.messageId,
-      ].join(""),
-    });
+    const itemId = parseWorkBoardOriginSessionId(input.originSessionId);
+    logPermissionEvent("work_board_steer_delivery", {
+      sessionId: permissionLogId(itemId === null ? input.originSessionId : String(itemId)) ?? "unknown",
+      disposition: permissionLogReasonCode(disposition),
+    }, level);
   }
 
   private auditParentDirective(
-    type: "info" | "warn",
+    level: "info" | "warn",
     input: { originSessionId: string; childSessionId: string; messageId: string },
-    outcome: string,
+    disposition: string,
   ): void {
-    this.deps.parentDeps?.auditLogger?.log({
-      timestamp: new Date().toISOString(),
-      sessionId: isValidSessionId(input.originSessionId) ? input.originSessionId : "unknown",
-      type,
-      input: [
-        "a2a:parent-directive:", outcome,
-        ":origin=", sanitizeA2ALabel(input.originSessionId),
-        ":child=", sanitizeA2ALabel(input.childSessionId),
-        ":message=", input.messageId,
-      ].join(""),
-    });
+    logPermissionEvent("work_board_steer_response", {
+      sessionId: permissionLogId(isValidSessionId(input.originSessionId) ? input.originSessionId : "unknown"),
+      disposition: permissionLogReasonCode(disposition),
+    }, level);
   }
 
   reserveQuestionWait(

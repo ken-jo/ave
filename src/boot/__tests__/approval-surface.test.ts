@@ -78,7 +78,7 @@ describe("registered approval surface resolution", () => {
     const registry = new ApprovalSurfaceRegistry();
     const owner = surfaceFixture();
     registry.register("board-root", owner.contents);
-    const gate = new ApprovalGate(approvalSurfaceResolver(registry), makeTestPolicy(), undefined, undefined, {
+    const gate = new ApprovalGate(approvalSurfaceResolver(registry), makeTestPolicy(), undefined, {
       fire: () => registry.releaseOwner(owner.contents),
     } as never);
     const decision = await gate.requestAndWait(request("owner-lost-before-send"));

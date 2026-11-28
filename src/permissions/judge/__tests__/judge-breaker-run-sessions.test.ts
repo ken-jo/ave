@@ -29,7 +29,6 @@ beforeEach(() => {
   manager.setJudge({
     settings: { ...DEFAULT_JUDGE_SETTINGS, chain: [], categories: { ...DEFAULT_JUDGE_SETTINGS.categories }, breaker: { ...DEFAULT_JUDGE_SETTINGS.breaker } },
     chain: [], breaker: manager.getJudgeBreaker(),
-    audit: { logShadow() {}, async appendPermissionAuditEntry(entry) { return { ...entry, prevHash: "test" }; } },
   }, sessionId => sessionId.startsWith("chat-child-") ? "chat-root" : sessionId.endsWith("-session") ? ITEM : sessionId);
   hooks = createRunScopeHooks(manager);
 });

@@ -255,7 +255,7 @@ export function registerMarketplaceContentHandlers(
 
   ipcMain.handle(CHANNELS.marketplaceContent.installed, async (event): Promise<InstalledContentResult | typeof UNAUTHORIZED_FRAME> => {
     if (!validateHostRendererSender(event)) {
-      auditUnauthorized(deps.auditLogger, CHANNELS.marketplaceContent.installed, event);
+      auditUnauthorized(CHANNELS.marketplaceContent.installed);
       return UNAUTHORIZED_FRAME;
     }
     const runtime = await loaded();

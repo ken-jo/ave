@@ -72,7 +72,7 @@ function fixture(options: { dpop?: boolean; challenge?: "use_dpop_nonce" | "inva
     settingsService: { ...stationaryLeaseState, getPluginConfig: () => ({}), isSecretStorageEncrypted: async () => true,
       getEncryptedSecret: async (key: string) => secrets.get(key) ?? null,
       setSecret: async (key: string, value: string) => { secrets.set(key, value); }, deleteSecret: async (key: string) => { secrets.delete(key); } },
-    bootAuditLogger: { log: audit }, pluginRuntimeAuditLog: () => {}, networkFetch: transport, mainWindow: {},
+    pluginRuntimeAuditLog: () => {}, networkFetch: transport, mainWindow: {},
     openAuthWindowService: async () => [], openLinkWindowService: async () => {}, openAuthPartitionViewerService: async () => {},
     clearAuthPartitionService: async () => {}, shellOpenExternal: async () => {},
     approvalGate: { requestAndWait: async () => { throw new Error("Unexpected approval fallback"); } }, permissionManager,

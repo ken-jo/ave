@@ -1,8 +1,7 @@
-import { randomBytes } from "node:crypto";
+import { trackInvocationCorrelations, collectPermissionEvents } from "../../__tests__/support/permission-events.js";
 import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync } from "node:fs";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { AuditLogger } from "../../audit/audit-logger.js";
+import { afterEach, describe, expect, it, vi, onTestFinished } from "vitest";
 import { MemoryManager } from "../../memory/memory-manager.js";
 import { enforceMutatingEffects, EffectBoundaryDeniedError } from "../../permissions/effect-enforcement.js";
 import { ApprovalSurfaceRegistry } from "../../permissions/approval-surface-registry.js";
@@ -19,6 +18,8 @@ import { createDynamicTool } from "../base.js";
 import { ToolExecutor } from "../executor.js";
 import { ToolRegistry } from "../registry.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
+
+const invocationCorrelationId = trackInvocationCorrelations();
 
 const resources = new PermissionTestResources();
 const cleanup: Array<() => Promise<void>> = [];
@@ -43,8 +44,7 @@ async function subject() {
   manager.setMode("default");
   const classify = vi.fn(async () => ({ level: "low" as const, reason: "bounded operation" }));
   setReviewerForTest(manager, { classifier: { classify }, cache: resources.makeVerdictCache(join(storageRoot, "cache.jsonl")), recentlyDenied: history });
-  const audit = new AuditLogger(join(storageRoot, "audit"));
-  await audit.setupPermissionAuditChain(randomBytes(32).toString("hex"));
+
   const hooks = new ScriptHookManager();
   const preHook = vi.spyOn(hooks, "runPreToolUse");
   const cards: ApprovalRequest[] = [];
@@ -59,8 +59,8 @@ async function subject() {
   const registry = new ToolRegistry();
   registry.register(createDynamicTool({ name: "send_probe", source: "builtin", description: "Sends a bounded message.", category: "network", pathFields: [],
     jsonSchema: { type: "object", properties: { password: { type: "string" }, message: { type: "string" } }, required: ["message"] }, execute }));
-  const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, hooks, audit);
-  cleanup.push(async () => { gate.disposeAll(); await audit.close(); });
+  const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, hooks);
+  cleanup.push(async () => { gate.disposeAll();  });
   const originalAbort = new AbortController();
   const input = { message: "bounded message", password: "private-history-credential" };
   const denyHeadless = (origin: Partial<import("../executor-contract.js").ToolPermissionContext> = {}, overlayTriggerOrigin?: string) => executor.executeAll([{ id: "initial-denied-call", name: "send_probe", input }], {
@@ -70,7 +70,7 @@ async function subject() {
   const approve = (card: ApprovalRequest) => gate.resolveFromDesktopRenderer(card.id, {
     requestId: card.id, choice: "allow-once", nonce: card.nonce, hmac: card.hmac,
   }, sender as never);
-  return { root, storageRoot, historyFile, history, manager, classify, hooks, preHook, cards, execute, input, originalAbort, denyHeadless, approve, executor, registry, gate, surfaces, sender, audit };
+  return { root, storageRoot, historyFile, history, manager, classify, hooks, preHook, cards, execute, input, originalAbort, denyHeadless, approve, executor, registry, gate, surfaces, sender };
 }
 
 describe("executor denial history and manual rerun", () => {
@@ -81,6 +81,8 @@ describe("executor denial history and manual rerun", () => {
     { ...recheck, retryAnswer: "integrity failure" },
     { ...recheck, retryAnswer: "person Deny" },
   ]))("audits a caught effect approval refusal ($trustOrigin recheck, retry $retryAnswer)", async ({ throws, trustOrigin, reason, retryAnswer }) => {
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
     const current = await subject();
     current.surfaces.register(SESSION_ID, current.sender as never);
     const pluginId = "nested-effect-provider";
@@ -139,11 +141,10 @@ describe("executor denial history and manual rerun", () => {
     expect(write).not.toHaveBeenCalled();
     expect(existsSync(target)).toBe(false);
     expect(save).not.toHaveBeenCalled();
-    const terminal = readFileSync(current.audit.getPermissionAuditLogFile(), "utf8").trim().split("\n")
-      .map(line => JSON.parse(line)).filter(row => row.toolUseId === "caught-effect-recheck" && row.decision !== "ask");
+    const terminal = capture.events.filter((event) => event.event === "permission_decision" &&
+      event.correlationId === invocationCorrelationId("caught-effect-recheck") && event.decision !== "ask");
     const terminalReason = personDenied ? "the user denied the effect approval" : reason;
-    expect(terminal).toEqual([expect.objectContaining({ decision: "deny", trustOrigin: personDenied ? "user-keyboard" : trustOrigin,
-      denyReasons: [expect.objectContaining({ reason: terminalReason })] })]);
+    expect(terminal).toEqual([expect.objectContaining({ decision: "deny", trustOrigin: personDenied ? "user-keyboard" : trustOrigin, })]);
     expect(result).toMatchObject({ content: terminalReason, is_error: true });
   });
 

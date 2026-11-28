@@ -1,3 +1,4 @@
+import { logPermissionEvent, permissionLogId } from "../lib/permission-log.js";
 import { commitTerminalRow, type TerminalDenialLifecycle, type TerminalDenyKind } from "./invocation-ledger.js";
 import { bindPendingAnswerRequest, openPendingAnswerCard, personAnswerStands, saveStandingAnswerRule, spendStandingAnswer, toolUseAction, type StandingAnswer, type StandingAnswerUse } from "../permissions/pending-answer-policy.js";
 import { agentBrowserScopeOf, browserApprovalCardFacts, userOwnedBrowserScopeOf } from "./browser-tools.js";
@@ -98,7 +99,7 @@ import {
   dispatchPermissionDirCommand,
   type PermissionDirectoryLifecycle,
 } from "../permissions/permission-slash.js";
-import type { HookResult, ToolExecutionAuditMetadata } from "../audit/audit-schema.js";
+import type { HookResult, ToolExecutionAuditMetadata } from "./pipeline/permission-decision.js";
 import type { EffectLedger } from "../permissions/effect-ledger.js";
 import { currentToolExecutionCwd, runWithToolExecutionCwd } from "./execution-context.js";
 import { withShellSessionCwd } from "./shell-session-cwd.js";
@@ -416,19 +417,13 @@ export async function runToolInvocation(
           decision: result.decision, reason: result.reason, results: [result],
         }) ?? []);
         if (!denied) {
-          services.auditLogger.log({ timestamp: new Date().toISOString(), sessionId: opts.sessionId ?? "unknown", type: "info",
-            input: JSON.stringify({ type: "hook_input_reclassified", toolUseId: toolUse.id, hookChain }), output: reason,
-            toolCalls: [{ name: toolUse.name, isError: false, trust: "high" }] });
+          logPermissionEvent("hook_input_reclassified", { sessionId: permissionLogId(opts.sessionId ?? "unknown"), correlationId: services.invocationTerminal.correlationId, tool: permissionLogId(toolUse.name), hookCount: hookChain.length });
         } else {
-          const ready = services.auditLogger.isPermissionAuditChainReady();
-          if (!ready && services.requirePermissionAuditChain) throw new Error("Hook mutation requires the permission audit chain");
           const common = { auditId: randomUUID(), ts: new Date().toISOString(), toolUseId: toolUse.id,
             trustOrigin: provenanceTrustOrigin(RULE_PROVENANCE, "deny", opts.permissionContext?.trustOrigin ?? "unknown" as const), tool: toolUse.name,
             source: services.toolRegistry.findByName(toolUse.name)?.source ?? "builtin" as const,
             category: services.toolRegistry.findByName(toolUse.name)?.category ?? "meta" as const, hookChain };
-          // The rule's deny is the attempt's one terminal row, written with no logger when the chain is neither set up nor
-          // required; the admission's settle then finds it claimed.
-          await commitTerminalRow(services.invocationTerminal, (row) => row({ ...(ready ? { logger: services.auditLogger } : {}),
+          await commitTerminalRow(services.invocationTerminal, (row) => row({
             entry: { ...common, decision: "deny", denyReasons: [{ reason, source: "hook-input-mutation" }] }, kind: "denied" }));
         }
         if (denied) {
@@ -507,6 +502,7 @@ async function runToolInvocationAttempt(
       input: Record<string, unknown> = toolUse.input,
     ): ToolExecutionAuditMetadata => ({
       toolUseId: toolUse.id,
+      correlationId: services.invocationTerminal.correlationId,
       ...(services.invocationTerminal.attempt > 1 ? { attempt: services.invocationTerminal.attempt } : {}),
       ...(hostShellExecutionPlanAudit !== undefined
         ? { executionPlan: hostShellExecutionPlanAudit }
@@ -601,6 +597,7 @@ async function runToolInvocationAttempt(
       ...args: AuditPermissionAskArgs
     ): Promise<void> => {
       args[8] = currentAuditMetadata(args[3]);
+      args[9] = sessionId;
       return services.auditWriter.auditPermissionAsk(...args);
     };
 
@@ -2117,7 +2114,6 @@ async function runToolInvocationAttempt(
           } catch { return { allowed: false, result: await denyFileTargets(changedTargetReason) }; }
         }
         if (decision.choice === "allow-always" && !persistRefused) {
-          // Persist no folder rule unless its grant audit is durable.
           await services.auditWriter.auditPermissionGrant({
             toolName: toolUse.name,
             source,

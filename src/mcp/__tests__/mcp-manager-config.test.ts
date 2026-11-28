@@ -1,3 +1,4 @@
+import { trackPermissionEvents } from "../../__tests__/support/permission-events.js";
 import { MCP_GOVERNANCE_UNAPPROVED_SERVER } from "../../shared/mcp-error-code.js";
 /** Config mutation tests use isolated temporary state and never launch real clients. */
 import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
@@ -31,7 +32,7 @@ const mockGetState = vi.fn().mockReturnValue({
   status: "connected" as const,
   registeredTools: [],
 });
-const mockAuditLog = vi.fn();
+const permissionEvents = trackPermissionEvents();
 const constructedConfigs: unknown[] = [];
 const mockValidateServer = vi.fn<() => ValidationResult>(() => ({ valid: true }));
 const mockValidateUserConfig = vi.fn<() => ValidationResult>(() => ({ valid: true }));
@@ -89,7 +90,6 @@ async function makeManager(bundledSecrets?: { getSecret(key: string): string | n
     new (ToolRegistry as new () => InstanceType<typeof ToolRegistry>)(),
     unusedNetworkFetch,
     testConfigPath,
-    { log: mockAuditLog } as never,
     undefined,
     undefined,
     (bundledSecrets ?? secretStore) as never,
@@ -395,7 +395,7 @@ describe("McpManager — addConfig()", () => {
     expect(raw.servers).toHaveLength(1);
     expect(raw.servers[0].id).toBe("new-srv");
     expect(mockConnect).toHaveBeenCalledOnce();
-    expect(mockAuditLog).toHaveBeenCalledWith(expect.objectContaining({ type: "mcp_connect" }));
+    expect(permissionEvents()).toContainEqual(expect.objectContaining({ event: "mcp_server_connected", serverId: "new-srv" }));
   });
 
   it("throws if server id already exists", async () => {
@@ -649,7 +649,7 @@ describe("McpManager — addConfig()", () => {
     expect(mockConnect.mock.calls.length).toBeGreaterThan(connectCallsBefore);
   });
 
-  it("setApiKey — emits mcp_apikey_set audit log on success (MEDIUM-5)", async () => {
+  it("setApiKey logs a successful credential update", async () => {
     const servers: McpServerConfig[] = [
       { id: "audit-key-srv", transport: "stdio", command: "uvx", auth: "api-key", apiKeyEnv: "MY_KEY" },
     ];
@@ -658,9 +658,8 @@ describe("McpManager — addConfig()", () => {
 
     await mgr.setApiKey("audit-key-srv", "sk-good-key");
 
-    expect(mockAuditLog).toHaveBeenCalledWith(
-      expect.objectContaining({ type: "mcp_apikey_set", output: "connected" }),
-    );
+    expect(permissionEvents()).toContainEqual(expect.objectContaining({ event: "mcp_api_key_set", serverId: "audit-key-srv" }));
+    expect(mockConnect).toHaveBeenCalled();
   });
 });
 
@@ -706,14 +705,14 @@ describe("McpManager — removeConfig()", () => {
     expect(vi.mocked(rename)).not.toHaveBeenCalled();
   });
 
-  it("emits kill-switch audit when a connected server is terminated", async () => {
+  it("logs the kill switch when a connected server is terminated", async () => {
     const mgr = await makeManager();
     const server = { id: "audit-srv", transport: "stdio", command: "cmd" } as const;
 
     await mgr.connectServer(server);
     await mgr.killSwitch(server.id);
 
-    expect(mockAuditLog).toHaveBeenCalledWith(expect.objectContaining({ type: "kill_switch" }));
+    expect(permissionEvents()).toContainEqual(expect.objectContaining({ event: "mcp_kill_switch", serverId: server.id }));
   });
 
   it("is idempotent when removing a server absent from bak-only config", async () => {

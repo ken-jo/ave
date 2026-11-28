@@ -1,8 +1,9 @@
+import { logPermissionEvent, permissionLogId } from "../lib/permission-log.js";
 import { isHostRefusal, markHostRefusal } from "./host-refusal.js";
 import { unattendedApprovalDenial } from "../shared/turn-extension-policy.js";
 import { appendToolInvocationAudit, trackDetachedToolInvocation } from "./invocation-ledger.js";
 import { isHostExitAbort } from "../shared/host-exit-abort.js";
-import type { ToolAuditTerminationReason } from "../audit/audit-logger.js";
+import type { ToolAuditTerminationReason } from "./executor-contract.js";
 import { type AnswerEpochs, answerEpochsOf, onlyMemoryRulesChangedSince, bindPendingAnswerRequest, openPendingAnswerCard, pendingQuestionStillAsked, personAnswerStands, saveStandingAnswerRule, standingAnswerFor, toolUseAction, type StandingAnswer, type StandingAnswerUse } from "../permissions/pending-answer-policy.js";
 import { dispatchReviewerForInteractiveAuto } from "./pipeline/reviewer-dispatch.js";
 import { userOwnedSurfaceCardFacts, resolveUserOwnedSurfaceApproval } from "./pipeline/user-owned-surface.js";
@@ -22,7 +23,7 @@ import type { ApprovalRequestInput, LinkedApprovalTarget } from "../permissions/
 import { randomUUID } from "node:crypto";
 import type { PermissionCheckResult } from "../permissions/permission-manager.js";
 import { HOST_TERMINAL_PERMISSION_CHANGED, issueHostTerminalWriteAuthority, type HostTerminalWriteAuthority } from "../permissions/host-terminal-write-authority.js";
-import type { ToolExecutionAuditMetadata } from "../audit/audit-schema.js";
+import type { ToolExecutionAuditMetadata } from "./pipeline/permission-decision.js";
 import { isPiiRedactionEnabled, maskSensitiveData } from "../audit/dlp-filter.js";
 import { emitEffectShadowLog } from "../permissions/reviewer/risk-shadow-log.js";
 import { runWithEffectLedger, type EffectLedger } from "../permissions/effect-ledger.js";
@@ -68,7 +69,6 @@ import type {
 import {
   hookChainFromDispatch,
   mergeHookChains,
-  redactAskUserAuditOutput,
 } from "./pipeline/audit-entries.js";
 import { emitPermissionReview, emitToolStart } from "./pipeline/display-mask.js";
 import { returnUserAbort } from "./pipeline/invocation-context.js";
@@ -81,12 +81,11 @@ import {
   scriptHookRefusal,
   type InvocationRunnerServices,
 } from "./invocation-services.js";
-import {
-  auditSafeToolInput,
-  type AuditWriter,
+import type {
+  AuditWriter,
 } from "./pipeline/audit-writer.js";
 import {
-  RATIONALE_TERMINAL_AUDIT_UNKNOWN_RESULT,
+  RATIONALE_TERMINAL_STATE_UNKNOWN_RESULT,
   type ExecuteOptions,
   type HostPluginAuthLifecycle,
   type ToolCallMeta,
@@ -192,7 +191,7 @@ export interface ExecutionStageContext {
     reason: string,
     input: Record<string, unknown>,
     blockedPermission?: PermissionCheckResult,
-    hookChain?: import("../audit/audit-schema.js").HookResult[],
+    hookChain?: import("./pipeline/permission-decision.js").HookResult[],
   ) => Promise<ToolResult>;
   startTime: number;
   callbacks: ToolExecutorCallbacks | undefined;
@@ -386,51 +385,6 @@ export async function executeAuthorizedToolInvocation(
     return withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, durationMs });
   }
 
-  if (services.requirePermissionAuditChain) {
-    try {
-      services.auditLogger.assertPermissionAuditWritable();
-    } catch (err) {
-      if (rationaleResumeContext) {
-        return returnRationaleResumeBlock(
-          "permission audit chain is not writable: " +
-            errorMessage(err),
-          finalInput,
-          permissionResult,
-        );
-      }
-      const msg = t("be_executor.auditChainBlock", { name: toolUse.name, error: errorMessage(err) });
-      const durationMs = Date.now() - startTime;
-      emitToolStart(callbacks, toolUse.name, finalInput, meta);
-      callbacks?.onToolEnd?.(toolUse.name, msg, true, meta, undefined, durationMs);
-      const audit = currentAuditMetadata(finalInput);
-      services.auditLogger.log({
-        timestamp: new Date().toISOString(),
-        sessionId: sessionId ?? "unknown",
-        type: "tool_call",
-        input: maskSensitiveData(
-          JSON.stringify(auditSafeToolInput(finalInput, audit)),
-          { pii: isPiiRedactionEnabled() },
-        ).masked.slice(0, 500),
-        output: msg.slice(0, 1024),
-        toolCalls: [{
-          name: toolUse.name,
-          isError: true,
-          source,
-          trust,
-          executionTimeMs: durationMs,
-          ...(audit.toolUseId !== undefined ? { toolUseId: audit.toolUseId } : {}),
-          ...(audit.executionPlan !== undefined
-            ? { executionPlan: audit.executionPlan }
-            : {}),
-          permissionDecision: "deny",
-          permissionReason: "permission audit chain unavailable before execution",
-          rateLimitRemaining: rateResult.remaining,
-        }],
-      });
-      return withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, durationMs });
-    }
-  }
-
   const operationExecutionDomain =
     resolvedPluginOperation && pluginOperationPrincipal
       ? pluginOperationExecutionDomain(
@@ -528,7 +482,7 @@ export async function executeAuthorizedToolInvocation(
   let effectAuthorizationRequired: AuthorizationRequiredControl | undefined;
   let effectNoApprover = false;
   let effectApprovalRefusal: EffectApprovalRefusal | undefined;
-  let latePermissionHookChain: import("../audit/audit-schema.js").HookResult[] | undefined;
+  let latePermissionHookChain: import("./pipeline/permission-decision.js").HookResult[] | undefined;
   let handlerAdmissionBlocked = true;
   let outputArtifact: ToolOutputArtifactInfo | undefined;
   let ownedOutputCapture: ToolOutputCapture | undefined;
@@ -536,7 +490,7 @@ export async function executeAuthorizedToolInvocation(
   let terminationReason: ToolAuditTerminationReason = "ok";
   let consumedPluginOperationGrantId: string | undefined;
   let deferredOperationSettlement: Promise<unknown> | undefined;
-  let indeterminateAuditPersisted = false;
+  let indeterminateSettlementTracked = false;
   let interruptionReason: "ceiling" | "user-abort" | undefined;
   let settledToolDetail: SettledToolDetail | undefined;
   let holdOperationLeaseForFinalBoundary = false;
@@ -590,7 +544,7 @@ export async function executeAuthorizedToolInvocation(
           permissionResult,
         );
       }
-      const started = await startRationaleResume(rationaleResumeContext.authorized);
+      const started = await startRationaleResume(rationaleResumeContext.authorized, services.invocationTerminal.correlationId);
       if (!started.ok) {
         return returnRationaleResumeBlock(
           started.reason,
@@ -653,12 +607,12 @@ export async function executeAuthorizedToolInvocation(
           },
         } as const;
         if (consumed.ok) {
-          await appendToolInvocationAudit(services.auditLogger, {
+          await appendToolInvocationAudit({
             ...commonGrantAudit,
             decision: "allow",
             });
         } else {
-          await appendToolInvocationAudit(services.auditLogger, {
+          await appendToolInvocationAudit({
             ...commonGrantAudit,
             decision: "deny",
             denyReasons: [{
@@ -995,15 +949,7 @@ export async function executeAuthorizedToolInvocation(
     tool.resolveHostCeilingMs !== undefined
     && effectiveCeilingMs > TOOL_TIMEOUT_POLICY.globalCeilingMs
   ) {
-    services.auditLogger.log({
-      timestamp: new Date().toISOString(),
-      sessionId: sessionId ?? "unknown",
-      type: "info",
-      input: `tool=${tool.name} source=${tool.source}`,
-      output:
-        `host ceiling raised to ${effectiveCeilingMs}ms `
-        + `(base ${TOOL_TIMEOUT_POLICY.globalCeilingMs}ms)`,
-    });
+    logPermissionEvent("tool_reclassified", { sessionId: permissionLogId(sessionId ?? "unknown"), tool: permissionLogId(tool.name), source: tool.source });
   }
   // Every allow source reaches this gate. Reviewer-bound requests paused by
   // the breaker require fresh native consent; existing grants keep their scope.
@@ -1019,14 +965,6 @@ export async function executeAuthorizedToolInvocation(
           : "File target changed before execution.";
         permissionResult = refusal(reason, RULE_PROVENANCE);
         throw new Error(t(key));
-      }
-    }
-    if (services.requirePermissionAuditChain) {
-      try {
-        services.auditLogger.assertPermissionAuditWritable();
-      } catch (error) {
-        permissionResult = refusal("permission audit chain unavailable before execution", HOST_PROVENANCE);
-        throw new Error(t("be_executor.auditChainBlock", { name: toolUse.name, error: errorMessage(error) }));
       }
     }
     if (humanApproved && services.permissionManager &&
@@ -1139,7 +1077,7 @@ export async function executeAuthorizedToolInvocation(
     await services.auditWriter.auditPermissionAsk(
       toolUse.name, source, invocationCategory, finalInput,
       permissionResult, executionCwd,
-      invocationPermissionContext, targetFilePath, currentAuditMetadata(finalInput),
+      invocationPermissionContext, targetFilePath, currentAuditMetadata(finalInput), sessionId,
     );
     signal.throwIfAborted();
     assertLateApprovalPolicyCurrent();
@@ -1474,7 +1412,7 @@ export async function executeAuthorizedToolInvocation(
     terminationReason = "indeterminate";
     // The ceiling and the quit seal are the host's stops; the invocation's principal decided nothing here.
     const hostStopped = !outcome.ok && outcome.reason === "ceiling" || isHostExitAbort(abortSignal?.reason);
-    await appendToolInvocationAudit(services.auditLogger, {
+    await appendToolInvocationAudit({
       ts: new Date().toISOString(),
       auditId: randomUUID(),
       tool: toolUse.name,
@@ -1495,7 +1433,7 @@ export async function executeAuthorizedToolInvocation(
           : {}),
       },
     });
-    indeterminateAuditPersisted = true;
+    indeterminateSettlementTracked = true;
   }
   const effectPermissionRefusal = effectApprovalRefusal === undefined ? undefined
     : effectApprovalRefusal.kind === "denied" ? refusal(effectApprovalRefusal.fresh.reason, RULE_PROVENANCE)
@@ -1663,7 +1601,6 @@ export async function executeAuthorizedToolInvocation(
         hostObservable: tool.source === "plugin",
         hostObservedEffect: effectSummary,
       },
-      services.auditLogger,
     );
   }
   if (
@@ -1689,7 +1626,7 @@ export async function executeAuthorizedToolInvocation(
     if (
       operationExecutionLease &&
       deferredOperationSettlement &&
-      indeterminateAuditPersisted &&
+      indeterminateSettlementTracked &&
       pluginOperationPrincipal &&
       resolvedPluginOperation
     ) {
@@ -1723,7 +1660,7 @@ export async function executeAuthorizedToolInvocation(
         settlement,
         async () => {
           try {
-            await appendToolInvocationAudit(services.auditLogger, { ...pluginOperationRow("settled"), decision: "allow" });
+            await appendToolInvocationAudit({ ...pluginOperationRow("settled"), decision: "allow" });
             lease.release();
           } catch (error) {
             log.error(
@@ -1735,7 +1672,7 @@ export async function executeAuthorizedToolInvocation(
           }
         },
         // The worker is stopped with its plugin; its settlement is no longer recorded.
-        () => appendToolInvocationAudit(services.auditLogger, {
+        () => appendToolInvocationAudit({
           ...pluginOperationRow("indeterminate"),
           decision: "deny",
           denyReasons: [{ reason: "host-shutdown", source: "plugin-operation-execution" }],
@@ -1797,11 +1734,11 @@ export async function executeAuthorizedToolInvocation(
         );
         rationaleResumeContext.terminalized = terminalCommitted;
         if (!terminalCommitted) {
-          callbacks?.onToolEnd?.(toolUse.name, RATIONALE_TERMINAL_AUDIT_UNKNOWN_RESULT, true, meta, undefined, durationMs);
+          callbacks?.onToolEnd?.(toolUse.name, RATIONALE_TERMINAL_STATE_UNKNOWN_RESULT, true, meta, undefined, durationMs);
           completePluginAuthFailure(
-            new Error(RATIONALE_TERMINAL_AUDIT_UNKNOWN_RESULT),
+            new Error(RATIONALE_TERMINAL_STATE_UNKNOWN_RESULT),
           );
-          return withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: RATIONALE_TERMINAL_AUDIT_UNKNOWN_RESULT, is_error: true, durationMs });
+          return withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: RATIONALE_TERMINAL_STATE_UNKNOWN_RESULT, is_error: true, durationMs });
         }
         callbacks?.onToolEnd?.(toolUse.name, displayContent, true, meta, undefined, durationMs);
       }
@@ -1887,53 +1824,11 @@ export async function executeAuthorizedToolInvocation(
   const dlpResult = maskExecutionOutput(content, settledToolDetail, pii);
   if (dlpResult.detections.length > 0) {
     displayContent = dlpResult.masked;
-    const audit = currentAuditMetadata(finalInput);
-    const dlpAuditInput = maskSensitiveData(
-      JSON.stringify(auditSafeToolInput(finalInput, audit)),
-      { pii },
-    ).masked;
-    log.warn(
-      `Sensitive data detected and masked — tool: '${toolUse.name}', patterns: ${dlpResult.detections.join(", ")}`,
-    );
-    services.auditLogger.log({
-      timestamp: new Date().toISOString(),
-      sessionId: sessionId ?? "unknown",
-      type: "tool_call",
-      input: dlpAuditInput.slice(0, 500),
-        output: `[DLP masking applied] patterns: ${dlpResult.detections.join(", ")}`,
-      toolCalls: [{
-        name: toolUse.name,
-        isError: false,
-        source,
-        trust,
-        executionTimeMs: Date.now() - startTime,
-        ...(audit.toolUseId !== undefined ? { toolUseId: audit.toolUseId } : {}),
-        ...(audit.executionPlan !== undefined
-          ? { executionPlan: audit.executionPlan }
-          : {}),
-        permissionDecision: "dlp_masked",
-          permissionReason: `Detected patterns: ${dlpResult.detections.join(", ")}`,
-      }],
-    });
+    logPermissionEvent("dlp_masked", { sessionId: permissionLogId(sessionId ?? "unknown"), tool: permissionLogId(toolUse.name), correlationId: services.invocationTerminal.correlationId, detectionCount: dlpResult.detections.length });
   }
 
   // ── Step 8: Audit + Result (항상 실행) ──────────
   const durationMs = Date.now() - startTime;
-  // Redact the user's freeText answer before it lands in the audit
-  // log. The DLP filter at Step 7b only catches structured patterns
-  // (emails, IDs); a free-form answer ("내 비밀번호는 …") wouldn't match
-  // any pattern but is still PII the user typed in. For ask_user_question
-  // specifically, the LLM doesn't need the raw text in audit — provenance
-  // (the question + that the user replied) is what matters.
-  //
-  // Gate on `source === "builtin"` (mirrors the builtin-only short-circuit
-  // pattern at Step 3). Otherwise a plugin/MCP tool that happens to be
-  // named `ask_user_question` would have its `freeText` field blindly
-  // replaced — a name collision should not trigger host-level redaction.
-  const auditContent =
-    toolUse.name === "ask_user_question" && source === "builtin" && !isError
-      ? redactAskUserAuditOutput(displayContent)
-      : displayContent;
   // Forensic hook chain on the success/post path: the pre hooks that allowed
   // this call plus the post hooks that ran after it. `undefined` when neither
   // fired (keeps non-hook rows clean). config-hook vs `.sh`-hook is now
@@ -1946,7 +1841,7 @@ export async function executeAuthorizedToolInvocation(
   const auditedPermissionResult = authorizationRequired || effectNoApprover
     ? refusal(effectNoApprover ? NO_APPROVER_MESSAGE : "authorization required but approval surface unavailable", HOST_PROVENANCE)
     : permissionResult;
-  await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, auditContent, isError, startTime, auditedPermissionResult, rateResult.remaining, invocationPermissionContext, invocationCategory, executionCwd, targetFilePath, terminationReason, successHookChain);
+  await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, displayContent, isError, startTime, auditedPermissionResult, rateResult.remaining, invocationPermissionContext, invocationCategory, executionCwd, targetFilePath, terminationReason, successHookChain);
   if (rationaleResumeContext?.started) {
     rationaleResumeContext.terminalizationAttempted = true;
     const terminalCommitted = await finishRationaleResume(
@@ -1955,12 +1850,12 @@ export async function executeAuthorizedToolInvocation(
     );
     rationaleResumeContext.terminalized = terminalCommitted;
     if (!terminalCommitted) {
-      log.error("Rationale resume invocation terminal audit CAS failed");
-      callbacks?.onToolEnd?.(toolUse.name, RATIONALE_TERMINAL_AUDIT_UNKNOWN_RESULT, true, meta, undefined, durationMs);
+      log.error("Rationale resume invocation terminal state CAS failed");
+      callbacks?.onToolEnd?.(toolUse.name, RATIONALE_TERMINAL_STATE_UNKNOWN_RESULT, true, meta, undefined, durationMs);
       completePluginAuthFailure(
-        new Error(RATIONALE_TERMINAL_AUDIT_UNKNOWN_RESULT),
+        new Error(RATIONALE_TERMINAL_STATE_UNKNOWN_RESULT),
       );
-      return withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: RATIONALE_TERMINAL_AUDIT_UNKNOWN_RESULT, is_error: true, durationMs });
+      return withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: RATIONALE_TERMINAL_STATE_UNKNOWN_RESULT, is_error: true, durationMs });
     }
   }
   if (pendingReadReceipt) {

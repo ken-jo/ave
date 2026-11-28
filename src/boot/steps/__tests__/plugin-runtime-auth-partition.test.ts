@@ -153,7 +153,6 @@ async function initAndGetFactory(): Promise<CreateHostApi> {
       replacePluginTools: vi.fn(),
     } as never,
     pythonPath: undefined,
-    bootAuditLogger: { log: vi.fn() } as never,
     mainWindow: {} as never,
     networkFetch: directHostFetchTransport(vi.fn() as unknown as typeof fetch),
     openAuthWindowService: vi.fn(async () => []),

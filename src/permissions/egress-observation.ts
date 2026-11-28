@@ -1,6 +1,4 @@
-/** Sandbox execution telemetry uses a separate JSONL schema from permission decisions (docs/research/sandbox-isolation.md). */
-
-import type { SandboxKind, SandboxCapability } from "../permissions/sandbox-capability.js";
+import type { SandboxKind, SandboxCapability } from "./sandbox-capability.js";
 import type { UserApprovalVerdict } from "../shared/permissions-events.js";
 import type { ToolTrustOrigin } from "../tools/types.js";
 import type { RiskLevel } from "../shared/permission-review-status.js";
@@ -8,7 +6,7 @@ import type { EgressDenial, EgressDenialSource } from "../shared/egress-denials.
 import type { EgressGrantScope } from "../shared/sandbox-capability-info.js";
 
 /** Events observed by sandbox backends while intercepting filesystem or network operations. */
-export type SandboxEvent =
+type SandboxEvent =
   | {
       type: "egress_attempted";
       blocked: boolean;

@@ -17,7 +17,6 @@ vi.mock("../audit/dlp-filter.js", () => ({
   initDlpAudit: vi.fn(),
   initPiiRedactionPolicy: vi.fn(),
 }));
-vi.mock("../audit/audit-logger.js", () => ({ createAuditLogger: vi.fn() }));
 
 function makeFakeWindow() {
   const listeners = new Map<string, Array<() => void>>();

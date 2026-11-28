@@ -1,3 +1,4 @@
+import { logPermissionEvent, permissionLogId } from "../lib/permission-log.js";
 /** Only accepted raises charge budgets and deliver host-owned cards, notifications, audit records, and events. */
 import type {
   AlertInput,
@@ -8,7 +9,6 @@ import type {
 } from "../plugins/public-contract.js";
 import type { AlertCard, AlertCardClosedReason, AlertKindRow, AlertSettings, SetAlertKindResult, SetAlertOsNotificationsResult } from "../shared/alerts-types.js";
 import { ALERT_HOST_PLUGIN_ID, ALERT_RESERVED_PACKAGE_ID, isAlertKindKey, isAlertKindPatch, isAlertVisibility } from "../shared/alerts-types.js";
-import type { AuditEntry } from "../audit/audit-logger.js";
 import { t, translate, type Locale } from "../i18n/index.js";
 import { getDeclaredAlertKinds, getDeclaredConfigInherits } from "../plugins/runtime/manifest-validation.js";
 import { AlertMigration, type AlertMigrationPorts } from "./migration.js";
@@ -61,7 +61,6 @@ export interface AlertsServiceDeps {
     fire(opts: { kind: "alert"; title: string; body: string; bypassFocusGate?: boolean; sticky?: boolean }): void;
   };
   emit: (type: "alert.raised" | "alert.withdrawn", payload: Record<string, unknown>) => void;
-  audit: (entry: AuditEntry) => void;
   kindsChanged?: () => void;
   now?: () => number;
 }
@@ -343,11 +342,8 @@ export class AlertsService {
     if (card) this.stageCard(pluginId, registration.pluginLabel, kind.id, alertId, rendered, priority, now);
     const cues = this.notify(pluginId, registration.pluginLabel, kind, rendered, visibility, priority, choice.osNotification && settings.osNotificationsEnabled);
 
-    this.writeAudit({
-      timestamp: new Date(now).toISOString(),
-      sessionId: "plugin",
-      type: "tool_call",
-      input: `[plugin:${pluginId}] alert.raised kind=${kind.id} alertId=${alertId} visibility=${visibility} priority=${priority}`,
+    logPermissionEvent("alert_raised", {
+      pluginId: permissionLogId(pluginId), alertKind: permissionLogId(kind.id), visibility, priority,
     });
     this.deps.emit("alert.raised", { pluginId, kind: kind.id, alertId, visibility, priority, raisedAt: new Date(now).toISOString() });
     return { status: "raised", alertId, delivered: { card, osNotification: cues.os, toast: cues.toast } };
@@ -501,22 +497,11 @@ export class AlertsService {
   private auditSuppressed(pluginId: string, kindId: string, reason: string): void {
     if (!this.denyThrottle.shouldEmit(pluginId, reason, this.now())) return;
     const suppressed = this.denyThrottle.drainSuppressed(pluginId, reason);
-    this.writeAudit({
-      timestamp: new Date(this.now()).toISOString(),
-      sessionId: "plugin",
-      type: "warn",
-      input:
-        `[plugin:${pluginId}] alert.suppressed kind=${kindId} reason=${reason}`
-        + (suppressed > 0 ? ` (+${suppressed} suppressed)` : ""),
-    });
+    logPermissionEvent("alert_suppressed", {
+      pluginId: permissionLogId(pluginId), alertKind: permissionLogId(kindId),
+      reasonCode: permissionLogId(reason), suppressed,
+    }, "warn");
   }
 
-  /** Audit failure must not turn an answered raise into a failed one. */
-  private writeAudit(entry: AuditEntry): void {
-    try {
-      this.deps.audit(entry);
-    } catch (err) {
-      log.warn(`alert audit failed: ${errorMessage(err)}`);
-    }
-  }
+
 }

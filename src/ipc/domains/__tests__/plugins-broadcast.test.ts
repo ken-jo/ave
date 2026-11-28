@@ -1,3 +1,4 @@
+import { collectPermissionEvents } from "../../../__tests__/support/permission-events.js";
 import { mkdtempSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -8,8 +9,7 @@ import {
   describe,
   expect,
   it,
-  vi,
-} from "vitest";
+  vi, onTestFinished } from "vitest";
 import { hostFrameEvent, untrustedEvent } from "../../../__tests__/test-helpers.js";
 import { CHANNELS } from "../../../contract/app-contract.js";
 import { notifyBootstrapStatus } from "../../../boot/bootstrap-status.js";
@@ -113,9 +113,6 @@ async function setup(options: { appWindows?: ReturnType<typeof makeWindow>[] } =
       getPluginConfig: vi.fn(() => ({})),
       setPluginConfig: vi.fn(async () => undefined),
     },
-    auditLogger: {
-      log: vi.fn(),
-    },
     pluginPaths: { cacheRoot: join(cleanupRoot, ".cache") },
     clearAuthPartitionService: vi.fn(async () => undefined),
     listPluginAuthPartitionsService: vi.fn((pluginId: string) => [
@@ -200,13 +197,15 @@ describe("plugins IPC lifecycle broadcast", () => {
   });
 
   it("refuses the recorded bootstrap status to a foreign frame", async () => {
-    const { deps } = await setup();
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
+    await setup();
     notifyBootstrapStatus(null, { phase: "error", message: "catalog fetch failed" });
 
     const handler = handlers.get("ave:bootstrap:status:get");
     if (!handler) throw new Error("No handler registered for: ave:bootstrap:status:get");
     expect(await handler(untrustedEvent())).toBeNull();
-    expect(deps.auditLogger.log).toHaveBeenCalled();
+    expect(capture.events).toContainEqual(expect.objectContaining({ event: "ipc_sender_refused" }));
   });
 
   it("rejects endpoint URLs saved into API-key secret fields", async () => {

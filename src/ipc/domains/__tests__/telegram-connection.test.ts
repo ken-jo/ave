@@ -1,3 +1,4 @@
+import { trackPermissionEvents } from "../../../__tests__/support/permission-events.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CHANNELS } from "../../../contract/app-contract.js";
 import { invokeFileIpcHandler } from "./test-helpers.js";
@@ -105,10 +106,8 @@ async function setup(options: {
   vi.clearAllMocks();
   const f = options.service ?? serviceFixture();
   const send = vi.fn();
-  const log = vi.fn();
   const { registerTelegramConnectionHandlers } = await import("../telegram-connection.js");
   registerTelegramConnectionHandlers({
-    auditLogger: { log },
     telegramConnectionService: f.service,
     getMainWindow: () => options.includeWindow
       ? { isDestroyed: () => false, webContents: { send } }
@@ -117,19 +116,18 @@ async function setup(options: {
       ? [{ isDestroyed: () => false, webContents: { send } }]
       : [],
   } as never);
-  return { ...f, send, log };
+  return { ...f, send };
 }
+
+const permissionEvents = trackPermissionEvents();
 
 async function setupDisabled() {
   handlers.clear();
   vi.clearAllMocks();
-  const log = vi.fn();
   const { registerTelegramConnectionHandlers } = await import("../telegram-connection.js");
   registerTelegramConnectionHandlers({
-    auditLogger: { log },
     getMainWindow: () => null,
   } as never);
-  return { log };
 }
 
 beforeEach(() => {
@@ -159,19 +157,21 @@ describe("Telegram connection owner IPC boundary", () => {
       await expect(Promise.resolve(handler(PLUGIN_FRAME as never, VALID_PAYLOAD[channel])))
         .resolves.toEqual({ ok: false, error: "unauthorized-frame" });
     }
-    expect(f.log).toHaveBeenCalledTimes(ALL_CHANNELS.length);
+    expect(permissionEvents().filter((entry) => entry.event === "ipc_sender_refused").map((entry) => entry.channel)).toEqual(ALL_CHANNELS);
     expect(f.service.connect).not.toHaveBeenCalled();
     expect(f.service.snapshot).not.toHaveBeenCalled();
     expect(f.service.approveCurrentConversation).not.toHaveBeenCalled();
   });
 
   it("checks the sender before the service and the service before the intent", async () => {
-    const disabled = await setupDisabled();
+    await setupDisabled();
 
     const handler = handlers.get(CHANNELS.telegramConnection.connect)!;
     await expect(Promise.resolve(handler(PLUGIN_FRAME as never, { intent, botToken: BOT_TOKEN })))
       .resolves.toEqual({ ok: false, error: "unauthorized-frame" });
-    expect(disabled.log).toHaveBeenCalledTimes(1);
+    expect(permissionEvents().filter((entry) => entry.event === "ipc_sender_refused")).toEqual([
+      expect.objectContaining({ channel: CHANNELS.telegramConnection.connect }),
+    ]);
 
     await expect(invokeFileIpcHandler(handlers, CHANNELS.telegramConnection.connect, {}))
       .resolves.toEqual({ ok: false, error: "telegram-connection-disabled" });

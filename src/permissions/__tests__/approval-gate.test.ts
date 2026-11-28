@@ -1,6 +1,7 @@
+import { collectPermissionEvents } from "../../__tests__/support/permission-events.js";
 import { bindRemoteControllerToSession } from "../../shared/chat-origin.js";
 import "../../__tests__/support/trusted-powershell.js";
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   ApprovalFreshIdentityRequiredError,
   ApprovalGate,
@@ -33,10 +34,10 @@ import {
   setActiveSandboxCapability,
 } from "../sandbox-capability.js";
 import {
-  auditRowTexts,
+
   makePlatformBridgeAuthority,
   makeTestPolicy,
-  auditRowStartingWith,
+
 } from "./test-helpers.js";
 import { sentApprovalCards } from "../../__tests__/test-helpers.js";
 import { setLocale } from "../../i18n/runtime.js";
@@ -59,6 +60,14 @@ function makeMockWebContents(
 }
 
 // requestAndWait accepts the unsealed input; the gate owns `requireExplicit`.
+let permissionEvents: ReturnType<typeof collectPermissionEvents>;
+beforeEach(() => { permissionEvents = collectPermissionEvents(); });
+afterEach(() => permissionEvents.restore());
+
+function eventFor(event: string, requestId: string) {
+  return permissionEvents.events.find((entry) => entry.event === event && entry.requestId === requestId);
+}
+
 type RequestInput = ApprovalRequestInput;
 
 function makeRequest(overrides?: Partial<RequestInput>): RequestInput {
@@ -94,21 +103,19 @@ function announcedSettledIds(
     .map(([, payload]) => payload.requestId);
 }
 
-// The text of every audit row a gate wrote, in order.
+
 function makeAuditingGate(): {
   wc: ReturnType<typeof makeMockWebContents>;
-  auditLogger: { log: ReturnType<typeof vi.fn> };
   gate: ApprovalGate;
 } {
   const wc = makeMockWebContents();
-  const auditLogger = { log: vi.fn() };
+
   const gate = new ApprovalGate(
     wc as never,
     undefined,
     1_000,
-    auditLogger as never,
   );
-  return { wc, auditLogger, gate };
+  return { wc, gate };
 }
 
 describe("ApprovalGate", () => {
@@ -116,7 +123,7 @@ describe("ApprovalGate", () => {
     await loadLocaleMessages(locale);
     setLocale(locale);
     const fire = vi.fn();
-    const gate = new ApprovalGate(makeMockWebContents() as never, undefined, 1_000, undefined, { fire } as never);
+    const gate = new ApprovalGate(makeMockWebContents() as never, undefined, 1_000, { fire } as never);
     const pending = gate.requestAndWait(makeRequest({
       kind: "out-of-allowed-dir", toolName: "write_file", toolCategory: "write",
       outOfAllowedDir: { candidatePath: "/outside/result.txt", suggestedParent: "/outside", currentAllowed: ["/project"], adjacencyWarnings: [] },
@@ -134,7 +141,7 @@ describe("ApprovalGate", () => {
   it("announces the settlement to the window showing the toast, though the request went to another", async () => {
     const owner = makeMockWebContents();
     const toastWindow = makeMockWebContents();
-    const gate = new ApprovalGate(owner as never, undefined, 1_000, undefined, { fire: vi.fn(() => toastWindow) } as never);
+    const gate = new ApprovalGate(owner as never, undefined, 1_000, { fire: vi.fn(() => toastWindow) } as never);
     const pending = gate.requestAndWait(makeRequest({ id: "toast-elsewhere" }));
     await vi.waitFor(() => expect(sentApprovalCards(owner)).toHaveLength(1));
     expect(announcedSettledIds(toastWindow)).toEqual([]);
@@ -147,7 +154,7 @@ describe("ApprovalGate", () => {
     const controller = new AbortController();
     const fire = vi.fn(() => { controller.abort(new Error("turn stopped")); return toastWindow; });
     const owner = makeMockWebContents();
-    const gate = new ApprovalGate(owner as never, undefined, 1_000, undefined, { fire } as never);
+    const gate = new ApprovalGate(owner as never, undefined, 1_000, { fire } as never);
     await expect(gate.requestAndWait(makeRequest({ id: "toast-aborted", abortSignal: controller.signal }))).resolves.toMatchObject({ choice: "deny-once" });
     expect(sentApprovalCards(owner)).toEqual([]);
     expect(announcedSettledIds(toastWindow)).toEqual(["toast-aborted"]);
@@ -158,7 +165,7 @@ describe("ApprovalGate", () => {
     // The toast is up before the request is sealed; an argument the seal cannot serialize makes that step throw.
     const fire = vi.fn(() => { args["count"] = 1n; return toastWindow; });
     const owner = makeMockWebContents();
-    const gate = new ApprovalGate(owner as never, undefined, 1_000, undefined, { fire } as never);
+    const gate = new ApprovalGate(owner as never, undefined, 1_000, { fire } as never);
     await expect(gate.requestAndWait(makeRequest({ id: "toast-unsealed", args }))).rejects.toThrow();
     expect(fire).toHaveBeenCalledOnce();
     expect(sentApprovalCards(owner)).toEqual([]);
@@ -167,13 +174,13 @@ describe("ApprovalGate", () => {
   it("announces the settlement to the toast's window when the request times out", async () => {
     const owner = makeMockWebContents();
     const toastWindow = makeMockWebContents();
-    const gate = new ApprovalGate(owner as never, undefined, 50, undefined, { fire: vi.fn(() => toastWindow) } as never);
+    const gate = new ApprovalGate(owner as never, undefined, 50, { fire: vi.fn(() => toastWindow) } as never);
     await expect(gate.requestAndWait(makeRequest({ id: "toast-timeout" }))).resolves.toMatchObject({ choice: "deny-once" });
     expect(announcedSettledIds(toastWindow)).toEqual(["toast-timeout"]);
   });
   it("announces the settlement once when the toast's window is the one the request went to", async () => {
     const owner = makeMockWebContents();
-    const gate = new ApprovalGate(owner as never, undefined, 1_000, undefined, { fire: vi.fn(() => owner) } as never);
+    const gate = new ApprovalGate(owner as never, undefined, 1_000, { fire: vi.fn(() => owner) } as never);
     const pending = gate.requestAndWait(makeRequest({ id: "toast-here" }));
     await vi.waitFor(() => expect(sentApprovalCards(owner)).toHaveLength(1));
     gate.resolve("toast-here", { requestId: "toast-here", choice: "deny-once", ...lastSentNonceHmac(owner) });
@@ -183,7 +190,7 @@ describe("ApprovalGate", () => {
   it("skips a toast window destroyed before the request settles", async () => {
     const owner = makeMockWebContents();
     const toastWindow = makeMockWebContents();
-    const gate = new ApprovalGate(owner as never, undefined, 1_000, undefined, { fire: vi.fn(() => toastWindow) } as never);
+    const gate = new ApprovalGate(owner as never, undefined, 1_000, { fire: vi.fn(() => toastWindow) } as never);
     const pending = gate.requestAndWait(makeRequest({ id: "toast-gone" }));
     await vi.waitFor(() => expect(sentApprovalCards(owner)).toHaveLength(1));
     toastWindow.isDestroyed.mockReturnValue(true);
@@ -194,12 +201,11 @@ describe("ApprovalGate", () => {
   it.each(["timeout", "shutdown", "abort"] as const)("settles %s even when the live owner lookup fails after parking", async (termination) => {
     vi.useFakeTimers();
     const wc = makeMockWebContents();
-    const auditLogger = { log: vi.fn() };
     let broken = false;
     const gate = new ApprovalGate(() => {
       if (broken) throw new Error("owner identity contract failed");
       return wc as never;
-    }, undefined, 1_000, auditLogger as never);
+    }, undefined, 1_000);
     const controller = new AbortController();
     const request = makeRequest({ sessionId: "owner-session", abortSignal: controller.signal });
     const pending = gate.requestAndWait(request);
@@ -218,9 +224,7 @@ describe("ApprovalGate", () => {
       expect(isHostApprovalCancelledDecision(await pending)).toBe(termination !== "timeout");
       expect(gate.pendingCount).toBe(0);
       expect(announcedSettledIds(wc)).toContain(request.id);
-      expect(auditLogger.log).toHaveBeenCalledWith(expect.objectContaining({
-        type: "approval", output: expect.stringContaining("[approval:notification-owner-failed]"),
-      }));
+      expect(eventFor("approval_notification_owner_failed", request.id)).toBeDefined();
     } finally {
       gate.disposeAll();
       vi.useRealTimers();
@@ -264,8 +268,7 @@ describe("ApprovalGate", () => {
     const windowA = makeMockWebContents();
     const windowB = makeMockWebContents();
     let owner = windowA;
-    const auditLogger = { log: vi.fn() };
-    const gate = new ApprovalGate(() => owner as never, undefined, undefined, auditLogger as never);
+    const gate = new ApprovalGate(() => owner as never, undefined, undefined);
     const promise = gate.requestAndWait(makeRequest({ id: "req-two-windows", sessionId: "moving-conversation" }));
     expect(gate.listPendingRendererRequests(windowB as never)).toEqual([]);
     owner = windowB;
@@ -276,7 +279,7 @@ describe("ApprovalGate", () => {
     const decision = { requestId: "req-two-windows", choice: "allow-once" as const, nonce, hmac };
     expect(gate.resolveFromDesktopRenderer("req-two-windows", decision, windowA as never)).toBeNull();
     expect(gate.pendingCount).toBe(1);
-    expect(auditRowTexts(auditLogger).some((row) => row.startsWith("[approval:surface-owner-required] req-two-windows"))).toBe(true);
+    expect(eventFor("approval_response_rejected", "req-two-windows")).toMatchObject({ reasonCode: "surface-owner-required" });
     expect(gate.resolveFromDesktopRenderer("req-two-windows", decision, windowB as never)).toMatchObject({ choice: "allow-once" });
     await promise;
     expect(announcedSettledIds(windowA)).toEqual(["req-two-windows"]);
@@ -304,12 +307,10 @@ describe("ApprovalGate", () => {
     { choice: "allow-always", forced: false },
   ] as const)("issues one exact-action receipt for authenticated $choice with forced=$forced", async ({ choice, forced }) => {
     const wc = makeMockWebContents();
-    const auditLogger = { log: vi.fn() };
     const gate = new ApprovalGate(
       wc as never,
       makeTestPolicy({ requireExplicitApproval: false }),
       undefined,
-      auditLogger as never,
     );
     const plan = buildHostShellExecutionPlan({
       platform: "win32",
@@ -373,14 +374,10 @@ describe("ApprovalGate", () => {
       hmac: sent.hmac,
     });
     const decision = await promise.finally(() => directory.dispose());
-    const auditText = JSON.stringify(auditLogger.log.mock.calls);
-    expect(auditText).toContain(`executionPlan.identity=${plan.identity}`);
-    expect(auditText).toContain("executionPlan.requestedSandbox=true");
-    expect(auditText).toContain("executionPlan.mode=plain");
-    expect(auditText).toContain(`executionPlan.fallbackReason=${plan.fallbackReason}`);
-    expect(auditText).toContain("executionPlan.capability.kind=none");
+    const auditText = JSON.stringify(permissionEvents.events);
+    expect(eventFor("approval_decided", req.id)).toMatchObject({ choice });
     expect(auditText).not.toContain(binding.command);
-    expect(auditText).not.toContain(binding.requestedCwd!);
+
     expect(auditText).not.toContain(binding.executionCwd);
     expect(auditText).not.toContain(binding.resolvedCwd);
     expect(auditText).not.toContain("test-only reason that must not enter the audit log");
@@ -449,8 +446,7 @@ describe("ApprovalGate", () => {
 
     for (const mismatch of cases) {
       const wc = makeMockWebContents();
-      const auditLogger = { log: vi.fn() };
-      const gate = new ApprovalGate(wc as never, undefined, undefined, auditLogger as never);
+      const gate = new ApprovalGate(wc as never, undefined, undefined);
       const result = await gate.requestAndWait(makeRequest({
         id: `req-host-shell-mismatch-${mismatch.label}`,
         toolName: mismatch.toolName,
@@ -466,8 +462,8 @@ describe("ApprovalGate", () => {
       expect(wc.send).not.toHaveBeenCalled();
       expect(gate.pendingCount).toBe(0);
       expect(consumeHostApprovedOneShotExecutionBinding(result, binding)).toBe(false);
-      const auditText = JSON.stringify(auditLogger.log.mock.calls);
-      expect(auditText).toContain("[approval:host-shell-binding-mismatch]");
+      const auditText = JSON.stringify(permissionEvents.events);
+      expect(eventFor("approval_host_shell_binding_mismatch", `req-host-shell-mismatch-${mismatch.label}`)).toBeDefined();
       expect(auditText).not.toContain(binding.command);
       expect(auditText).not.toContain(binding.executionCwd);
     }
@@ -487,8 +483,7 @@ describe("ApprovalGate", () => {
     });
     const leakedMarker = "must-not-cross-execution-plan-boundary";
     const wc = makeMockWebContents();
-    const auditLogger = { log: vi.fn() };
-    const gate = new ApprovalGate(wc as never, undefined, undefined, auditLogger as never);
+    const gate = new ApprovalGate(wc as never, undefined, undefined);
 
     const result = await gate.requestAndWait(makeRequest({
       id: "req-structural-execution-plan",
@@ -502,8 +497,8 @@ describe("ApprovalGate", () => {
     expect(isHostApprovalRejectedDecision(result)).toBe(true);
     expect(wc.send).not.toHaveBeenCalled();
     expect(gate.pendingCount).toBe(0);
-    const auditText = JSON.stringify(auditLogger.log.mock.calls);
-    expect(auditText).toContain("[approval:execution-plan-invalid]");
+    const auditText = JSON.stringify(permissionEvents.events);
+    expect(eventFor("approval_execution_plan_invalid", "req-structural-execution-plan")).toBeDefined();
     expect(auditText).not.toContain(leakedMarker);
   });
 
@@ -546,8 +541,7 @@ describe("ApprovalGate", () => {
       },
     });
     const wc = makeMockWebContents();
-    const auditLogger = { log: vi.fn() };
-    const gate = new ApprovalGate(wc as never, undefined, undefined, auditLogger as never);
+    const gate = new ApprovalGate(wc as never, undefined, undefined);
 
     const result = await gate.requestAndWait(makeRequest({
       id: "req-binding-execution-plan-mismatch",
@@ -569,21 +563,18 @@ describe("ApprovalGate", () => {
     expect(wc.send).not.toHaveBeenCalled();
     expect(gate.pendingCount).toBe(0);
     expect(consumeHostApprovedOneShotExecutionBinding(result, binding)).toBe(false);
-    const auditText = JSON.stringify(auditLogger.log.mock.calls);
-    expect(auditText).toContain("[approval:execution-plan-mismatch]");
-    expect(auditText).toContain(`executionPlan.identity=${plan.identity}`);
+    const auditText = JSON.stringify(permissionEvents.events);
+    expect(eventFor("approval_execution_plan_mismatch", "req-binding-execution-plan-mismatch")).toBeDefined();
     expect(auditText).not.toContain(binding.command);
     expect(auditText).not.toContain(binding.executionCwd);
   });
 
-  it("audits agent-action issuer plugin id and scope on request and decision", async () => {
+  it("shows the agent-action issuer and logs its decision", async () => {
     const wc = makeMockWebContents();
-    const auditLogger = { log: vi.fn() };
     const gate = new ApprovalGate(
       wc as never,
       undefined,
       1_000,
-      auditLogger as never,
     );
     const req = makeRequest({
       id: "req-agent-action-1",
@@ -606,38 +597,19 @@ describe("ApprovalGate", () => {
     });
     await expect(promise).resolves.toMatchObject({ choice: "allow-once" });
 
-    const rows = auditLogger.log.mock.calls.map(([entry]) => {
-      const auditEntry = entry as { input?: string; output?: string };
-      return auditEntry.input ?? auditEntry.output ?? "";
-    });
-    const requested = rows.find((row) =>
-      row.includes("[approval:requested] req-agent-action-1"),
-    );
-    const decided = rows.find((row) =>
-      row.includes("[approval:decided] req-agent-action-1"),
-    );
-    expect(requested).toContain("category=agent-action");
-    expect(requested).toContain("kind=agent-action");
-    expect(requested).toContain("source=plugin");
-    expect(requested).toContain("sourcePluginId=sample-plugin");
-    expect(requested).toContain("approvalScope=agent_external_api_call");
-    expect(decided).toContain("category=agent-action");
-    expect(decided).toContain("kind=agent-action");
-    expect(decided).toContain("source=plugin");
-    expect(decided).toContain("sourcePluginId=sample-plugin");
-    expect(decided).toContain("approvalScope=agent_external_api_call");
+    expect((wc.send.mock.calls[0] as unknown as [string, ApprovalRequest])[1]).toMatchObject({ sourcePluginId: "sample-plugin", approvalScope: "agent_external_api_call" });
+    expect(eventFor("approval_requested", req.id)).toBeDefined();
+    expect(eventFor("approval_decided", req.id)).toMatchObject({ choice: "allow-once" });
   });
 
-  it("audits agent-action issuer plugin id and scope on timeout", async () => {
+  it("denies a timed-out agent action and logs the timeout", async () => {
     vi.useFakeTimers();
     try {
       const wc = makeMockWebContents();
-      const auditLogger = { log: vi.fn() };
       const gate = new ApprovalGate(
         wc as never,
         undefined,
         1_000,
-        auditLogger as never,
       );
       const req = makeRequest({
         id: "req-agent-timeout",
@@ -653,30 +625,18 @@ describe("ApprovalGate", () => {
       vi.advanceTimersByTime(1_001);
       await expect(promise).resolves.toMatchObject({ choice: "deny-once" });
 
-      const rows = auditLogger.log.mock.calls.map(([entry]) => {
-        const auditEntry = entry as { input?: string; output?: string };
-        return auditEntry.input ?? auditEntry.output ?? "";
-      });
-      const timeout = rows.find((row) =>
-        row.includes("[approval:timeout] req-agent-timeout"),
-      );
-      expect(timeout).toContain("category=agent-action");
-      expect(timeout).toContain("kind=agent-action");
-      expect(timeout).toContain("sourcePluginId=sample-plugin");
-      expect(timeout).toContain("approvalScope=agent_external_api_call");
+      expect(eventFor("approval_timeout", req.id)).toBeDefined();
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it("audits agent-action issuer plugin id and scope on nonce mismatch", async () => {
+  it("denies an agent action with an inexact nonce and logs the mismatch", async () => {
     const wc = makeMockWebContents();
-    const auditLogger = { log: vi.fn() };
     const gate = new ApprovalGate(
       wc as never,
       undefined,
       1_000,
-      auditLogger as never,
     );
     const req = makeRequest({
       id: "req-agent-nonce-mismatch",
@@ -698,17 +658,7 @@ describe("ApprovalGate", () => {
     });
     await expect(promise).resolves.toMatchObject({ choice: "deny-once" });
 
-    const rows = auditLogger.log.mock.calls.map(([entry]) => {
-      const auditEntry = entry as { input?: string; output?: string };
-      return auditEntry.input ?? auditEntry.output ?? "";
-    });
-    const mismatch = rows.find((row) =>
-      row.includes("[approval:nonce-mismatch] req-agent-nonce-mismatch"),
-    );
-    expect(mismatch).toContain("category=agent-action");
-    expect(mismatch).toContain("kind=agent-action");
-    expect(mismatch).toContain("sourcePluginId=sample-plugin");
-    expect(mismatch).toContain("approvalScope=agent_external_api_call");
+    expect(eventFor("approval_nonce_mismatch", req.id)).toBeDefined();
   });
 
   it("timeout returns deny-once after timeoutMs", async () => {
@@ -935,7 +885,7 @@ describe("ApprovalGate", () => {
   it("attributes unattended denials and notifies without exposing an approval surface", async () => {
     const log = vi.fn();
     const onDenied = vi.fn(() => { throw new Error("stderr unavailable"); });
-    const gate = new ApprovalGate(null, undefined, undefined, { log } as never, undefined, { onDenied });
+    const gate = new ApprovalGate(null, undefined, undefined, undefined, { onDenied });
     const onPending = vi.fn();
     const dispose = gate.observePendingApprovals({ onPending, onSettled: vi.fn() });
     const request = makeRequest({ category: "agent-action", kind: "agent-action", toolCategory: "meta" });
@@ -943,7 +893,7 @@ describe("ApprovalGate", () => {
     expect(decision.choice).toBe("deny-once");
     expect(isHostApprovalRejectedDecision(decision)).toBe(true);
     expect(onDenied).toHaveBeenCalledWith(request.id, request.toolName);
-    expect(log).toHaveBeenCalledWith(expect.objectContaining({ output: expect.stringContaining("answeredBy=headless-exec") }));
+    expect(eventFor("approval_surface_unavailable", request.id)).toMatchObject({ headless: true });
     expect(onPending).not.toHaveBeenCalled();
     expect(gate.pendingCount).toBe(0);
     dispose();
@@ -953,12 +903,10 @@ describe("ApprovalGate", () => {
 
   it("isDestroyed() true → deny-once immediately, no pending entry", async () => {
     const wc = makeMockWebContents({ isDestroyed: true });
-    const auditLogger = { log: vi.fn() };
     const gate = new ApprovalGate(
       wc as never,
       undefined,
       1_000,
-      auditLogger as never,
     );
     const req = makeRequest({
       id: "req-destroyed",
@@ -977,12 +925,7 @@ describe("ApprovalGate", () => {
     // send should never be called when already destroyed
     expect(wc.send).not.toHaveBeenCalled();
     expect(gate.pendingCount).toBe(0);
-    const auditEntry = auditLogger.log.mock.calls[0]?.[0] as
-      { output?: string } | undefined;
-    expect(auditEntry?.output).toContain("sourcePluginId=sample-plugin");
-    expect(auditEntry?.output).toContain(
-      "approvalScope=agent_external_api_call",
-    );
+    expect(eventFor("approval_surface_unavailable", req.id)).toBeDefined();
   });
 
   it("webContents.send throws → deny-once + pendingCount === 0", async () => {
@@ -1206,7 +1149,7 @@ describe("ApprovalGate", () => {
       makeRequest({ id: "d2-req-2", toolName: "tool_b" }),
     );
     const call1 = wc.send.mock.calls[0] as [string, ApprovalRequest];
-    const call2 = wc.send.mock.calls[1] as [string, ApprovalRequest];
+
 
     // Attacker replays req-1's nonce/hmac inside a response claiming to decide req-2
     gate.resolve("d2-req-2", {
@@ -1389,19 +1332,7 @@ describe("ApprovalGate", () => {
       return (calls[calls.length - 1] as unknown as [string, ApprovalRequest])[1];
     }
 
-    function auditRows(auditLogger: { log: ReturnType<typeof vi.fn> }): {
-      sessionId: string;
-      text: string;
-    }[] {
-      return auditLogger.log.mock.calls.map(([entry]) => {
-        const row = entry as {
-          sessionId: string;
-          input?: string;
-          output?: string;
-        };
-        return { sessionId: row.sessionId, text: row.input ?? row.output ?? "" };
-      });
-    }
+
 
     it("signs the attribution: the echoed signature verifies for its own conversation", async () => {
       const wc = makeMockWebContents();
@@ -1493,12 +1424,10 @@ describe("ApprovalGate", () => {
 
     it("attributes requested and decided audit rows to the asking conversation", async () => {
       const wc = makeMockWebContents();
-      const auditLogger = { log: vi.fn() };
       const gate = new ApprovalGate(
         wc as never,
         undefined,
         1_000,
-        auditLogger as never,
       );
 
       const promiseA = gate.requestAndWait(
@@ -1525,26 +1454,18 @@ describe("ApprovalGate", () => {
       });
       await promiseB;
 
-      const rows = auditRows(auditLogger);
-      const sessionFor = (marker: string) =>
-        rows.filter((row) => row.text.includes(marker)).map((r) => r.sessionId);
-
-      expect(sessionFor("[approval:requested] attr-audit-a")).toEqual(["conv-a"]);
-      expect(sessionFor("[approval:decided] attr-audit-a")).toEqual(["conv-a"]);
-      expect(sessionFor("[approval:requested] attr-audit-b")).toEqual(["conv-b"]);
-      expect(sessionFor("[approval:decided] attr-audit-b")).toEqual(["conv-b"]);
-      // Replay can now separate the two conversations, and no row is filed under the old subsystem placeholder.
-      expect(rows.map((row) => row.sessionId)).not.toContain("approval-gate");
+      for (const [id, sessionId] of [["attr-audit-a", "conv-a"], ["attr-audit-b", "conv-b"]]) {
+        expect(eventFor("approval_requested", id)).toMatchObject({ sessionId });
+        expect(eventFor("approval_decided", id)).toMatchObject({ sessionId });
+      }
     });
 
     it("files an approval with no conversation under the unattributed sentinel", async () => {
       const wc = makeMockWebContents();
-      const auditLogger = { log: vi.fn() };
       const gate = new ApprovalGate(
         wc as never,
         undefined,
         1_000,
-        auditLogger as never,
       );
 
       const promise = gate.requestAndWait(makeRequest({ id: "attr-none" }));
@@ -1557,24 +1478,16 @@ describe("ApprovalGate", () => {
       });
       await promise;
 
-      const rows = auditRows(auditLogger);
-      expect(
-        rows.filter((row) => row.text.includes("attr-none")).map((r) => r.sessionId),
-      ).toEqual([
-        UNATTRIBUTED_APPROVAL_SESSION_ID,
-        UNATTRIBUTED_APPROVAL_SESSION_ID,
-      ]);
-      expect(rows.map((row) => row.sessionId)).not.toContain("approval-gate");
+      expect(eventFor("approval_requested", "attr-none")).toMatchObject({ sessionId: UNATTRIBUTED_APPROVAL_SESSION_ID });
+      expect(eventFor("approval_decided", "attr-none")).toMatchObject({ sessionId: UNATTRIBUTED_APPROVAL_SESSION_ID });
     });
 
     it("attributes a host-rejected request that never reaches the renderer", async () => {
-      const wc = makeMockWebContents();
-      const auditLogger = { log: vi.fn() };
+
       const gate = new ApprovalGate(
         null,
         undefined,
         1_000,
-        auditLogger as never,
       );
 
       // Missing approval transport denies before a card is parked.
@@ -1588,24 +1501,16 @@ describe("ApprovalGate", () => {
         ),
       ).resolves.toMatchObject({ choice: "deny-once" });
 
-      const blocked = auditRows(auditLogger).find((row) =>
-        row.text.includes("[approval:send-failed] attr-blocked"),
-      );
-      expect(blocked?.sessionId).toBe("conv-blocked");
+      expect(eventFor("approval_surface_unavailable", "attr-blocked")).toMatchObject({ sessionId: "conv-blocked" });
     });
 
 
   });
 
-  // Answerer attribution `sessionId` names the conversation that was blocked; `answeredBy` names who ended the block. The assertions below are about the shape of the record: the field is present with a real value on the row that records an answer, absent everywhere else, host-derived, and closed.
   describe("approval answerer", () => {
-    // Read the row's answerer, so a test asserts its value and not merely that the word appears.
-    function answererOf(row: string): string | undefined {
-      return /(?:^| )answeredBy=(\S+)/.exec(row)?.[1];
-    }
 
-    it("records the desk as the answerer on the decided row", async () => {
-      const { wc, auditLogger, gate } = makeAuditingGate();
+    it("logs one decision for a desk answer", async () => {
+      const { wc, gate } = makeAuditingGate();
 
       const promise = gate.requestAndWait(makeRequest({ id: "answerer-desk" }));
       const { nonce, hmac } = lastSentNonceHmac(wc);
@@ -1617,15 +1522,11 @@ describe("ApprovalGate", () => {
       });
       await expect(promise).resolves.toMatchObject({ choice: "allow-once" });
 
-      const decided = auditRowTexts(auditLogger).find((row) =>
-        row.includes("[approval:decided] answerer-desk"),
-      );
-      expect(decided).toBeDefined();
-      expect(answererOf(decided as string)).toBe("desk");
+      expect(eventFor("approval_decided", "answerer-desk")).toMatchObject({ choice: "allow-once" });
     });
 
-    it("names an answerer on the decided row and on no other row", async () => {
-      const { wc, auditLogger, gate } = makeAuditingGate();
+    it("logs a request followed by its desk denial", async () => {
+      const { wc, gate } = makeAuditingGate();
 
       const promise = gate.requestAndWait(makeRequest({ id: "answerer-scope" }));
       const { nonce, hmac } = lastSentNonceHmac(wc);
@@ -1637,22 +1538,14 @@ describe("ApprovalGate", () => {
       });
       await promise;
 
-      const rows = auditRowTexts(auditLogger);
-      // The requested row is emitted for this same approval, so "only the decided row names an answerer" constrains a non-empty set of other rows rather than asserting something about nothing.
-      expect(
-        rows.some((row) => row.includes("[approval:requested] answerer-scope")),
-      ).toBe(true);
-      expect(
-        rows
-          .filter((row) => answererOf(row) !== undefined)
-          .map((row) => row.split(" ")[0]),
-      ).toEqual(["[approval:decided]"]);
+      expect(eventFor("approval_requested", "answerer-scope")).toBeDefined();
+      expect(eventFor("approval_decided", "answerer-scope")).toMatchObject({ choice: "deny-once" });
     });
 
-    it("claims no answerer when the host resolved the request itself", async () => {
+    it("logs a timeout when the host resolves a request", async () => {
       vi.useFakeTimers();
       try {
-        const { auditLogger, gate } = makeAuditingGate();
+        const { gate } = makeAuditingGate();
 
         const promise = gate.requestAndWait(
           makeRequest({ id: "answerer-timeout" }),
@@ -1660,19 +1553,15 @@ describe("ApprovalGate", () => {
         vi.advanceTimersByTime(1_001);
         await expect(promise).resolves.toMatchObject({ choice: "deny-once" });
 
-        const timeout = auditRowTexts(auditLogger).find((row) =>
-          row.includes("[approval:timeout] answerer-timeout"),
-        );
-        expect(timeout).toBeDefined();
-        // Absence is the record. Nobody answered, so naming the desk here would assert a user action that never happened.
-        expect(answererOf(timeout as string)).toBeUndefined();
+        expect(eventFor("approval_timeout", "answerer-timeout")).toBeDefined();
+        expect(eventFor("approval_decided", "answerer-timeout")).toBeUndefined();
       } finally {
         vi.useRealTimers();
       }
     });
 
     it("ignores an answerer smuggled in the renderer's response payload", async () => {
-      const { wc, auditLogger, gate } = makeAuditingGate();
+      const { wc, gate } = makeAuditingGate();
 
       const promise = gate.requestAndWait(makeRequest({ id: "answerer-spoof" }));
       const { nonce, hmac } = lastSentNonceHmac(wc);
@@ -1686,10 +1575,7 @@ describe("ApprovalGate", () => {
       } as ApprovalDecision & { answeredBy: string });
       await expect(promise).resolves.toMatchObject({ choice: "allow-once" });
 
-      const decided = auditRowTexts(auditLogger).find((row) =>
-        row.includes("[approval:decided] answerer-spoof"),
-      );
-      expect(answererOf(decided as string)).toBe("desk");
+      expect(eventFor("approval_decided", "answerer-spoof")).not.toHaveProperty("answeredBy");
     });
 
     it("closes the union: a non-member answerer is an anomaly, not the desk", () => {
@@ -1710,7 +1596,7 @@ describe("ApprovalGate", () => {
     });
   });
 
-  // Remote-controller origin The marker answers "was a remote controller's turn blocked on this approval?" It is a fact the host wrote down, not one a later reader reconstructs from the reason text, and not one the renderer is asked for or told. Every assertion below is about that: the value the host set, on the rows that outlive the request, and nowhere the renderer can see.
+
   describe("remote-controller origin", () => {
     function makeControllerRequest(overrides: Partial<RequestInput>): RequestInput {
       const sessionId = overrides.sessionId ?? "controller-session";
@@ -1720,19 +1606,10 @@ describe("ApprovalGate", () => {
       return makeRequest({ ...overrides, sessionId, remoteControllerAuthority: bindRemoteControllerToSession(authority, sessionId) });
     }
 
-    function originOf(row: string): string | undefined {
-      return /(?:^| )remoteControllerOrigin=(\S+)/.exec(row)?.[1];
-    }
 
-    function rowsFor(
-      auditLogger: { log: ReturnType<typeof vi.fn> },
-      id: string,
-    ): string[] {
-      return auditRowTexts(auditLogger).filter((row) => row.includes(id));
-    }
 
-    it("names the controller on every row a remote turn produces", async () => {
-      const { wc, auditLogger, gate } = makeAuditingGate();
+    it("settles a controller request through fresh identity and logs the decision", async () => {
+      const { wc, gate } = makeAuditingGate();
 
       const promise = gate.requestAndWait(
         makeControllerRequest({
@@ -1749,16 +1626,8 @@ describe("ApprovalGate", () => {
       });
       await expect(promise).resolves.toMatchObject({ choice: "allow-once" });
 
-      const rows = rowsFor(auditLogger, "origin-tailnet");
-      expect(rows.map((row) => row.split(" ")[0])).toEqual([
-        "[approval:requested]",
-        "[approval:decided]",
-      ]);
-      // The decided row is written from the pending entry after the request object is gone, so this pins that the entry kept the marker too.
-      expect(rows.map(originOf)).toEqual([
-        "tailnet-controller",
-        "tailnet-controller",
-      ]);
+      expect(eventFor("approval_requested", "origin-tailnet")).toBeDefined();
+      expect(eventFor("approval_decided", "origin-tailnet")).toMatchObject({ choice: "allow-once" });
     });
 
     it("fails clearly when a Tailnet-controller card reaches a synchronous answer path, leaving the card pending", async () => {
@@ -1772,8 +1641,8 @@ describe("ApprovalGate", () => {
       await expect(promise).resolves.toMatchObject({ choice: "allow-once" });
     });
 
-    it("distinguishes the controllers instead of marking every remote turn alike", async () => {
-      const { wc, auditLogger, gate } = makeAuditingGate();
+    it("settles a bridge denial and logs the decision", async () => {
+      const { wc, gate } = makeAuditingGate();
 
       const promise = gate.requestAndWait(
         makeControllerRequest({
@@ -1790,14 +1659,11 @@ describe("ApprovalGate", () => {
       });
       await promise;
 
-      expect(rowsFor(auditLogger, "origin-bridge").map(originOf)).toEqual([
-        "platform-bridge",
-        "platform-bridge",
-      ]);
+      expect(eventFor("approval_decided", "origin-bridge")).toMatchObject({ choice: "deny-once" });
     });
 
-    it("states positively that no controller is behind an ordinary approval", async () => {
-      const { wc, auditLogger, gate } = makeAuditingGate();
+    it("logs the decision for an ordinary approval", async () => {
+      const { wc, gate } = makeAuditingGate();
 
       const promise = gate.requestAndWait(makeRequest({ id: "origin-desk", sessionId: "controller-session" }));
       const { nonce, hmac } = lastSentNonceHmac(wc);
@@ -1809,17 +1675,13 @@ describe("ApprovalGate", () => {
       });
       await promise;
 
-      // Not an absent key: a reviewer partitioning rows by origin would have to guess whether an absence meant "the desk asked" or "this row's writer never carried the marker".
-      expect(rowsFor(auditLogger, "origin-desk").map(originOf)).toEqual([
-        "none",
-        "none",
-      ]);
+      expect(eventFor("approval_decided", "origin-desk")).toMatchObject({ choice: "allow-once" });
     });
 
-    it("still names the controller when the host resolved the request itself", async () => {
+    it("denies and logs a remote controller timeout", async () => {
       vi.useFakeTimers();
       try {
-        const { auditLogger, gate } = makeAuditingGate();
+        const { gate } = makeAuditingGate();
 
         const promise = gate.requestAndWait(
           makeControllerRequest({
@@ -1830,20 +1692,15 @@ describe("ApprovalGate", () => {
         vi.advanceTimersByTime(1_001);
         await expect(promise).resolves.toMatchObject({ choice: "deny-once" });
 
-        const timeout = rowsFor(auditLogger, "origin-timeout").find((row) =>
-          row.startsWith("[approval:timeout]"),
-        );
-        expect(timeout).toBeDefined();
-        // Unlike `answeredBy`, which is absent here because nobody answered, the origin is still true of the request and is exactly what a review of an unanswered remote turn is looking for.
-        expect(originOf(timeout as string)).toBe("tailnet-controller");
+        expect(eventFor("approval_timeout", "origin-timeout")).toBeDefined();
       } finally {
         vi.useRealTimers();
       }
     });
 
-    it("names the controller on a request the host refused before the renderer saw it", async () => {
-      const { wc, auditLogger } = makeAuditingGate();
-      const gate = new ApprovalGate(null, undefined, undefined, auditLogger as never);
+    it("logs a bridged request refused before reaching the renderer", async () => {
+      const { wc } = makeAuditingGate();
+      const gate = new ApprovalGate(null, undefined, undefined);
 
       await expect(
         gate.requestAndWait(
@@ -1856,11 +1713,7 @@ describe("ApprovalGate", () => {
       ).resolves.toMatchObject({ choice: "deny-once" });
 
       expect(wc.send).not.toHaveBeenCalled();
-      const blocked = rowsFor(auditLogger, "origin-blocked").find((row) =>
-        row.startsWith("[approval:send-failed]"),
-      );
-      // The hard-block resolves before a nonce is minted, so this row is the only record that a bridged turn tried it at all.
-      expect(originOf(blocked as string)).toBe("platform-bridge");
+      expect(eventFor("approval_surface_unavailable", "origin-blocked")).toBeDefined();
     });
 
     it("never sends the marker to the renderer", async () => {
@@ -1965,7 +1818,7 @@ describe("ApprovalGate", () => {
     }
 
     it("unparks a request nobody answered when the turn is stopped", async () => {
-      const { wc, auditLogger, gate } = makeAuditingGate();
+      const { wc, gate } = makeAuditingGate();
       const turn = new AbortController();
 
       const parked = gate.requestAndWait(makeAbortableRequest(turn.signal));
@@ -1984,12 +1837,8 @@ describe("ApprovalGate", () => {
       // The entry is gone, so a desk answer that crossed the abort in flight arrives as an unknown-request replay rather than an answer to a turn that no longer exists.
       expect(gate.pendingCount).toBe(0);
 
-      const cancelled = auditRowTexts(auditLogger).find((row) =>
-        row.startsWith("[approval:cancelled]"),
-      );
-      expect(cancelled).toContain("abort-1");
-      expect(cancelled).toContain("reason=turn-abort");
-      expect(cancelled).toContain('cause="user cancelled turn"');
+      expect(eventFor("approval_cancelled", "abort-1")).toBeDefined();
+      expect(JSON.stringify(permissionEvents.events)).not.toContain("user cancelled turn");
     });
 
     it("keeps a parked request for the next renderer while its turn is not stopped", async () => {
@@ -2008,7 +1857,7 @@ describe("ApprovalGate", () => {
 
     it("retires a parked request with the release that stopped its turn, and says so", async () => {
       // A tile the host let go of — closed, or released by a renderer reload — has no turn left to answer into; the request is not re-offered, and the row names the release rather than a stop the user never made.
-      const { wc, auditLogger, gate } = makeAuditingGate();
+      const { wc, gate } = makeAuditingGate();
       const turn = new AbortController();
       const parked = gate.requestAndWait(makeAbortableRequest(turn.signal));
       expect(gate.listPendingRendererRequests(wc as never)).toHaveLength(1);
@@ -2019,10 +1868,8 @@ describe("ApprovalGate", () => {
       expect(decision.choice).toBe("deny-once");
       expect(isHostApprovalRejectedDecision(decision)).toBe(true);
       expect(gate.listPendingRendererRequests(wc as never)).toEqual([]);
-      const cancelled = auditRowTexts(auditLogger).find((row) =>
-        row.startsWith("[approval:cancelled]"),
-      );
-      expect(cancelled).toContain('cause="renderer reload released the tile"');
+      expect(eventFor("approval_cancelled", "abort-1")).toBeDefined();
+      expect(JSON.stringify(permissionEvents.events)).not.toContain("renderer reload released the tile");
     });
 
     it("tells the renderer a request it can no longer answer is over", async () => {
@@ -2064,7 +1911,7 @@ describe("ApprovalGate", () => {
     });
 
     it("does not raise a modal for a turn that is already over", async () => {
-      const { wc, auditLogger, gate } = makeAuditingGate();
+      const { wc, gate } = makeAuditingGate();
       const turn = new AbortController();
       turn.abort(new Error("user cancelled turn"));
 
@@ -2073,10 +1920,8 @@ describe("ApprovalGate", () => {
       expect(decision.choice).toBe("deny-once");
       expect(wc.send).not.toHaveBeenCalled();
       expect(gate.pendingCount).toBe(0);
-      const rows = auditRowTexts(auditLogger);
-      // The cancelled row keeps its requested row. An approval that leaves no trace at all reads exactly like one that was never asked for.
-      expect(rows.some((row) => row.startsWith("[approval:requested]"))).toBe(true);
-      expect(rows.some((row) => row.startsWith("[approval:cancelled]"))).toBe(true);
+      expect(eventFor("approval_requested", "abort-1")).toBeDefined();
+      expect(eventFor("approval_cancelled", "abort-1")).toBeDefined();
     });
 
     it("leaves a request that carries no signal parked", async () => {
@@ -2101,7 +1946,7 @@ describe("ApprovalGate", () => {
     });
 
     it("detaches from the signal once the desk answers", async () => {
-      const { wc, auditLogger, gate } = makeAuditingGate();
+      const { wc, gate } = makeAuditingGate();
       const turn = new AbortController();
       const removeListener = vi.spyOn(turn.signal, "removeEventListener");
 
@@ -2119,11 +1964,7 @@ describe("ApprovalGate", () => {
 
       // A later stop of the same turn has nothing left to cancel here. One turn can ask many times, and an answered request that stayed attached would keep piling listeners onto the one signal it shares with them.
       turn.abort(new Error("user cancelled turn"));
-      expect(
-        auditRowTexts(auditLogger).some((row) =>
-          row.startsWith("[approval:cancelled]"),
-        ),
-      ).toBe(false);
+      expect(eventFor("approval_cancelled", "abort-1")).toBeUndefined();
     });
   });
 });

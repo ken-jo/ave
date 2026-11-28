@@ -90,7 +90,6 @@ async function setup(overrides: {
   };
   const { registerTailnetObserverHandlers } = await import("../tailnet-observer.js");
   registerTailnetObserverHandlers({
-    auditLogger: { log: vi.fn() },
     tailnetObserverConfigService: service,
     getMainWindow: () => null,
   } as never);
@@ -102,7 +101,6 @@ async function setupDisabled() {
   vi.clearAllMocks();
   const { registerTailnetObserverHandlers } = await import("../tailnet-observer.js");
   registerTailnetObserverHandlers({
-    auditLogger: { log: vi.fn() },
     getMainWindow: () => null,
   } as never);
 }

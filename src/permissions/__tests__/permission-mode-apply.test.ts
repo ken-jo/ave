@@ -1,5 +1,6 @@
+import { watchPermissionEvents } from "../../__tests__/support/permission-events.js";
 import { dispatchPermissionReviewerCommandWithRewire } from "../permission-slash.js";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { answeredApprovalDecision, answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 import { ApprovalGate, IPC_APPROVAL_REQUEST, type ApprovalRequest } from "../approval-gate.js";
 import { t } from "../../i18n/index.js";
@@ -29,6 +30,15 @@ import type { PermissionModeCommand } from "../permission-slash.js";
 const fixtureDirectories: string[] = [];
 afterEach(() => { for (const directory of fixtureDirectories.splice(0)) rmSync(directory, { recursive: true, force: true }); });
 
+const modeEvent = vi.fn();
+beforeEach(() => {
+  modeEvent.mockClear();
+  watchPermissionEvents((entry) => {
+    if (entry.event === "permission_mode_changed") modeEvent(entry);
+  });
+});
+afterEach(() => vi.restoreAllMocks());
+
 function makeDeps() {
   const directory = mkdtempSync(join(tmpdir(), "permission-mode-"));
   fixtureDirectories.push(directory);
@@ -46,11 +56,7 @@ function makeDeps() {
   const approvalGate = {
     requestAndWait: answeringRequestAndWait(() => ({ choice: "allow-once" })),
   };
-  const auditLogger = {
-    isPermissionAuditChainReady: vi.fn(() => true),
-    appendPermissionAuditEntry: vi.fn(async () => undefined),
-  };
-  return { permissionManager, approvalGate, auditLogger, reviewerSettingsPath };
+  return { permissionManager, approvalGate, reviewerSettingsPath };
 }
 
 const durableAuto: PermissionModeCommand = {
@@ -95,7 +101,7 @@ describe("applyPermissionModeCommand", () => {
     const result = await applyPermissionModeCommand(durableAuto, { ...deps, approvalGate: outcome === "unavailable" ? undefined : gate } as never);
     expect(result).toMatchObject({ ok: false, error, message: expect.stringContaining(t(key, { name: "/permission mode" })) });
     expect(deps.permissionManager.setModePersist).not.toHaveBeenCalled();
-    expect(deps.auditLogger.appendPermissionAuditEntry).not.toHaveBeenCalled();
+    expect(modeEvent).not.toHaveBeenCalled();
   });
 
   it("uses the approval gate for durable mode changes without a trusted built-in confirmation", async () => {
@@ -135,9 +141,9 @@ describe("applyPermissionModeCommand", () => {
 
     expect(result).toMatchObject({ ok: true, mode: "auto", durable: true });
     expect(deps.approvalGate.requestAndWait).not.toHaveBeenCalled();
-    expect(deps.auditLogger.appendPermissionAuditEntry).toHaveBeenCalledWith(
+    expect(modeEvent).toHaveBeenCalledWith(
       expect.objectContaining({
-        decision: "mode_change",
+        event: "permission_mode_changed",
         trustOrigin: "user-keyboard",
         fromMode: "default",
         toMode: "auto",
@@ -159,9 +165,9 @@ describe("applyPermissionModeCommand", () => {
 
     expect(result).toMatchObject({ ok: true, mode: "auto", durable: false });
     expect(deps.approvalGate.requestAndWait).not.toHaveBeenCalled();
-    expect(deps.auditLogger.appendPermissionAuditEntry).toHaveBeenCalledWith(
+    expect(modeEvent).toHaveBeenCalledWith(
       expect.objectContaining({
-        decision: "mode_change",
+        event: "permission_mode_changed",
         trustOrigin: "user-keyboard",
         fromMode: "default",
         toMode: "auto",
@@ -186,7 +192,7 @@ describe("applyPermissionModeCommand", () => {
     expect(result).toMatchObject({ ok: false, error: "external-durable-forbidden" });
     expect(deps.permissionManager.setModePersist).not.toHaveBeenCalled();
     expect(deps.permissionManager.setMode).not.toHaveBeenCalled();
-    expect(deps.auditLogger.appendPermissionAuditEntry).not.toHaveBeenCalled();
+    expect(modeEvent).not.toHaveBeenCalled();
   });
 
   it("refuses the `allow` mode on the external channel even session-scoped", async () => {
@@ -242,7 +248,7 @@ describe("applyPermissionModeCommand", () => {
     expect(deps.permissionManager.setModePersist).not.toHaveBeenCalled();
   });
 
-  it("does not attribute a rejected bypass in the permission audit chain", async () => {
+  it("does not attribute a rejected bypass in the permission mode event", async () => {
     const deps = makeDeps();
 
     const result = await applyPermissionModeCommand(durableAuto, {
@@ -256,8 +262,8 @@ describe("applyPermissionModeCommand", () => {
 
     expect(result).toMatchObject({ ok: true });
     expect(deps.approvalGate.requestAndWait).toHaveBeenCalledTimes(1);
-    expect(deps.auditLogger.appendPermissionAuditEntry).toHaveBeenCalledWith(
-      expect.objectContaining({ decision: "mode_change", confirmationSource: undefined }),
+    expect(modeEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ event: "permission_mode_changed", confirmationSource: undefined }),
     );
   });
 });
@@ -468,38 +474,19 @@ describe("durable mode change across a restart", () => {
 });
 
 describe("mode change at quit", () => {
-  it("refuses a mode change that arrives after the audit closed without failing the shutdown", async () => {
+  it("refuses a mode change after shutdown closes admission", async () => {
     vi.resetModules();
     const { applyPermissionModeCommand: apply } = await import("../permission-mode-apply.js");
     const ledger = await import("../../tools/invocation-ledger.js");
     const deps = makeDeps();
     ledger.sealToolInvocations();
-    let result: unknown;
-    await expect(ledger.closeToolInvocationAudit(async () => {
-      result = await apply(durableAuto, { ...deps, approvalBypass: { source: "settings-ui", trustOrigin: "user-keyboard", explicitUserAction: true } } as never);
-    })).resolves.toBe(0);
+    await expect(ledger.closeToolInvocations()).resolves.toBe(0);
+    const result = await apply(durableAuto, { ...deps, approvalBypass: {
+      source: "settings-ui", trustOrigin: "user-keyboard", explicitUserAction: true,
+    } } as never);
     expect(result).toMatchObject({ ok: false, error: "host-shutdown" });
     expect(deps.permissionManager.setModePersist).not.toHaveBeenCalled();
     expect(deps.permissionManager.setMode).not.toHaveBeenCalled();
-    expect(deps.auditLogger.appendPermissionAuditEntry).not.toHaveBeenCalled();
-  });
-
-  it.each([true, false])("applies no mode when quit seals admission during the mode audit (durable=%s)", async (durable) => {
-    // A sealed ledger is process-wide; load a fresh one.
-    vi.resetModules();
-    const { applyPermissionModeCommand: apply } = await import("../permission-mode-apply.js");
-    const ledger = await import("../../tools/invocation-ledger.js");
-    const deps = makeDeps();
-    deps.auditLogger.appendPermissionAuditEntry.mockImplementation(async (...args: unknown[]) => {
-      if ((args[0] as { decision?: string }).decision === "mode_change") ledger.sealToolInvocations();
-      return undefined;
-    });
-    const result = await apply({ ...durableAuto, durable }, { ...deps, approvalBypass: { source: "settings-ui", trustOrigin: "user-keyboard", explicitUserAction: true } } as never);
-    expect(result).toMatchObject({ ok: false, error: "host-shutdown" });
-    expect(deps.permissionManager.setModePersist).not.toHaveBeenCalled();
-    expect(deps.permissionManager.setMode).not.toHaveBeenCalled();
-    expect(deps.auditLogger.appendPermissionAuditEntry).toHaveBeenLastCalledWith(expect.objectContaining({
-      decision: "deny", tool: "/permission mode", denyReasons: [{ reason: "host-shutdown", source: "permission-mode" }], trustOrigin: "unknown",
-    }));
+    expect(modeEvent).not.toHaveBeenCalled();
   });
 });

@@ -10,7 +10,7 @@ import https from "node:https";
 import { execFileSync } from "node:child_process";
 import { shellQuote } from "../../../lib/shell-resolver.js";
 import { SandboxManager } from "@anthropic-ai/sandbox-runtime";
-import type { SandboxEgressDecisionAuditEntry, SandboxEgressDenyAuditEntry, SandboxEgressFailureAuditEntry } from "../../../audit/sandbox-audit.js";
+import type { SandboxEgressDecisionAuditEntry, SandboxEgressDenyAuditEntry, SandboxEgressFailureAuditEntry } from "../../../permissions/egress-observation.js";
 import { initializeAsrtSandbox, isAsrtSandboxActive, resetAsrtSandbox, subscribeAsrtViolations } from "../../../permissions/asrt-sandbox.js";
 import {
   EGRESS_DENY_REASONS,

@@ -175,7 +175,6 @@ async function overlayHostApi(input: {
       replacePluginTools: vi.fn(),
     } as never,
     pythonPath: undefined,
-    bootAuditLogger: { log: vi.fn() } as never,
     mainWindow: input.bootWindow as never,
     ...(input.getMainWindow ? { getMainWindow: input.getMainWindow as never } : {}),
     networkFetch: directHostFetchTransport(vi.fn() as unknown as typeof fetch),
@@ -443,7 +442,7 @@ describe("hostApi.raiseAlert and host theme events", () => {
       overlay: { show: vi.fn(), dismiss: vi.fn() },
       notifications: { isFocusGateActive: () => false, fire: vi.fn() },
       emit: emitEvent,
-      audit: vi.fn(),
+
     });
     await alerts.load();
     alertsServices.push(alerts);

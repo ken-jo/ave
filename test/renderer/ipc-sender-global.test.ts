@@ -60,8 +60,6 @@ const CHANNEL_MANIFEST: Record<string, "mutating" | "sensitive" | "public-read">
   [PERMISSIONS.judgeSet]: "mutating",
   [PERMISSIONS.recentlyDeniedList]: "sensitive",
   [PERMISSIONS.recentlyDeniedRerun]: "mutating",
-  [PERMISSIONS.auditShow]: "sensitive",
-  [PERMISSIONS.auditVerify]: "sensitive",
   [PERMISSIONS.hookTrustList]: "sensitive",
   "ave:approval:respond": "mutating",
   "ave:approval:pending": "sensitive",
@@ -74,8 +72,6 @@ const CHANNEL_MANIFEST: Record<string, "mutating" | "sensitive" | "public-read">
   "ave:starred:list": "public-read",
   "ave:starred:add": "sensitive",
   "ave:starred:remove": "sensitive",
-  "ave:audit:search": "public-read",
-  "ave:audit:stats": "public-read",
   // Routines v2; invoke channels only (fired/running-started/running-finished are main→renderer push, no handle)
   "ave:routines:list": "public-read",
   "ave:routines:add": "mutating",
@@ -87,7 +83,7 @@ describe("ipc-bridge.ts — mutating/sensitive channels have a sender guard", ()
   // ipc-bridge.ts is now a thin re-export shim; all handler source lives in src/ipc/domains/*. Aggregate
   // the full source so the channel + guard checks remain valid against the actual implementation files.
   const domainDir = join(__dirname, "../../src/ipc/domains");
-  const domainFiles = ["settings.ts", "chat.ts", "plugins.ts", "usage.ts", "audit.ts", "permissions.ts", "permission-judge.ts", "window.ts", "routines.ts", "session-tasks.ts"];
+  const domainFiles = ["settings.ts", "chat.ts", "plugins.ts", "usage.ts", "permissions.ts", "permission-judge.ts", "window.ts", "routines.ts", "session-tasks.ts"];
   // Inline IPC channel SoT constants (`shared/ipc-channels.ts`) into the aggregated source so handlers written as `ipcMain.handle(ROUTINES.list, ...)` are matched by the same
   // `ipcMain.handle("ave:routines:list"` pattern the test runs for the other channels. Without this, routine + Overlay V1 channels read as "not found in source" even though their handlers live in `routines.ts`.
   const constInlinePairs: Array<[string, string]> = [];
@@ -152,8 +148,6 @@ describe("ipc-bridge.ts — mutating/sensitive channels have a sender guard", ()
     [PERMISSIONS.judgeSet]: "PERMISSIONS.judgeSet",
     [PERMISSIONS.recentlyDeniedList]: "PERMISSIONS.recentlyDeniedList",
     [PERMISSIONS.recentlyDeniedRerun]: "PERMISSIONS.recentlyDeniedRerun",
-    [PERMISSIONS.auditShow]: "PERMISSIONS.auditShow",
-    [PERMISSIONS.auditVerify]: "PERMISSIONS.auditVerify",
     [PERMISSIONS.hookTrustList]: "PERMISSIONS.hookTrustList",
   };
   const escapeRegex = (value: string): string =>

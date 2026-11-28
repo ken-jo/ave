@@ -37,7 +37,7 @@ describe.runIf(process.platform === "win32")("drop redemption on a failed drive 
   beforeAll(() => {
     root = realpathSync.native(mkdtempSync(join(tmpdir(), "ave-attach-locality-")));
     setWindowsDriveQueryForTest(() => String.raw`\Device\HarddiskVolume1`);
-    registerAttachHandlers({ auditLogger: { log: vi.fn() }, getMainWindow: () => null,
+    registerAttachHandlers({ getMainWindow: () => null,
       getAppWindows: () => [{ webContents: sender, isDestroyed: () => false }] } as never);
   });
 

@@ -1,10 +1,11 @@
 import { EventEmitter } from "node:events";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CHANNELS, PUBLIC_CHANNELS } from "../../contract/app-contract.js";
 import { sha256Hex } from "../../lib/hex-digest-equal.js";
 import { securitySettingsGestures } from "../security-settings-gesture.js";
 import { registerSkillMemoryHandlers } from "../domains/skill-memory.js";
 import { requiredFixture } from "../../__tests__/support/required-fixture.js";
+import { watchPermissionEvents } from "../../__tests__/support/permission-events.js";
 import type { SkillMemoryGroup, SkillMemoryReviewState } from "../../shared/skill-memory-types.js";
 
 const state = vi.hoisted(() => ({
@@ -23,6 +24,8 @@ beforeEach(() => {
   state.current = true;
 });
 
+afterEach(() => vi.restoreAllMocks());
+
 function fixture() {
   const frame = { url: "file:///renderer.html" };
   const contents = Object.assign(new EventEmitter(), { mainFrame: frame, isDestroyed: () => false });
@@ -33,7 +36,7 @@ function fixture() {
   const decide = vi.fn(async (_input: unknown, grant: (scope: object, lesson: object, deletingStaged: boolean) => boolean) => grant({}, {}, false));
   const ensureReviewAvailable = vi.fn<() => SkillMemoryReviewState>(() => "ready");
   registerSkillMemoryHandlers({
-    conversationLoop: { deps: { skillMemory: { ensureReviewAvailable, store: { list, listCurrent, decide } } } }, auditLogger: { log: vi.fn() },
+    conversationLoop: { deps: { skillMemory: { ensureReviewAvailable, store: { list, listCurrent, decide } } } },
   } as never);
   const change = {
     scopeId: sha256Hex("scope"), action: "apply", lessonId: "7c1c6b6e-1b53-4b47-b6ec-9b9ea567c8fe", digest: sha256Hex("lesson"),
@@ -47,6 +50,8 @@ function fixture() {
 
 describe("skill memory IPC", () => {
   it("keeps the channels internal and refuses non-owner frames", async () => {
+    const record = vi.fn();
+    watchPermissionEvents(record, "warn");
     const f = fixture();
     expect(PUBLIC_CHANNELS).not.toContain(CHANNELS.skillMemory.list);
     expect(PUBLIC_CHANNELS).not.toContain(CHANNELS.skillMemory.decide);
@@ -55,6 +60,10 @@ describe("skill memory IPC", () => {
     state.focused = false;
     expect(await f.invokeList(f.event)).toEqual({ ok: true, groups: [], review: "ready" });
     expect(await f.invokeDecision(f.event, f.change)).toMatchObject({ error: "unauthorized-frame" });
+    expect(record.mock.calls).toEqual([
+      [{ event: "ipc_sender_refused", channel: CHANNELS.skillMemory.list }],
+      [{ event: "ipc_sender_refused", channel: CHANNELS.skillMemory.decide }],
+    ]);
   });
 
   it("requires and consumes a live, one-shot native decision", async () => {

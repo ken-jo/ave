@@ -1,7 +1,8 @@
+import { collectPermissionEvents } from "../../__tests__/support/permission-events.js";
 // Record host-observed effects independently of declared category without changing permission decisions.
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
-import { mkdtempSync, readFileSync, readdirSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PermissionManager } from "../../permissions/permission-manager.js";
@@ -9,7 +10,6 @@ import { ToolExecutor } from "../executor.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
 import { ToolRegistry } from "../registry.js";
 import { createDynamicTool } from "../base.js";
-import { AuditLogger, type AuditEntry } from "../../audit/audit-logger.js";
 import { recordEffect } from "../../permissions/effect-ledger.js";
 import { recordChokepoint } from "../../permissions/effect-ledger.js";
 import type { ChokepointKind } from "../../permissions/effect-kind.js";
@@ -41,41 +41,25 @@ function makePluginTool(
   });
 }
 
-function shadowRows(auditDir: string, event: string): Array<Record<string, unknown>> {
-  const files = readdirSync(auditDir).filter((f) => f.endsWith(".jsonl"));
-  const rows: Array<Record<string, unknown>> = [];
-  for (const f of files) {
-    for (const line of readFileSync(join(auditDir, f), "utf-8").trim().split("\n")) {
-      if (!line) continue;
-      const entry = JSON.parse(line) as AuditEntry;
-      const out = entry.output ?? "";
-      if (out.includes(event)) rows.push(JSON.parse(out) as Record<string, unknown>);
-    }
-  }
-  return rows;
-}
-
-function effectShadowRows(auditDir: string): Array<Record<string, unknown>> {
-  return shadowRows(auditDir, "effect-shadow");
-}
-
 describe("executor effect ledger — host-observed read/write shadow", () => {
-  let auditDir: string;
-  let auditLogger: AuditLogger;
+  let root: string;
+  let capture: ReturnType<typeof collectPermissionEvents>;
+
 
   beforeEach(() => {
-    auditDir = mkdtempSync(join(tmpdir(), "ave-effect-ledger-"));
-    auditLogger = new AuditLogger(auditDir);
+    root = mkdtempSync(join(tmpdir(), "ave-effect-ledger-"));
+    capture = collectPermissionEvents();
   });
   afterEach(async () => {
-    await auditLogger.close();
-    await cleanupTmpDir(auditDir);
+
+    capture.restore();
+    await cleanupTmpDir(root);
   });
 
   function newExecutor(registry: ToolRegistry): ToolExecutor {
-    const manager = new PermissionManager(join(auditDir, "permissions.json"));
+    const manager = new PermissionManager(join(root, "permissions.json"));
     manager.setMode("allow");
-    return new ToolExecutor(registry, undefined, manager, undefined, undefined, undefined, auditLogger);
+    return new ToolExecutor(registry, undefined, manager, undefined, undefined, undefined);
   }
 
   it("a read-only plugin invocation → hasMutatingEffect:false", async () => {
@@ -93,11 +77,11 @@ describe("executor effect ledger — host-observed read/write shadow", () => {
     expect(results[0].is_error).toBeFalsy();
     expect(results[0].content).toBe("ok");
 
-    await auditLogger.flush();
-    const rows = effectShadowRows(auditDir).filter((r) => r.toolName === "ave-plugin-sampletool_readonly");
+
+    const rows = capture.events.filter((row) => row.event === "permission_effect_observed").filter((r) => r.tool === "ave-plugin-sampletool_readonly");
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
-      event: "effect-shadow",
+      event: "permission_effect_observed",
       source: "plugin",
       pluginId: "ave-plugin-sampletool",
       hasMutatingEffect: false,
@@ -119,8 +103,8 @@ describe("executor effect ledger — host-observed read/write shadow", () => {
     expect(results[0].is_error).toBeFalsy();
     expect(results[0].content).toBe("ok");
 
-    await auditLogger.flush();
-    const rows = effectShadowRows(auditDir).filter((r) => r.toolName === "ave-plugin-sampletool_mutating");
+
+    const rows = capture.events.filter((row) => row.event === "permission_effect_observed").filter((r) => r.tool === "ave-plugin-sampletool_mutating");
     expect(rows).toHaveLength(1);
     expect(rows[0].hasMutatingEffect).toBe(true);
     expect(rows[0]).not.toHaveProperty("declaredCategory");
@@ -144,9 +128,9 @@ describe("executor effect ledger — host-observed read/write shadow", () => {
       [{ id: "tu-2", name: "ave-plugin-sampletool_readonly2", input: {} }],
       { sessionId: "sess-2", permissionContext: userPermissionContext() },
     );
-    await auditLogger.flush();
-    const mut = effectShadowRows(auditDir).filter((r) => r.toolName === "ave-plugin-sampletool_mutating2");
-    const ro = effectShadowRows(auditDir).filter((r) => r.toolName === "ave-plugin-sampletool_readonly2");
+
+    const mut = capture.events.filter((row) => row.event === "permission_effect_observed").filter((r) => r.tool === "ave-plugin-sampletool_mutating2");
+    const ro = capture.events.filter((row) => row.event === "permission_effect_observed").filter((r) => r.tool === "ave-plugin-sampletool_readonly2");
     expect(mut[0].hasMutatingEffect).toBe(true);
     expect(ro[0].hasMutatingEffect).toBe(false);
   });
@@ -182,17 +166,13 @@ describe("executor effect ledger — host-observed read/write shadow", () => {
       { sessionId: "sess-wrap", permissionContext: userPermissionContext() },
     );
 
-    await auditLogger.flush();
-    const wrapRows = effectShadowRows(auditDir).filter((r) => r.toolName === "ave-plugin-sampletool_wrapper");
+
+    const wrapRows = capture.events.filter((row) => row.event === "permission_effect_observed").filter((r) => r.tool === "ave-plugin-sampletool_wrapper");
     expect(wrapRows).toHaveLength(1);
     // Propagate delegated mutations to the wrapper ledger so read recognition cannot fail open.
     expect(wrapRows[0].hasMutatingEffect).toBe(true);
-    expect(wrapRows[0].effects).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ kind: "callTool-child", effect: "write", target: "ave-plugin-sampletool_inner_mut" }),
-      ]),
-    );
-    const innerRows = effectShadowRows(auditDir).filter((r) => r.toolName === "ave-plugin-sampletool_inner_mut");
+    expect(wrapRows[0].effectCount).toBeGreaterThan(0);
+    const innerRows = capture.events.filter((row) => row.event === "permission_effect_observed").filter((r) => r.tool === "ave-plugin-sampletool_inner_mut");
     expect(innerRows[0].hasMutatingEffect).toBe(true);
   });
 
@@ -205,10 +185,8 @@ describe("executor effect ledger — host-observed read/write shadow", () => {
       [{ id: "tu-corr", name: "ave-plugin-sampletool_corr", input: {} }],
       { sessionId: "sess-corr", permissionContext: userPermissionContext() },
     );
-    await auditLogger.flush();
-    const cat = shadowRows(auditDir, "risk-shadow").filter((r) => r.toolName === "ave-plugin-sampletool_corr");
-    const eff = effectShadowRows(auditDir).filter((r) => r.toolName === "ave-plugin-sampletool_corr");
-    expect(cat).toHaveLength(0);
+
+    const eff = capture.events.filter((row) => row.event === "permission_effect_observed").filter((r) => r.tool === "ave-plugin-sampletool_corr");
     expect(eff).toHaveLength(1);
     expect(typeof eff[0].correlationId).toBe("string");
     expect((eff[0].correlationId as string).length).toBeGreaterThan(0);
@@ -242,16 +220,12 @@ describe("executor effect ledger — host-observed read/write shadow", () => {
       );
       expect(results[0].is_error).toBeFalsy();
 
-      await auditLogger.flush();
-      const rows = effectShadowRows(auditDir).filter((r) => r.toolName === "ave-plugin-sampletool_storage_mut");
+
+      const rows = capture.events.filter((row) => row.event === "permission_effect_observed").filter((r) => r.tool === "ave-plugin-sampletool_storage_mut");
       expect(rows).toHaveLength(1);
       expect(rows[0].hostObservable).toBe(true);
       expect(rows[0].hasMutatingEffect).toBe(true);
-      expect(rows[0].effects).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({ kind: "storageWrite", effect: "write", target: "data.json" }),
-        ]),
-      );
+      expect(rows[0].effectCount).toBeGreaterThan(0);
     } finally {
       await cleanupTmpDir(storageDir);
     }
@@ -279,15 +253,11 @@ describe("executor effect ledger — host-observed read/write shadow", () => {
       [{ id: "tu-clearauth", name: "ave-plugin-sampletool_clearauth_mut", input: {} }],
       { sessionId: "sess-clearauth", permissionContext: userPermissionContext() },
     );
-    await auditLogger.flush();
-    const rows = effectShadowRows(auditDir).filter((r) => r.toolName === "ave-plugin-sampletool_clearauth_mut");
+
+    const rows = capture.events.filter((row) => row.event === "permission_effect_observed").filter((r) => r.tool === "ave-plugin-sampletool_clearauth_mut");
     expect(rows).toHaveLength(1);
     expect(rows[0].hasMutatingEffect).toBe(true);
-    expect(rows[0].effects).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ kind: "clearAuthPartition", effect: "write" }),
-      ]),
-    );
+    expect(rows[0].effectCount).toBeGreaterThan(0);
   });
 
   it("read-declared wrapper → REAL loopback invoker → mutating inner ⇒ outer hasMutatingEffect:true", async () => {
@@ -364,16 +334,12 @@ describe("executor effect ledger — host-observed read/write shadow", () => {
     );
 
     expect(innerObservedOrigin).toBe("plugin");
-    await auditLogger.flush();
-    const wrapRows = effectShadowRows(auditDir).filter((r) => r.toolName === "ave-plugin-sampletool_wrapper_real");
+
+    const wrapRows = capture.events.filter((row) => row.event === "permission_effect_observed").filter((r) => r.tool === "ave-plugin-sampletool_wrapper_real");
     expect(wrapRows).toHaveLength(1);
     expect(wrapRows[0].hasMutatingEffect).toBe(true);
-    expect(wrapRows[0].effects).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ kind: "callTool-child", effect: "write", target: "ave-plugin-sampletool_inner_mut_real" }),
-      ]),
-    );
-    const innerRows = effectShadowRows(auditDir).filter((r) => r.toolName === "ave-plugin-sampletool_inner_mut_real");
+    expect(wrapRows[0].effectCount).toBeGreaterThan(0);
+    const innerRows = capture.events.filter((row) => row.event === "permission_effect_observed").filter((r) => r.tool === "ave-plugin-sampletool_inner_mut_real");
     expect(innerRows[0].hasMutatingEffect).toBe(true);
   });
 
@@ -396,12 +362,12 @@ describe("executor effect ledger — host-observed read/write shadow", () => {
       [{ id: "tu-mcp", name: "remote_mcp_tool", input: {} }],
       { sessionId: "sess-mcp", permissionContext: userPermissionContext() },
     );
-    await auditLogger.flush();
-    const rows = effectShadowRows(auditDir).filter((r) => r.toolName === "remote_mcp_tool");
+
+    const rows = capture.events.filter((row) => row.event === "permission_effect_observed").filter((r) => r.tool === "remote_mcp_tool");
     expect(rows).toHaveLength(1);
     // An empty, unobservable ledger must fail closed instead of being recognized as a read.
     expect(rows[0].hostObservable).toBe(false);
     expect(rows[0].hasMutatingEffect).toBe(false);
-    expect(rows[0].effects).toEqual([]);
+    expect(rows[0].effectCount).toBe(0);
   });
 });

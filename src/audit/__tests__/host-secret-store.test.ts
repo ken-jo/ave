@@ -1,13 +1,15 @@
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { randomBytes } from "node:crypto";
-import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { createNodeSecretEncryption } from "../../data/node-secret-encryption.js";
 import { ensureTailnetPairedShareActorSecret } from "../../main/tailnet-paired-share-authorizer.js";
-import { ELECTRON_DECRYPT_FAILED_MESSAGE } from "../hmac-chain.js";
-import { createHostSecretStore } from "../host-secret-store.js";
+import { ELECTRON_DECRYPT_FAILED_MESSAGE } from "../../lib/protected-secret-store.js";
+import { createHostSecretStore } from "../../lib/host-secret-store.js";
 
 let root: string;
 let keyFile: string;
@@ -79,4 +81,69 @@ describe("host authority secret store", () => {
     expect(ensureTailnetPairedShareActorSecret(await createHostSecretStore(desktopEncryption, directory))).not.toBe(first);
     expect(readdirSync(directory).some((name) => name.includes("quarantined"))).toBe(true);
   });
+});
+
+it("opens retained authority with corrupt and unopenable retired entries", async () => {
+  const decrypt = vi.fn(async (value: Buffer) => ({ shouldReEncrypt: false, result: value.toString("utf8") }));
+  const encryption = {
+    isEncryptionAvailable: () => true,
+    encryptString: (value: string) => Buffer.from(value),
+    decryptString: (value: Buffer) => value.toString("utf8"),
+    isAsyncEncryptionAvailable: async () => true,
+    getSelectedStorageBackend: () => "gnome_libsecret" as const,
+    encryptStringAsync: async (value: string) => Buffer.from(value),
+    decryptStringAsync: decrypt,
+  };
+  const first = await createHostSecretStore(encryption, directory);
+  first.write("authority", "retained-value");
+  const retired = join(directory, "audit-hmac.key.safe-storage");
+  const unopenable = join(directory, "rationale-invocation-journal-head-v1.safe-storage");
+  const corrupt = "safe:v1:invalid";
+  writeFileSync(retired, corrupt);
+  mkdirSync(unopenable);
+  decrypt.mockClear();
+
+  const reopened = await createHostSecretStore(encryption, directory);
+  expect(reopened.read("authority", 1024)).toBe("retained-value");
+  expect(decrypt).toHaveBeenCalledOnce();
+  expect(readFileSync(retired, "utf8")).toBe(corrupt);
+  expect(readdirSync(unopenable)).toEqual([]);
+});
+
+it.skipIf(process.platform !== "win32")("opens the startup secret store while a retired seal is locked", async () => {
+  const encryption = {
+    isEncryptionAvailable: () => true,
+    encryptString: (value: string) => Buffer.from(value),
+    decryptString: (value: Buffer) => value.toString("utf8"),
+    isAsyncEncryptionAvailable: async () => true,
+    getSelectedStorageBackend: () => "gnome_libsecret" as const,
+    encryptStringAsync: async (value: string) => Buffer.from(value),
+    decryptStringAsync: async (value: Buffer) => ({ shouldReEncrypt: false, result: value.toString("utf8") }),
+  };
+  const store = await createHostSecretStore(encryption, directory);
+  store.write("authority", "retained-value");
+  const retired = join(directory, "audit-seal-example.safe-storage");
+  writeFileSync(retired, "corrupt");
+  const script = [
+    "$ErrorActionPreference = 'Stop'",
+    "$lock = [IO.File]::Open($env:AVE_TEST_RETIRED_SEAL, 'Open', 'ReadWrite', 'None')",
+    "try { [Console]::WriteLine('ready'); [void][Console]::ReadLine() } finally { $lock.Dispose() }",
+  ].join("; ");
+  const holder = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
+    env: { ...process.env, AVE_TEST_RETIRED_SEAL: retired },
+    windowsHide: true,
+  });
+  const exited = once(holder, "exit");
+  try {
+    await Promise.race([
+      once(holder.stdout, "data").then(([data]) => expect(String(data).trim()).toBe("ready")),
+      exited.then(([code]) => { throw new Error(`Lock holder exited with ${code}`); }),
+    ]);
+    expect(() => readFileSync(retired)).toThrow();
+    expect((await createHostSecretStore(encryption, directory)).read("authority", 1024)).toBe("retained-value");
+  } finally {
+    holder.stdin.end("\n");
+    await exited;
+  }
+  expect(readFileSync(retired, "utf8")).toBe("corrupt");
 });

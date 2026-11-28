@@ -5,7 +5,6 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import AdmZip from "adm-zip";
-import { AuditLogger } from "../audit-logger.js";
 import {
   buildDiagnosticsBundle,
   pickRedactedSettings,
@@ -15,7 +14,6 @@ import { planWindowsSandbox } from "../../boot/steps/windows-sandbox-plan.js";
 import type { AppSettings } from "../../data/settings-store.js";
 
 let tmp: string;
-let auditDir: string;
 let logsDir: string;
 let crashDir: string;
 
@@ -79,10 +77,8 @@ function writeLogLines(filename: string, messages: string[], level = 30) {
 
 beforeEach(() => {
   tmp = mkdtempSync(join(tmpdir(), "ave-diag-test-"));
-  auditDir = join(tmp, "audit");
   logsDir = join(tmp, "logs");
   crashDir = join(tmp, "crash-dumps");
-  mkdirSync(auditDir, { recursive: true });
   mkdirSync(logsDir, { recursive: true });
   mkdirSync(crashDir, { recursive: true });
 });
@@ -92,10 +88,8 @@ afterEach(async () => {
 });
 
 async function build(overrides: Partial<Parameters<typeof buildDiagnosticsBundle>[0]> = {}): Promise<Buffer> {
-  const auditLogger = new AuditLogger(auditDir);
   return buildDiagnosticsBundle({
     settings: makeSettings(),
-    auditLogger,
     appVersion: "9.9.9-test",
     crashDumpsDir: crashDir,
     logsDir,
@@ -199,20 +193,6 @@ describe("buildDiagnosticsBundle — PII / secret exclusion", () => {
     ]);
   });
 
-  it("credential-class secrets in audit input/output are scrubbed", async () => {
-    const logger = new AuditLogger(auditDir);
-    logger.log({
-      timestamp: "2025-06-01T00:00:00.000Z",
-      sessionId: "s1",
-      type: "turn",
-      input: "here is my key sk-live-AUDITSECRETKEY987654",
-      output: "Authorization: Bearer auditBEARERtokenXYZ123",
-    });
-    const { allText } = unzipToText(await build({ auditLogger: logger }));
-    expect(allText).not.toContain("sk-live-AUDITSECRETKEY987654");
-    expect(allText).not.toContain("auditBEARERtokenXYZ123");
-  });
-
   it("MCP stderr in the log file is redacted at the bundle chokepoint (§5d)", async () => {
     // Server stderr reaches app logs and must be scrubbed during export.
     writeLogLines("ave-2025-06-02.log", ["[mcp stderr] leaked admin@corp.com token"], 40);
@@ -221,19 +201,6 @@ describe("buildDiagnosticsBundle — PII / secret exclusion", () => {
     expect(allText).toContain("[REDACTED:EMAIL]");
   });
 
-  it("audit entry input/output PII is redacted", async () => {
-    const logger = new AuditLogger(auditDir);
-    logger.log({
-      timestamp: "2025-06-01T00:00:00.000Z",
-      sessionId: "s1",
-      type: "turn",
-      input: "reach me at pii@leak.com",
-      output: "or 010-9999-8888",
-    });
-    const { allText } = unzipToText(await build({ auditLogger: logger }));
-    expect(allText).not.toContain("pii@leak.com");
-    expect(allText).not.toContain("010-9999-8888");
-  });
 });
 
 describe("buildDiagnosticsBundle — effective Windows shell route", () => {
@@ -323,23 +290,6 @@ describe("buildDiagnosticsBundle — default window over the local/UTC split", (
     else process.env.TZ = previousTz;
   });
 
-  it("keeps audit rows written after UTC midnight but before local midnight", async () => {
-    writeFileSync(
-      join(auditDir, "2026-06-15.jsonl"),
-      JSON.stringify({
-        timestamp: "2026-06-15T16:00:00.000Z",
-        sessionId: "s",
-        type: "turn",
-        input: "AFTER-UTC-MIDNIGHT-MARKER",
-        output: "",
-      }) + "\n",
-      "utf-8",
-    );
-    const { names, allText } = unzipToText(await build({ dateFrom: undefined, dateTo: undefined }));
-    expect(names).toContain("audit/2026-06-09_2026-06-16.jsonl");
-    expect(allText).toContain("AFTER-UTC-MIDNIGHT-MARKER");
-  });
-
   it("keeps the log files named for the UTC days the local window reaches into", async () => {
     // The first and last local days each overlap an additional UTC-named log file.
     writeFileSync(join(logsDir, "ave-2026-06-16.log"), "LAST-LOCAL-DAY-MARKER\n", "utf-8");
@@ -354,21 +304,12 @@ describe("buildDiagnosticsBundle — default window over the local/UTC split", (
   });
 });
 
-it("redacts literal and encoded homes in exported audit output and log lines", async () => {
+it("redacts literal and encoded homes in exported log lines", async () => {
   const { homedir } = await import("node:os");
   const home = homedir();
   const payload = JSON.stringify({ literal: `${home}/literal`, encoded: `${encodeURIComponent(home)}/encoded` });
-  const logger = new AuditLogger(auditDir);
-  logger.log({ timestamp: new Date().toISOString(), sessionId: "home-audit", type: "info", output: payload });
   writeLogLines("ave-2025-06-01.log", [payload]);
-  const bytes = await build({ auditLogger: logger });
-  const zip = new AdmZip(bytes);
-  const audit = zip.getEntries().filter(entry => entry.entryName.includes("audit") && entry.entryName.endsWith(".jsonl"));
-  expect(audit.length).toBeGreaterThan(0);
-  const records = audit.flatMap(entry => entry.getData().toString("utf8").trim().split("\n").map(line => JSON.parse(line) as { sessionId: string; output?: string }));
-  const output = records.find(entry => entry.sessionId === "home-audit")?.output ?? "";
-  expect(JSON.parse(output)).toEqual({ literal: "[home]/literal", encoded: "[home-token]" });
-  const { allText } = unzipToText(bytes);
+  const { allText } = unzipToText(await build());
   expect(allText).not.toContain(home);
   expect(allText).not.toContain(encodeURIComponent(home));
 });

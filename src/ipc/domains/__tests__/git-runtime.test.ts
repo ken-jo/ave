@@ -39,7 +39,7 @@ async function setup() {
   handlers.clear();
   const readStatus = vi.fn(async (): Promise<GitRuntimeStatus> => STATUS);
   const { registerGitRuntimeHandlers } = await import("../git-runtime.js");
-  registerGitRuntimeHandlers({ auditLogger: { log: vi.fn() }, getMainWindow: () => null } as never, readStatus);
+  registerGitRuntimeHandlers({ getMainWindow: () => null } as never, readStatus);
   return readStatus;
 }
 
@@ -74,7 +74,7 @@ describe("git runtime IPC boundary", () => {
         started.resolve();
       }));
       const { registerGitRuntimeHandlers } = await import("../git-runtime.js");
-      registerGitRuntimeHandlers({ auditLogger: { log: vi.fn() }, getMainWindow: () => null } as never);
+      registerGitRuntimeHandlers({ getMainWindow: () => null } as never);
 
       const first = invokeFileIpcHandler(handlers, CHANNELS.gitRuntime.status);
       const second = invokeFileIpcHandler(handlers, CHANNELS.gitRuntime.status);

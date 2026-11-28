@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
   evaluateTriggerSpec,
   TriggerConversationDedupe,
@@ -17,7 +17,6 @@ function run(capabilities: string[]) {
     capabilities,
     dedupe: new TriggerConversationDedupe(),
     rateLimiter: new TriggerConversationRateLimiter(),
-    auditLogger: { log: vi.fn() },
     now: () => Date.parse("2026-05-10T00:00:00.000Z"),
   });
 }

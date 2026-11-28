@@ -1,4 +1,5 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi, onTestFinished } from "vitest";
+import { collectPermissionEvents } from "../../__tests__/support/permission-events.js";
 import {
   createInMemoryFeatureNamespace as createInMemoryNamespace,
 } from "../../__tests__/test-helpers.js";
@@ -22,6 +23,13 @@ import {
 } from "../a2a-agent-message-envelope.js";
 import { A2AAgentMessageBus } from "../a2a-agent-message-bus.js";
 import { A2AAgentMessageMailbox } from "../a2a-agent-message-mailbox.js";
+
+let events: ReturnType<typeof collectPermissionEvents>["events"];
+beforeEach(() => {
+  const capture = collectPermissionEvents();
+  onTestFinished(capture.restore);
+  events = capture.events;
+});
 
 const ORIGIN = "origin-session";
 const SENDER = "sub-sender";
@@ -77,7 +85,6 @@ function createHarness(options: {
 } = {}) {
   const namespace = createInMemoryNamespace();
   const mailbox = new A2AAgentMessageMailbox(namespace.handle);
-  const audit = vi.fn();
   let captured: CapturedGuidance | undefined;
   const loop = {
     hasActiveTurn: () => true,
@@ -111,13 +118,11 @@ function createHarness(options: {
   const bus = new A2AAgentMessageBus({
     parentBus: { deliverToParent: parentDeliver } as never,
     mailbox,
-    auditLogger: { log: audit } as never,
     resolveSender,
     resolvePeer,
   });
 
   return {
-    audit,
     bus,
     captured: () => captured,
     loop,
@@ -245,8 +250,8 @@ describe("A2A agent message bus", () => {
     });
     const stored = await harness.mailbox.peekWithDiagnostics(RECIPIENT);
     expect(stored.entries).toEqual([]);
-    expect(harness.audit).toHaveBeenCalledWith(expect.objectContaining({
-      input: expect.stringContaining("dropped:budget-exhausted"),
+    expect(events).toContainEqual(expect.objectContaining({
+      operation: "delivery", outcome: "dropped", reasonCode: "budget-exhausted",
     }));
   });
 
@@ -315,15 +320,15 @@ describe("A2A agent message bus", () => {
         disposition: "dropped",
         reason: entry.reason,
       });
-      expect(entry.harness.audit, entry.name).toHaveBeenCalledWith(
+      expect(events.at(-1), entry.name).toMatchObject(
         expect.objectContaining({
-          input: expect.stringContaining("dropped:" + entry.reason),
+          operation: "delivery", outcome: "dropped", reasonCode: entry.reason,
         }),
       );
       expect(JSON.stringify(entry.harness.namespace.getStored() ?? {}), entry.name)
         .not.toContain("message-drop-");
     }
-    expect(JSON.stringify(cases[2]!.harness.audit.mock.calls)).not.toContain(secretId);
+    expect(JSON.stringify(events)).not.toContain(secretId);
   });
 
   it("rejects forged causal state, raw FilePart, and hop overflow before enqueue", async () => {
@@ -539,8 +544,8 @@ describe("A2A agent message bus", () => {
     await expect(harness.bus.cleanupTerminalRecipientMailbox(RECIPIENT))
       .resolves.toEqual({ ok: true, removed: 1, retained: 0 });
     expect((await harness.mailbox.peekWithDiagnostics(RECIPIENT)).entries).toEqual([]);
-    expect(harness.audit).toHaveBeenCalledWith(expect.objectContaining({
-      input: expect.stringContaining("dropped:terminal-recipient"),
+    expect(events).toContainEqual(expect.objectContaining({
+      operation: "delivery", outcome: "dropped", reasonCode: "terminal-recipient",
     }));
   });
 
@@ -601,8 +606,7 @@ describe("A2A agent message bus", () => {
       originSessionId: ORIGIN,
       messageCount: 1,
     }]);
-    const deliveredEdges = harness.audit.mock.calls.filter(([entry]) =>
-      String(entry.input).includes("delivered:parent"));
+    const deliveredEdges = events.filter(({ outcome, reasonCode }) => outcome === "delivered" && reasonCode === "parent");
     expect(deliveredEdges).toHaveLength(1);
   });
 
@@ -652,8 +656,8 @@ describe("A2A agent message bus", () => {
     };
     expect(stored.entries ?? []).toEqual([]);
     expect(stored.trees).toEqual([expect.objectContaining({ messageCount: 1 })]);
-    expect(harness.audit).toHaveBeenCalledWith(expect.objectContaining({
-      input: expect.stringContaining("delivered:foreground-return"),
+    expect(events).toContainEqual(expect.objectContaining({
+      operation: "delivery", outcome: "delivered", reasonCode: "foreground-return",
     }));
   });
 
@@ -691,8 +695,7 @@ describe("A2A agent message bus", () => {
     });
     const stored = harness.namespace.getStored() as { trees?: unknown[] };
     expect(stored.trees ?? []).toEqual([]);
-    expect(harness.audit.mock.calls.some(([entry]) =>
-      String(entry.input).includes("delivered:parent"))).toBe(false);
+    expect(events.some(({ outcome, reasonCode }) => outcome === "delivered" && reasonCode === "parent")).toBe(false);
   });
 
   it("terminalizes a staged question when commit and envelope rollback both fail", async () => {
@@ -726,8 +729,7 @@ describe("A2A agent message bus", () => {
       originSessionId: ORIGIN,
       messageCount: 1,
     }]);
-    expect(harness.audit.mock.calls.some(([entry]) =>
-      String(entry.input).includes("dropped:storage-failed"))).toBe(true);
+    expect(events.some(({ outcome, reasonCode }) => outcome === "dropped" && reasonCode === "storage-failed")).toBe(true);
   });
 
   it("strictly merges only same-origin causal contexts for the exact recipient", () => {

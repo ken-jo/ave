@@ -52,7 +52,7 @@ export function registerTelegramConnectionHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.telegramConnection.snapshot, async (event) => {
     if (!validateHostRendererSender(event)) {
-      auditUnauthorized(deps.auditLogger, CHANNELS.telegramConnection.snapshot, event);
+      auditUnauthorized(CHANNELS.telegramConnection.snapshot);
       return UNAUTHORIZED_FRAME;
     }
     if (!service) return DISABLED;
@@ -65,7 +65,7 @@ export function registerTelegramConnectionHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.telegramConnection.connect, async (event, payload: unknown) => {
     if (!validateHostRendererSender(event)) {
-      auditUnauthorized(deps.auditLogger, CHANNELS.telegramConnection.connect, event);
+      auditUnauthorized(CHANNELS.telegramConnection.connect);
       return UNAUTHORIZED_FRAME;
     }
     if (!service) return DISABLED;
@@ -81,7 +81,7 @@ export function registerTelegramConnectionHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.telegramConnection.setOwnerUserId, async (event, payload: unknown) => {
     if (!validateHostRendererSender(event)) {
-      auditUnauthorized(deps.auditLogger, CHANNELS.telegramConnection.setOwnerUserId, event);
+      auditUnauthorized(CHANNELS.telegramConnection.setOwnerUserId);
       return UNAUTHORIZED_FRAME;
     }
     if (!service) return DISABLED;
@@ -96,7 +96,7 @@ export function registerTelegramConnectionHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.telegramConnection.disconnect, async (event, payload: unknown) => {
     if (!validateHostRendererSender(event)) {
-      auditUnauthorized(deps.auditLogger, CHANNELS.telegramConnection.disconnect, event);
+      auditUnauthorized(CHANNELS.telegramConnection.disconnect);
       return UNAUTHORIZED_FRAME;
     }
     if (!service) return DISABLED;
@@ -111,7 +111,7 @@ export function registerTelegramConnectionHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.telegramConnection.pause, async (event, payload: unknown) => {
     if (!validateHostRendererSender(event)) {
-      auditUnauthorized(deps.auditLogger, CHANNELS.telegramConnection.pause, event);
+      auditUnauthorized(CHANNELS.telegramConnection.pause);
       return UNAUTHORIZED_FRAME;
     }
     if (!service) return DISABLED;
@@ -126,7 +126,7 @@ export function registerTelegramConnectionHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.telegramConnection.resume, async (event, payload: unknown) => {
     if (!validateHostRendererSender(event)) {
-      auditUnauthorized(deps.auditLogger, CHANNELS.telegramConnection.resume, event);
+      auditUnauthorized(CHANNELS.telegramConnection.resume);
       return UNAUTHORIZED_FRAME;
     }
     if (!service) return DISABLED;
@@ -141,7 +141,7 @@ export function registerTelegramConnectionHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.telegramConnection.createPairingCode, async (event, payload: unknown) => {
     if (!validateHostRendererSender(event)) {
-      auditUnauthorized(deps.auditLogger, CHANNELS.telegramConnection.createPairingCode, event);
+      auditUnauthorized(CHANNELS.telegramConnection.createPairingCode);
       return UNAUTHORIZED_FRAME;
     }
     if (!service) return DISABLED;
@@ -157,7 +157,7 @@ export function registerTelegramConnectionHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.telegramConnection.revokePairing, async (event, payload: unknown) => {
     if (!validateHostRendererSender(event)) {
-      auditUnauthorized(deps.auditLogger, CHANNELS.telegramConnection.revokePairing, event);
+      auditUnauthorized(CHANNELS.telegramConnection.revokePairing);
       return UNAUTHORIZED_FRAME;
     }
     if (!service) return DISABLED;
@@ -176,9 +176,7 @@ export function registerTelegramConnectionHandlers(deps: IpcDeps): void {
     async (event, payload: unknown) => {
       if (!validateHostRendererSender(event)) {
         auditUnauthorized(
-          deps.auditLogger,
           CHANNELS.telegramConnection.approveCurrentConversation,
-          event,
         );
         return UNAUTHORIZED_FRAME;
       }
@@ -197,7 +195,7 @@ export function registerTelegramConnectionHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.telegramConnection.revokeApproval, async (event, payload: unknown) => {
     if (!validateHostRendererSender(event)) {
-      auditUnauthorized(deps.auditLogger, CHANNELS.telegramConnection.revokeApproval, event);
+      auditUnauthorized(CHANNELS.telegramConnection.revokeApproval);
       return UNAUTHORIZED_FRAME;
     }
     if (!service) return DISABLED;

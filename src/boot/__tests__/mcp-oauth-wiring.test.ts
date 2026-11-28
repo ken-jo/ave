@@ -35,7 +35,7 @@ async function wiring(encrypted = true) {
     host: { desktop: { shellOpenExternal, openOAuthLogin, getAppWindows: () => windows } },
   } as unknown as BootContext;
   await setupMcp(context);
-  return { windows, settings, hostFetch, shellOpenExternal, openOAuthLogin, oauth: capture.args[8] as McpOAuthDependencies };
+  return { windows, settings, hostFetch, shellOpenExternal, openOAuthLogin, oauth: capture.args[7] as McpOAuthDependencies };
 }
 
 describe("remote authorization boot boundaries", () => {

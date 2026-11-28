@@ -1,6 +1,7 @@
+import { collectPermissionEvents } from "../../__tests__/support/permission-events.js";
 // The egress ask on the approval dock: the `egress-host` request shape the gate accepts, the answers it honours (desktop window, allow-once, a scope the card offered) and how the requester maps them back (egress-approval.ts).
 import { registerRunSession, __resetRunGrantsForTest } from "../run-grants.js";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi, onTestFinished } from "vitest";
 import { answeredApprovalDecision, answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
@@ -29,9 +30,9 @@ function makeWebContents() {
 
 function makeGate() {
   const wc = makeWebContents();
-  const auditLogger = { log: vi.fn() };
-  const gate = new ApprovalGate(wc as never, undefined, 5_000, auditLogger as never);
-  return { wc, gate, auditLogger };
+
+  const gate = new ApprovalGate(wc as never, undefined, 5_000);
+  return { wc, gate };
 }
 
 const egressRequest = (overrides: Partial<EgressShellApprovalRequest> = {}): EgressShellApprovalRequest => ({
@@ -138,7 +139,9 @@ describe("egress-host approval requests", () => {
   });
 
   it("ignores an allow from outside the desktop window and keeps the card pending for the desktop", async () => {
-    const { wc, gate, auditLogger } = makeGate();
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
+    const { wc, gate } = makeGate();
     const answer = createApprovalGateEgressRequester(gate)(egressRequest());
     const card = await cardSent(wc);
     let settled = false;
@@ -148,8 +151,7 @@ describe("egress-host approval requests", () => {
     })).toBeNull();
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(settled).toBe(false);
-    const rows = auditLogger.log.mock.calls.map(([row]) => String((row as { output?: string }).output ?? ""));
-    expect(rows.some((row) => row.startsWith(`[approval:native-desktop-required] ${card.id}`))).toBe(true);
+    expect(capture.events).toContainEqual(expect.objectContaining({ event: "approval_native_desktop_required", requestId: card.id }));
     gate.resolveFromDesktopRenderer(card.id, {
       requestId: card.id, choice: "allow-once", egressScope: "once", nonce: card.nonce, hmac: card.hmac,
     }, wc as never);
@@ -157,7 +159,9 @@ describe("egress-host approval requests", () => {
   });
 
   it("ignores a deny from outside the desktop window too: only the desktop answers an egress ask", async () => {
-    const { wc, gate, auditLogger } = makeGate();
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
+    const { wc, gate } = makeGate();
     const answer = createApprovalGateEgressRequester(gate)(egressRequest());
     const card = await cardSent(wc);
     let settled = false;
@@ -165,8 +169,7 @@ describe("egress-host approval requests", () => {
     expect(gate.resolve(card.id, { requestId: card.id, choice: "deny-once", nonce: card.nonce, hmac: card.hmac })).toBeNull();
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(settled).toBe(false);
-    const rows = auditLogger.log.mock.calls.map(([row]) => String((row as { output?: string }).output ?? ""));
-    expect(rows.some((row) => row.startsWith(`[approval:native-desktop-required] ${card.id}`))).toBe(true);
+    expect(capture.events).toContainEqual(expect.objectContaining({ event: "approval_native_desktop_required", requestId: card.id }));
     gate.resolveFromDesktopRenderer(card.id, {
       requestId: card.id, choice: "allow-once", egressScope: "session", nonce: card.nonce, hmac: card.hmac,
     }, wc as never);
@@ -174,8 +177,10 @@ describe("egress-host approval requests", () => {
   });
 
   it("refuses an allow with a scope the card did not offer, or without one", async () => {
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
     for (const scope of ["always", undefined] as const) {
-      const { wc, gate, auditLogger } = makeGate();
+      const { wc, gate } = makeGate();
       const answer = createApprovalGateEgressRequester(gate)(egressRequest({ scopes: ["once", "session"] }));
       const card = await cardSent(wc);
       const decision = {
@@ -187,8 +192,7 @@ describe("egress-host approval requests", () => {
       };
       gate.resolveFromDesktopRenderer(card.id, decision, wc as never);
       await expect(answer).resolves.toEqual({ allow: false, reason: EGRESS_APPROVAL_DENY_REASONS.rejected, settledRefusal: true });
-      const rows = auditLogger.log.mock.calls.map(([row]) => String((row as { output?: string }).output ?? ""));
-      expect(rows.some((row) => row.startsWith(`[approval:egress-scope-rejected] ${card.id}`))).toBe(true);
+      expect(capture.events).toContainEqual(expect.objectContaining({ event: "approval_egress_scope_rejected", requestId: card.id }));
     }
   });
 
@@ -264,9 +268,9 @@ describe("a workspace terminal tab's egress ask", () => {
     const sessionSurface = makeWebContents();
     const resolver = vi.fn((_sessionId: string | undefined, terminalTabId?: string) =>
       (terminalTabId === undefined ? sessionSurface : terminalSurface) as never);
-    const auditLogger = { log: vi.fn() };
-    const gate = new ApprovalGate(resolver, undefined, 5_000, auditLogger as never);
-    return { gate, resolver, sessionSurface, auditLogger };
+
+    const gate = new ApprovalGate(resolver, undefined, 5_000);
+    return { gate, resolver, sessionSurface };
   }
 
   it("goes to the window that owns the tab, names the tab and no conversation, and offers This tab", async () => {
@@ -292,9 +296,11 @@ describe("a workspace terminal tab's egress ask", () => {
   });
 
   it("is listed for, and answered from, only the window that owns the tab", async () => {
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
     const owner = makeWebContents();
     const unrelatedSurface = makeWebContents();
-    const { gate, sessionSurface, auditLogger } = makeRoutedGate(owner);
+    const { gate, sessionSurface } = makeRoutedGate(owner);
     const answer = createApprovalGateEgressRequester(gate)(terminalRequest());
     let settled = false;
     void answer.then(() => { settled = true; });
@@ -310,10 +316,8 @@ describe("a workspace terminal tab's egress ask", () => {
     expect(gate.resolve(card.id, decision, "platform-bridge")).toBeNull();
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(settled).toBe(false);
-    const rows = auditLogger.log.mock.calls.map(([row]) => String((row as { output?: string }).output ?? ""));
-    const rejections = rows.filter((row) => row.startsWith(`[approval:terminal-owner-required] ${card.id}`));
+    const rejections = capture.events.filter((entry) => entry.event === "approval_response_rejected" && entry.requestId === card.id && entry.reasonCode === "terminal-owner-required");
     expect(rejections).toHaveLength(3);
-    expect(rejections.filter((row) => row.includes("answeredBy=platform-bridge"))).toHaveLength(1);
     // The owner can still answer it.
     gate.resolveFromDesktopRenderer(card.id, { ...decision, egressScope: "once" }, owner as never);
     await expect(answer).resolves.toEqual({ allow: true, scope: "once" });
@@ -455,7 +459,7 @@ describe("shell egress human fallback termination", () => {
 
   it("reports a card that times out after the policy changed as timed out", async () => {
     const wc = makeWebContents();
-    const gate = new ApprovalGate(wc as never, undefined, 50, { log: vi.fn() } as never);
+    const gate = new ApprovalGate(wc as never, undefined, 50);
     const answer = createRequester(gate, permissionManager)(egressRequest());
     await cardSent(wc);
     permissionManager.setMode("default");

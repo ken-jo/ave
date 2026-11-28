@@ -6,7 +6,7 @@ import { deferred } from "../../../../__tests__/support/deferred.js";
 import { makeMockAveApi } from "../../../../../test/renderer/mock-ave-api.js";
 import { SettingsEditorProvider } from "../../context/SettingsEditorContext.js";
 import { SavedToastProvider } from "../../context/SavedToastContext.js";
-import { AuditTab } from "../AuditTab.js";
+import { DiagnosticsTab } from "../DiagnosticsTab.js";
 import { DiagnosticsSection } from "../DiagnosticsSection.js";
 import { RolesTab } from "../RolesTab.js";
 import { UsageDashboard } from "../../components/UsageDashboard.js";
@@ -21,7 +21,6 @@ function installApi(change: (settings: typeof DEFAULT_SETTINGS) => void = () => 
   change(settings);
   const { api } = makeMockAveApi({ settings });
   Object.assign(api, {
-    audit: { search: vi.fn(async () => ({ entries: [], total: 0 })), getStats: vi.fn(async () => ({ totalByType: {}, totalByDay: {}, sensitiveOps: 0 })) },
     logs: { tail: vi.fn(async () => ({ ok: true, lines: [] })) },
     diagnostics: { export: vi.fn(async () => ({ ok: false, canceled: true })), crashList: vi.fn(async () => ({ ok: true, dumps: [] })) },
     getUsageRange: vi.fn(async () => {
@@ -51,15 +50,13 @@ function assertEditableControlCoverage(container: HTMLElement) {
 }
 
 describe("data settings control registrations", () => {
-  it("registers stored crash consent and explicitly identifies audit and log query controls", async () => {
+  it("registers stored crash consent and explicitly identifies log query controls", async () => {
     const { api } = installApi();
-    const view = renderEditor(api, <AuditTab />);
-    await waitFor(() => expect(view.getByRole("checkbox", { name: t("auditTab.bundleIncludeCrashDumps") })).toBeEnabled());
+    const view = renderEditor(api, <DiagnosticsTab />);
+    await waitFor(() => expect(view.getByRole("checkbox", { name: t("diagnosticsTab.bundleIncludeCrashDumps") })).toBeEnabled());
     await waitFor(() => assertEditableControlCoverage(view.container));
-    expect(view.getByRole("checkbox", { name: t("auditTab.bundleIncludeCrashDumps") })).toHaveAttribute("data-setting-id", "diagnostics.includeCrashDumps");
-    expect(view.getByRole("combobox", { name: t("auditTab.logLevel") })).toHaveAttribute("data-settings-transient", "true");
-    expect(view.getByTestId("audit-date-from")).toHaveAttribute("data-settings-transient", "true");
-    expect(view.getByTestId("audit-date-to")).toHaveAttribute("data-settings-transient", "true");
+    expect(view.getByRole("checkbox", { name: t("diagnosticsTab.bundleIncludeCrashDumps") })).toHaveAttribute("data-setting-id", "diagnostics.includeCrashDumps");
+    expect(view.getByRole("combobox", { name: t("diagnosticsTab.logLevel") })).toHaveAttribute("data-settings-transient", "true");
   });
 
   it("keeps usage date ranges as query controls without writing a synthetic setting", async () => {
@@ -102,10 +99,10 @@ describe("data settings control registrations", () => {
   it("resets crash consent to the canonical default and updates the actual checkbox", async () => {
     const { api } = installApi((settings) => { settings.diagnostics.includeCrashDumps = true; });
     const view = renderEditor(api, <DiagnosticsSection defaultDateFrom="2026-01-01" defaultDateTo="2026-01-31" />, true);
-    const reset = await view.findByRole("button", { name: t("settingsEditor.resetLabel", { label: t("auditTab.bundleIncludeCrashDumps") }) });
+    const reset = await view.findByRole("button", { name: t("settingsEditor.resetLabel", { label: t("diagnosticsTab.bundleIncludeCrashDumps") }) });
     fireEvent.click(reset);
     await waitFor(() => expect(api.updateSettings).toHaveBeenCalledWith({ diagnostics: { includeCrashDumps: DEFAULT_SETTINGS.diagnostics.includeCrashDumps } }));
-    await waitFor(() => expect(view.getByRole("checkbox", { name: t("auditTab.bundleIncludeCrashDumps") })).not.toBeChecked());
+    await waitFor(() => expect(view.getByRole("checkbox", { name: t("diagnosticsTab.bundleIncludeCrashDumps") })).not.toBeChecked());
   });
 
   it("resets keep-latest through its setting without clearing any document", async () => {

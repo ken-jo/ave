@@ -1,5 +1,6 @@
+import { watchPermissionEvents } from "../../../__tests__/support/permission-events.js";
 import { RULE_PROVENANCE } from "../../../permissions/decision-provenance.js";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PermissionCheckResult } from "../../../permissions/permission-manager.js";
 import {
   InMemoryHostAnchorRoundCasStore,
@@ -18,7 +19,6 @@ import {
   InProcessRationaleTicketStore,
   createRationaleTicketCasExpectation,
   type HostRationaleTicketSnapshot,
-  type RationaleTicketStoreAuditEvent,
 } from "../rationale-ticket-store.js";
 
 const NOW = 1_900_000_000_000;
@@ -111,8 +111,13 @@ function required(
   return snapshot as HostRationaleTicketSnapshot;
 }
 
-function auditedStore(audit: RationaleTicketStoreAuditEvent[]) {
-  return new InProcessRationaleTicketStore({ onAudit: (event) => audit.push(event) });
+afterEach(() => vi.restoreAllMocks());
+
+function auditedStore(audit: Record<string, unknown>[]) {
+  watchPermissionEvents((event) => {
+    if (event.event === "rationale_ticket") audit.push(event);
+  });
+  return new InProcessRationaleTicketStore();
 }
 
 function createStored(
@@ -147,7 +152,7 @@ function toPendingReady(
   ));
 }
 function expectAuditPayloadsAreSafe(
-  audit: readonly RationaleTicketStoreAuditEvent[],
+  audit: readonly Record<string, unknown>[],
 ): void {
   const auditJson = JSON.stringify(audit);
   expect(auditJson).not.toContain("delete private build output");
@@ -158,7 +163,7 @@ function expectAuditPayloadsAreSafe(
 
 describe("InProcessRationaleTicketStore", () => {
   it("binds control and ticket to one session and rejects duplicate creation", () => {
-    const audit: RationaleTicketStoreAuditEvent[] = [];
+    const audit: Record<string, unknown>[] = [];
     const store = auditedStore(audit);
     const control = fixture();
 
@@ -206,7 +211,7 @@ describe("InProcessRationaleTicketStore", () => {
       now: NOW + 2,
     })).toBeNull();
 
-    expect(audit.map((event) => [event.operation, event.event, event.state]))
+    expect(audit.map((event) => [event.operation, event.transition ?? null, event.state]))
       .toEqual([
         ["created", null, "review_required"],
         ["retired", "stale-replay", "rejected"],
@@ -218,7 +223,7 @@ describe("InProcessRationaleTicketStore", () => {
   });
 
   it("prunes expired tombstones without allowing clock-rollback replay", () => {
-    const audit: RationaleTicketStoreAuditEvent[] = [];
+    const audit: Record<string, unknown>[] = [];
     const store = auditedStore(audit);
     const control = fixture("f0100278-9f5c-47d3-87cd-caa530ab3542", "tombstone-expiry");
     const initial = createStored(store, control);
@@ -249,7 +254,7 @@ describe("InProcessRationaleTicketStore", () => {
   });
 
   it("issues exactly one valid allow-once receipt after the CAS sequence", () => {
-    const audit: RationaleTicketStoreAuditEvent[] = [];
+    const audit: Record<string, unknown>[] = [];
     const store = auditedStore(audit);
     const control = fixture("34725366-0fca-4f9b-8464-ee7e996d74c7", "receipt");
     const pending = toPendingReady(store, createStored(store, control));
@@ -296,12 +301,12 @@ describe("InProcessRationaleTicketStore", () => {
       .toHaveLength(1);
     expect(audit.at(-1)).toMatchObject({
       operation: "replay-rejected",
-      event: "stale-replay",
+      transition: "stale-replay",
     });
   });
 
   it("issues exactly one reviewer-authorized-once receipt straight from rationale_ready", () => {
-    const audit: RationaleTicketStoreAuditEvent[] = [];
+    const audit: Record<string, unknown>[] = [];
     const store = auditedStore(audit);
     const control = fixture("038f9292-1648-43cb-8d0b-a6673fb1b3d5", "reviewer-auto");
     const requested = required(store.requestRationale(
@@ -358,16 +363,16 @@ describe("InProcessRationaleTicketStore", () => {
       .toHaveLength(1);
     expect(audit.some((event) =>
       event.operation === "reviewer-authorized-once-consumed" &&
-      event.event === "reviewer-authorize-once")).toBe(true);
+      event.transition === "reviewer-authorize-once")).toBe(true);
     expect(audit.at(-1)).toMatchObject({
       operation: "replay-rejected",
-      event: "stale-replay",
+      transition: "stale-replay",
     });
     expectAuditPayloadsAreSafe(audit);
   });
 
   it("handles failed rationale, deny, cancel, and expiry as terminal cleanup", () => {
-    const store = new InProcessRationaleTicketStore({ onAudit: () => {} });
+    const store = new InProcessRationaleTicketStore();
 
     const failedControl = fixture("61a38f06-4729-4bb1-8713-11bcfc344f5b", "failed");
     const failedInitial = createStored(store, failedControl);
@@ -431,7 +436,7 @@ describe("InProcessRationaleTicketStore", () => {
   });
 
   it("terminalizes stale version and identity mismatches without cross-session mutation", () => {
-    const audit: RationaleTicketStoreAuditEvent[] = [];
+    const audit: Record<string, unknown>[] = [];
     const store = auditedStore(audit);
 
     const staleControl = fixture("9f9c6f7c-805d-4e10-8681-b887151bbcf3", "stale");
@@ -445,7 +450,7 @@ describe("InProcessRationaleTicketStore", () => {
       now: NOW + 2,
     })).toBeNull();
     expect(audit).toContainEqual(expect.objectContaining({
-      event: "stale-replay",
+      transition: "stale-replay",
       state: "rejected",
       terminalReason: "stale-replay",
     }));
@@ -458,7 +463,7 @@ describe("InProcessRationaleTicketStore", () => {
     }, NOW + 1)).toBeNull();
     expect(audit).toContainEqual(expect.objectContaining({
       ticketId: identityControl.ticketId,
-      event: "identity-mismatch",
+      transition: "identity-mismatch",
       terminalReason: "identity-mismatch",
     }));
 
@@ -480,7 +485,7 @@ describe("InProcessRationaleTicketStore", () => {
   });
 
   it("closes only the selected session and revokes its unused receipts", () => {
-    const audit: RationaleTicketStoreAuditEvent[] = [];
+    const audit: Record<string, unknown>[] = [];
     const store = auditedStore(audit);
     const first = fixture("e8388133-375c-4f08-8f18-41665da4070f", "close-a");
     const second = fixture("e8388133-375c-4f08-8f18-41665da4070f", "close-b");
@@ -525,8 +530,7 @@ describe("InProcessRationaleTicketStore", () => {
     expect(store.isAuthenticConsumedAllowOnceReceipt(receipt, NOW + 11)).toBe(false);
     expect(audit).toContainEqual(expect.objectContaining({
       operation: "receipt-revoked",
-      event: "session-close",
-      receiptId: receipt.receiptId,
+      transition: "session-close",
     }));
 
     required(store.abort(
@@ -535,208 +539,6 @@ describe("InProcessRationaleTicketStore", () => {
     ));
     expect(store.closeSession("e8388133-375c-4f08-8f18-41665da4070f", NOW + 13)).toEqual([]);
   });
-  it.each([
-    {
-      label: "throws",
-      failAudit: () => {
-        throw new Error("audit unavailable");
-      },
-      expectedError: /audit unavailable/,
-    },
-    {
-      label: "returns a thenable",
-      failAudit: () => Promise.resolve(),
-      expectedError: /audit sink must commit synchronously/,
-    },
-  ])(
-    "does not create a ticket or session index when the audit sink $label",
-    ({ failAudit, expectedError }) => {
-      const audit: RationaleTicketStoreAuditEvent[] = [];
-      let shouldFail = true;
-      const store = new InProcessRationaleTicketStore({
-        onAudit: (event) => {
-          audit.push(event);
-          if (shouldFail) return failAudit();
-        },
-      });
-      const control = fixture("3cc929ba-6681-4a0e-85d0-5f27007283c9", "create-atomic");
-
-      expect(() => createStored(store, control)).toThrow(expectedError);
-      expect(store.activeTicketIds(control.anchor.sessionId)).toEqual([]);
-      expect(store.get({
-        sessionId: control.anchor.sessionId,
-        ticketId: control.ticketId,
-        now: NOW,
-      })).toBeNull();
-
-      shouldFail = false;
-      const created = createStored(store, control);
-      expect(created).toMatchObject({
-        version: 0,
-        ticket: { state: "review_required" },
-      });
-      expect(store.activeTicketIds(control.anchor.sessionId))
-        .toEqual([control.ticketId]);
-      expect(audit.filter((event) => event.operation === "created"))
-        .toHaveLength(2);
-      expectAuditPayloadsAreSafe(audit);
-    },
-  );
-
-  it("keeps a normal transition unchanged when its audit write fails", () => {
-    const audit: RationaleTicketStoreAuditEvent[] = [];
-    let failTransition = false;
-    const store = new InProcessRationaleTicketStore({
-      onAudit: (event) => {
-        audit.push(event);
-        if (failTransition && event.operation === "transitioned") {
-          throw new Error("transition audit unavailable");
-        }
-      },
-    });
-    const control = fixture("562ad4b1-ca6f-426f-8f49-f6545bfe6032", "transition-atomic");
-    const initial = createStored(store, control);
-    const expectation = createRationaleTicketCasExpectation(initial);
-
-    failTransition = true;
-    expect(() => store.requestRationale(expectation, NOW + 1))
-      .toThrow(/transition audit unavailable/);
-    expect(store.get({
-      sessionId: control.anchor.sessionId,
-      ticketId: control.ticketId,
-      now: NOW + 1,
-    })).toBe(initial);
-    expect(store.activeTicketIds(control.anchor.sessionId))
-      .toEqual([control.ticketId]);
-
-    failTransition = false;
-    const requested = required(store.requestRationale(expectation, NOW + 1));
-    expect(requested).toMatchObject({
-      version: 1,
-      ticket: { state: "rationale_requested" },
-    });
-    expectAuditPayloadsAreSafe(audit);
-  });
-
-  it("commits no ticket or receipt mutation when allow-once audit fails", () => {
-    const audit: RationaleTicketStoreAuditEvent[] = [];
-    let failAllowOnce = false;
-    const store = new InProcessRationaleTicketStore({
-      onAudit: (event) => {
-        audit.push(event);
-        if (failAllowOnce && event.operation === "allow-once-consumed") {
-          throw new Error("allow-once audit unavailable");
-        }
-      },
-    });
-    const control = fixture("21082466-2c6c-4822-8793-a670e5fa5b89", "allow-atomic");
-    const pending = toPendingReady(store, createStored(store, control));
-    const expectation = createRationaleTicketCasExpectation(pending);
-
-    failAllowOnce = true;
-    expect(() => store.consumeAllowOnce(expectation, NOW + 4))
-      .toThrow(/allow-once audit unavailable/);
-    expect(store.get({
-      sessionId: control.anchor.sessionId,
-      ticketId: control.ticketId,
-      now: NOW + 4,
-    })).toBe(pending);
-    expect(store.activeTicketIds(control.anchor.sessionId))
-      .toEqual([control.ticketId]);
-
-    failAllowOnce = false;
-    const receipt = store.consumeAllowOnce(
-      expectation,
-      NOW + 4,
-    ) as HostConsumedAllowOnceReceipt;
-    expect(receipt).toMatchObject({
-      ticketId: control.ticketId,
-      ticket: { state: "allowed_once" },
-    });
-    expect(store.isAuthenticConsumedAllowOnceReceipt(receipt, NOW + 5)).toBe(true);
-    expect(store.consumeAllowOnce(expectation, NOW + 5)).toBeNull();
-
-    expect(store.closeSession(control.anchor.sessionId, NOW + 6)).toEqual([]);
-    expect(store.isAuthenticConsumedAllowOnceReceipt(receipt, NOW + 6)).toBe(false);
-    expect(audit.filter((event) => event.operation === "receipt-revoked"))
-      .toHaveLength(1);
-    expectAuditPayloadsAreSafe(audit);
-  });
-
-  it("retains an allow-once receipt when session-close revoke audit fails", () => {
-    const audit: RationaleTicketStoreAuditEvent[] = [];
-    let failReceiptRevoke = false;
-    const store = new InProcessRationaleTicketStore({
-      onAudit: (event) => {
-        audit.push(event);
-        if (failReceiptRevoke && event.operation === "receipt-revoked") {
-          throw new Error("receipt revoke audit unavailable");
-        }
-      },
-    });
-    const control = fixture("92b3fd65-f3e3-4ddb-8f55-0be10a9fd667", "revoke-atomic");
-    const pending = toPendingReady(store, createStored(store, control));
-    const receipt = store.consumeAllowOnce(
-      createRationaleTicketCasExpectation(pending),
-      NOW + 4,
-    ) as HostConsumedAllowOnceReceipt;
-
-    failReceiptRevoke = true;
-    expect(() => store.closeSession(control.anchor.sessionId, NOW + 5))
-      .toThrow(/receipt revoke audit unavailable/);
-    expect(store.isAuthenticConsumedAllowOnceReceipt(receipt, NOW + 5)).toBe(true);
-
-    failReceiptRevoke = false;
-    expect(store.closeSession(control.anchor.sessionId, NOW + 6)).toEqual([]);
-    expect(store.isAuthenticConsumedAllowOnceReceipt(receipt, NOW + 6)).toBe(false);
-    expect(audit.filter((event) => event.operation === "receipt-revoked"))
-      .toHaveLength(2);
-    expectAuditPayloadsAreSafe(audit);
-  });
-
-  it("keeps the active ticket and creates no tombstone when terminal audit fails", () => {
-    const audit: RationaleTicketStoreAuditEvent[] = [];
-    let failRetirement = false;
-    const store = new InProcessRationaleTicketStore({
-      onAudit: (event) => {
-        audit.push(event);
-        if (failRetirement && event.operation === "retired") {
-          throw new Error("terminal audit unavailable");
-        }
-      },
-    });
-    const control = fixture("fee7bcfe-4b02-47f1-8275-ad0bd3d6e8c9", "terminal-atomic");
-    const initial = createStored(store, control);
-    const expectation = createRationaleTicketCasExpectation(initial);
-
-    failRetirement = true;
-    expect(() => store.abort(expectation, NOW + 1))
-      .toThrow(/terminal audit unavailable/);
-    expect(store.get({
-      sessionId: control.anchor.sessionId,
-      ticketId: control.ticketId,
-      now: NOW + 1,
-    })).toBe(initial);
-    expect(store.activeTicketIds(control.anchor.sessionId))
-      .toEqual([control.ticketId]);
-
-    failRetirement = false;
-    const terminal = required(store.abort(expectation, NOW + 1));
-    expect(terminal).toMatchObject({
-      version: 1,
-      ticket: { state: "cancelled", terminalReason: "caller-abort" },
-    });
-    expect(store.get({
-      sessionId: control.anchor.sessionId,
-      ticketId: control.ticketId,
-      now: NOW + 1,
-    })).toBeNull();
-    expect(store.activeTicketIds(control.anchor.sessionId)).toEqual([]);
-    expectAuditPayloadsAreSafe(audit);
-  });
-});
-
-describe("RATIONALE_TICKET_TERMINAL_STATES", () => {
   it("lists the states a ticket never leaves", () => {
     expect([...RATIONALE_TICKET_TERMINAL_STATES].sort()).toEqual(["allowed_once", "cancelled", "denied", "expired", "rejected"]);
   });
@@ -744,7 +546,7 @@ describe("RATIONALE_TICKET_TERMINAL_STATES", () => {
 
 describe("InProcessRationaleTicketStore — session id rule is the host's", () => {
   it("rejects a 257-character id the old length-only check accepted, accepts a namespaced one", () => {
-    const store = new InProcessRationaleTicketStore({ onAudit: () => {} });
+    const store = new InProcessRationaleTicketStore();
     expect(() => createStored(store, fixture("a".repeat(256), "long")))
       .toThrow(/invalid rationale ticket session id/);
     const namespaced = "sub-x-12434f55-fbb9-4a54-b1a7-fb9638d8eebd";

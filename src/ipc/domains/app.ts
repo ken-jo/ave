@@ -1,3 +1,4 @@
+import { logPermissionEvent } from "../../lib/permission-log.js";
 // Use the shared app version; the runtime's version API reports the binary version in unpackaged runs.
 // The host-renderer guard is the disclosure boundary for this unprojected response.
 import { ipcMain } from "electron";
@@ -12,7 +13,6 @@ import { isAppUpdateInstallRequested } from "../../main/app-update-install-inten
 import { isAppRelaunchRequested, setAppRelaunchRequested } from "../../main/app-relaunch-state.js";
 
 export function registerAppHandlers(deps: IpcDeps): void {
-  const { auditLogger } = deps;
   const systemAtBoot = deps.settingsService.get("system");
   const startupSettings: import("../../shared/restart-settings.js").BootSystemSettings = {
     hardwareAcceleration: systemAtBoot.hardwareAcceleration,
@@ -26,14 +26,13 @@ export function registerAppHandlers(deps: IpcDeps): void {
   };
   ipcMain.handle(CHANNELS.app.relaunch, (event, payload: unknown): AppRelaunchResult => {
     const refuse = (error: AppRelaunchError): AppRelaunchResult => {
-      auditLogger.log({ timestamp: new Date().toISOString(), sessionId: "ipc-guard", type: "warn",
-        input: JSON.stringify({ channel: CHANNELS.app.relaunch, error }) });
+      logPermissionEvent("app_relaunch_refused", { channel: CHANNELS.app.relaunch, reasonCode: error }, "warn");
       return { ok: false, error };
     };
     const window = deps.getMainWindow();
     const mainFrame = event.senderFrame !== null && event.senderFrame === event.sender?.mainFrame;
     if (!validateHostRendererSender(event) || !mainFrame || !window || window.isDestroyed() || window.webContents !== event.sender) {
-      auditUnauthorized(auditLogger, CHANNELS.app.relaunch, event);
+      auditUnauthorized(CHANNELS.app.relaunch);
       return { ok: false, error: "unauthorized-frame" };
     }
     const intent = payload && typeof payload === "object" && "intent" in payload ? payload.intent : undefined;
@@ -54,7 +53,7 @@ export function registerAppHandlers(deps: IpcDeps): void {
   });
   ipcMain.handle(CHANNELS.app.info, async (e) => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.app.info, e);
+      auditUnauthorized(CHANNELS.app.info);
       return UNAUTHORIZED_FRAME;
     }
     const { app } = await import("electron");

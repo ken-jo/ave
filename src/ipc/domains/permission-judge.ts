@@ -77,14 +77,14 @@ export function registerPermissionJudgeHandlers(deps: IpcDeps): void {
   const saveJudgeSettings = createSerialQueue();
   ipcMain.handle(PERMISSIONS.judgeGet, async (event): Promise<PermissionJudgeReadResult> => {
     if (!validateHostRendererSender(event)) {
-      auditUnauthorized(deps.auditLogger, PERMISSIONS.judgeGet, event);
+      auditUnauthorized(PERMISSIONS.judgeGet);
       return { ...UNAUTHORIZED_FRAME, ok: false };
     }
     return { ok: true, ...(await snapshot(deps)) };
   });
   ipcMain.handle(PERMISSIONS.judgeSet, async (event, payload: unknown): Promise<PermissionJudgeWriteResult> => {
     if (!validateHostRendererSender(event)) {
-      auditUnauthorized(deps.auditLogger, PERMISSIONS.judgeSet, event);
+      auditUnauthorized(PERMISSIONS.judgeSet);
       return { ...UNAUTHORIZED_FRAME, ok: false };
     }
     if (!hasUserKeyboardIntentPayload(payload)) return USER_KEYBOARD_REQUIRED;

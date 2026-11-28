@@ -1,3 +1,4 @@
+import { logPermissionEvent, permissionLogId } from "../../lib/permission-log.js";
 import { admitLocalPath, admitLocalRoute, localFs, withLocalityDecision } from "../../shared/local-path-io.js";
 import { pickNativeFiles } from "../../main/desktop-approval-presentation.js";
 import { ipcMain, shell } from "electron";
@@ -406,7 +407,7 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
       throw error;
     }
   });
-  const { auditLogger, getMainWindow } = deps;
+  const { getMainWindow } = deps;
   type WorkspaceMemoryLifecycle = {
     allowProjectRoot?: (root: string) => unknown;
     detachSessionsFromProject?: (root: string) => unknown;
@@ -434,7 +435,7 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
 
   const auditLifecycleWarning = (
     source: string,
-    root: string,
+    _root: string,
     phase:
       | "allow"
       | "revoke-live-scopes"
@@ -444,17 +445,9 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
     error: unknown,
   ): void => {
     try {
-      auditLogger.log({
-        timestamp: new Date().toISOString(),
-        sessionId: "workspace-root-lifecycle",
-        type: "warn",
-        input: JSON.stringify({
-          channel: source,
-          path: opaqueWorkspaceRootAuditRef(root),
-          lifecyclePhase: phase,
-          errorCode: stableErrorCode(error),
-        }),
-      });
+      logPermissionEvent("workspace_root_change_refused", {
+        source: permissionLogId(source), phase, code: stableErrorCode(error),
+      }, "warn");
     } catch {
       // An audit sink failure must not mask the lifecycle decision itself.
     }
@@ -792,7 +785,6 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
     let liveScopesRevoked = 0;
     const execution = await removeWorkspaceRootWithIntent(target, {
       source,
-      auditLogger,
       beforeRemove: async (runtimePath, context) => {
         grantResult = await pruneWorkspaceRootDurableScopes(
           runtimePath,
@@ -880,17 +872,7 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
       }
       return { ok: false, error: "persist-failed", warnings: verdict.adjacencyWarnings };
     }
-    // Audit scope widening with a redacted path and picker/drop gesture provenance.
-    auditLogger.log({
-      timestamp: new Date().toISOString(),
-      sessionId: "workspace-pick-root",
-      type: "info",
-      input: JSON.stringify({
-        channel: CHANNELS.workspace.pickRoot,
-        path: opaqueWorkspaceRootAuditRef(picked),
-        gesture,
-      }),
-    });
+    logPermissionEvent("workspace_root_picked", { channel: CHANNELS.workspace.pickRoot, gesture });
     return {
       ok: true,
       added: canonicalPicked,
@@ -901,12 +883,11 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.workspace.listRoots, async (e): Promise<WorkspaceListRootsResult> => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.workspace.listRoots, e);
+      auditUnauthorized(CHANNELS.workspace.listRoots);
       return { ok: false, error: "unauthorized" };
     }
     const reconciliation = await reconcileWorkspaceRoots({
       source: "list-roots",
-      auditLogger,
       permissionManager: deps.conversationLoop?.permissionManager,
       beforeRemove: async (runtimeRoot, context) => {
         const grants = await pruneWorkspaceRootDurableScopes(
@@ -951,7 +932,7 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
     CHANNELS.workspace.pickRoot,
     async (e, opts?: { ackToken?: string }): Promise<WorkspacePickRootResult> => {
       if (!validateHostRendererSender(e)) {
-        auditUnauthorized(auditLogger, CHANNELS.workspace.pickRoot, e);
+        auditUnauthorized(CHANNELS.workspace.pickRoot);
         return { ok: false, error: "unauthorized" };
       }
       // Consume the acknowledgment token before validation and persist only its main-owned bound path.
@@ -1012,7 +993,7 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
     CHANNELS.workspace.listDir,
     async (e, rawPath: string): Promise<WorkspaceListDirResult> => {
       if (!validateHostRendererSender(e)) {
-        auditUnauthorized(auditLogger, CHANNELS.workspace.listDir, e);
+        auditUnauthorized(CHANNELS.workspace.listDir);
         return { ok: false, error: "unauthorized", message: "sender frame not authorized" };
       }
       if (typeof rawPath !== "string" || rawPath.length === 0) {
@@ -1132,7 +1113,7 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
     CHANNELS.workspace.searchFiles,
     async (e, rawQuery: unknown, rawOptions?: unknown): Promise<WorkspaceSearchFilesResult> => {
       if (!validateHostRendererSender(e)) {
-        auditUnauthorized(auditLogger, CHANNELS.workspace.searchFiles, e);
+        auditUnauthorized(CHANNELS.workspace.searchFiles);
         return { ok: false, error: "unauthorized" };
       }
       if (typeof rawQuery !== "string" || rawQuery.length > WORKSPACE_FILE_QUERY_MAX_CHARS) {
@@ -1210,7 +1191,7 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
     CHANNELS.workspace.previewRemoveRoot,
     async (e, rawPath: unknown): Promise<WorkspacePreviewRemoveRootResult> => {
       if (!validateHostRendererSender(e)) {
-        auditUnauthorized(auditLogger, CHANNELS.workspace.previewRemoveRoot, e);
+        auditUnauthorized(CHANNELS.workspace.previewRemoveRoot);
         return { ok: false, error: "unauthorized" };
       }
       if (typeof rawPath !== "string" || rawPath.length === 0) return { ok: false, error: "invalid-path" };
@@ -1280,7 +1261,7 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
     CHANNELS.workspace.removeRoot,
     async (e, rawPath: string): Promise<WorkspaceRemoveRootResult> => {
       if (!validateHostRendererSender(e)) {
-        auditUnauthorized(auditLogger, CHANNELS.workspace.removeRoot, e);
+        auditUnauthorized(CHANNELS.workspace.removeRoot);
         return { ok: false, error: "unauthorized", message: "sender frame not authorized" };
       }
       if (typeof rawPath !== "string" || rawPath.length === 0) {
@@ -1306,22 +1287,9 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
       }
       // Revoke path-tier grants under removed roots or re-add would silently revive them.
       const prunedGrants = removal.prunedGrants;
-      // Audit redacted grant tuples but expose only their count over IPC.
-      const prunedAudit = removal.prunedAudit;
-      auditLogger.log({
-        timestamp: new Date().toISOString(),
-        sessionId: "workspace-remove-root",
-        type: "info",
-        input: JSON.stringify({
-          channel: CHANNELS.workspace.removeRoot,
-          path: opaqueWorkspaceRootAuditRef(removal.runtimePath),
-          operationId: removal.operationId,
-          cleanupPending: removal.cleanupPending,
-          prunedGrants,
-          detachedSessions: removal.detachedSessions,
-          liveScopesRevoked: removal.liveScopesRevoked,
-          ...(prunedAudit.length > 0 ? { prunedPatterns: prunedAudit } : {}),
-        }),
+      logPermissionEvent("workspace_root_removed", {
+        channel: CHANNELS.workspace.removeRoot, prunedGrants, cleanupPending: removal.cleanupPending,
+        detachedSessions: removal.detachedSessions, liveScopesRevoked: removal.liveScopesRevoked,
       });
       // Undo re-adds only this main-owned path through the ack flow (same TTL and one-time consumption). None while cleanup is
       // pending: a re-add must not race the deferred revocation.
@@ -1357,7 +1325,7 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
     | { ok: true; rawPath: string; rootPath: string; resolved: string; authorize: (real: string, pass: ExternalOpenPass) => "unauthorized" | "root-not-registered" | "outside-project" | null }
   > {
     if (!validateAppWindowMainFrameSender(e, deps)) {
-      auditUnauthorized(auditLogger, channel, e);
+      auditUnauthorized(channel);
       return { ok: false, refusal: { ok: false, error: "unauthorized" } };
     }
     if (!hasUserKeyboardIntentPayload(payload)) return { ok: false, refusal: USER_KEYBOARD_REQUIRED };
@@ -1404,23 +1372,11 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
     };
   }
 
-  function auditProjectFileOpen(channel: string, sessionId: string, rootPath: string, path: string, error: string | null): void {
-    try {
-      auditLogger.log({
-        timestamp: new Date().toISOString(),
-        sessionId,
-        type: error === null ? "info" : "warn",
-        input: JSON.stringify({
-          channel,
-          root: opaqueWorkspaceRootAuditRef(rootPath),
-          path: opaqueWorkspaceRootAuditRef(path),
-          ok: error === null,
-          ...(error === null ? {} : { error }),
-        }),
-      });
-    } catch {
-      // An audit sink failure must not change what the user was told.
-    }
+  function logProjectFileAction(channel: string, sessionId: string, error: string | null): void {
+    logPermissionEvent("workspace_root_action", {
+      sessionId: permissionLogId(sessionId), channel, outcome: error === null ? "ok" : "failed",
+      reasonCode: permissionLogId(error),
+    });
   }
 
   // Open one in-project file with the OS default app.
@@ -1431,8 +1387,7 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
       if (!admitted.ok) return admitted.refusal;
       // The requested spelling goes in, not the resolved one, so a `.sh` name that links to a text file is still refused.
       const opened = await openVerifiedExternalFile(admitted.rawPath, admitted.authorize);
-      auditProjectFileOpen(CHANNELS.workspace.openPath, "workspace-open-path", admitted.rootPath,
-        opened.ok ? opened.real : admitted.resolved, opened.ok ? null : opened.error);
+      logProjectFileAction(CHANNELS.workspace.openPath, "workspace-open-path", opened.ok ? null : opened.error);
       return opened.ok ? { ok: true } : { ok: false, error: opened.error };
     },
   );
@@ -1461,8 +1416,7 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
           return argv.ok && await launchEditor(argv.program, argv.args);
         },
       });
-      auditProjectFileOpen(CHANNELS.workspace.openInEditor, "workspace-open-in-editor", admitted.rootPath,
-        opened.ok ? opened.real : admitted.resolved, opened.ok ? null : opened.error);
+      logProjectFileAction(CHANNELS.workspace.openInEditor, "workspace-open-in-editor", opened.ok ? null : opened.error);
       if (opened.ok) return { ok: true };
       return { ok: false, error: opened.error === "open-failed" ? "launch-failed" : opened.error };
     },
@@ -1486,7 +1440,7 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
       launch: async (real) => { outcome = await act(real, () => admitted.authorize(real, "final") === null); return true; },
     });
     const error = !verified.ok ? verified.error : outcome?.ok === false ? (outcome as { error?: string }).error ?? "failed" : null;
-    auditProjectFileOpen(channel, auditSession, admitted.rootPath, verified.ok ? verified.real : admitted.resolved, error);
+    logProjectFileAction(channel, auditSession, error);
     if (!verified.ok) {
       if (verified.error === "open-failed") throw new Error("edit hand-off reported a failed launch");
       return { ok: false, error: verified.error };
@@ -1538,7 +1492,7 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
     CHANNELS.workspace.reveal,
     async (e, rawPath: string): Promise<WorkspaceRevealResult> => {
       if (!validateHostRendererSender(e)) {
-        auditUnauthorized(auditLogger, CHANNELS.workspace.reveal, e);
+        auditUnauthorized(CHANNELS.workspace.reveal);
         return { ok: false, error: "unauthorized", message: "sender frame not authorized" };
       }
       if (typeof rawPath !== "string" || rawPath.length === 0) {
@@ -1566,7 +1520,7 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
     CHANNELS.workspace.dropPrepare,
     async (e, rawPath: string): Promise<WorkspaceDropPrepareResult> => {
       if (!validateHostRendererSender(e)) {
-        auditUnauthorized(auditLogger, CHANNELS.workspace.dropPrepare, e);
+        auditUnauthorized(CHANNELS.workspace.dropPrepare);
         return { ok: false, error: "unauthorized" };
       }
       if (typeof rawPath !== "string" || rawPath.length === 0) {

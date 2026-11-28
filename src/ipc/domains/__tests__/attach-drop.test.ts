@@ -76,7 +76,7 @@ beforeAll(() => {
   writeFileSync(join(root, ".env"), "SECRET=1");
   writeFileSync(join(root, "run.exe"), "MZ");
   mkdirSync(join(root, "folder"));
-  registerAttachHandlers({ auditLogger: { log: vi.fn() }, getMainWindow: () => null,
+  registerAttachHandlers({ getMainWindow: () => null,
     getAppWindows: () => [...appEvents.values()].map(({ sender }) => ({ webContents: sender, isDestroyed: () => false })),
   } as never);
 });

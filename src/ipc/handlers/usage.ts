@@ -1,26 +1,20 @@
 import { redactForLLM } from "../../audit/dlp-filter.js";
-import type { UsageSummary, UsageTotals } from "../../engine/usage-stats.js";
-
-export interface UsageAuditFlushBoundary {
-  flush(): Promise<void>;
-}
+import type { UsageSessionSource, UsageSummary, UsageTotals } from "../../engine/usage-stats.js";
 
 export async function handleUsageSummary(
+  sessions: UsageSessionSource,
   days?: number,
-  auditLogger?: UsageAuditFlushBoundary,
 ) {
-  await auditLogger?.flush();
   const { getUsageSummary } = await import("../../engine/usage-stats.js");
-  return getUsageSummary(typeof days === "number" ? days : 60);
+  return getUsageSummary(sessions, typeof days === "number" ? days : 60);
 }
 
 export async function handleUsageRange(
+  sessions: UsageSessionSource,
   opts: { dateFrom: string; dateTo: string },
-  auditLogger?: UsageAuditFlushBoundary,
 ) {
-  await auditLogger?.flush();
   const { getUsageRange } = await import("../../engine/usage-stats.js");
-  return getUsageRange(opts);
+  return getUsageRange(sessions, opts);
 }
 
 interface UsageDailySummaryItem {

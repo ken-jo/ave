@@ -1,11 +1,10 @@
 import { allowOnceCardAnswer } from "../../../__tests__/support/approval-card-answer.js";
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { IpcMainInvokeEvent, WebContents } from "electron";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { withSourceHostResources } from "../../../__tests__/support/source-host-resources.js";
-import { AuditLogger } from "../../../audit/audit-logger.js";
 import { ScriptHookManager } from "../../../hooks/script-hook-manager.js";
 import { PermissionTestResources } from "../../../permissions/__tests__/test-resources.js";
 import { ApprovalGate, type ApprovalRequest, type ApprovalRequestInput, IPC_APPROVAL_REQUEST } from "../../../permissions/approval-gate.js";
@@ -50,34 +49,32 @@ async function subject() {
   const root = resources.makeTmpDir("ave-run-grant-record-");
   vi.stubEnv("AVE_HOME", join(root, "home"));
   for (const stage of ["plan", "build"]) mkdirSync(join(root, stage));
-  const audit = new AuditLogger(join(root, "audit"));
-  await audit.setupPermissionAuditChain(randomBytes(32).toString("hex"));
+
   const contents = { id: 101, mainFrame: { url: "file:///application/index.html" }, isDestroyed: vi.fn(() => false), send: vi.fn() };
   const window = { isDestroyed: vi.fn(() => false), webContents: contents };
   const event = { sender: contents, senderFrame: contents.mainFrame } as unknown as IpcMainInvokeEvent;
   // Every stage child of the board row is drawn by the window the run started from.
-  const gate = new ApprovalGate(() => contents as unknown as WebContents, undefined, undefined, audit);
+  const gate = new ApprovalGate(() => contents as unknown as WebContents, undefined, undefined);
   const manager = new PermissionManager(join(root, "permissions.json"));
   manager.setMode("default");
   manager.setJudge({
     settings: { ...DEFAULT_JUDGE_SETTINGS, chain: [], categories: { ...DEFAULT_JUDGE_SETTINGS.categories }, breaker: { ...DEFAULT_JUDGE_SETTINGS.breaker } },
-    chain: [], breaker: manager.getJudgeBreaker(), audit,
+    chain: [], breaker: manager.getJudgeBreaker(),
   });
   const registry = new ToolRegistry();
   const execute = vi.fn(async () => "wrote");
   registry.register(makeWriteProbeTool(execute));
-  const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, new ScriptHookManager(), audit);
+  const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, new ScriptHookManager());
   const pending: Promise<unknown>[] = [];
   const track = <T>(run: Promise<T>): Promise<T> => { pending.push(run); void run.catch(() => undefined); return run; };
   cleanup.push(async () => {
     gate.disposeAll();
     await Promise.allSettled(pending);
-    await audit.close();
+
   });
   const { registerPermissionsHandlers } = await import("../permissions.js");
   registerPermissionsHandlers({
-    conversationLoop: { permissionManager: manager }, approvalGate: gate, auditLogger: audit,
-    toolRegistry: registry, getMainWindow: () => window, getAppWindows: () => [window],
+    conversationLoop: { permissionManager: manager }, approvalGate: gate, toolRegistry: registry, getMainWindow: () => window, getAppWindows: () => [window],
   } as never);
   const hooks = createRunScopeHooks(manager);
   const invoke = (channel: string, payload: unknown) => {

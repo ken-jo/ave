@@ -57,7 +57,6 @@ async function saveOwnedClipboardImage(): Promise<string> {
 beforeAll(() => {
   root = mkdtempSync(join(tmpdir(), "ave-attach-cleanup-"));
   registerAttachHandlers({
-    auditLogger: { log: vi.fn() },
     getMainWindow: () => ({}),
   } as never);
 });
@@ -401,7 +400,7 @@ describe("sweepLeftoverClipboardImages", () => {
     savedTempDirs.add(legacy);
     savedTempDirs.add(lookalike);
 
-    registerAttachHandlers({ auditLogger: { log: vi.fn() }, getMainWindow: () => ({}) } as never);
+    registerAttachHandlers({ getMainWindow: () => ({}) } as never);
     // A paste queues behind the sweep, so its answer means the sweep has finished.
     const pasted = await saveOwnedClipboardImage();
 

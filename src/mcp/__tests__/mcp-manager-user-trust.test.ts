@@ -1,12 +1,10 @@
+import { watchPermissionEvents } from "../../__tests__/support/permission-events.js";
+import { makeMcpTrustManager } from "../../__tests__/support/mcp-trust.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promises as fileSystem } from "node:fs";
-import { McpManager } from "../mcp-manager.js";
-import { McpGovernance } from "../mcp-governance.js";
-import { ToolRegistry } from "../../tools/registry.js";
-import { unusedNetworkFetch } from "../../__tests__/support/network-fetch-stubs.js";
 import { userServerApproval, userServerFingerprint, userServerTrustSecretId } from "../user-server-trust.js";
 import { bundledCredentialKey } from "../bundled-credential.js";
 import type { McpServerConfig } from "../types.js";
@@ -30,18 +28,15 @@ const stored = new Map<string, string>();
 const secrets = { getSecret: vi.fn(async (key: string) => stored.get(key) ?? null),
   setSecret: vi.fn(async (key: string, value: string) => { stored.set(key, value); }),
   deleteSecret: vi.fn(async (key: string) => { stored.delete(key); }) };
-const appendAudit = vi.fn(async (_entry: unknown) => undefined);
 const config: McpServerConfig = { id: "local-notes", transport: "stdio", command: "notes-server", args: ["--profile", "team alpha"], env: { PROFILE: "team" } };
 function manager() {
-  return new McpManager(new McpGovernance(policyPath), new ToolRegistry(), unusedNetworkFetch, configPath,
-    { append: appendAudit, log: vi.fn() } as never, undefined, undefined, secrets);
+  return makeMcpTrustManager(policyPath, configPath, secrets);
 }
 
 beforeEach(async () => {
   vi.clearAllMocks();
   secrets.setSecret.mockReset().mockImplementation(async (key, value) => { stored.set(key, value); });
   secrets.deleteSecret.mockReset().mockImplementation(async (key) => { stored.delete(key); });
-  appendAudit.mockReset().mockResolvedValue(undefined);
   constructed.length = 0;
   stored.clear();
   root = await mkdtemp(join(tmpdir(), "ave-mcp-user-trust-"));
@@ -255,19 +250,25 @@ describe("user server configuration transactions", () => {
     } finally { spy.mockRestore(); }
   });
 
-  it("records durable user consent before storing trust and refuses an audit failure", async () => {
+  it("keeps exact trust binding and connects when app logging throws", async () => {
     const owner = manager();
     await owner.addConfig(config);
-    appendAudit.mockRejectedValueOnce(new Error("Audit append refused"));
-    await expect(owner.startServer(config.id, userServerFingerprint(config))).rejects.toThrow("Audit append refused");
-    expect(stored.has(userServerTrustSecretId(config.id))).toBe(false);
-    expect(connect).not.toHaveBeenCalled();
-    await owner.startServer(config.id, userServerFingerprint(config));
-    expect(appendAudit).toHaveBeenLastCalledWith(expect.objectContaining({ type: "approval", input: expect.stringContaining("mcp_server_trust_requested") }));
-    const auditOrder = appendAudit.mock.invocationCallOrder.at(-1);
-    const secretOrder = secrets.setSecret.mock.invocationCallOrder.at(-1);
-    if (auditOrder === undefined || secretOrder === undefined) throw new Error("Both audit and credential writes must execute");
-    expect(auditOrder).toBeLessThan(secretOrder);
+    const trusted = vi.fn((_entry: Record<string, unknown>) => { throw new Error("Log sink unavailable"); });
+    const capture = watchPermissionEvents((entry) => {
+      if (entry.event === "mcp_server_trust_requested") trusted(entry);
+    });
+    try {
+      await expect(owner.startServer(config.id, "stale-fingerprint")).rejects.toThrow("mcp-trust-stale");
+      expect(stored.has(userServerTrustSecretId(config.id))).toBe(false);
+      expect(connect).not.toHaveBeenCalled();
+      const fingerprint = userServerFingerprint(config);
+      await expect(owner.startServer(config.id, fingerprint)).resolves.toEqual({ connected: true });
+      expect(stored.get(userServerTrustSecretId(config.id))).toBe(fingerprint);
+      expect(connect).toHaveBeenCalledOnce();
+      expect(trusted).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ serverId: config.id }));
+    } finally {
+      capture.mockRestore();
+    }
   });
 
   it("never restores an orphan key into a surviving replacement when file recovery fails, including after restart", async () => {

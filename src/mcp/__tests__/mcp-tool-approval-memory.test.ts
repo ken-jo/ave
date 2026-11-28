@@ -9,7 +9,6 @@ import { approvalIdentityFor } from "../../tools/pipeline/display-mask.js";
 import { ApprovalGate, type ApprovalRequest } from "../../permissions/approval-gate.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { wireJudgeForTest } from "../../__tests__/support/reviewer-judge.js";
-import { AuditLogger } from "../../audit/audit-logger.js";
 import { ToolExecutor } from "../../tools/executor.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import { approvalCacheKeyIdentity, recordApproval, __resetSessionStoreForTest } from "../../permissions/user-approval-store.js";
@@ -73,7 +72,7 @@ describe("external tool remembered identity", () => {
 
 describe("external tool per-tool approval execution", () => {
   let root: string;
-  let audit: AuditLogger;
+
   let manager: PermissionManager;
   let gate: ApprovalGate;
   const sessionId = "tool-memory-conversation";
@@ -81,14 +80,13 @@ describe("external tool per-tool approval execution", () => {
     root = await realpath(await mkdtemp(join(tmpdir(), "ave-external-tool-memory-")));
     vi.stubEnv("AVE_HOME", join(root, "state"));
     __resetSessionStoreForTest();
-    audit = new AuditLogger(join(root, "audit"));
     manager = new PermissionManager(join(root, "permissions.json"));
     manager.setMode("default");
     wireJudgeForTest(manager);
   });
   afterEach(async () => {
     gate?.disposeAll();
-    await audit.close();
+
     __resetSessionStoreForTest();
     vi.unstubAllEnvs();
     await rm(root, { recursive: true, force: true });
@@ -125,7 +123,7 @@ describe("external tool per-tool approval execution", () => {
       },
     };
     gate = new ApprovalGate(surface as never);
-    const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, undefined, audit);
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, undefined);
     const run = async (name: string, value: string, context: Partial<ToolPermissionContext> = {}) => {
       const [result] = await executor.executeAll([{ id: randomUUID(), name, input: { value } }], {
         sessionId, executionCwd: root,

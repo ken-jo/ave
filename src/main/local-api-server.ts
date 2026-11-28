@@ -1,3 +1,4 @@
+import { logPermissionEvent } from "../lib/permission-log.js";
 import type { MainWindow } from "./main-window-host.js";
 // Start no listener or discovery write unless an independently opted-in route family has a handler. A fresh per-boot bearer is never logged; discovery
 // uses openFeatureNamespace and the local OS user boundary.
@@ -133,20 +134,8 @@ export function isA2ALoopbackEnabled(
   return resolveLoopbackRouteFamilies(settingsService, env).a2a;
 }
 
-function auditA2ARouteDisabled(
-  services: AppServices,
-  reason: "initialization-failed" | "no-routable-handler",
-): void {
-  try {
-    services.auditLogger.log({
-      timestamp: new Date().toISOString(),
-      sessionId: "a2a-loopback",
-      type: "warn",
-      input: "a2a:loopback:" + reason,
-    });
-  } catch {
-    // Audit persistence must not brick the independently enabled local API.
-  }
+function logA2ARouteDisabled(reason: "initialization-failed" | "no-routable-handler"): void {
+  logPermissionEvent("local_agent_request_refused", { sessionId: "a2a-loopback", reasonCode: reason }, "warn");
 }
 
 function normalizeA2ARouterRuntime(result: A2ARouterFactoryResult): A2ARouterRuntime | null {
@@ -194,13 +183,12 @@ async function invalidateA2ARuntime(runtime: A2ARouterRuntime | null): Promise<v
 
 async function initializeA2ARouter(
   factory: A2ARouterFactory | undefined,
-  services: AppServices,
   emit: (message: string) => void,
   approveAgentAction: AgentActionApprover | undefined,
 ): Promise<A2ARouterRuntime | null> {
   bootA2ARuntime ??= (async () => {
     if (!factory) {
-      auditA2ARouteDisabled(services, "no-routable-handler");
+      logA2ARouteDisabled("no-routable-handler");
       emit("[a2a] no routable handlers; route family disabled for this boot");
       return null;
     }
@@ -215,11 +203,11 @@ async function initializeA2ARouter(
       }
       if (runtime) return runtime;
       if (produced && "router" in produced) await disposeA2ARuntime(produced);
-      auditA2ARouteDisabled(services, "no-routable-handler");
+      logA2ARouteDisabled("no-routable-handler");
       emit("[a2a] no routable handlers; route family disabled for this boot");
       return null;
     } catch {
-      auditA2ARouteDisabled(services, "initialization-failed");
+      logA2ARouteDisabled("initialization-failed");
       emit("[a2a] initialization failed; route family disabled for this boot");
       return null;
     }
@@ -317,7 +305,7 @@ async function startLocalApiServerForBoot(
   );
   const a2aRuntime = bootRouteFamilies.a2a
     ? await Promise.race([
-      initializeA2ARouter(input.createA2ARouter, services, emit, approveAgentAction),
+      initializeA2ARouter(input.createA2ARouter, emit, approveAgentAction),
       cancellation.then((): typeof START_CANCELLED => START_CANCELLED),
     ])
     : null;

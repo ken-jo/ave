@@ -95,8 +95,7 @@ describe("work-board project authorization", () => {
     const runBriefing = vi.fn(async () => ({ status: "empty", kind: "daily", reason: "no findings" }));
     registerWorkBoardHandlers({
       workBoardStore: { get: async () => ({ status: "found", item: { ...deniedItem(workspace), projectRoot: workspace } }) },
-      workBoardEngine: { runItem, runBriefing, projectTemplateRuns: async (items: unknown[]) => items, adoptParkedTemplateRuns: async () => {} }, auditLogger: { log: vi.fn() },
-      getMainWindow: () => window, getAppWindows: () => [window],
+      workBoardEngine: { runItem, runBriefing, projectTemplateRuns: async (items: unknown[]) => items, adoptParkedTemplateRuns: async () => {} }, getMainWindow: () => window, getAppWindows: () => [window],
     } as unknown as IpcDeps);
     const event = { sender: owner, senderFrame: owner.mainFrame };
     await registeredHandler(WORK_BOARD.setProjectScope)(event, workspace);
@@ -116,8 +115,7 @@ describe("work-board project authorization", () => {
     const runBriefing = vi.fn();
     registerWorkBoardHandlers({
       workBoardStore: { get: async () => ({ status: "found", item: { ...deniedItem(workspace), projectRoot: workspace } }) },
-      workBoardEngine: { runItem, runBriefing, projectTemplateRuns: async (items: unknown[]) => items, adoptParkedTemplateRuns: async () => {} }, auditLogger: { log: vi.fn() },
-      getMainWindow: () => window, getAppWindows: () => [window],
+      workBoardEngine: { runItem, runBriefing, projectTemplateRuns: async (items: unknown[]) => items, adoptParkedTemplateRuns: async () => {} }, getMainWindow: () => window, getAppWindows: () => [window],
     } as unknown as IpcDeps);
     const event = { sender, senderFrame: kind === "subframe" ? { url: "file:///index.html" } : sender.mainFrame };
     vi.mocked(auditUnauthorized).mockClear();
@@ -142,7 +140,6 @@ describe("work-board project authorization", () => {
     registerWorkBoardHandlers({
       workBoardStore: { list },
       workBoardReport: { generate },
-      auditLogger: { log: vi.fn() },
       getMainWindow: () => window,
       getAppWindows: () => [window],
     } as unknown as IpcDeps);
@@ -176,7 +173,6 @@ describe("work-board project authorization", () => {
     registerWorkBoardHandlers({
       workBoardStore: store,
       workBoardEngine: engine,
-      auditLogger: { log: vi.fn() },
       getMainWindow: () => null,
       getAppWindows: () => [],
     } as unknown as IpcDeps);
@@ -210,7 +206,6 @@ describe("work-board project authorization", () => {
     };
     registerWorkBoardHandlers({
       workBoardStore: store,
-      auditLogger: { log: vi.fn() },
       getMainWindow: () => null,
       getAppWindows: () => [],
     } as unknown as IpcDeps);
@@ -233,7 +228,7 @@ describe("conditional board mutations", () => {
     const store = new WorkBoardStore(join(root, "board.json"));
     const created = await store.create({ title: "Export notes", projectRoot: workspace });
     if (created.status !== "created") throw new Error("Create failed");
-    registerWorkBoardHandlers({ workBoardStore: store, auditLogger: { log: vi.fn() }, getMainWindow: () => null, getAppWindows: () => [] } as unknown as IpcDeps);
+    registerWorkBoardHandlers({ workBoardStore: store, getMainWindow: () => null, getAppWindows: () => [] } as unknown as IpcDeps);
     await store.beginRun(created.itemId, "new-run", new Date().toISOString());
     await expect(registeredHandler(WORK_BOARD.complete)({}, created.itemId, created.item.mutationRevision)).resolves.toMatchObject({ status: "invalid", reason: "work-item-changed" });
     await expect(registeredHandler(WORK_BOARD.transition)({}, created.itemId, "completed", created.item.mutationRevision)).resolves.toMatchObject({ status: "invalid", reason: "work-item-changed" });
@@ -242,7 +237,7 @@ describe("conditional board mutations", () => {
     const store = new WorkBoardStore(join(root, "board.json"));
     const created = await store.create({ title: "Export notes", projectRoot: workspace });
     if (created.status !== "created") throw new Error("Create failed");
-    registerWorkBoardHandlers({ workBoardStore: store, auditLogger: { log: vi.fn() }, getMainWindow: () => null, getAppWindows: () => [] } as unknown as IpcDeps);
+    registerWorkBoardHandlers({ workBoardStore: store, getMainWindow: () => null, getAppWindows: () => [] } as unknown as IpcDeps);
     for (const revision of [undefined, "unknown", 3]) {
       await expect(registeredHandler(WORK_BOARD.complete)({}, created.itemId, revision)).resolves.toMatchObject({ status: "invalid", reason: "work-item-changed" });
     }
@@ -258,7 +253,7 @@ describe("write refusals", () => {
     const pin = { templateId: "template-1", version: 1, graphHash: "b".repeat(64) };
     const live = { runId: "live-r", itemId: 9, pin, runStartedBy: { kind: "local-create-and-run", pin }, startedAt: "2026-01-01T00:00:00.000Z", stageRuns: [] };
     writeFileSync(join(root, "workflow-runs.json"), JSON.stringify({ version: 1, rowIdFloor: 9, runs: [live] }));
-    registerWorkBoardHandlers({ workBoardStore: store, auditLogger: { log: vi.fn() }, getMainWindow: () => null, getAppWindows: () => [] } as unknown as IpcDeps);
+    registerWorkBoardHandlers({ workBoardStore: store, getMainWindow: () => null, getAppWindows: () => [] } as unknown as IpcDeps);
     const before = readFileSync(path, "utf8");
     await expect(registeredHandler(WORK_BOARD.update)({}, created.itemId, { detail: "edited" })).resolves.toEqual({ status: "invalid", itemId: created.itemId, reason: "work-board-run-id-held" });
     expect(readFileSync(path, "utf8")).toBe(before);
@@ -268,7 +263,7 @@ describe("write refusals", () => {
     const store = new WorkBoardStore(join(root, "board.json"));
     const text = '{"version":1,"rowIdFloor":0,"runs":[],"runs":[]}';
     writeFileSync(join(root, "workflow-runs.json"), text);
-    registerWorkBoardHandlers({ workBoardStore: store, auditLogger: { log: vi.fn() }, getMainWindow: () => null, getAppWindows: () => [] } as unknown as IpcDeps);
+    registerWorkBoardHandlers({ workBoardStore: store, getMainWindow: () => null, getAppWindows: () => [] } as unknown as IpcDeps);
     await expect(registeredHandler(WORK_BOARD.list)({}, {})).resolves.toEqual({ ok: false, error: "workflow-runs-duplicate-key" });
     await expect(registeredHandler(WORK_BOARD.add)({}, { title: "Notes", projectRoot: workspace })).resolves.toEqual({ status: "invalid", reason: "workflow-runs-duplicate-key" });
     expect(readFileSync(join(root, "workflow-runs.json"), "utf8")).toBe(text);
@@ -277,7 +272,7 @@ describe("write refusals", () => {
   it("never returns a create's raw failure", async () => {
     const store = new WorkBoardStore(join(root, "board.json"));
     vi.spyOn(store, "create").mockRejectedValue(new Error("disk full at C:\\private"));
-    registerWorkBoardHandlers({ workBoardStore: store, auditLogger: { log: vi.fn() }, getMainWindow: () => null, getAppWindows: () => [] } as unknown as IpcDeps);
+    registerWorkBoardHandlers({ workBoardStore: store, getMainWindow: () => null, getAppWindows: () => [] } as unknown as IpcDeps);
     await expect(registeredHandler(WORK_BOARD.add)({}, { title: "Notes", projectRoot: workspace })).resolves.toEqual({ status: "invalid", reason: "work-board-write-failed" });
   });
 });
@@ -339,7 +334,7 @@ describe("a copy of a work board file that cannot be made", () => {
     const engine = createWorkBoardEngine({ store, getRunner: () => undefined, emitProgress: () => {} });
     // A missing run's clear is the template engine's pass-through to the store.
     const workBoardEngine = { ...engine, clearMissingRun: (id: number, at: { revision: string; runId: string }) => store.clearMissingRun(id, at.revision, at.runId) };
-    registerWorkBoardHandlers({ workBoardStore: store, workBoardEngine, auditLogger: { log: vi.fn() }, getMainWindow: () => window, getAppWindows: () => [window] } as unknown as IpcDeps);
+    registerWorkBoardHandlers({ workBoardStore: store, workBoardEngine, getMainWindow: () => window, getAppWindows: () => [window] } as unknown as IpcDeps);
     const [channel, args] = await prepare(store);
     for (const written of [path, runsPath]) writeFileSync(written, JSON.stringify(JSON.parse(readFileSync(written, "utf8"))));
     const before = [readFileSync(path), readFileSync(runsPath)];
@@ -370,7 +365,7 @@ describe("listed row delete", () => {
     const store = new WorkBoardStore(join(root, "board.json"));
     const created = await store.create({ title: "Export notes", projectRoot: workspace });
     if (created.status !== "created") throw new Error("Create failed");
-    registerWorkBoardHandlers({ workBoardStore: store, auditLogger: { log: vi.fn() }, getMainWindow: () => null, getAppWindows: () => [] } as unknown as IpcDeps);
+    registerWorkBoardHandlers({ workBoardStore: store, getMainWindow: () => null, getAppWindows: () => [] } as unknown as IpcDeps);
     const remove = registeredHandler(WORK_BOARD.remove);
     for (const target of [undefined, {}, { revision: "unknown" }, { revision: created.item.mutationRevision, more: 1 }, "revision"]) {
       await expect(remove({}, created.itemId, target)).resolves.toEqual({ status: "invalid", itemId: created.itemId, reason: "work-item-changed" });
@@ -397,7 +392,7 @@ describe("invalid row delete", () => {
     const store = new WorkBoardStore(path);
     const broadcast = vi.fn();
     const window = { isDestroyed: () => false, webContents: { send: broadcast } };
-    registerWorkBoardHandlers({ workBoardStore: store, auditLogger: { log: vi.fn() }, getMainWindow: () => window, getAppWindows: () => [window] } as unknown as IpcDeps);
+    registerWorkBoardHandlers({ workBoardStore: store, getMainWindow: () => window, getAppWindows: () => [window] } as unknown as IpcDeps);
     const remove = registeredHandler(WORK_BOARD.remove);
     const card = async (entry: unknown) => {
       const listed = await store.list();
@@ -446,7 +441,7 @@ describe("missing run clear", () => {
     const clearMissingRun = vi.fn((id: number, input: { revision: string; runId: string }) => store.clearMissingRun(id, input.revision, input.runId));
     registerWorkBoardHandlers({
       workBoardStore: store, workBoardEngine: { runItem, clearMissingRun, projectTemplateRuns: async (items: unknown[]) => items, adoptParkedTemplateRuns: async () => {} },
-      auditLogger: { log: vi.fn() }, getMainWindow: () => window, getAppWindows: () => [window],
+      getMainWindow: () => window, getAppWindows: () => [window],
     } as unknown as IpcDeps);
     const event = { sender: owner, senderFrame: owner.mainFrame };
     await registeredHandler(WORK_BOARD.setProjectScope)(event, workspace);
@@ -485,7 +480,7 @@ describe("unreadable run record discard", () => {
     const store = new WorkBoardStore(path);
     const broadcast = vi.fn();
     const window = { isDestroyed: () => false, webContents: { send: broadcast } };
-    registerWorkBoardHandlers({ workBoardStore: store, auditLogger: { log: vi.fn() }, getMainWindow: () => window, getAppWindows: () => [window] } as unknown as IpcDeps);
+    registerWorkBoardHandlers({ workBoardStore: store, getMainWindow: () => window, getAppWindows: () => [window] } as unknown as IpcDeps);
     const remove = registeredHandler(WORK_BOARD.remove);
     const listed = await store.list();
     const [first, second] = listed.status === "ok" ? listed.unreadableRuns ?? [] : [];
@@ -526,7 +521,7 @@ describe("unreadable run record discard", () => {
     const store = new WorkBoardStore(path);
     const broadcast = vi.fn();
     const window = { isDestroyed: () => false, webContents: { send: broadcast } };
-    registerWorkBoardHandlers({ workBoardStore: store, auditLogger: { log: vi.fn() }, getMainWindow: () => window, getAppWindows: () => [window] } as unknown as IpcDeps);
+    registerWorkBoardHandlers({ workBoardStore: store, getMainWindow: () => window, getAppWindows: () => [window] } as unknown as IpcDeps);
     const remove = registeredHandler(WORK_BOARD.remove);
     const card = async (entry: unknown) => {
       const listed = await store.list();
@@ -559,7 +554,7 @@ describe("unreadable run record discard", () => {
     writeFileSync(runsPath, text);
     const window = { isDestroyed: () => false, webContents: { send: vi.fn() } };
     registerWorkBoardHandlers({
-      workBoardStore: new WorkBoardStore(path), auditLogger: { log: vi.fn() }, getMainWindow: () => window, getAppWindows: () => [window],
+      workBoardStore: new WorkBoardStore(path), getMainWindow: () => window, getAppWindows: () => [window],
       ...(attachments === undefined ? {} : { workflowTemplateStore: attachments }),
     } as unknown as IpcDeps);
     const hash = createHash("sha256").update(JSON.stringify(entry)).digest("hex");

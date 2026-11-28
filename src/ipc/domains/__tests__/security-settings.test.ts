@@ -1,6 +1,7 @@
+import { watchPermissionEvents } from "../../../__tests__/support/permission-events.js";
 import { requiredFixture } from "../../../__tests__/support/required-fixture.js";
 import { EventEmitter } from 'node:events';
-import { assert, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PERMISSIONS } from '../../../shared/ipc-channels.js';
 import { securitySettingsGestures } from '../../security-settings-gesture.js';
 import { USER_GESTURE_LIFETIME_MS } from '../../../shared/chat-origin.js';
@@ -17,33 +18,33 @@ function setup() {
   const window = { webContents: contents, isDestroyed: () => false };
   const previous = { features: { osToolSandbox: true }, system: { localApiServer: false } };
   const settingsService = { getAll: () => previous, patch: vi.fn(async (patch) => patch) };
-  const auditLogger = { log: vi.fn(), append: vi.fn(async (_entry: unknown) => {}) };
-  registerPermissionsHandlers({ conversationLoop: {}, settingsService, auditLogger, getMainWindow: () => window, getAppWindows: () => [window] } as never);
+  const events = vi.fn();
+  watchPermissionEvents(events);
+  registerPermissionsHandlers({ conversationLoop: {}, settingsService, getMainWindow: () => window, getAppWindows: () => [window] } as never);
   securitySettingsGestures.observe(contents as never);
   const event = { sender: contents, senderFrame: frame };
   const call = (patch: unknown, intent = { inputOrigin: 'user-keyboard', userActivation: true }, senderEvent = event) =>
     requiredFixture(handlers.get(PERMISSIONS.updateSecuritySettings))(senderEvent, { patch, intent });
-  return { contents, event, settingsService, auditLogger, call };
+  return { contents, event, settingsService, events, call };
 }
 
 beforeEach(() => handlers.clear());
+afterEach(() => vi.restoreAllMocks());
 describe('security settings user consent boundary', () => {
   it('refuses a forged renderer intent without a native main input', async () => {
     const f = setup();
     expect(await f.call({ features: { osToolSandbox: false } })).toMatchObject({ ok: false, error: 'user-keyboard-required' });
     expect(f.settingsService.patch).not.toHaveBeenCalled();
-    expect(f.auditLogger.log).toHaveBeenCalledWith(expect.objectContaining({ input: expect.stringContaining('security_settings_refused') }));
+    expect(f.events).toHaveBeenCalledWith(expect.objectContaining({ event: 'security_settings_refused' }));
   });
-  it('consumes the native gesture once and audits before and after values', async () => {
+  it('consumes the native gesture once and logs the committed change', async () => {
     const f = setup();
     f.contents.emit('before-mouse-event', {}, { type: 'mouseUp' });
     await f.call({ features: { osToolSandbox: false } });
     expect(f.settingsService.patch).toHaveBeenCalledExactlyOnceWith({ features: { osToolSandbox: false } });
-    const lastAppend = f.auditLogger.append.mock.lastCall;
-    assert.exists(lastAppend, 'Expected a committed audit entry');
-    const committed = JSON.parse(String((lastAppend[0] as { input: string }).input));
-    expect(committed).toEqual({ action: 'security_settings_changed', phase: 'committed', changes: [{ path: 'features.osToolSandbox', previous: true, value: false }],
-      gestureSequence: expect.any(Number), gesturePayloadDigest: expect.stringMatching(/^[a-f0-9]{64}$/) });
+    expect(f.events).toHaveBeenLastCalledWith({
+      event: "security_settings_changed", phase: "committed", osToolSandbox: false,
+    });
     expect(await f.call({ features: { osToolSandbox: false } })).toMatchObject({ ok: false });
   });
   it.each(['blur', 'did-start-navigation', 'destroyed'])('invalidates pending native input after %s', async (name) => {
@@ -85,17 +86,20 @@ describe('security settings user consent boundary', () => {
     expect(await f.call(patch)).toMatchObject({ error: 'invalid-security-settings' });
     expect(f.settingsService.patch).not.toHaveBeenCalled();
   });
-  it.each(['Audit writer is unavailable', 'Audit writer queue is full', 'Filesystem error'])('refuses mutation when durable audit fails: %s', async (message) => {
-    const f = setup(); f.contents.emit('before-mouse-event', {}, { type: 'mouseUp' });
-    f.auditLogger.append.mockRejectedValueOnce(new Error(message));
-    expect(await f.call({ features: { osToolSandbox: false } })).toMatchObject({ error: 'security-settings-audit-unavailable' });
-    expect(f.settingsService.patch).not.toHaveBeenCalled();
+  it("persists once when app logging fails", async () => {
+    const f = setup();
+    f.events.mockImplementation(() => { throw new Error("Log sink unavailable"); });
+    f.contents.emit("before-mouse-event", {}, { type: "mouseUp" });
+    expect(await f.call({ features: { osToolSandbox: false } })).toMatchObject({ features: { osToolSandbox: false } });
+    expect(f.settingsService.patch).toHaveBeenCalledExactlyOnceWith({ features: { osToolSandbox: false } });
+    expect(f.events).toHaveBeenCalledTimes(2);
   });
-  it('restores only the changed fields when the final audit append fails', async () => {
-    const f = setup(); f.contents.emit('before-mouse-event', {}, { type: 'mouseUp' });
-    f.auditLogger.append.mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error('Storage closed'));
-    expect(await f.call({ features: { osToolSandbox: false } })).toMatchObject({ error: 'security-settings-audit-unavailable' });
-    expect(f.settingsService.patch).toHaveBeenLastCalledWith({ features: { osToolSandbox: true } });
+  it("surfaces a real settings write failure without logging a commit", async () => {
+    const f = setup();
+    f.settingsService.patch.mockRejectedValueOnce(new Error("Settings storage unavailable"));
+    f.contents.emit("before-mouse-event", {}, { type: "mouseUp" });
+    await expect(f.call({ features: { osToolSandbox: false } })).rejects.toThrow("Settings storage unavailable");
+    expect(f.events).toHaveBeenCalledExactlyOnceWith({ event: "security_settings_changed", phase: "requested", osToolSandbox: false });
   });
   it('classifies all protected flags for the generic settings refusal', () => {
     for (const key of SECURITY_FEATURE_KEYS) expect(containsSecuritySettings({ features: { [key]: false } })).toBe(true);

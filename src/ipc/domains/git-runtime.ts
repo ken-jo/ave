@@ -15,10 +15,10 @@ async function readGitRuntimeStatus(): Promise<GitRuntimeStatus> {
   return gitRuntimeStatus(await detectGitRuntime(root), root !== null);
 }
 
-export function registerGitRuntimeHandlers(deps: IpcDeps, readStatus: ReadGitRuntimeStatus = readGitRuntimeStatus): void {
+export function registerGitRuntimeHandlers(_deps: IpcDeps, readStatus: ReadGitRuntimeStatus = readGitRuntimeStatus): void {
   ipcMain.handle(CHANNELS.gitRuntime.status, async (event): Promise<GitRuntimeResult | typeof UNAUTHORIZED_FRAME> => {
     if (!validateHostRendererSender(event)) {
-      auditUnauthorized(deps.auditLogger, CHANNELS.gitRuntime.status, event);
+      auditUnauthorized(CHANNELS.gitRuntime.status);
       return UNAUTHORIZED_FRAME;
     }
     return { ok: true, status: scrubMarketplaceStrings(await readStatus()) };

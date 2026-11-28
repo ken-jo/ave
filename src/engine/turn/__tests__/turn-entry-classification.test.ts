@@ -178,10 +178,6 @@ interface Classified {
 }
 
 const CLASSIFIED: Record<string, Classified> = {
-  "audit/permission-audit-proof.ts": {
-    sites: { userKeyboardLiteral: 1 },
-    classification: "the audit-chain self-test row; not a turn origin",
-  },
   "boot/node-host-runtime.ts": {
     sites: { computedCall: 1 },
     classification: "computed: a Reflect.get forwarding proxy over a host runtime object; no turn entry",
@@ -261,6 +257,10 @@ const CLASSIFIED: Record<string, Classified> = {
   "main/session-goal-revival.ts": {
     sites: { runTurn: 2 },
     classification: "session goal revival: delegates to the chat domain's agent-message turn",
+  },
+  "lib/permission-log.ts": {
+    sites: { computedCall: 1 },
+    classification: "computed: a logger method chosen by level; no turn entry",
   },
   "marketplace/log.ts": {
     sites: { computedCall: 2 },

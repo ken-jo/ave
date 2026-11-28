@@ -13,7 +13,6 @@ import { userPermissionContext } from "./tool-context-fixture.js";
 import { ToolRegistry } from "../registry.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { wireJudgeForTest } from "../../__tests__/support/reviewer-judge.js";
-import { AuditLogger } from "../../audit/audit-logger.js";
 import {
   approvalCacheKeyIdentity,
   recordApproval,
@@ -37,7 +36,7 @@ describe("ToolExecutor — Store B memory skip end-to-end (real PermissionManage
   let dir: string;
   let aveHomeDir: string;
   let prevAveHome: string | undefined;
-  let auditLogger: AuditLogger;
+
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "ave-memory-skip-e2e-"));
@@ -46,13 +45,12 @@ describe("ToolExecutor — Store B memory skip end-to-end (real PermissionManage
     process.env.AVE_HOME = aveHomeDir;
     __resetSessionStoreForTest();
     // Own the audit logger so teardown can flush queued writes before removing its temporary home.
-    auditLogger = new AuditLogger(join(aveHomeDir, "audit"));
   });
 
   afterEach(async () => {
     // Flush the audit writer before deleting the home; approval writes are already awaited.
     // Awaiting settled promises or microtasks does not complete pending filesystem writes.
-    await auditLogger.close();
+
     // Safe only because the flush above has completed: with nothing in flight, reverting `AVE_HOME` cannot redirect a pending write at the real home.
     if (prevAveHome === undefined) delete process.env.AVE_HOME;
     else process.env.AVE_HOME = prevAveHome;
@@ -85,8 +83,6 @@ describe("ToolExecutor — Store B memory skip end-to-end (real PermissionManage
       undefined,
       { requestAndWait } as never,
       undefined,
-      // 7th parameter. Without it the executor builds its own logger under the real `aveHome()`; see the note in `beforeEach`.
-      auditLogger,
     );
 
     const result = await executor.executeAll(
@@ -126,8 +122,6 @@ describe("ToolExecutor — Store B memory skip end-to-end (real PermissionManage
       undefined,
       { requestAndWait } as never,
       undefined,
-      // 7th parameter. Without it the executor builds its own logger under the real `aveHome()`; see the note in `beforeEach`.
-      auditLogger,
     );
 
     const result = await executor.executeAll(
@@ -171,8 +165,6 @@ describe("ToolExecutor — Store B memory skip end-to-end (real PermissionManage
       undefined,
       { requestAndWait } as never,
       undefined,
-      // 7th parameter. Without it the executor builds its own logger under the real `aveHome()`; see the note in `beforeEach`.
-      auditLogger,
     );
 
     const result = await executor.executeAll(
@@ -213,8 +205,6 @@ describe("ToolExecutor — Store B memory skip end-to-end (real PermissionManage
       undefined,
       { requestAndWait } as never,
       undefined,
-      // 7th parameter. Without it the executor builds its own logger under the real `aveHome()`; see the note in `beforeEach`.
-      auditLogger,
     );
 
     const result = await executor.executeAll(
@@ -253,7 +243,7 @@ describe("ToolExecutor — Store B memory skip end-to-end (real PermissionManage
     const requestAndWait = answeringRequestAndWait<{ id: string }>(() => ({ choice: "deny-once" as const }));
     const executor = new ToolExecutor(
       registry, undefined, manager, undefined,
-      { requestAndWait } as never, undefined, auditLogger,
+      { requestAndWait } as never, undefined,
     );
     const result = await executor.executeAll(
       [{ id: "conversation-write", name: "write_probe", input }],
@@ -301,7 +291,7 @@ describe("ToolExecutor — Store B memory skip end-to-end (real PermissionManage
       workingDirectoryIdentity: captureApprovalWorkingDirectory(dir).identity,
     });
     const requestAndWait = answeringRequestAndWait<{ id: string }>(() => ({ choice: "deny-once" as const }));
-    const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined, auditLogger);
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined);
     const result = await executor.executeAll(
       [{ id: "subagent-write", name: "write_probe", input }],
       { sessionId: calledBy, executionCwd: dir, permissionContext: userPermissionContext({ additionalDirectories: [dir] }) },
@@ -354,8 +344,6 @@ describe("ToolExecutor — Store B memory skip end-to-end (real PermissionManage
       undefined,
       { requestAndWait } as never,
       undefined,
-      // 7th parameter. Without it the executor builds its own logger under the real `aveHome()`; see the note in `beforeEach`.
-      auditLogger,
     );
 
     const result = await executor.executeAll(
@@ -413,7 +401,7 @@ describe("ToolExecutor — Store B memory skip end-to-end (real PermissionManage
       },
     };
     const gate = new ApprovalGate(nativeWebContents as never);
-    const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, undefined, auditLogger);
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, undefined);
     const run = (id: string, cwd: string, nextCommand = command) => executor.executeAll(
       [{ id, name: tool.name, input: { command: nextCommand } }],
       { sessionId: "unavailable-reviewer", executionCwd: cwd, permissionContext: userPermissionContext({ additionalDirectories: [dir] }) },
@@ -440,7 +428,7 @@ describe("ToolExecutor — Store B memory skip end-to-end (real PermissionManage
     const manager = new PermissionManager(join(dir, "permissions.json"));
     manager.setRules([{ pattern: key, action: "deny" }]);
     const requestAndWait = vi.fn();
-    const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined, auditLogger);
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined);
     const result = await executor.executeAll([{ id: "exact-policy-deny", name: tool.name, input }], {
       executionCwd: dir, permissionContext: userPermissionContext({ additionalDirectories: [dir] }),
     });
@@ -466,7 +454,7 @@ describe("ToolExecutor — Store B memory skip end-to-end (real PermissionManage
     await writeFile(storePath, JSON.stringify(stored));
     __resetSessionStoreForTest();
     const requestAndWait = answeringRequestAndWait<{ id: string }>(() => ({ choice: "deny-once" as const }));
-    const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined, auditLogger);
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined);
     const result = await executor.executeAll([{ id: "malformed", name: "write_probe", input }], {
       executionCwd: dir, permissionContext: userPermissionContext({ additionalDirectories: [dir] }),
     });

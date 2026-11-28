@@ -82,22 +82,11 @@ describe("ConversationLoop plugin operation governance", () => {
     });
     const { generationAccess, release } = admittedHostGeneration(pluginId, generationId);
     const grants = new PluginOperationGrantCoordinator();
-    const auditLogger = {
-      log: vi.fn(),
-      logShadow: vi.fn(),
-      appendPermissionAuditEntry: vi.fn(async (entry: Record<string, unknown>) => ({
-        ...entry,
-        prevHash: "test-prev-hash",
-      })),
-      isPermissionAuditChainReady: vi.fn(() => false),
-      isShadowChannelWritable: vi.fn(() => true),
-      getPermissionShadowLogFile: vi.fn(() => "/tmp/shadow"),
-    };
+
     const loop = new ConversationLoop(makeConversationLoopDeps({
       toolRegistry: registry,
       permissionManager,
       scriptHookManager: new ScriptHookManager(),
-      auditLogger: auditLogger as never,
       pluginRuntime: {
         listPluginIds: () => [pluginId],
         isPluginEnabled: () => true,

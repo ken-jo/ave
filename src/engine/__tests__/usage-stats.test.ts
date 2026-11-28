@@ -1,53 +1,16 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
-import { appendFileSync, mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
-import { gzipSync } from "node:zlib";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
-
-const auditStatGate = vi.hoisted(() => ({
-  target: undefined as string | undefined,
-  append: undefined as (() => void) | undefined,
-  appendBeforeStatOnCall: undefined as number | undefined,
-  appendAfterStatOnCall: undefined as number | undefined,
-  calls: 0,
-}));
-
-vi.mock("node:fs/promises", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("node:fs/promises")>();
-  return {
-    ...actual,
-    stat: async (...args: Parameters<typeof actual.stat>) => {
-      const isTarget = auditStatGate.target && String(args[0]) === auditStatGate.target;
-      if (isTarget) {
-        auditStatGate.calls += 1;
-        if (auditStatGate.calls === auditStatGate.appendBeforeStatOnCall) {
-          auditStatGate.append?.();
-        }
-      }
-      const metadata = await actual.stat(...args);
-      if (isTarget && auditStatGate.calls === auditStatGate.appendAfterStatOnCall) {
-        auditStatGate.append?.();
-      }
-      return metadata;
-    },
-  };
-});
-
 import {
   computeUsageSummary,
-  readAuditEntries,
   computeMonthlyProjection,
   getUsageRange,
   getUsageSummary,
-  createUsageSummaryCache,
-  type AuditTurnEntry,
+  type UsageTurnEntry,
   type UsageTrendPoint,
 } from "../usage-stats.js";
 import { computeCost, knownModelPricing, resolveModelPricing } from "../llm/pricing.js";
 import { resolvePricingOverrides } from "../../shared/pricing-overrides.js";
 
-function turn(partial: Partial<AuditTurnEntry>): AuditTurnEntry {
+function turn(partial: Partial<UsageTurnEntry>): UsageTurnEntry {
   return {
     timestamp: new Date().toISOString(),
     sessionId: "s1",
@@ -56,15 +19,6 @@ function turn(partial: Partial<AuditTurnEntry>): AuditTurnEntry {
     tokenUsage: { inputTokens: 1000, outputTokens: 500 },
     ...partial,
   };
-}
-
-function summaryWithInput(inputTokens = 100): ReturnType<typeof computeUsageSummary> {
-  return computeUsageSummary([
-    turn({
-      timestamp: "2026-07-04T01:00:00Z",
-      tokenUsage: { inputTokens, outputTokens: 10 },
-    }),
-  ], new Date("2026-07-04T12:00:00Z"));
 }
 
 it("classifies label-only usage as unpriced in totals and projections", () => {
@@ -129,88 +83,10 @@ afterEach(() => {
   else process.env.TZ = previousTz;
 });
 
-describe("UsageSummaryCache", () => {
-  it("reuses a stable revision and returns isolated summaries", async () => {
-    const cache = createUsageSummaryCache({ maxEntries: 2 });
-    const compute = vi.fn(async () => ({
-      summary: summaryWithInput(),
-      cacheable: true,
-    }));
-    const first = await cache.getOrCompute({
-      key: "stable",
-      now: new Date("2026-07-04T12:00:00Z"),
-      compute,
-    });
-    first.today.inputTokens = 999_999;
-    first.trend[0].inputTokens = 999_999;
-    first.subscription.sources["provider-reported"].totalTokens = 999_999;
-
-    const secondNow = new Date("2026-07-04T12:01:00Z");
-    const second = await cache.getOrCompute({
-      key: "stable",
-      now: secondNow,
-      compute,
-    });
-
-    expect(compute).toHaveBeenCalledTimes(1);
-    expect(second).not.toBe(first);
-    expect(second.today.inputTokens).toBe(100);
-    expect(second.trend[0].inputTokens).toBe(100);
-    expect(second.subscription.sources["provider-reported"].totalTokens).toBe(0);
-    expect(second.generatedAt).toBe(secondNow.toISOString());
-  });
-
-  it("does not retain an unstable snapshot", async () => {
-    const cache = createUsageSummaryCache();
-    const compute = vi.fn(async () => ({
-      summary: summaryWithInput(),
-      cacheable: false,
-    }));
-
-    await cache.getOrCompute({
-      key: "unstable",
-      now: new Date("2026-07-04T12:00:00Z"),
-      compute,
-    });
-    await cache.getOrCompute({
-      key: "unstable",
-      now: new Date("2026-07-04T12:01:00Z"),
-      compute,
-    });
-
-    expect(compute).toHaveBeenCalledTimes(2);
-  });
-
-  it("evicts the least recently used stable revision", async () => {
-    const cache = createUsageSummaryCache({ maxEntries: 2 });
-    const a = vi.fn(async () => ({ summary: summaryWithInput(100), cacheable: true }));
-    const b = vi.fn(async () => ({ summary: summaryWithInput(200), cacheable: true }));
-    const c = vi.fn(async () => ({ summary: summaryWithInput(300), cacheable: true }));
-    const get = (key: string, compute: () => Promise<{ summary: ReturnType<typeof summaryWithInput>; cacheable: boolean }>) => (
-      cache.getOrCompute({
-        key,
-        now: new Date("2026-07-04T12:00:00Z"),
-        compute,
-      })
-    );
-
-    await get("a", a);
-    await get("b", b);
-    await get("a", a);
-    await get("c", c);
-    await get("a", a);
-    await get("b", b);
-
-    expect(a).toHaveBeenCalledTimes(1);
-    expect(b).toHaveBeenCalledTimes(2);
-    expect(c).toHaveBeenCalledTimes(1);
-  });
-});
-
 describe("usage-stats", () => {
   it("aggregates today/week/month totals from turn entries", () => {
     const now = new Date("2026-04-18T12:00:00Z");
-    const entries: AuditTurnEntry[] = [
+    const entries: UsageTurnEntry[] = [
       turn({ timestamp: "2026-04-18T10:00:00Z", tokenUsage: { inputTokens: 1_000_000, outputTokens: 500_000 },
       }),
       turn({ timestamp: "2026-04-13T10:00:00Z", tokenUsage: { inputTokens: 200_000, outputTokens: 100_000 },
@@ -310,7 +186,7 @@ describe("usage-stats", () => {
 
   it("buckets today and the trend on the host's calendar day, not UTC's", () => {
     const now = new Date("2026-07-03T16:00:00Z");
-    const entries: AuditTurnEntry[] = [
+    const entries: UsageTurnEntry[] = [
       turn({ timestamp: "2026-07-03T15:30:00Z", tokenUsage: { inputTokens: 100, outputTokens: 10 },
       }),
       turn({ timestamp: "2026-07-03T14:30:00Z", tokenUsage: { inputTokens: 300, outputTokens: 30 },
@@ -338,7 +214,7 @@ describe("usage-stats", () => {
 
   it("groups by model and session and ranks by recorded spend", () => {
     const modelSettings = { pricing: { source: "user" as const, rates: { inputPer1M: 3, outputPer1M: 15 } } };
-    const entries: AuditTurnEntry[] = [
+    const entries: UsageTurnEntry[] = [
       turn({ sessionId: "expensive", modelSettings, tokenUsage: { inputTokens: 2_000_000, outputTokens: 1_000_000 },
       }),
       turn({ sessionId: "cheap", modelSettings, tokenUsage: { inputTokens: 1000, outputTokens: 500 },
@@ -485,7 +361,7 @@ describe("usage-stats", () => {
 
   it("totalTokens vendor-aware — OpenAI cacheRead is NOT double-counted", () => {
     // Cached input is already included in prompt input here; adding it again inflates totals.
-    const entries: AuditTurnEntry[] = [
+    const entries: UsageTurnEntry[] = [
       {
         timestamp: new Date().toISOString(),
         sessionId: "openai-cache-hot",
@@ -503,7 +379,7 @@ describe("usage-stats", () => {
   });
 
   it("marks zero-price placeholder model costs as unknown instead of fake $0", () => {
-    const entries: AuditTurnEntry[] = [
+    const entries: UsageTurnEntry[] = [
       {
         timestamp: new Date().toISOString(),
         sessionId: "legacy-openai",
@@ -522,7 +398,7 @@ describe("usage-stats", () => {
   });
 
   it("keeps label-only deployment usage unpriced", () => {
-    const entries: AuditTurnEntry[] = [
+    const entries: UsageTurnEntry[] = [
       {
         timestamp: new Date().toISOString(),
         sessionId: "azure-model-name",
@@ -543,7 +419,7 @@ describe("usage-stats", () => {
   });
 
   it("does not lend OpenAI's table price to an Azure deployment alias", () => {
-    const entries: AuditTurnEntry[] = [
+    const entries: UsageTurnEntry[] = [
       {
         timestamp: new Date().toISOString(),
         sessionId: "azure-model-alias",
@@ -558,7 +434,7 @@ describe("usage-stats", () => {
   });
 
   it("keeps token-bearing bare legacy routes in an explicit unknown bucket", () => {
-    const entries: AuditTurnEntry[] = [
+    const entries: UsageTurnEntry[] = [
       {
         timestamp: new Date().toISOString(),
         sessionId: "legacy-bare-route",
@@ -582,7 +458,7 @@ describe("usage-stats", () => {
 
   it("keeps a per-model segment whose vendor id this build no longer knows", () => {
     // Persisted audit rows retain usage even when their vendor identifier has since changed.
-    const entries: AuditTurnEntry[] = [
+    const entries: UsageTurnEntry[] = [
       {
         timestamp: new Date().toISOString(),
         sessionId: "renamed-vendor",
@@ -607,7 +483,7 @@ describe("usage-stats", () => {
   });
 
   it("uses per-model audit breakdown for mixed-provider fallback turns", () => {
-    const entries: AuditTurnEntry[] = [
+    const entries: UsageTurnEntry[] = [
       {
         timestamp: new Date().toISOString(),
         sessionId: "mixed-fallback",
@@ -659,7 +535,7 @@ describe("usage-stats", () => {
 
   it("selects a recorded long-context tier per request segment", () => {
     const pricing = resolveModelPricing("openai", "gpt-5.4");
-    const entries: AuditTurnEntry[] = [
+    const entries: UsageTurnEntry[] = [
       {
         timestamp: new Date().toISOString(),
         sessionId: "multi-round-openai",
@@ -691,7 +567,7 @@ describe("usage-stats", () => {
   });
 
   it("totalTokens vendor-aware — current Anthropic usageByModel adds cache to total", () => {
-    const entries: AuditTurnEntry[] = [
+    const entries: UsageTurnEntry[] = [
       {
         timestamp: new Date().toISOString(),
         sessionId: "claude-cache-hot",
@@ -724,7 +600,7 @@ describe("usage-stats", () => {
   });
 
   it("normalizes legacy Claude audit rows without usageByModel before aggregation", () => {
-    const entries: AuditTurnEntry[] = [
+    const entries: UsageTurnEntry[] = [
       {
         timestamp: new Date().toISOString(),
         sessionId: "legacy-claude-cache-hot",
@@ -785,7 +661,7 @@ describe("usage-stats", () => {
   });
 
   it("builds a chronological trend array", () => {
-    const entries: AuditTurnEntry[] = [
+    const entries: UsageTurnEntry[] = [
       turn({ timestamp: "2026-04-10T10:00:00Z" }),
       turn({ timestamp: "2026-04-12T10:00:00Z" }),
       turn({ timestamp: "2026-04-11T10:00:00Z" }),
@@ -801,92 +677,6 @@ describe("usage-stats", () => {
     ]);
   });
 
-  it("reads JSONL audit files and ignores non-turn entries", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "usage-stats-"));
-    try {
-      mkdirSync(dir, { recursive: true });
-      // Derive yesterday from the clock so fixtures stay inside the rolling lookback window.
-      const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000);
-      const yyyy = yesterday.getUTCFullYear();
-      const mm = String(yesterday.getUTCMonth() + 1).padStart(2, "0");
-      const dd = String(yesterday.getUTCDate()).padStart(2, "0");
-      const dateStr = `${yyyy}-${mm}-${dd}`;
-      const file = join(dir, `${dateStr}.jsonl`);
-      writeFileSync(
-        file,
-        [
-          JSON.stringify(turn({ timestamp: `${dateStr}T10:00:00Z` })),
-          JSON.stringify({
-            type: "tool_call",
-            timestamp: `${dateStr}T10:05:00Z`,
-          }),
-          "not json",
-          "",
-          JSON.stringify(turn({ timestamp: `${dateStr}T11:00:00Z` })),
-        ].join("\n") + "\n",
-        "utf-8",
-      );
-      const read = await readAuditEntries(dir, 365);
-      expect(read.length).toBe(2);
-      expect(read.every((e) => e.type === "turn")).toBe(true);
-    } finally {
-      await cleanupTmpDir(dir);
-    }
-  });
-  it("reads canonical gzip archives and excludes non-telemetry channels", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "usage-gzip-"));
-    const now = new Date("2026-07-04T12:00:00Z");
-    try {
-      const archivedTurn = turn({
-        timestamp: "2026-07-03T15:30:00Z",
-        sessionId: "archived",
-        input: "archived input",
-        tokenUsage: { inputTokens: 100, outputTokens: 10 },
-      });
-      const rawTurn = turn({
-        timestamp: "2026-07-04T01:00:00Z",
-        sessionId: "raw",
-        tokenUsage: { inputTokens: 200, outputTokens: 20 },
-      });
-      writeFileSync(
-        join(dir, "2026-07-03.jsonl.20260704120000000.11111111-1111-4111-8111-111111111111.gz"),
-        gzipSync(Buffer.from(`${JSON.stringify(archivedTurn)}\n`, "utf-8")),
-      );
-      writeFileSync(join(dir, "2026-07-04.jsonl"), `${JSON.stringify(rawTurn)}\n`, "utf-8");
-      writeFileSync(
-        join(dir, "2026-07-03.permission-shadow.jsonl.20260704.gz"),
-        gzipSync(Buffer.from(`${JSON.stringify(turn({ tokenUsage: { inputTokens: 9_999, outputTokens: 0 } }))}\n`, "utf-8")),
-      );
-
-      const entries = await readAuditEntries(dir, 2, now);
-      expect(entries.map((entry) => entry.sessionId)).toEqual(["archived", "raw"]);
-      expect(computeUsageSummary(entries, now).today.inputTokens).toBe(300);
-    } finally {
-      await cleanupTmpDir(dir);
-    }
-  });
-
-  it("skips an entire corrupted gzip archive without losing valid files", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "usage-gzip-corrupt-"));
-    const now = new Date("2026-07-04T12:00:00Z");
-    try {
-      const partialArchive = gzipSync(Buffer.from([
-        JSON.stringify(turn({ sessionId: "should-not-count", timestamp: "2026-07-03T15:30:00Z" })),
-        JSON.stringify(turn({ sessionId: "also-should-not-count", timestamp: "2026-07-03T15:31:00Z" })),
-      ].join("\n") + "\n", "utf-8")).subarray(0, -8);
-      writeFileSync(join(dir, "2026-07-03.jsonl.20260704.gz"), partialArchive);
-      writeFileSync(
-        join(dir, "2026-07-04.jsonl"),
-        `${JSON.stringify(turn({ sessionId: "valid", timestamp: "2026-07-04T01:00:00Z" }))}\n`,
-        "utf-8",
-      );
-
-      const entries = await readAuditEntries(dir, 2, now);
-      expect(entries.map((entry) => entry.sessionId)).toEqual(["valid"]);
-    } finally {
-      await cleanupTmpDir(dir);
-    }
-  });
 });
 
 describe("computeMonthlyProjection", () => {
@@ -934,343 +724,97 @@ describe("computeMonthlyProjection", () => {
   });
 });
 
-describe("getUsageRange (via readAuditEntries + filter)", () => {
-  it("filters entries to exact date range", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "usage-range-"));
-    try {
-      mkdirSync(dir, { recursive: true });
-      writeFileSync(
-        join(dir, "2026-04-10.jsonl"),
-        JSON.stringify({
-          timestamp: "2026-04-10T10:00:00Z",
-          sessionId: "s1",
-          type: "turn",
-          route: "claude/claude-sonnet-4-6",
-          tokenUsage: { inputTokens: 100, outputTokens: 50 },
-        }) + "\n",
-        "utf-8",
-      );
-      writeFileSync(
-        join(dir, "2026-04-15.jsonl"),
-        JSON.stringify({
-          timestamp: "2026-04-15T10:00:00Z",
-          sessionId: "s1",
-          type: "turn",
-          route: "claude/claude-sonnet-4-6",
-          tokenUsage: { inputTokens: 200, outputTokens: 100 },
-        }) + "\n",
-        "utf-8",
-      );
-      writeFileSync(
-        join(dir, "2026-04-20.jsonl"),
-        JSON.stringify({
-          timestamp: "2026-04-20T10:00:00Z",
-          sessionId: "s1",
-          type: "turn",
-          route: "claude/claude-sonnet-4-6",
-          tokenUsage: { inputTokens: 400, outputTokens: 200 },
-        }) + "\n",
-        "utf-8",
-      );
+describe("saved turn usage", () => {
+  it("splits saved request input for usage totals and pricing", async () => {
+    const now = new Date(2026, 5, 16, 12);
+    const sessions = {
+      listSessions: () => [{ id: "saved" }] as ReturnType<Parameters<typeof getUsageRange>[0]["listSessions"]>,
+      loadSession: () => [{
+        role: "assistant",
+        meta: {
+          createdAt: now.getTime(),
+          turnSummary: {
+            usageByModel: [{
+              vendorProvider: "claude",
+              vendorModel: "claude-sonnet-4-6",
+              tokenUsage: { inputTokens: 100, outputTokens: 20, cacheReadTokens: 80, cacheWriteTokens: 10 },
+              pricing: { source: "user", rates: { inputPer1M: 10, outputPer1M: 20, cacheReadPer1M: 2, cacheWritePer1M: 15 } },
+            }],
+          },
+        },
+      }],
+    };
 
-      const entries = (await readAuditEntries(dir, 365)).filter((e) => {
-        const d = e.timestamp.slice(0, 10);
-        return d >= "2026-04-10" && d <= "2026-04-15";
-      });
-      const summary = computeUsageSummary(entries);
-      expect(summary.trend.map((t) => t.date)).toEqual([
-        "2026-04-10",
-        "2026-04-15",
-      ]);
-      expect(summary.trend[0].inputTokens).toBe(100);
-      expect(summary.trend[1].inputTokens).toBe(200);
-    } finally {
-      await cleanupTmpDir(dir);
-    }
+    const { today } = await getUsageSummary(sessions, 1, now);
+    expect(today).toMatchObject({ inputTokens: 10, outputTokens: 20, cacheReadTokens: 80, cacheWriteTokens: 10, totalTokens: 120 });
+    expect(today.cost).toBeCloseTo(0.00081, 10);
   });
 
-  it("reads adjacent UTC gzip archives for a selected local day", async () => {
-    const home = mkdtempSync(join(tmpdir(), "usage-range-kst-home-"));
-    const originalHome = process.env.AVE_HOME;
-    try {
-      process.env.AVE_HOME = home;
-      const auditDir = join(home, "audit");
-      mkdirSync(auditDir, { recursive: true });
-      writeFileSync(
-        join(auditDir, "2026-07-03.jsonl.20260704.gz"),
-        gzipSync(Buffer.from([
-          JSON.stringify({
-            timestamp: "2026-07-03T14:30:00Z",
-            sessionId: "s1",
-            type: "turn",
-            route: "claude/claude-sonnet-4-6",
-            tokenUsage: { inputTokens: 300, outputTokens: 30 },
-          }),
-          JSON.stringify({
-            timestamp: "2026-07-03T15:30:00Z",
-            sessionId: "s1",
-            type: "turn",
-            route: "claude/claude-sonnet-4-6",
-            tokenUsage: { inputTokens: 100, outputTokens: 10 },
-          }),
-        ].join("\n") + "\n", "utf-8")),
-      );
+  it("keeps measurable usage, excludes dates and duplicates, and flags partial coverage", async () => {
+    const now = new Date(2026, 5, 16, 12);
+    const priorDay = new Date(2026, 5, 15, 12);
+    const saved = {
+      role: "assistant",
+      meta: {
+        messageId: "saved-turn",
+        createdAt: now.getTime(),
+        turnSummary: {
+          tokensIn: 9999,
+          freshInputTokens: 100,
+          tokensOut: 20,
+          vendorProvider: "openai",
+          vendorModel: "gpt-4o",
+          modelSettings: { pricing: { source: "user", rates: { inputPer1M: 10, outputPer1M: 20 } } },
+        },
+      },
+    };
+    const sessions = {
+      listSessions: vi.fn(() => [
+        { id: "primary" }, { id: "fork" }, { id: "unreadable" },
+      ] as unknown as ReturnType<Parameters<typeof getUsageRange>[0]["listSessions"]>),
+      loadSession: vi.fn((id: string) => {
+        if (id === "unreadable") throw new Error("Unreadable session");
+        return id === "fork" ? [saved] : [
+          saved,
+          { role: "assistant", meta: { createdAt: now.getTime() } },
+          { ...saved, meta: { ...saved.meta, messageId: "older", createdAt: priorDay.getTime() } },
+        ];
+      }),
+    };
 
-      const summary = await getUsageRange({
-        dateFrom: "2026-07-04",
-        dateTo: "2026-07-04",
-      });
-      expect(summary.trend.map((point) => point.date)).toEqual(["2026-07-04"]);
-      expect(summary.trend[0].inputTokens).toBe(100);
-    } finally {
-      if (originalHome === undefined) {
-        delete process.env.AVE_HOME;
-      } else {
-        process.env.AVE_HOME = originalHome;
-      }
-      await cleanupTmpDir(home);
-    }
-  });
-});
-
-describe("usage summary cache wiring", () => {
-  it("invalidates a cached rolling summary after an active audit append", async () => {
-    const home = mkdtempSync(join(tmpdir(), "usage-summary-cache-append-"));
-    const originalHome = process.env.AVE_HOME;
-    try {
-      process.env.AVE_HOME = home;
-      const auditDir = join(home, "audit");
-      const now = new Date("2026-07-04T12:00:00Z");
-      const file = join(auditDir, "2026-07-04.jsonl");
-      mkdirSync(auditDir, { recursive: true });
-      writeFileSync(file, JSON.stringify(turn({
-        timestamp: "2026-07-04T01:00:00Z",
-        tokenUsage: { inputTokens: 100, outputTokens: 10 },
-      })) + "\n", "utf-8");
-
-      const first = await getUsageSummary(60, now);
-      appendFileSync(file, JSON.stringify(turn({
-        timestamp: "2026-07-04T02:00:00Z",
-        tokenUsage: { inputTokens: 200, outputTokens: 20 },
-      })) + "\n", "utf-8");
-      const second = await getUsageSummary(60, now);
-
-      expect(first.today.inputTokens).toBe(100);
-      expect(second.today.inputTokens).toBe(300);
-      expect(second.today.outputTokens).toBe(30);
-    } finally {
-      if (originalHome === undefined) {
-        delete process.env.AVE_HOME;
-      } else {
-        process.env.AVE_HOME = originalHome;
-      }
-      await cleanupTmpDir(home);
-    }
+    const range = await getUsageRange(sessions, { dateFrom: "2026-06-16", dateTo: "2026-06-16" }, now);
+    expect(range).toMatchObject({
+      auditIncomplete: true,
+      today: { inputTokens: 100, outputTokens: 20, totalTokens: 120, cost: 0.0014 },
+      perModel: [{ vendor: "openai", model: "gpt-4o", totalTokens: 120 }],
+    });
+    expect(range.trend).toHaveLength(1);
+    const rolling = await getUsageSummary(sessions, 2, now);
+    expect(rolling.thisMonth.totalTokens).toBe(240);
   });
 
-  it("retries a cache hit when an append lands between manifest scans", async () => {
-    const home = mkdtempSync(join(tmpdir(), "usage-summary-cache-race-"));
-    const originalHome = process.env.AVE_HOME;
-    try {
-      process.env.AVE_HOME = home;
-      const auditDir = join(home, "audit");
-      const file = join(auditDir, "2026-07-04.jsonl");
-      const now = new Date("2026-07-04T12:00:00Z");
-      mkdirSync(auditDir, { recursive: true });
-      writeFileSync(file, JSON.stringify(turn({
-        timestamp: "2026-07-04T01:00:00Z",
-        tokenUsage: { inputTokens: 100, outputTokens: 10 },
-      })) + "\n", "utf-8");
-
-      await getUsageSummary(60, now);
-      auditStatGate.target = file;
-      auditStatGate.appendAfterStatOnCall = 1;
-      auditStatGate.append = () => {
-        appendFileSync(file, JSON.stringify(turn({
-          timestamp: "2026-07-04T02:00:00Z",
-          tokenUsage: { inputTokens: 200, outputTokens: 20 },
-        })) + "\n", "utf-8");
-      };
-
-      const result = await getUsageSummary(60, now);
-
-      expect(auditStatGate.calls).toBeGreaterThanOrEqual(2);
-      expect(result.today.inputTokens).toBe(300);
-      expect(result.today.outputTokens).toBe(30);
-    } finally {
-      if (originalHome === undefined) {
-        delete process.env.AVE_HOME;
-      } else {
-        process.env.AVE_HOME = originalHome;
-      }
-      await cleanupTmpDir(home);
-    }
+  it("counts reported zero usage and skips unmeasured summaries with pricing", async () => {
+    const now = new Date(2026, 5, 16, 12);
+    const sessions = {
+      listSessions: () => [{ id: "missing" }, { id: "reported" }, { id: "legacy" }] as
+        ReturnType<Parameters<typeof getUsageRange>[0]["listSessions"]>,
+      loadSession: (id: string) => [{
+        role: "assistant",
+        meta: {
+          createdAt: now.getTime(),
+          turnSummary: {
+            tokensIn: 512,
+            freshInputTokens: 0,
+            tokensOut: 0,
+            ...(id === "legacy" ? {} : { usageReported: id === "reported" }),
+            vendorProvider: "openai",
+            vendorModel: "gpt-4o",
+            modelSettings: { pricing: { source: "user", rates: { inputPer1M: 10, outputPer1M: 20 } } },
+          },
+        },
+      }],
+    };
+    const range = await getUsageRange(sessions, { dateFrom: "2026-06-16", dateTo: "2026-06-16" }, now);
+    expect(range.topConversationsByTokens).toMatchObject([{ sessionId: "reported", turns: 1, cost: 0, hasPricedCost: true }]);
   });
-
-  it("retries a cache miss when audit data changes during a read", async () => {
-    const home = mkdtempSync(join(tmpdir(), "usage-summary-cache-miss-race-"));
-    const originalHome = process.env.AVE_HOME;
-    try {
-      process.env.AVE_HOME = home;
-      const auditDir = join(home, "audit");
-      const file = join(auditDir, "2026-07-04.jsonl");
-      const now = new Date("2026-07-04T12:00:00Z");
-      mkdirSync(auditDir, { recursive: true });
-      writeFileSync(file, JSON.stringify(turn({
-        timestamp: "2026-07-04T01:00:00Z",
-        tokenUsage: { inputTokens: 100, outputTokens: 10 },
-      })) + "\n", "utf-8");
-
-      auditStatGate.target = file;
-      auditStatGate.appendBeforeStatOnCall = 2;
-      auditStatGate.append = () => {
-        appendFileSync(file, JSON.stringify(turn({
-          timestamp: "2026-07-04T02:00:00Z",
-          tokenUsage: { inputTokens: 200, outputTokens: 20 },
-        })) + "\n", "utf-8");
-      };
-
-      const result = await getUsageSummary(60, now);
-
-      expect(auditStatGate.calls).toBeGreaterThanOrEqual(4);
-      expect(result.today.inputTokens).toBe(300);
-      expect(result.today.outputTokens).toBe(30);
-    } finally {
-      if (originalHome === undefined) {
-        delete process.env.AVE_HOME;
-      } else {
-        process.env.AVE_HOME = originalHome;
-      }
-      await cleanupTmpDir(home);
-    }
-  });
-
-  it("marks a range with a corrupt archive incomplete and preserves readable usage", async () => {
-    const home = mkdtempSync(join(tmpdir(), "usage-summary-cache-repair-"));
-    const originalHome = process.env.AVE_HOME;
-    try {
-      process.env.AVE_HOME = home;
-      const auditDir = join(home, "audit");
-      const archive = join(auditDir, "2026-07-04.jsonl.20260704.gz");
-      const now = new Date("2026-07-04T12:00:00Z");
-      const validRows = JSON.stringify(turn({
-        timestamp: "2026-07-04T01:00:00Z",
-        tokenUsage: { inputTokens: 100, outputTokens: 10 },
-      })) + "\n";
-      mkdirSync(auditDir, { recursive: true });
-      writeFileSync(
-        archive,
-        gzipSync(Buffer.from(validRows, "utf-8")).subarray(0, -8),
-      );
-      const readableRow = turn({
-        timestamp: "2026-07-04T02:00:00Z",
-        tokenUsage: { inputTokens: 200, outputTokens: 20 },
-      });
-      writeFileSync(join(auditDir, "2026-07-04.jsonl"), `${JSON.stringify(readableRow)}\n`, "utf-8");
-
-      const range = { dateFrom: "2026-07-04", dateTo: "2026-07-04" };
-      const corrupt = await getUsageRange(range, now);
-      writeFileSync(archive, gzipSync(Buffer.from(validRows, "utf-8")));
-      const repaired = await getUsageRange(range, now);
-
-      expect(corrupt).toMatchObject({ auditIncomplete: true, today: { inputTokens: 200, outputTokens: 20 } });
-      expect(repaired).not.toHaveProperty("auditIncomplete");
-      expect(repaired.today).toMatchObject({ inputTokens: 300, outputTokens: 30 });
-    } finally {
-      if (originalHome === undefined) {
-        delete process.env.AVE_HOME;
-      } else {
-        process.env.AVE_HOME = originalHome;
-      }
-      await cleanupTmpDir(home);
-    }
-  });
-
-  it("uses the local calendar date in the rolling-summary cache key", async () => {
-    const home = mkdtempSync(join(tmpdir(), "usage-summary-cache-kst-"));
-    const originalHome = process.env.AVE_HOME;
-    try {
-      process.env.AVE_HOME = home;
-      const auditDir = join(home, "audit");
-      mkdirSync(auditDir, { recursive: true });
-      writeFileSync(
-        join(auditDir, "2026-07-03.jsonl"),
-        JSON.stringify(turn({
-          timestamp: "2026-07-03T15:30:00Z",
-          tokenUsage: { inputTokens: 100, outputTokens: 10 },
-        })) + "\n",
-        "utf-8",
-      );
-
-      const beforeLocalMidnight = await getUsageSummary(
-        60,
-        new Date("2026-07-03T14:59:00Z"),
-      );
-      const afterLocalMidnight = await getUsageSummary(
-        60,
-        new Date("2026-07-03T15:01:00Z"),
-      );
-
-      expect(beforeLocalMidnight.today.inputTokens).toBe(0);
-      expect(afterLocalMidnight.today.inputTokens).toBe(100);
-    } finally {
-      if (originalHome === undefined) {
-        delete process.env.AVE_HOME;
-      } else {
-        process.env.AVE_HOME = originalHome;
-      }
-      await cleanupTmpDir(home);
-    }
-  });
-
-  it("keeps cached legacy usage unpriced after a price correction", async () => {
-    const home = mkdtempSync(join(tmpdir(), "usage-summary-cache-pricing-"));
-    const originalHome = process.env.AVE_HOME;
-    try {
-      process.env.AVE_HOME = home;
-      const auditDir = join(home, "audit");
-      mkdirSync(auditDir, { recursive: true });
-      writeFileSync(
-        join(auditDir, "2026-07-04.jsonl"),
-        JSON.stringify(turn({
-          timestamp: "2026-07-04T01:00:00Z",
-          tokenUsage: { inputTokens: 1_000, outputTokens: 10 },
-        })) + "\n",
-        "utf-8",
-      );
-      const now = new Date("2026-07-04T12:00:00Z");
-
-      const first = await getUsageSummary(60, now);
-      vi.stubEnv("AVE_PRICING_OVERRIDE", '{"claude":{"claude-sonnet-4-6":{"inputPer1M":100,"outputPer1M":100}}}');
-      const afterOverride = await getUsageSummary(60, now);
-
-      expect(afterOverride.today).toEqual(first.today);
-      expect(afterOverride.today).toMatchObject({ cost: 0, legacyRouteUnrecordedTurns: 1 });
-    } finally {
-      vi.unstubAllEnvs();
-      if (originalHome === undefined) {
-        delete process.env.AVE_HOME;
-      } else {
-        process.env.AVE_HOME = originalHome;
-      }
-      await cleanupTmpDir(home);
-    }
-  });
-});
-
-function resetAuditStatGate(): void {
-  auditStatGate.target = undefined;
-  auditStatGate.append = undefined;
-  auditStatGate.appendBeforeStatOnCall = undefined;
-  auditStatGate.appendAfterStatOnCall = undefined;
-  auditStatGate.calls = 0;
-}
-
-beforeEach(() => {
-  delete process.env.AVE_PRICING_OVERRIDE;
-  resetAuditStatGate();
-});
-afterEach(() => {
-  delete process.env.AVE_PRICING_OVERRIDE;
-  resetAuditStatGate();
 });

@@ -40,7 +40,7 @@ import { CHANNELS } from "../../../contract/app-contract.js";
 const resourcePath = fileURLToPath(new URL("../../../../resources/", import.meta.url));
 const helperPresent = process.platform === "win32" && existsSync(windowsPathKindHelperIn(resourcePath));
 const appWindows: Array<{ isDestroyed: () => boolean; webContents: object }> = [];
-const deps = { auditLogger: { log: vi.fn() }, getAppWindows: () => appWindows, getMainWindow: () => null } as never;
+const deps = { getAppWindows: () => appWindows, getMainWindow: () => null } as never;
 
 // Initial read admission and post-read publication each pin once. The latter shares its pin with observation and the open grant.
 const PREVIEW_TEXT_OPEN_TARGET = 4;

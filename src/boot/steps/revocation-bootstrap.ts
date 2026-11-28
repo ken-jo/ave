@@ -1,6 +1,6 @@
+import { logPermissionEvent } from "../../lib/permission-log.js";
 /** Seed revocations from disk before plugin and renderer load gates; marketplace sync refreshes them later. */
 import { join } from "node:path";
-import type { AuditLogger } from "../../audit/audit-logger.js";
 import { createLogger } from "../../lib/logger.js";
 import { mcpInstallOrigins } from "../../marketplace/app/mcp-installer.js";
 import { revocationFeed } from "../../marketplace/app/revocations.js";
@@ -16,15 +16,6 @@ export interface RevocationBootstrapInput {
   home: string;
   appVersion: string;
   pluginRegistryPath: string;
-  bootAuditLogger: AuditLogger;
-}
-
-function audit(logger: AuditLogger, line: string): void {
-  try {
-    logger.log({ timestamp: new Date().toISOString(), sessionId: "boot", type: "info", input: line });
-  } catch {
-    /* audit must not break boot */
-  }
 }
 
 /** Unreadable snapshots leave covered packages without revocations until sync; log errors and continue boot. */
@@ -49,5 +40,5 @@ export async function feedRevocationsFromSnapshots(input: RevocationBootstrapInp
     log.error({ sourceId: item.sourceId, err: item.message }, "revocations: a source snapshot could not be read; its revocations wait for the next sync");
   }
   revocationRegistry.replace(feed.rules);
-  audit(input.bootAuditLogger, `revocations_loaded rules=${feed.rules.length} unreadable=${feed.unreadable.length}`);
+  logPermissionEvent("revocations_loaded", { ruleCount: feed.rules.length, unreadableCount: feed.unreadable.length });
 }

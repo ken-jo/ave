@@ -91,12 +91,9 @@ function makeServices(
       // Counts include model-visible tools, excluding app-only tools.
       getModelVisibleTools: () => Array.from({ length: toolRegistrySize }, () => ({})),
     } as any,
-    auditLogger: { log: vi.fn() } as any,
-    // A throwing transport makes unexpected network requests fail locally.
     singleHopNetworkFetch: unusedNetworkFetch,
     idleScheduler: undefined,
     bashAstValidator: {} as any,
-    auditService: {} as any,
     postTurnHookChain: {} as any,
   };
 }

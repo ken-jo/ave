@@ -33,7 +33,6 @@ async function setup() {
   const { registerSessionGoalHandlers } = await import("../session-goal.js");
   registerSessionGoalHandlers({
     sessionGoalStore: store,
-    auditLogger: { log: vi.fn() },
     getMainWindow: () => null,
   } as never);
   return { store };
@@ -94,7 +93,6 @@ describe("session-goal IPC", () => {
         clear: async () => {},
         onChange: vi.fn(),
       },
-      auditLogger: { log: vi.fn() },
       getMainWindow: () => null,
     } as never);
     await expect(invokeFileIpcHandler(handlers, CHANNELS.sessionGoal.pause, SESSION_A))

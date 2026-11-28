@@ -1,3 +1,4 @@
+import { trackPermissionEvents } from "../../../__tests__/support/permission-events.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { UI } from "../../../shared/ipc-channels.js";
 import { NATIVE_MENU_MAX_ITEMS } from "../../../shared/native-context-menu.js";
@@ -11,7 +12,6 @@ const {
   fromWebContentsMock,
   composedWindowMock,
   uiOriginMock,
-  auditLogMock,
   menuTemplates,
 } = vi.hoisted(() => ({
   handlers: new Map<string, (...args: unknown[]) => unknown>(),
@@ -22,7 +22,6 @@ const {
   fromWebContentsMock: vi.fn(),
   composedWindowMock: vi.fn(),
   uiOriginMock: vi.fn(),
-  auditLogMock: vi.fn(),
   menuTemplates: [] as unknown[],
 }));
 
@@ -77,7 +76,6 @@ async function setup() {
   uiOriginMock.mockReturnValue({ x: 4, y: 4 });
   const { registerUiHandlers } = await import("../ui.js");
   registerUiHandlers({
-    auditLogger: { log: auditLogMock },
     getMainWindow: vi.fn(),
   } as never);
 }
@@ -102,6 +100,8 @@ function firstTemplate() {
 afterEach(() => {
   vi.unstubAllGlobals();
 });
+
+const permissionEvents = trackPermissionEvents();
 
 describe("ui IPC handlers", () => {
   beforeEach(async () => {
@@ -286,7 +286,10 @@ describe("ui IPC handlers", () => {
     const iframeResult = invoke(UI.nativeContextMenu, iframeEvent, { ...wellFormed, requestId: "req-5" });
 
     expect(iframeResult).toEqual({ ok: false, error: "unauthorized-frame" });
-    expect(auditLogMock).toHaveBeenCalled();
+    expect(permissionEvents().filter((entry) => entry.event === "ipc_sender_refused")).toEqual([
+      expect.objectContaining({ channel: UI.nativeContextMenu }),
+      expect.objectContaining({ channel: UI.nativeContextMenu }),
+    ]);
     expect(popupMock).not.toHaveBeenCalled();
   });
 });

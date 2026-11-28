@@ -47,13 +47,13 @@ it("retries a failed consent projection from the store instead of its invalid he
   const reads = fixture.api.getSettings.mock.calls.length;
   fixture.api.getSettings.mockResolvedValue(structuredClone(DEFAULT_SETTINGS));
   fireEvent.click(retry);
-  const consent = view.getByRole("checkbox", { name: t("auditTab.bundleIncludeCrashDumps") });
+  const consent = view.getByRole("checkbox", { name: t("diagnosticsTab.bundleIncludeCrashDumps") });
   await waitFor(() => expect(consent).toBeEnabled());
   expect(fixture.api.getSettings).toHaveBeenCalledTimes(reads + 1);
   expect(view.queryByRole("button", { name: t("common.retry") })).toBeNull();
   view.rerender(fixture.content(null));
   view.rerender(fixture.content(<DiagnosticsSection defaultDateFrom="" defaultDateTo="" />));
-  await waitFor(() => expect(view.getByRole("checkbox", { name: t("auditTab.bundleIncludeCrashDumps") })).toBeEnabled());
+  await waitFor(() => expect(view.getByRole("checkbox", { name: t("diagnosticsTab.bundleIncludeCrashDumps") })).toBeEnabled());
 });
 
 it.each(["documents", "diagnostics", "roles"] as const)("updates the mounted %s projection after the editor reloads", async (section) => {
@@ -69,7 +69,7 @@ it.each(["documents", "diagnostics", "roles"] as const)("updates the mounted %s 
     : section === "diagnostics" ? <DiagnosticsSection defaultDateFrom="" defaultDateTo="" /> : <RolesTab api={fixture.api as never} />;
   const view = render(fixture.content(panel));
   const control = () => section === "documents" ? requiredFixture(view.container.querySelector('[data-testid="document-open-mode"] [data-value="link"]'))
-    : section === "diagnostics" ? view.getByRole("checkbox", { name: t("auditTab.bundleIncludeCrashDumps") }) : view.getByTestId("roles-tab:keep-latest");
+    : section === "diagnostics" ? view.getByRole("checkbox", { name: t("diagnosticsTab.bundleIncludeCrashDumps") }) : view.getByTestId("roles-tab:keep-latest");
   await waitFor(() => expect(control()).toBeEnabled());
   fixture.api.getSettings.mockResolvedValue(next);
   view.rerender(fixture.content(panel, 1));
@@ -91,10 +91,10 @@ it("keeps a successful retry newer than the editor's pending initial document re
   </SavedToastProvider></SettingsEditorProvider>;
   const view = render(content(true));
   fireEvent.click(await view.findByRole("button", { name: t("common.retry") }));
-  await waitFor(() => expect(view.getByRole("checkbox", { name: t("auditTab.bundleIncludeCrashDumps") })).toBeEnabled());
+  await waitFor(() => expect(view.getByRole("checkbox", { name: t("diagnosticsTab.bundleIncludeCrashDumps") })).toBeEnabled());
   await act(async () => { initial.resolve(invalid); });
   view.rerender(content(false));
   view.rerender(content(true));
-  await waitFor(() => expect(view.getByRole("checkbox", { name: t("auditTab.bundleIncludeCrashDumps") })).toBeEnabled());
+  await waitFor(() => expect(view.getByRole("checkbox", { name: t("diagnosticsTab.bundleIncludeCrashDumps") })).toBeEnabled());
   expect(view.queryByRole("button", { name: t("common.retry") })).toBeNull();
 });

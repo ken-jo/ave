@@ -1,18 +1,19 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { JudgeContractError, JudgeFailure, type JudgeRequest, type JudgeVerdict, type PermissionJudge } from "../judge-contract.js";
 import { JudgeCircuitBreaker } from "../judge-breaker.js";
 import { POLICY_REDACTED, resolveJudge, type JudgeEngineDeps, type JudgeGate, type JudgeHooks } from "../judge-engine.js";
 import type { JudgeSettings } from "../judge-settings.js";
 import {
   PLANTED_CREDENTIAL,
-  auditPayload,
-  collectingAudit,
+  collectJudgeEvents,
   judgeInvocation,
   judgeRecords,
-  type CollectingAudit,
+  type JudgeEventCapture,
   judgeRequest,
   judgeSettings,
 } from "./judge-request-fixture.js";
+
+afterEach(() => vi.restoreAllMocks());
 
 const UNDECIDED: JudgeGate = { priorDecision: "undecided", strictMode: false, capabilityGrant: false };
 
@@ -37,11 +38,11 @@ function deps(
   judge: PermissionJudge | null,
   settings: Partial<JudgeSettings> = {},
   hooks?: JudgeHooks,
-): JudgeEngineDeps & Pick<CollectingAudit, "entries" | "chained"> {
+): JudgeEngineDeps & Pick<JudgeEventCapture, "events"> {
   const s = judgeSettings(settings);
-  const { entries, chained, logger } = collectingAudit();
+  const { events } = collectJudgeEvents();
   const chain = s.chain.map((stage) => ({ settings: stage, judge }));
-  return { settings: s, chain, breaker: new JudgeCircuitBreaker(s.breaker), audit: logger, entries, chained, ...(hooks ? { hooks } : {}) };
+  return { settings: s, chain, breaker: new JudgeCircuitBreaker(s.breaker), events, ...(hooks ? { hooks } : {}) };
 }
 
 const ALLOW: JudgeVerdict = { decision: "allow", rationale: "build script" };
@@ -98,7 +99,7 @@ describe("resolveJudge — placement", () => {
     const d = deps(answering(ALLOW), { mode: "shadow" });
     const out = await resolveJudge(UNDECIDED, judgeRequest(), d);
     expect(out).toMatchObject({ judged: true, decision: "allow", applied: false });
-    expect(auditPayload(d.entries[0]!)).toMatchObject({ mode: "shadow", applied: false, decision: "allow" });
+    expect(judgeRecords(d)[0]).toMatchObject({ mode: "shadow", applied: false, decision: "allow" });
   });
 
   it("shadow headless denial never creates denial history", async () => {
@@ -189,7 +190,7 @@ describe("resolveJudge — hooks", () => {
     expect(judge.calls).toBe(0);
   });
 
-  it("beforeJudge may hide input values from the judge; the audit still describes the real call", async () => {
+  it("beforeJudge may hide input values from the judge; logging omits the arguments", async () => {
     let seen: Record<string, unknown> = {};
     const judge: PermissionJudge = {
       id: "seeing",
@@ -205,12 +206,8 @@ describe("resolveJudge — hooks", () => {
     expect(seen).toEqual({ command: POLICY_REDACTED });
     expect(real.invocation.finalInput).toEqual({ command: "npm run build" });
     const record = judgeRecords(d)[0]!;
-    expect(record.policyRedactedKeys).toEqual(["command"]);
-    expect((record.redactedRequest as { tool: { input: Record<string, string> } }).tool.input.command).toBe("npm run build");
-
-    const unredacted = deps(answering(ALLOW));
-    await resolveJudge(UNDECIDED, judgeRequest(), unredacted);
-    expect(judgeRecords(unredacted)[0]!.argsHash).toBe(record.argsHash);
+    expect(record).toMatchObject({ event: "permission_judge", decision: "allow" });
+    expect(JSON.stringify(record)).not.toContain("npm run build");
   });
 
   it("beforeJudge cannot change what executes or what the judge sees except by redaction", async () => {
@@ -263,7 +260,6 @@ describe("resolveJudge — circuit breaker", () => {
     expect(provider.calls).toBe(3);
     expect(judgeRecords(d).at(-1)).toMatchObject({
       source: "breaker", pause: "consecutive", stages: [],
-      rationale: "Automated approval paused: 3 consecutive classifier blocks",
     });
     // A subagent keyed by the same root session shares the pause.
     expect(await resolveJudge(UNDECIDED, { ...request, sessionId: "session-root" }, d)).toMatchObject(paused);
@@ -337,27 +333,20 @@ describe("resolveJudge — circuit breaker", () => {
   });
 });
 
-describe("resolveJudge — audit", () => {
-  it("active decisions go to the HMAC chain, shadow rows to the plain channel", async () => {
-    const active = deps(answering(ALLOW));
-    await resolveJudge(UNDECIDED, judgeRequest(), active);
-    expect(active.entries).toHaveLength(0);
-    expect(active.chained).toHaveLength(1);
-    expect(active.chained[0]).toMatchObject({ decision: "judge", tool: "bash", source: "builtin", category: "shell" });
-
-    const shadow = deps(answering(ALLOW), { mode: "shadow" });
-    await resolveJudge(UNDECIDED, judgeRequest(), shadow);
-    expect(shadow.chained).toHaveLength(0);
-    expect(shadow.entries).toHaveLength(1);
+describe("resolveJudge app events", () => {
+  it.each(["active", "shadow"] as const)("marks whether a %s decision applies", async (mode) => {
+    const d = deps(answering(ALLOW), { mode });
+    expect(await resolveJudge(UNDECIDED, judgeRequest(), d)).toMatchObject({ decision: "allow", applied: mode === "active" });
+    expect(judgeRecords(d)).toEqual([expect.objectContaining({ mode, applied: mode === "active", tool: "bash", decision: "allow" })]);
   });
 
-  it("an unwritable integrity channel fails the active call clearly", async () => {
+  it("allows a valid review when the log sink throws", async () => {
     const d = deps(answering(ALLOW));
-    d.audit = { ...d.audit, appendPermissionAuditEntry: () => Promise.reject(new Error("permission audit chain not initialized")) };
-    await expect(resolveJudge(UNDECIDED, judgeRequest(), d)).rejects.toThrow("not initialized");
+    vi.spyOn(console, "log").mockImplementation(() => { throw new Error("log unavailable"); });
+    await expect(resolveJudge(UNDECIDED, judgeRequest(), d)).resolves.toMatchObject({ decision: "allow", applied: true });
   });
 
-  it("writes one redacted record per judged call, including provider stderr", async () => {
+  it("emits one allowlisted decision without provider stderr or raw request", async () => {
     const d = deps(answering({ decision: "allow", rationale: `saw ${PLANTED_CREDENTIAL}`, diagnostics: { stderr: `warn ${PLANTED_CREDENTIAL}` } }));
     const request = judgeRequest({
       invocation: judgeInvocation({ finalInput: { command: `curl -H "Authorization: token ${PLANTED_CREDENTIAL}" x` } }),
@@ -367,47 +356,35 @@ describe("resolveJudge — audit", () => {
     expect(out).toMatchObject({ decision: "allow" });
     const records = judgeRecords(d);
     expect(records).toHaveLength(1);
-    expect(JSON.stringify(d.chained)).not.toContain(PLANTED_CREDENTIAL);
+    expect(JSON.stringify(d.events)).not.toContain(PLANTED_CREDENTIAL);
     expect(records[0]).toMatchObject({
-      event: "permission-judge",
-      session: "session-root",
+      event: "permission_judge",
+      sessionId: "session-root",
       tool: "bash",
-      judge: { id: "scripted", version: "t1" },
-      verdictDecision: "allow",
-      fallback: null,
+      reviewerStage: "scripted",
+      decision: "allow",
     });
     const stage = (records[0]!.stages as Array<Record<string, unknown>>)[0]!;
-    expect(String(stage.stderr)).toContain("warn");
-    expect(String(stage.stderr)).not.toContain(PLANTED_CREDENTIAL);
-    expect(typeof records[0]!.argsHash).toBe("string");
+    expect(stage).not.toHaveProperty("stderr");
+    expect(records[0]).not.toHaveProperty("redactedRequest");
     expect(typeof records[0]!.latencyMs).toBe("number");
   });
 });
 
 describe("shared pause across concurrent reviews", () => {
-  it.each(["provider", "audit"] as const)("replaces an in-flight allow when a sibling trips the breaker during %s", async (boundary) => {
+  it("replaces an in-flight allow when a sibling trips the breaker during review", async () => {
     let reached!: () => void;
     let release!: () => void;
     const started = new Promise<void>((resolve) => { reached = resolve; });
     const held = new Promise<void>((resolve) => { release = resolve; });
     const d = deps(answering(async () => {
-      if (boundary === "provider") { reached(); await held; }
+      reached();
+      await held;
       return ALLOW;
     }));
-    if (boundary === "audit") {
-      const append = d.audit.appendPermissionAuditEntry.bind(d.audit);
-      d.audit = {
-        ...d.audit,
-        async appendPermissionAuditEntry(entry) {
-          reached();
-          await held;
-          return append(entry);
-        },
-      };
-    }
     const pending = resolveJudge(UNDECIDED, judgeRequest(), d);
     await started;
-    const sibling = { ...deps(answering(DENY)), breaker: d.breaker };
+    const sibling = { ...d, chain: d.chain.map((stage) => ({ ...stage, judge: answering(DENY) })) };
     for (let call = 0; call < 3; call += 1) await resolveJudge(UNDECIDED, judgeRequest(), sibling);
     release();
     expect(await pending).toMatchObject({ decision: "ask", pause: "consecutive", source: "breaker" });
@@ -427,22 +404,17 @@ describe("shared pause across concurrent reviews", () => {
   });
 });
 
-it("retains a completed classifier block when the caller stops during its audit write", async () => {
+it("retains a completed classifier block when the caller stops during log emission", async () => {
   const controller = new AbortController();
-  const reason = new Error("caller stopped during audit");
+  const reason = new Error("caller stopped during logging");
   const d = deps(answering(DENY));
   for (let block = 0; block < 19; block += 1) {
     d.breaker.record("session-root", "deny", `completed-block-${block}`);
     d.breaker.record("session-root", "allow", `allowed-after-block-${block}`);
   }
-  const append = d.audit.appendPermissionAuditEntry.bind(d.audit);
-  d.audit = {
-    ...d.audit,
-    async appendPermissionAuditEntry(entry) {
-      controller.abort(reason);
-      return append(entry);
-    },
-  };
+  vi.spyOn(console, "log").mockImplementation((message) => {
+    if (message === "[permissions] permission_judge") controller.abort(reason);
+  });
   await expect(resolveJudge(UNDECIDED, judgeRequest(), d, controller.signal)).rejects.toBe(reason);
   expect(d.breaker.snapshot("session-root")).toEqual({ consecutive: 1, total: 20, open: true });
   expect(d.breaker.pauseReason("session-root")).toBe("total");

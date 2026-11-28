@@ -44,7 +44,7 @@ beforeEach(async () => {
   content = await ContentStore.open({ root: join(root, "packages"), activation: {
     activate, deactivate: vi.fn(async () => undefined), approveComponents: vi.fn(async () => undefined),
   } });
-  registerPluginStudioHandlers({ auditLogger: { log: vi.fn() }, mcpManager: {
+  registerPluginStudioHandlers({ mcpManager: {
     getStudioStoredCredentialValues: async () => [],
   } } as never, async () => ({ store: content, reload } as never));
 });
@@ -78,7 +78,7 @@ describe("plugin Studio IPC", () => {
     const event = hostFrameEvent();
     Object.assign(event.sender, { mainFrame: event.senderFrame });
     const relaunchApp = vi.fn();
-    registerAppHandlers({ settingsService: { get: () => ({ hardwareAcceleration: true, corpCaEnabled: true, corpCaCommonName: "Test Root", corpCaDebugLog: false }) }, auditLogger: { log: vi.fn() }, relaunchApp,
+    registerAppHandlers({ settingsService: { get: () => ({ hardwareAcceleration: true, corpCaEnabled: true, corpCaCommonName: "Test Root", corpCaDebugLog: false }) }, relaunchApp,
       getMainWindow: () => ({ webContents: event.sender, isDestroyed: () => false }) } as never);
     return { relaunchApp, request: () => invoke(CHANNELS.app.relaunch, event, { intent: { inputOrigin: "user-keyboard", userActivation: true } }) };
   }
@@ -155,7 +155,7 @@ describe("plugin Studio IPC", () => {
       command: "node", auth: "api-key" as const, apiKeyEnv: "SAMPLE_KEY" }, args: ["--visible-arg"], env: { SAMPLE: "visible-env" } })),
       getConfigs: vi.fn(async () => [{ id: "sample", transport: "stdio" as const, command: "node", auth: "api-key" as const, apiKeyEnv: "SAMPLE_KEY" }]),
       getStudioConnectorSummary: vi.fn(async () => ({ digest: (await previewStudioConnector(manager as never, "sample")).specDigest, argsCount: 1, envCount: 1 })) };
-    registerPluginStudioHandlers({ auditLogger: { log: vi.fn() }, mcpManager: manager } as never,
+    registerPluginStudioHandlers({ mcpManager: manager } as never,
       async () => ({ store: content, reload } as never));
     const draft = await invoke(CHANNELS.pluginStudio.writeDraft, hostFrameEvent(), { name: "team-kit", version: "1.0.0",
       description: "A team plugin", references: [{ kind: "connector", name: "sample" }] });
@@ -174,7 +174,7 @@ describe("plugin Studio IPC", () => {
 
   it("refuses a shared draft when decoded package JSON contains a stored credential", async () => {
     const key = "stored-\"-credential";
-    registerPluginStudioHandlers({ auditLogger: { log: vi.fn() }, mcpManager: {
+    registerPluginStudioHandlers({ mcpManager: {
       getStudioStoredCredentialValues: async () => [key],
     } } as never, async () => ({ store: content, reload } as never));
     const studio = new PluginStudioStore();

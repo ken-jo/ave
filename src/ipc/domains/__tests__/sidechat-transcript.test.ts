@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { collectPermissionEvents } from "../../../__tests__/support/permission-events.js";
+import { beforeEach, describe, expect, it, vi, onTestFinished } from "vitest";
 import type { IpcMainInvokeEvent } from "electron";
 import { CHANNELS } from "../../../contract/app-contract.js";
 import type { SubAgentTranscriptRequest } from "../../../shared/subagent-transcript.js";
@@ -44,15 +45,14 @@ function setup() {
     })),
   };
   const getSubAgentRunner = vi.fn(() => runner);
-  const auditLogger = { log: vi.fn() };
+
   const deps = {
     sideChatConversationLoop: sideLoop,
     getSubAgentRunner,
-    auditLogger,
     getMainWindow: () => null,
   } as unknown as IpcDeps;
   registerSideChatHandlers(deps);
-  return { deps, sideLoop, runner, getSubAgentRunner, auditLogger };
+  return { deps, sideLoop, runner, getSubAgentRunner };
 }
 
 function read(payload: unknown = REQUEST, event = frame()): unknown {
@@ -113,12 +113,14 @@ describe("side-chat child transcript owner boundary", () => {
   });
 
   it("denies an unauthorized frame before consulting the active session", () => {
-    const { sideLoop, getSubAgentRunner, auditLogger } = setup();
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
+    const { sideLoop, getSubAgentRunner } = setup();
     expect(read(REQUEST, frame("https://foreign.invalid/")))
       .toEqual({ ok: false, error: "unauthorized-frame" });
     expect(sideLoop.getSessionId).not.toHaveBeenCalled();
     expect(getSubAgentRunner).not.toHaveBeenCalled();
-    expect(auditLogger.log).toHaveBeenCalledOnce();
+    expect(capture.events.filter(({ event }) => event === "ipc_sender_refused")).toHaveLength(1);
   });
 
   it.each([
@@ -136,7 +138,6 @@ describe("side-chat child transcript owner boundary", () => {
     registerSideChatHandlers({
       sideChatConversationLoop: undefined,
       getSubAgentRunner,
-      auditLogger: { log: vi.fn() },
     } as unknown as IpcDeps);
     expect(read()).toEqual({ ok: false, error: "side-chat-unavailable" });
     expect(getSubAgentRunner).not.toHaveBeenCalled();

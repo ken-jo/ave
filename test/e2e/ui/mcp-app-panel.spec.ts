@@ -358,13 +358,11 @@ test('a dock auth identity change remounts its app without app-tool auth denials
     await expect.poll(guestId).toBeTruthy();
     expect(messages.join('\n')).not.toContain('MCP_APP_AUTH_TOOL_NOT_APP_CALLABLE');
     expect(messages.join('\n')).not.toContain('tools/call denied or failed');
-    const audit = await page.evaluate(() => window.aveApi.audit.search({ textSearch: "MCP_APP_AUTH_TOOL_NOT_APP_CALLABLE", limit: 100 }));
-    expect(audit).toMatchObject({ total: 0, entries: [] });
     const dock = app.windows().find((window) => window.url().includes('floating-dock-window.html'));
     if (!dock) throw new Error('Dock window not found');
     await dock.screenshot({ path: testInfo.outputPath('auth-remounted-dock.png') });
     const evidencePath = testInfo.outputPath('dock-auth-lifetime.json');
-    writeFileSync(evidencePath, JSON.stringify({ before, after: await guestId(), messages, audit }, null, 2));
+    writeFileSync(evidencePath, JSON.stringify({ before, after: await guestId(), messages }, null, 2));
     await testInfo.attach('dock-auth-lifetime', { path: evidencePath, contentType: 'application/json' });
   } finally { await quitElectron(app); }
 });

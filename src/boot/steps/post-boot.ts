@@ -4,7 +4,6 @@ import type { TelemetryService } from "../../main/telemetry.js";
 import type { PluginTelemetryClient } from "../../telemetry/client.js";
 
 import type { SettingsService } from "../../data/settings-store.js";
-import type { AuditLogger } from "../../audit/audit-logger.js";
 import type { MarketplaceAnnouncement } from "../../shared/marketplace-announcements.js";
 import { MARKETPLACE } from "../../shared/ipc-channels.js";
 import {
@@ -28,8 +27,6 @@ export interface ReleasePrepOutput {
 export interface ReleasePrepInput {
   mainWindow: MainWindow | null;
   settingsService: SettingsService;
-  bootAuditLogger: AuditLogger;
-  /** The host's outbound transport — both telemetry uploads run on it. */
   networkFetch: typeof fetch;
   /** Boot-configured tracing; its batched spans are flushed on quit. */
   tracing: TracingHandle;

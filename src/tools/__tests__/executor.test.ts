@@ -1,3 +1,5 @@
+import * as decisionProjection from "../pipeline/audit-entries.js";
+import { trackInvocationCorrelations, collectPermissionEvents } from "../../__tests__/support/permission-events.js";
 import * as persistenceGuards from "../../permissions/approval-persistence-guard.js";
 import type { ApprovalPersistenceGuard } from "../../permissions/approval-persistence-guard.js";
 import { RULE_PROVENANCE } from "../../permissions/decision-provenance.js";
@@ -5,7 +7,7 @@ import { _resetAveHomePrivacyForTest, aveHome, setAveHomeConfigurationRefusedAtB
 import { bindRemoteControllerToSession } from "../../shared/chat-origin.js";
 import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 // Admission denials and forced approvals must precede tool execution.
-import { afterEach, describe, it, expect, vi } from "vitest";
+import { afterEach, describe, it, expect, vi, onTestFinished } from "vitest";
 import { withSourceHostResources } from "../../__tests__/support/source-host-resources.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { hostFilesystemPath } from "../../__tests__/support/host-filesystem-path.js";
@@ -15,7 +17,7 @@ import { syncBuiltinESMExports } from "node:module";
 import * as powerShellExecutable from "../../shared/powershell-executable.js";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve as pathResolve } from "node:path";
+import { join } from "node:path";
 
 import { ToolExecutor } from "../executor.js";
 import { initPiiRedactionPolicy } from "../../shared/dlp.js";
@@ -51,8 +53,7 @@ import {
 import { createAgentStatusTool } from "../agent-spawn.js";
 import { HookRunner } from "../../hooks/hook-runner.js";
 import { BashAstValidator } from "../../main/bash-ast-validator.js";
-import { AuditLogger } from "../../audit/audit-logger.js";
-import * as sandboxAuditSink from "../../audit/sandbox-audit-sink.js";
+
 import { buildPluginToolsForTest } from "../../plugins/__tests__/plugin-tool-test-fixture.js";
 import type { PluginManifest } from "../../plugins/types.js";
 import type { PluginRuntime } from "../../plugins/runtime.js";
@@ -73,6 +74,8 @@ import { getHostShellExecutionPlanAuditProjection } from "../../permissions/host
 import { makeMockWebContents, sentApprovalCards } from "../../__tests__/test-helpers.js";
 import { approvalCacheKeyFor } from "../pipeline/display-mask.js";
 import { answeredApprovalDecision, answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
+
+const invocationCorrelationId = trackInvocationCorrelations();
 
 withSourceHostResources();
 
@@ -564,16 +567,6 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
         cache: new VerdictCache(join(dir, "reviewer-cache.jsonl")),
         recentlyDenied,
       });
-      const appendPermissionAuditEntry = vi.fn(async (entry: Record<string, unknown>) => ({
-        ...entry,
-        prevHash: "h",
-      }));
-      const auditLogger = {
-        log: vi.fn(),
-        isPermissionAuditChainReady: vi.fn(() => true),
-        assertPermissionAuditWritable: vi.fn(),
-        appendPermissionAuditEntry,
-      };
       const executor = new ToolExecutor(
         registry,
         undefined,
@@ -581,7 +574,6 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
         undefined,
         undefined,
         undefined,
-        auditLogger as never,
       );
 
       const result = await executor.executeAll(
@@ -758,6 +750,8 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
   });
 
   it("passes non-keyboard trustOrigin to ApprovalGate and records the answered allow as the desk's", async () => {
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
     const executeSpy = vi.fn(async () => "wrote");
     const registry = new ToolRegistry();
     registry.register(createDynamicTool({
@@ -783,16 +777,7 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
     const approvalGate = {
       requestAndWait: answeringRequestAndWait<{ id: string }>(() => ({ choice: "allow-once" as const })),
     };
-    const appendPermissionAuditEntry = vi.fn(async (entry: Record<string, unknown>) => ({
-      ...entry,
-      prevHash: "h",
-    }));
-    const auditLogger = {
-      log: vi.fn(),
-      isPermissionAuditChainReady: vi.fn(() => true),
-      assertPermissionAuditWritable: vi.fn(),
-      appendPermissionAuditEntry,
-    };
+
     const executor = new ToolExecutor(
       registry,
       undefined,
@@ -800,7 +785,6 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
       undefined,
       approvalGate as never,
       undefined,
-      auditLogger as never,
     );
 
     const result = await executor.executeAll(
@@ -816,24 +800,13 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
         sessionId: "sess-origin",
       }),
     );
-    expect(appendPermissionAuditEntry).toHaveBeenCalledWith(
-      expect.objectContaining({
-        decision: "ask",
-        trustOrigin: "plugin-emitted",
-        tool: "write_probe",
-        reason: "trust-origin boundary test",
-      }),
-    );
-    expect(appendPermissionAuditEntry).toHaveBeenCalledWith(
-      expect.objectContaining({
-        decision: "allow",
-        trustOrigin: "user-keyboard",
-        tool: "write_probe",
-      }),
-    );
+    expect(capture.events).toContainEqual(expect.objectContaining({ event: "permission_decision", decision: "ask", trustOrigin: "plugin-emitted", tool: "write_probe" }));
+    expect(capture.events).toContainEqual(expect.objectContaining({ event: "permission_decision", decision: "allow", trustOrigin: "user-keyboard", tool: "write_probe" }));
   });
 
   it("uses declared pathFields for permission audit directory", async () => {
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
     const executeSpy = vi.fn(async () => "custom wrote");
     const registry = new ToolRegistry();
     registry.register(createDynamicTool({
@@ -853,16 +826,7 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
     }));
     const permMgr = fixtureManager();
     permMgr.setMode("allow");
-    const appendPermissionAuditEntry = vi.fn(async (entry: Record<string, unknown>) => ({
-      ...entry,
-      prevHash: "h",
-    }));
-    const auditLogger = {
-      log: vi.fn(),
-      isPermissionAuditChainReady: vi.fn(() => true),
-      assertPermissionAuditWritable: vi.fn(),
-      appendPermissionAuditEntry,
-    };
+
     const executor = new ToolExecutor(
       registry,
       undefined,
@@ -870,7 +834,6 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
       undefined,
       undefined,
       undefined,
-      auditLogger as never,
     );
 
     const result = await executor.executeAll(
@@ -879,15 +842,14 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
     );
 
     expect(result[0].is_error).toBeUndefined();
-    expect(appendPermissionAuditEntry).toHaveBeenCalledWith(
-      expect.objectContaining({
-        decision: "allow",
-        directory: pathResolve("reports/out.md"),
-      }),
-    );
+    expect(capture.events).toContainEqual(expect.objectContaining({ event: "permission_decision", decision: "allow", tool: "custom_write_probe" }));
+    expect(executeSpy).toHaveBeenCalledWith(expect.objectContaining({ customTarget: "reports/out.md" }));
+    expect(JSON.stringify(capture.events)).not.toContain("reports/out.md");
   });
 
   it("does not synthesize permission audit directory without a declared path surface", async () => {
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
     const executeSpy = vi.fn(async () => "write without path surface");
     const registry = new ToolRegistry();
     registry.register(createDynamicTool({
@@ -909,16 +871,7 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
     }));
     const permMgr = fixtureManager();
     permMgr.setMode("allow");
-    const appendPermissionAuditEntry = vi.fn(async (entry: Record<string, unknown>) => ({
-      ...entry,
-      prevHash: "h",
-    }));
-    const auditLogger = {
-      log: vi.fn(),
-      isPermissionAuditChainReady: vi.fn(() => true),
-      assertPermissionAuditWritable: vi.fn(),
-      appendPermissionAuditEntry,
-    };
+
     const executor = new ToolExecutor(
       registry,
       undefined,
@@ -926,7 +879,6 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
       undefined,
       undefined,
       undefined,
-      auditLogger as never,
     );
 
     const result = await executor.executeAll(
@@ -935,18 +887,14 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
     );
 
     expect(result[0].is_error).toBeUndefined();
-    expect(appendPermissionAuditEntry).toHaveBeenCalledWith(
-      expect.objectContaining({
-        decision: "allow",
-        tool: "pathless_write_probe",
-      }),
-    );
-    const allowEntry = appendPermissionAuditEntry.mock.calls.find(([entry]) => entry.decision === "allow")?.[0];
+    expect(capture.events).toContainEqual(expect.objectContaining({ event: "permission_decision", decision: "allow", tool: "pathless_write_probe" }));
+    const allowEntry = capture.events.find((entry) => entry.tool === "pathless_write_probe" && entry.decision === "allow");
     expect(allowEntry).not.toHaveProperty("directory");
-    expect(allowEntry).not.toHaveProperty("directoryAllowed");
   });
 
   it("auto mode allows LOW reviewed mutating calls", async () => {
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
     // Foreground reviewer auto-approval requires explicit auto mode plus the configured threshold.
     const executeSpy = vi.fn(async () => "reviewed write");
     const registry = new ToolRegistry();
@@ -968,16 +916,7 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
     const dir = mkdtempSync(join(tmpdir(), "ave-executor-interactive-p3-"));
     try {
       const permMgr = makePermissionManager(dir, vi.fn(() => ({ level: "low", reason: "reviewer says safe" })), "auto");
-      const appendPermissionAuditEntry = vi.fn(async (entry: Record<string, unknown>) => ({
-        ...entry,
-        prevHash: "h",
-      }));
-      const auditLogger = {
-        log: vi.fn(),
-        isPermissionAuditChainReady: vi.fn(() => true),
-        assertPermissionAuditWritable: vi.fn(),
-        appendPermissionAuditEntry,
-      };
+
       const executor = new ToolExecutor(
         registry,
         undefined,
@@ -985,7 +924,6 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
         undefined,
         undefined,
         undefined,
-        auditLogger as never,
       );
       const permissionReviewEvents: import("../../shared/permission-review-status.js").PermissionReviewEvent[] = [];
 
@@ -1005,14 +943,7 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
       expect(result[0].is_error).toBeUndefined();
       expect(executeSpy).toHaveBeenCalledOnce();
       // Record the reviewer verdict so automatic approval remains auditable.
-      expect(appendPermissionAuditEntry).toHaveBeenCalledWith(expect.objectContaining({
-        decision: "allow",
-        tool: "reviewed_write_probe_p3",
-        reviewer: expect.objectContaining({
-          level: "low",
-          reason: "reviewer says safe",
-        }),
-      }));
+      expect(capture.events).toContainEqual(expect.objectContaining({ event: "permission_decision", decision: "allow", tool: "reviewed_write_probe_p3", reviewerRisk: "low" }));
       expect(permissionReviewEvents.map((event) => event.status)).toEqual([
         "reviewing",
         "auto_approved",
@@ -1055,12 +986,7 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
     try {
       const classifySpy = vi.fn(() => ({ level: "low" as const, reason: "reviewer says safe" }));
       const permMgr = makePermissionManager(dir, classifySpy);
-      const auditLogger = {
-        log: vi.fn(),
-        isPermissionAuditChainReady: vi.fn(() => true),
-        assertPermissionAuditWritable: vi.fn(),
-        appendPermissionAuditEntry: vi.fn(async (entry: Record<string, unknown>) => ({ ...entry, prevHash: "h" })),
-      };
+
       const gate = {
         requestAndWait: answeringRequestAndWait<{ id: string }>(() => ({ choice: "deny-once" as const })),
       };
@@ -1071,7 +997,6 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
         undefined,
         gate as never,
         undefined,
-        auditLogger as never,
       );
       const result = await executor.executeAll(
         [{ id: "tu-p3-off", name: "reviewed_write_probe_p3_off", input: { payload: "ok" } }],
@@ -1193,7 +1118,7 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
     const previousAveHome = process.env.AVE_HOME;
     process.env.AVE_HOME = dir;
     __resetSessionStoreForTest();
-    const auditLogger = new AuditLogger(join(dir, "audit"));
+
     try {
       const classifySpy = vi.fn(() => ({
         level: "medium" as const,
@@ -1230,7 +1155,6 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
         undefined,
         { requestAndWait } as never,
         undefined,
-        auditLogger,
       );
       // A trusted network target avoids escalation above the stored MEDIUM verdict during re-check.
       const input = {
@@ -1271,7 +1195,7 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
       expect(requestAndWait).toHaveBeenCalledTimes(1);
       expect(classifySpy).not.toHaveBeenCalled();
     } finally {
-      await auditLogger.close();
+
       if (previousAveHome === undefined) delete process.env.AVE_HOME;
       else process.env.AVE_HOME = previousAveHome;
       __resetSessionStoreForTest();
@@ -1408,6 +1332,8 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
   });
 
   it("records reviewer verdict on auto-reviewed LOW allow audit entries", async () => {
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
     const executeSpy = vi.fn(async () => "reviewed write");
     const registry = new ToolRegistry();
     registry.register(createDynamicTool({
@@ -1428,16 +1354,7 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
     const dir = mkdtempSync(join(tmpdir(), "ave-executor-reviewer-audit-"));
     try {
       const permMgr = makePermissionManager(dir, vi.fn(() => ({ level: "low", reason: "reviewer says safe" })), "auto");
-      const appendPermissionAuditEntry = vi.fn(async (entry: Record<string, unknown>) => ({
-        ...entry,
-        prevHash: "h",
-      }));
-      const auditLogger = {
-        log: vi.fn(),
-        isPermissionAuditChainReady: vi.fn(() => true),
-        assertPermissionAuditWritable: vi.fn(),
-        appendPermissionAuditEntry,
-      };
+
       const executor = new ToolExecutor(
         registry,
         undefined,
@@ -1445,7 +1362,6 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
         undefined,
         undefined,
         undefined,
-        auditLogger as never,
       );
 
       const result = await executor.executeAll(
@@ -1455,14 +1371,7 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
 
       expect(result[0].is_error).toBeUndefined();
       expect(executeSpy).toHaveBeenCalledOnce();
-      expect(appendPermissionAuditEntry).toHaveBeenCalledWith(expect.objectContaining({
-        decision: "allow",
-        tool: "reviewed_write_probe",
-        reviewer: expect.objectContaining({
-          level: "low",
-          reason: "reviewer says safe",
-        }),
-      }));
+      expect(capture.events).toContainEqual(expect.objectContaining({ event: "permission_decision", decision: "allow", tool: "reviewed_write_probe", reviewerRisk: "low" }));
     } finally {
       await cleanupTmpDir(dir);
     }
@@ -1667,6 +1576,8 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
     expect(results[0].content).toContain("Bash AST 차단");
   });
   it("forces sub-agent message tool calls through the receiver ApprovalGate with provenance", async () => {
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
     const executeSpy = vi.fn(async () => "read");
     const registry = new ToolRegistry();
     registry.register(createDynamicTool({
@@ -1681,15 +1592,9 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
 
     const permMgr = fixtureManager();
     permMgr.setMode("allow");
-    const checkDetailed = vi.spyOn(permMgr,"checkDetailed");
+    vi.spyOn(permMgr, "checkDetailed");
     const approvalGate = {
       requestAndWait: answeringRequestAndWait<{ id: string }>(() => ({ choice: "allow-once" as const })),
-    };
-    const auditLogger = {
-      log: vi.fn(),
-      isPermissionAuditChainReady: () => true,
-      assertPermissionAuditWritable: () => undefined,
-      appendPermissionAuditEntry: vi.fn(async () => undefined),
     };
     const executor = new ToolExecutor(
       registry,
@@ -1698,7 +1603,6 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
       undefined,
       approvalGate as never,
       undefined,
-      auditLogger as never,
     );
 
     const results = await executor.executeAll(
@@ -1718,9 +1622,7 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
         trustOrigin: "agent-message",
       }),
     );
-    expect(auditLogger.appendPermissionAuditEntry).toHaveBeenCalledWith(
-      expect.objectContaining({ trustOrigin: "agent-message" }),
-    );
+    expect(capture.events).toContainEqual(expect.objectContaining({ event: "permission_decision", trustOrigin: "agent-message", decision: "ask" }));
   });
 
   it("forces A2A-prefixed builtin reads through one human card without reviewer", async () => {
@@ -2559,10 +2461,7 @@ describe("ToolExecutor — R2-CR-4 ask_user_question audit redaction is gated by
     const registry = new ToolRegistry();
     registry.register(pluginAskTool);
 
-    const { AuditLogger: AL } = await import("../../audit/audit-logger.js");
-    const logSpy = vi
-      .spyOn(AL.prototype, "log")
-      .mockImplementation(() => undefined);
+    const permissionLogs = collectPermissionEvents();
 
     try {
       const executor = new ToolExecutor(registry, undefined, fixtureManager("allow"));
@@ -2574,15 +2473,11 @@ describe("ToolExecutor — R2-CR-4 ask_user_question audit redaction is gated by
       expect(results).toHaveLength(1);
       expect(results[0].is_error).toBeUndefined();
 
-      const toolCallEntry = logSpy.mock.calls
-        .map((c) => c[0] as { type?: string; output?: string; sessionId?: string })
-        .find((e) => e.type === "tool_call" && e.sessionId === "sess-r2cr4-plugin");
-      expect(toolCallEntry).toBeDefined();
-      // Plugin output must remain unredacted by the builtin question redactor.
-      expect(toolCallEntry!.output).toContain("hello world");
-      expect(toolCallEntry!.output).not.toContain("[redacted");
+      expect(results[0].content).toContain("hello world");
+      expect(permissionLogs.events).toContainEqual(expect.objectContaining({ event: "permission_decision", sessionId: "sess-r2cr4-plugin", decision: "allow" }));
+      expect(JSON.stringify(permissionLogs.events)).not.toContain("hello world");
     } finally {
-      logSpy.mockRestore();
+      permissionLogs.restore();
     }
   });
 
@@ -2609,10 +2504,7 @@ describe("ToolExecutor — R2-CR-4 ask_user_question audit redaction is gated by
     const registry = new ToolRegistry();
     registry.register(builtinAskTool);
 
-    const { AuditLogger: AL } = await import("../../audit/audit-logger.js");
-    const logSpy = vi
-      .spyOn(AL.prototype, "log")
-      .mockImplementation(() => undefined);
+    const permissionLogs = collectPermissionEvents();
 
     try {
       const executor = new ToolExecutor(registry, undefined, fixtureManager("allow"));
@@ -2620,19 +2512,14 @@ describe("ToolExecutor — R2-CR-4 ask_user_question audit redaction is gated by
         [{ id: "tu-r2cr4-b", name: "ask_user_question", input: {} }],
         { sessionId: "sess-r2cr4-builtin", permissionContext: userPermissionContext() },
       );
-      const toolCallEntry = logSpy.mock.calls
-        .map((c) => c[0] as { type?: string; output?: string; sessionId?: string })
-        .find((e) => e.type === "tool_call" && e.sessionId === "sess-r2cr4-builtin");
-      expect(toolCallEntry).toBeDefined();
-      // Builtin question answers must be redacted.
-      expect(toolCallEntry!.output).not.toContain("secret-content");
-      expect(toolCallEntry!.output).toContain("[redacted");
+      expect(permissionLogs.events).toContainEqual(expect.objectContaining({ event: "permission_decision", sessionId: "sess-r2cr4-builtin", decision: "allow" }));
+      expect(JSON.stringify(permissionLogs.events)).not.toContain("secret-content");
     } finally {
-      logSpy.mockRestore();
+      permissionLogs.restore();
     }
   });
 
-  it("preserves user-provided email in tool_result while masking UI callback and audit", async () => {
+  it("preserves user-provided email in tool_result, masks UI callbacks, and omits it from logs", async () => {
     // privacy.piiRedactEnabled governs both display and audit masking.
     initPiiRedactionPolicy(() => true);
     const builtinAskTool = createDynamicTool({
@@ -2656,10 +2543,7 @@ describe("ToolExecutor — R2-CR-4 ask_user_question audit redaction is gated by
     const registry = new ToolRegistry();
     registry.register(builtinAskTool);
 
-    const { AuditLogger: AL } = await import("../../audit/audit-logger.js");
-    const logSpy = vi
-      .spyOn(AL.prototype, "log")
-      .mockImplementation(() => undefined);
+    const permissionLogs = collectPermissionEvents();
     const onToolStart = vi.fn();
     const onToolEnd = vi.fn();
 
@@ -2691,14 +2575,10 @@ describe("ToolExecutor — R2-CR-4 ask_user_question audit redaction is gated by
       expect(renderedResult).toContain("***@gmail.com");
       expect(renderedResult).not.toContain("real.user@gmail.com");
 
-      const auditEntries = logSpy.mock.calls
-        .map((c) => c[0] as { type?: string; input?: string; output?: string; sessionId?: string })
-        .filter((e) => e.sessionId === "sess-dlp-email-preserve");
-      expect(auditEntries.some((e) => e.type === "tool_call" && e.output?.includes("real.user@gmail.com"))).toBe(false);
-      expect(auditEntries.some((e) => e.type === "tool_call" && e.input?.includes("input.user@gmail.com"))).toBe(false);
-      expect(auditEntries.some((e) => e.type === "tool_call" && e.input?.includes("***@gmail.com"))).toBe(true);
+      expect(permissionLogs.events).toContainEqual(expect.objectContaining({ event: "permission_decision", sessionId: "sess-dlp-email-preserve", decision: "allow" }));
+      expect(JSON.stringify(permissionLogs.events)).not.toContain("@gmail.com");
     } finally {
-      logSpy.mockRestore();
+      permissionLogs.restore();
       initPiiRedactionPolicy(() => false);
     }
   });
@@ -2864,7 +2744,6 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
       gate,
       undefined,
       undefined,
-      undefined,
       () => lifecycle,
     );
 
@@ -2929,7 +2808,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
     const gate = new ApprovalGate(wc as never);
     const allowDirectory = vi.fn(async (root: string) => [root]);
     const executor = new ToolExecutor(
-      registry, undefined, fixtureManager(), undefined, gate, undefined, undefined, undefined,
+      registry, undefined, fixtureManager(), undefined, gate, undefined, undefined,
       () => ({ allowDirectory, denyDirectory: vi.fn(async () => []) }),
     );
     setAveHomeConfigurationRefusedAtBoot(aveHome());
@@ -2959,7 +2838,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
     const previousHome = process.env.AVE_HOME;
     const isolatedHome = mkdtempSync(join(tmpdir(), "ave-executor-no-lifecycle-"));
     process.env.AVE_HOME = isolatedHome;
-    const auditLogger = new AuditLogger(join(isolatedHome, "audit"));
+
     try {
       const executeSpy = vi.fn(async () => "ok");
       const registry = new ToolRegistry();
@@ -2973,7 +2852,6 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
         undefined,
         gate,
         undefined,
-        auditLogger,
       );
 
       const callPromise = executor.executeAll(
@@ -3007,7 +2885,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
       expect(results[0].content).toContain("workspace lifecycle unavailable");
       expect(executeSpy).not.toHaveBeenCalled();
     } finally {
-      await auditLogger.close();
+
       if (previousHome === undefined) delete process.env.AVE_HOME;
       else process.env.AVE_HOME = previousHome;
       await cleanupTmpDir(isolatedHome);
@@ -3599,8 +3477,9 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
   });
 
   it("audits headless reviewer fallback as terminal denial", async () => {
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
     const dir = mkdtempSync(join(tmpdir(), "ave-executor-headless-audit-"));
-    const reviewerAudit = vi.spyOn(sandboxAuditSink,"emitSandboxAudit");
     try {
       const executeSpy = vi.fn(async () => ({ output: "sent", isError: false }));
       const registry = new ToolRegistry();
@@ -3633,16 +3512,6 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
         recentlyDenied: queue,
       });
 
-      const appendPermissionAuditEntry = vi.fn(async (entry: Record<string, unknown>) => ({
-        ...entry,
-        prevHash: "h",
-      }));
-      const auditLogger = {
-        log: vi.fn(),
-        isPermissionAuditChainReady: vi.fn(() => true),
-        assertPermissionAuditWritable: vi.fn(),
-        appendPermissionAuditEntry,
-      };
       const executor = new ToolExecutor(
         registry,
         undefined,
@@ -3650,7 +3519,6 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
         undefined,
         undefined,
         undefined,
-        auditLogger as never,
       );
 
       const results = await executor.executeAll(
@@ -3676,22 +3544,13 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
       expect(results[0].is_error).toBe(true);
       expect(executeSpy).not.toHaveBeenCalled();
       expect(pending).toHaveLength(1);
-      expect(auditLogger.log).toHaveBeenCalledWith(expect.objectContaining({
-        toolCalls: [expect.objectContaining({ permissionDecision: "deny" })],
-      }));
-      expect(appendPermissionAuditEntry).toHaveBeenCalledWith(expect.objectContaining({
-        decision: "deny",
-        tool: "teams_send",
-        source: "plugin",
-        category: "network",
-        denyReasons: [expect.objectContaining({ reason: "Nobody can approve this request; do not retry." })],
-      }));
+      expect(capture.events).toContainEqual(expect.objectContaining({ event: "permission_decision", decision: "deny", tool: "teams_send", source: "plugin", category: "network", terminalKind: "denied" }));
+      expect(results[0].content).toContain("Nobody can approve this request; do not retry.");
       expect(classifier.classify).toHaveBeenCalledOnce();
-      expect(reviewerAudit).toHaveBeenCalledWith(expect.objectContaining({
-        reviewer: expect.objectContaining({ finalVerdict: "high" }),
+      expect(capture.events).toContainEqual(expect.objectContaining({
+        event: "permission_reviewer_decision", tool: "teams_send", reviewerRisk: "high",
       }));
     } finally {
-      reviewerAudit.mockRestore();
       await cleanupTmpDir(dir);
     }
   });
@@ -4518,17 +4377,10 @@ describe("ToolExecutor — script hook denial surfaces in audit hookChain (#811 
         runPermissionRequest: vi.fn(async () => ({ decision: "allow" as const, reason: "noop", results: [] })),
       };
 
-      const appendPermissionAuditEntry = vi.fn(async (entry: Record<string, unknown>) => ({
-        ...entry,
-        prevHash: "h",
-      }));
-      const auditLogger = {
-        log: vi.fn(),
-        isPermissionAuditChainReady: vi.fn(() => true),
-        assertPermissionAuditWritable: vi.fn(),
-        appendPermissionAuditEntry,
-      };
-
+      const projected = vi.spyOn(decisionProjection, "permissionAuditEntryFromToolCall");
+      onTestFinished(() => projected.mockRestore());
+      const capture = collectPermissionEvents();
+      onTestFinished(capture.restore);
       const executor = new ToolExecutor(
         registry,
         undefined,
@@ -4536,7 +4388,6 @@ describe("ToolExecutor — script hook denial surfaces in audit hookChain (#811 
         undefined,
         undefined,
         scriptHookManager as never,
-        auditLogger as never,
       );
 
       const result = await executor.executeAll(
@@ -4549,9 +4400,8 @@ describe("ToolExecutor — script hook denial surfaces in audit hookChain (#811 
       expect(executeSpy).not.toHaveBeenCalled();
       expect(scriptHookManager.runPreToolUse).toHaveBeenCalledOnce();
 
-      const denyEntry = appendPermissionAuditEntry.mock.calls
-        .map(([entry]) => entry)
-        .find((entry) => entry.decision === "deny");
+      expect(capture.events).toContainEqual(expect.objectContaining({ event: "permission_decision", decision: "deny", correlationId: invocationCorrelationId("tu-hookchain") }));
+      const denyEntry = projected.mock.results.map((record) => record.value).find((entry) => entry.decision === "deny");
       expect(denyEntry).toBeDefined();
       expect(denyEntry?.hookChain).toBeDefined();
       const chain = denyEntry?.hookChain as Array<Record<string, unknown>>;
@@ -4778,7 +4628,6 @@ describe("ToolExecutor — host-classifies-risk enforcement scope", () => {
         undefined,
         { requestAndWait } as never,
         undefined,
-        undefined,
       );
       await executor.executeAll(
         [{ id: `tu-${name}`, name, input: { endpoint: "https://example.com/api" } }],
@@ -4939,11 +4788,12 @@ describe("ToolExecutor remote controller session authority", () => {
   });
 
   it("attributes an ordinary outside-directory card to the admitted controller", async () => {
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
     const registry = new ToolRegistry();
     registry.register(makeWriteFileTool(vi.fn(async () => "ok")));
     const wc = makeMockWebContents();
-    const auditLogger = { log: vi.fn() };
-    const gate = new ApprovalGate(wc as never, undefined, 5_000, auditLogger as never);
+    const gate = new ApprovalGate(wc as never, undefined, 5_000);
     const executor = new ToolExecutor(registry, undefined, fixtureManager(), undefined, gate);
     const sessionId = "controller-directory-card";
     const pending = executor.executeAll([{ id: sessionId, name: "write_file", input: { path: "/var/tmp/some-random-area/file.txt" } }], {
@@ -4953,7 +4803,9 @@ describe("ToolExecutor remote controller session authority", () => {
     expect(card.kind).toBe("out-of-allowed-dir");
     await gate.resolveWithFreshIdentity(card.id, { requestId: card.id, choice: "deny-once", nonce: card.nonce, hmac: card.hmac });
     await pending;
-    expect(auditLogger.log).toHaveBeenCalledWith(expect.objectContaining({ input: expect.stringContaining("remoteControllerOrigin=tailnet-controller") }));
+    expect(capture.events).toContainEqual(expect.objectContaining({ event: "approval_requested", sessionId, requestId: card.id }));
+    const [result] = await pending;
+    expect(result.is_error).toBe(true);
   });
 
   it("runs capability-changing tools through the same mode as local tools", async () => {
@@ -5016,15 +4868,8 @@ describe("privacy toggle governs tool-output masking", () => {
       decision: "allow", provenance: RULE_PROVENANCE,
       reason: "privacy toggle probe",
       });
-    const auditLogger = {
-      log: vi.fn(),
-      isPermissionAuditChainReady: vi.fn(() => true),
-      assertPermissionAuditWritable: vi.fn(),
-      appendPermissionAuditEntry: vi.fn(async (entry: Record<string, unknown>) => ({
-        ...entry,
-        prevHash: "h",
-      })),
-    };
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
     const onToolEnd = vi.fn();
     const executor = new ToolExecutor(
       registry,
@@ -5033,7 +4878,6 @@ describe("privacy toggle governs tool-output masking", () => {
       undefined,
       undefined,
       undefined,
-      auditLogger as never,
     );
 
     const result = await executor.executeAll(
@@ -5049,20 +4893,10 @@ describe("privacy toggle governs tool-output masking", () => {
       },
     );
 
-    const auditRows = auditLogger.log.mock.calls.map(
-      (call) => call[0] as {
-        input?: string;
-        output?: string;
-        toolCalls?: Array<{ permissionDecision?: string; permissionReason?: string }>;
-      },
-    );
     return {
       modelContent: result[0].content,
       displayContent: onToolEnd.mock.calls[0]?.[1] as string,
-      auditRows,
-      dlpRow: auditRows.find((row) =>
-        row.toolCalls?.some((call) => call.permissionDecision === "dlp_masked"),
-      ),
+      dlpRow: capture.events.find((row) => row.event === "dlp_masked"),
     };
   }
 
@@ -5079,7 +4913,7 @@ describe("privacy toggle governs tool-output masking", () => {
     expect(displayContent).not.toContain("real.user@example.com");
     expect(displayContent).toContain("***@example.com");
     expect(displayContent).toContain("010-****-****");
-    expect(dlpRow?.output).toContain("[DLP masking applied]");
+    expect(dlpRow).toMatchObject({ detectionCount: 2 });
   });
 
   it("scrubs the credential in both states, and names only it when the toggle is off", async () => {
@@ -5089,9 +4923,7 @@ describe("privacy toggle governs tool-output masking", () => {
     // Preserve the user's own contact details while scrubbing secrets.
     expect(off.displayContent).toContain("real.user@example.com");
     expect(off.displayContent).toContain("010-1234-5678");
-    expect(off.dlpRow?.toolCalls?.[0]?.permissionReason).toBe(
-      "Detected patterns: 자격 증명",
-    );
+    expect(off.dlpRow).toMatchObject({ detectionCount: 1 });
 
     const on = await runProbe(true, PII_AND_CREDENTIAL);
     expect(on.displayContent).not.toContain(CREDENTIAL);

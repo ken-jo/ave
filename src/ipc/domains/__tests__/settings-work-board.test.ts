@@ -27,7 +27,6 @@ beforeEach(async () => {
   registerSettingsHandlers({
     settingsService,
     conversationLoop: { refreshProvider: vi.fn() },
-    auditLogger: { log: vi.fn() },
     getAppWindows: () => [],
     singleHopNetworkFetch: vi.fn(),
   } as never);

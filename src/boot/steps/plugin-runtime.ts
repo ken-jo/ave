@@ -1,3 +1,4 @@
+import { logPermissionEvent, permissionLogId } from "../../lib/permission-log.js";
 import { createMcpServerDisconnectedSink } from "../../mcp/mcp-server-disconnect-sink.js";
 import type { BaseWindow } from "electron";
 import type { MainWindow } from "../../main/main-window-host.js";
@@ -12,7 +13,6 @@ import { aveHome } from "../../shared/ave-home.js";
 import { errorMessage } from "../../shared/error-message.js";
 import { registerBootPluginShutdown, registerShutdownHook } from "../../main/app-shutdown.js";
 import { emitEvent, onEvent as onHostEvent } from "../types.js";
-import { AuditLogger } from "../../audit/audit-logger.js";
 import { PluginRuntime } from "../../plugins/runtime.js";
 import { resolvePluginChildEntryPath } from "../../permissions/confined-child.js";
 import { LeaseDenialAudit } from "../../plugins/secret-access/lease-denial-audit.js";
@@ -113,7 +113,6 @@ export interface InitPluginRuntimeInput {
   toolRegistry: ToolRegistry;
   pythonPath: string | undefined;
   pythonRuntime?: PythonRuntimeBootstrapper;
-  bootAuditLogger: AuditLogger;
   mainWindow: MainWindow | null;
   /** Use OS proxy and trust-store routing for gated hostFetch; transport exists at boot. */
   networkFetch: HostFetchTransport;
@@ -181,7 +180,6 @@ export async function initPluginRuntime(
     toolRegistry,
     pythonPath,
     pythonRuntime,
-    bootAuditLogger,
     mainWindow,
     networkFetch,
     getMainWindow,
@@ -259,23 +257,18 @@ export async function initPluginRuntime(
       const manifest = pluginRuntime?.getPluginManifest(data.pluginId);
       if (manifest) emitEvent("plugin.lifecycle.failed", { pluginId: manifest.id, version: manifest.version, errorClass: "PluginRuntimeError" });
     }
-    try {
-      bootAuditLogger.log({
-        timestamp: new Date().toISOString(),
-        sessionId: "plugin-runtime",
-        type: level === "error" ? "error" : "tool_call",
-        input: `[${level.toUpperCase()}] ${message}`,
-        output: serializeRuntimeAuditData(data),
-      });
-    } catch (error) {
-      log.error({ err: error }, "plugin runtime audit sink failed");
+    const pluginId = data && typeof data === "object" && "pluginId" in data ? permissionLogId(data.pluginId) : undefined;
+    if (message === "plugin_storage_path_rejected") {
+      logPermissionEvent("plugin_storage_path_rejected", { pluginId, decision: "deny" }, "warn");
+    } else {
+      logPermissionEvent("plugin_worker_log", { workerLevel: level }, level === "info" ? "info" : "warn");
     }
   };
   /** The catcher registry must not outlive the runtime that owns its bound ports. */
   const authRedirectCatchers = new AuthRedirectCatchers();
   const backgroundEffectApprovals = input.backgroundEffectApprovals
     ?? new PluginBackgroundEffectApprovals(backgroundEffectApprovalsPath(pluginPaths.cacheRoot));
-  const leaseDenialAudit = new LeaseDenialAudit(bootAuditLogger);
+  const leaseDenialAudit = new LeaseDenialAudit();
   const createHostApi = createHostApiFactory({
     host: input.host,
     getPluginRuntime: () => pluginRuntime,
@@ -287,7 +280,6 @@ export async function initPluginRuntime(
     ...(input._onCredentialIssuanceStageForTest
       ? { _onCredentialIssuanceStageForTest: input._onCredentialIssuanceStageForTest }
       : {}),
-    bootAuditLogger,
     leaseDenialAudit,
     pluginRuntimeAuditLog,
     networkFetch,
@@ -327,7 +319,6 @@ export async function initPluginRuntime(
     deploymentGuard,
     installReceiptCacheRoot: pluginPaths.cacheRoot,
     auditLog: pluginRuntimeAuditLog,
-    effectAudit: bootAuditLogger,
     onMalformedCredentialSelector: (pluginId) => {
       leaseDenialAudit.record(pluginId, "hostFetch", { code: "credential-conflict" });
     },
@@ -429,4 +420,3 @@ export async function initPluginRuntime(
 }
 
 export type { MainWindow };
-import { serializeRuntimeAuditData } from "../../audit/runtime-audit-json.js";

@@ -56,32 +56,6 @@ This command runs alone. It checks the packaged UV executable and MCP `uvx`
 resolution using a temporary cache before normal boot, key loading, or profile
 locking. It does not run a conversation or prove every server feature works.
 
-To produce a public terminal receipt for the stopped host's permission audit,
-run the proof command with a fresh 64-character lowercase hexadecimal
-challenge:
-
-```sh
-./ave --verify-permission-audit="$CHALLENGE"
-```
-
-The command requires explicit absolute `AVE_HOME` and
-`AVE_SECRET_KEY_FILE` values. It runs before normal host boot and accepts no
-other command, apart from one optional `--user-data-dir=<directory>`. It opens
-the existing encrypted audit authority read-only, verifies every canonical
-`YYYY-MM-DD.permission-audit.jsonl` HMAC chain and every nonempty file's daily
-seal, and prints one `ave-permission-audit-proof/v1` JSON receipt. The receipt
-contains only the supplied challenge, verification time, and each file's
-basename, date, SHA-256, byte count, and entry count. It never prints secret
-material, seals, paths, or audit rows. Missing or changed authority, unexpected
-permission-audit names, linked or non-private files, chain tampering, and
-missing or mismatched seals fail without producing a receipt.
-Proof errors use only the stable codes
-`permission-audit-proof:invalid-arguments` and
-`permission-audit-proof:verification-failed`; filesystem paths and underlying
-provider messages are not written to stderr. Bare, malformed, or duplicate
-proof flags are reserved by the native dispatcher and fail as proof usage
-instead of falling through to normal host boot.
-
 ## Select a profile and external key
 
 Use a dedicated native profile when an existing desktop profile contains

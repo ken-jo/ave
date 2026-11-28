@@ -155,7 +155,6 @@ describe.each(['container', 'unconfined', 'account', 'projection'] as const)('%s
     });
     const note = { id: '11111111-1111-4111-8111-111111111111', filename: 'example.md', title: 'Example', content: 'Memory' };
     registerWindowsMemoryMapHandlers({
-      auditLogger: { log: vi.fn() },
       settingsService: { get: (key: string) => key === 'memoryEmbedding'
         ? { localModelPath: state.root, localInferenceWithoutSandbox: true } : undefined },
       memoryManager: { readMemoryPanelCatalog: () => ({ notes: [note] }) },
@@ -273,7 +272,6 @@ it.each(['catalog scan fails', 'scope options change before takeover'] as const)
   const readCatalog = vi.fn(() => ({ notes: [note] }));
   let projectName = 'example';
   registerWindowsMemoryMapHandlers({
-    auditLogger: { log: vi.fn() },
     settingsService: { get: (key: string) => key === 'memoryEmbedding' ? { localModelPath: state.root } : undefined },
     memoryManager: { readMemoryPanelCatalog: readCatalog },
   } as unknown as IpcDeps, () => ({ ok: true, options: { projectRoot: state.root, projectName } }));
@@ -337,7 +335,6 @@ it('keeps the replacement running while a superseded scope polls status and face
     return buildGraph(task.input, { embed: async () => [], dispose: async () => {} }, () => {});
   });
   registerWindowsMemoryMapHandlers({
-    auditLogger: { log: vi.fn() },
     settingsService: { get: (key: string) => key === 'memoryEmbedding' ? { localModelPath: state.root } : undefined },
     memoryManager: { readMemoryPanelCatalog: () => ({ notes: [] }) },
   } as unknown as IpcDeps, raw => ({ ok: true, options: raw as typeof a.scope }));
@@ -400,7 +397,6 @@ it('returns the graph committed before resolved scope options change', async () 
   const scope = { projectRoot: 'D:/example/project' };
   let projectName = 'project';
   registerWindowsMemoryMapHandlers({
-    auditLogger: { log: vi.fn() },
     settingsService: { get: (key: string) => key === 'memoryEmbedding' ? { localModelPath: state.root } : undefined },
     memoryManager: { readMemoryPanelCatalog: () => ({ notes: [note] }) },
   } as unknown as IpcDeps, () => ({ ok: true, options: { ...scope, projectName } }));
@@ -468,7 +464,6 @@ describe.each(['account', 'container'] as const)('%s admission', backend => {
       });
       const note = { id: '11111111-1111-4111-8111-111111111111', filename: 'example.md', title: 'Example', content: 'Memory' };
       registerWindowsMemoryMapHandlers({
-        auditLogger: { log: vi.fn() },
         settingsService: { get: (key: string) => key === 'memoryEmbedding' ? { localModelPath: state.root } : undefined },
         memoryManager: { readMemoryPanelCatalog: () => ({ notes: [note] }) },
       } as unknown as IpcDeps, () => ({ ok: true, options: { projectRoot: state.root, projectName } }));

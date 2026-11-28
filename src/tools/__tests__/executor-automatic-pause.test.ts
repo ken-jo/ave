@@ -1,12 +1,12 @@
+import { trackInvocationCorrelations, collectPermissionEvents } from "../../__tests__/support/permission-events.js";
+import { InMemoryHostInvocationStartCasStore } from "../pipeline/rationale-ticket-lifecycle.js";
 import { registerRunSession, __resetRunGrantsForTest } from "../../permissions/run-grants.js";
-import { randomBytes, randomUUID } from "node:crypto";
-import { readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import * as decisionProjection from "../pipeline/audit-entries.js";
 import { t } from "../../i18n/index.js";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { withSourceHostResources } from "../../__tests__/support/source-host-resources.js";
-import { AuditLogger } from "../../audit/audit-logger.js";
-import { verifyChain } from "../../audit/hmac-chain.js";
 import { ScriptHookManager } from "../../hooks/script-hook-manager.js";
 import { PermissionTestResources } from "../../permissions/__tests__/test-resources.js";
 import { ApprovalGate, answeredApprovalProvenance, answeredRecordForAction, type ApprovalDecision, type ApprovalRequest } from "../../permissions/approval-gate.js";
@@ -32,33 +32,52 @@ import { approvalIdentityFor } from "../pipeline/display-mask.js";
 import { createTestRequestAnchor, rationaleResponseFor } from "../pipeline/__tests__/rationale-fixtures.js";
 import { InMemoryHostAnchorRoundCasStore } from "../pipeline/rationale-control.js";
 import { RationaleHostCoordinator } from "../pipeline/rationale-host-coordinator.js";
-import { InMemoryHostInvocationStartCasStore, type InvocationAuditRecord } from "../pipeline/rationale-ticket-lifecycle.js";
 import { InProcessRationaleTicketStore } from "../pipeline/rationale-ticket-store.js";
 import { tryUserApprovalMemorySkip } from "../pipeline/approval-memory-skip.js";
 import { ToolRegistry } from "../registry.js";
 import { makeWriteProbeTool } from "./approval-memory-test-fixtures.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
 
+const invocationCorrelationId = trackInvocationCorrelations();
+
 withSourceHostResources();
 
 const SESSION_ID = "automatic-pause-session";
 const resources = new PermissionTestResources();
-const loggers: AuditLogger[] = [];
+let logs: ReturnType<typeof collectPermissionEvents>;
+let terminalProjection: ReturnType<typeof instrumentTerminalDecisions>;
+function instrumentTerminalDecisions() {
+  return vi.spyOn(decisionProjection, "permissionAuditEntryFromToolCall");
+}
+beforeEach(() => {
+  logs = collectPermissionEvents();
+  terminalProjection = instrumentTerminalDecisions();
+});
+
+function projectedDecisions() {
+  return terminalProjection.mock.results.flatMap((result) => {
+    if (result.type !== "return") return [];
+    const entry = result.value;
+    const event = decisions(entry.toolUseId).findLast((candidate) => candidate.decision === entry.decision);
+    return [{ ...entry, terminalKind: event?.terminalKind }];
+  });
+}
+
+function decisions(toolUseId?: string) {
+  return logs.events.filter((entry) => entry.event === "permission_decision" && (toolUseId === undefined || entry.correlationId === invocationCorrelationId(toolUseId)));
+}
 
 afterEach(async () => {
   vi.restoreAllMocks();
   approvals.__resetSessionStoreForTest();
-  for (const logger of loggers.splice(0)) await logger.close();
+  logs.restore();
   await resources.cleanup();
   vi.useRealTimers();
 });
 
 async function subject(sessionId = SESSION_ID) {
   const root = resources.makeTmpDir("ave-executor-pause-");
-  const audit = new AuditLogger(join(root, "audit"));
-  loggers.push(audit);
-  const auditSecret = randomBytes(32).toString("hex");
-  await audit.setupPermissionAuditChain(auditSecret);
+
   let level: RiskVerdict["level"] = "low";
   const complete = vi.fn<LlmReviewerProvider["complete"]>(async () => ({
     text: JSON.stringify({ level, reason: "reviewed action" }),
@@ -81,7 +100,7 @@ async function subject(sessionId = SESSION_ID) {
       categories: { ...DEFAULT_JUDGE_SETTINGS.categories },
       breaker: { ...DEFAULT_JUDGE_SETTINGS.breaker },
     },
-    chain: [], breaker: manager.getJudgeBreaker(), audit,
+    chain: [], breaker: manager.getJudgeBreaker(),
   });
   const review = (input: Record<string, unknown>) => manager.dispatchReviewer("write_probe", {
     invocationId: randomUUID(),
@@ -97,16 +116,7 @@ async function subject(sessionId = SESSION_ID) {
     level = "low";
     expect(manager.isAutomatedApprovalPaused(sessionId)).toBe(true);
   };
-  return { root, audit, auditSecret, manager, complete, pause, review, sessionId, setLevel: (value: RiskVerdict["level"]) => { level = value; } };
-}
-
-function corruptAuditTail(audit: AuditLogger) {
-  const file = audit.getPermissionAuditLogFile();
-  const lines = readFileSync(file, "utf8").trimEnd().split("\n");
-  const tail = JSON.parse(lines[lines.length - 1]);
-  tail.entryHash = "0".repeat(64);
-  lines[lines.length - 1] = JSON.stringify(tail);
-  writeFileSync(file, `${lines.join("\n")}\n`);
+  return { root, manager, complete, pause, review, sessionId, setLevel: (value: RiskVerdict["level"]) => { level = value; } };
 }
 
 async function rationaleContinuation(surface: "native" | "unavailable" = "native") {
@@ -118,12 +128,11 @@ async function rationaleContinuation(surface: "native" | "unavailable" = "native
   registry.register(makeWriteProbeTool(execute));
   const hooks = new ScriptHookManager();
   const { gate, cards, approve } = manualGate();
-  const invocationAudits: InvocationAuditRecord[] = [];
   const scopeComplete = vi.fn<LlmReviewerProvider["complete"]>(async () => ({
     text: JSON.stringify({ level: "medium", reason: "bounded action", scopeAlignment: "aligned", scopeReasons: ["sealed target matches the request"] }),
     tokensIn: 1, tokensOut: 1, costUsd: 0,
   }));
-  const ticketStore = new InProcessRationaleTicketStore({ onAudit: () => {} });
+  const ticketStore = new InProcessRationaleTicketStore();
   const coordinator = new RationaleHostCoordinator({
     requestAnchor: createTestRequestAnchor({ sessionId: current.sessionId }),
     userRoleTexts: ["Perform the requested operation."],
@@ -136,10 +145,8 @@ async function rationaleContinuation(surface: "native" | "unavailable" = "native
     getSandboxGeneration: () => "sandbox-one",
     anchorRoundCas: new InMemoryHostAnchorRoundCasStore(),
     hostInvocationStartCas: new InMemoryHostInvocationStartCasStore(),
-    onInvocationAudit: (record) => { invocationAudits.push(record); },
-    onProjectionAudit: () => {},
   });
-  const executor = new ToolExecutor(registry, undefined, current.manager, undefined, gate, hooks, current.audit);
+  const executor = new ToolExecutor(registry, undefined, current.manager, undefined, gate, hooks);
   const options = {
     sessionId: current.sessionId, executionCwd: current.root,
     permissionContext: userPermissionContext({
@@ -166,7 +173,7 @@ async function rationaleContinuation(surface: "native" | "unavailable" = "native
   const resumeOptions = { ...options, rationaleResumeRuntime: coordinator, permissionContext: { ...options.permissionContext,
     ...(surface === "unavailable" ? { approvalSurface: "unavailable" as const } : {}),
   } };
-  return { ...current, execute, hooks, reached, release, gate, cards, approve, invocationAudits, executor, sealed, resumeOptions };
+  return { ...current, execute, hooks, reached, release, gate, cards, approve, executor, sealed, resumeOptions };
 }
 
 function manualGate() {
@@ -282,7 +289,7 @@ describe("executor automated approval pause", () => {
     });
     const { gate, cards } = manualGate();
     const held = heldHandlerFinalizers("late-hook-replacement", 1);
-    const executor = new ToolExecutor(registry, undefined, current.manager, undefined, gate, hooks, current.audit);
+    const executor = new ToolExecutor(registry, undefined, current.manager, undefined, gate, hooks);
     const pending = executor.executeAll([{ id: "late-hook-replacement", name: "write_probe", input: { path: join(current.root, "original.txt") } }], {
       sessionId: SESSION_ID, executionCwd: current.root,
       permissionContext: userPermissionContext({ additionalDirectories: [current.root] }),
@@ -310,8 +317,7 @@ describe("executor automated approval pause", () => {
     registry.register(makeWriteProbeTool(execute));
     const { hooks, reached, release } = heldPreToolUse();
     const { gate, cards, approve, nativeWebContents } = manualGate();
-    const executor = new ToolExecutor(registry, undefined, f.manager, undefined, gate, hooks, f.audit);
-    const auditLog = vi.spyOn(f.audit, "log");
+    const executor = new ToolExecutor(registry, undefined, f.manager, undefined, gate, hooks);
     const pending = executor.executeAll([{ id: "cancel-late-card", name: "write_probe", input: { path: join(f.root, "held.txt") } }], {
       sessionId: SESSION_ID, executionCwd: f.root, abortSignal: controller.signal,
       permissionContext: userPermissionContext({ additionalDirectories: [f.root] }),
@@ -348,7 +354,7 @@ describe("executor automated approval pause", () => {
     expect(gate.pendingCount).toBe(0);
     expect(approve(cards[0])).toBeNull();
     expect(f.manager.isAutomatedApprovalPaused(SESSION_ID)).toBe(true);
-    const rows = readFileSync(f.audit.getPermissionAuditLogFile(), "utf8").trimEnd().split("\n").map((line) => JSON.parse(line));
+    const rows = projectedDecisions();
     if (by === "quit") {
       expect(rows.at(-1)).toMatchObject({ decision: "deny", toolUseId: "cancel-late-card", denyReasons: [{ reason: "host-shutdown" }], trustOrigin: "unknown" });
     } else if (by === "timeout-before-stop" || by === "refusal-before-quit") {
@@ -361,8 +367,7 @@ describe("executor automated approval pause", () => {
       expect.soft(result.content).toContain(detail);
       expect.soft(rows.at(-1)).toMatchObject({ decision: "deny", terminalKind: "cancelled", toolUseId: "cancel-late-card",
         denyReasons: [expect.objectContaining({ reason: expect.stringContaining(detail) })], trustOrigin: "unknown" });
-      expect(auditLog).toHaveBeenCalledWith(expect.objectContaining({ type: "tool_call", output: expect.stringContaining(detail),
-        toolCalls: [expect.objectContaining({ permissionDecision: "cancelled", permissionReason: expect.stringContaining(detail) })] }));
+      expect(decisions("cancel-late-card")).toContainEqual(expect.objectContaining({ decision: "deny", terminalKind: "cancelled" }));
     } else {
       expect(result.content).toBe(t("be_executor.toolExecutionCancelled"));
       expect(rows.at(-1)).toMatchObject({ decision: "deny", terminalKind: "cancelled", toolUseId: "cancel-late-card" });
@@ -377,7 +382,7 @@ describe("executor automated approval pause", () => {
     registry.register(makeWriteProbeTool(execute));
     const { hooks, reached, release } = heldPreToolUse();
     const { gate, cards, deny } = manualGate();
-    const executor = new ToolExecutor(registry, undefined, f.manager, undefined, gate, hooks, f.audit);
+    const executor = new ToolExecutor(registry, undefined, f.manager, undefined, gate, hooks);
     const pending = executor.executeAll([{ id: "deny-late-card", name: "write_probe", input: { path: join(f.root, "held.txt") } }], {
       sessionId: SESSION_ID, executionCwd: f.root, abortSignal: quit.signal,
       permissionContext: userPermissionContext({ additionalDirectories: [f.root] }),
@@ -392,7 +397,7 @@ describe("executor automated approval pause", () => {
     const [result] = await pending;
     expect(result.is_error).toBe(true);
     expect(execute).not.toHaveBeenCalled();
-    const rows = readFileSync(f.audit.getPermissionAuditLogFile(), "utf8").trimEnd().split("\n").map((line) => JSON.parse(line));
+    const rows = projectedDecisions();
     const denied = rows.filter((row) => row.toolUseId === "deny-late-card" && row.decision === "deny");
     expect(denied).toEqual([expect.objectContaining({ trustOrigin: "user-keyboard" })]);
     expect(JSON.stringify(denied)).not.toContain("host-shutdown");
@@ -405,7 +410,7 @@ describe("executor automated approval pause", () => {
     registry.register(makeWriteProbeTool(execute));
     const { hooks, reached, release } = heldPreToolUse();
     const { gate, cards, approve } = manualGate();
-    const executor = new ToolExecutor(registry, undefined, f.manager, undefined, gate, hooks, f.audit);
+    const executor = new ToolExecutor(registry, undefined, f.manager, undefined, gate, hooks);
     const pending = executor.executeAll([{ id: "plugin-late-card", name: "write_probe", input: { path: join(f.root, "held.txt") } }], {
       sessionId: SESSION_ID, executionCwd: f.root,
       permissionContext: userPermissionContext({ trustOrigin: "plugin-emitted", additionalDirectories: [f.root] }),
@@ -418,7 +423,7 @@ describe("executor automated approval pause", () => {
     const [result] = await pending;
     expect(result.is_error, result.content).not.toBe(true);
     expect(execute).toHaveBeenCalledOnce();
-    const rows = readFileSync(f.audit.getPermissionAuditLogFile(), "utf8").trimEnd().split("\n").map((line) => JSON.parse(line));
+    const rows = projectedDecisions();
     const allowed = rows.filter((row) => row.toolUseId === "plugin-late-card" && row.decision === "allow");
     expect(allowed.at(-1)).toMatchObject({ trustOrigin: "user-keyboard" });
   });
@@ -436,7 +441,7 @@ describe("executor automated approval pause", () => {
       answered.push(decision);
       return decision;
     });
-    const executor = new ToolExecutor(registry, undefined, f.manager, undefined, gate, undefined, f.audit);
+    const executor = new ToolExecutor(registry, undefined, f.manager, undefined, gate, undefined);
     const pending = executor.executeAll([{ id: "bound-late-card", name: "write_probe", input: { path: join(f.root, "held.txt") } }], {
       sessionId: SESSION_ID, executionCwd: f.root,
       permissionContext: userPermissionContext({ additionalDirectories: [f.root] }),
@@ -472,7 +477,7 @@ describe("executor automated approval pause", () => {
       return runPermissionRequest(...args);
     });
     const { gate, cards } = manualGate();
-    const executor = new ToolExecutor(registry, undefined, f.manager, undefined, gate, hooks, f.audit);
+    const executor = new ToolExecutor(registry, undefined, f.manager, undefined, gate, hooks);
     const pending = executor.executeAll([{ id: "cancel-held-permission-hook", name: "write_probe", input: { path: join(f.root, "held.txt") } }], {
       sessionId: SESSION_ID, executionCwd: f.root, abortSignal: controller.signal,
       permissionContext: userPermissionContext({ additionalDirectories: [f.root] }),
@@ -497,7 +502,7 @@ describe("executor automated approval pause", () => {
     expect(cards).toHaveLength(0);
     expect(gate.pendingCount).toBe(0);
     expect(execute).not.toHaveBeenCalled();
-    const rows = readFileSync(f.audit.getPermissionAuditLogFile(), "utf8").trimEnd().split("\n").map((line) => JSON.parse(line));
+    const rows = projectedDecisions();
     expect(rows.some((row) => row.decision === "ask" && row.toolUseId === "cancel-held-permission-hook")).toBe(false);
   });
 
@@ -523,7 +528,7 @@ describe("executor automated approval pause", () => {
     }));
     const { hooks, reached, release } = heldPreToolUse();
     const { gate, cards, approve } = manualGate();
-    const executor = new ToolExecutor(registry, undefined, f.manager, undefined, gate, hooks, f.audit);
+    const executor = new ToolExecutor(registry, undefined, f.manager, undefined, gate, hooks);
     const pending = executor.executeAll([{ id: "interrupt-late-approved-handler", name: "write_probe", input: { path: join(f.root, "held.txt") } }], {
       sessionId: SESSION_ID, executionCwd: f.root, abortSignal: controller.signal,
       permissionContext: userPermissionContext({ additionalDirectories: [f.root] }),
@@ -559,32 +564,27 @@ describe("executor automated approval pause", () => {
     expect(f.execute).not.toHaveBeenCalled();
     expect(f.cards).toHaveLength(0);
     expect(f.manager.isAutomatedApprovalPaused(f.sessionId)).toBe(true);
-    expect(f.invocationAudits.some((record) => record.state === "started" || record.state === "completed")).toBe(false);
     const replay = await f.executor.executeSealedRationaleResume(f.sealed.resumeRequest, f.resumeOptions);
     expect(replay.is_error).toBe(true);
     expect(f.execute).not.toHaveBeenCalled();
   });
 
-  it.each(["policy", "remembered", "reviewer", "rationale", "fresh native", "late native"] as const)("applies the common final audit gate to %s approval", async (source) => {
+  it.each(["policy", "remembered", "reviewer", "rationale", "fresh native", "late native"] as const)("honors pre-tool hooks and records terminal outcomes for %s approval", async (source) => {
     if (source === "rationale") {
       const f = await rationaleContinuation();
       const order: string[] = [];
-      const check = f.audit.assertPermissionAuditWritable.bind(f.audit);
-      vi.spyOn(f.audit, "assertPermissionAuditWritable").mockImplementation(() => { order.push("audit"); check(); });
       f.execute.mockImplementation(async () => { order.push("handler"); return "sealed write completed"; });
       const pending = f.executor.executeSealedRationaleResume(f.sealed.resumeRequest, f.resumeOptions);
       await f.reached;
       order.push("pre-hook-finished");
       f.release();
       expect((await pending).is_error).toBeUndefined();
-      expect(order.slice(-2)).toEqual(["audit", "handler"]);
-      expect(order.indexOf("pre-hook-finished")).toBeLessThan(order.lastIndexOf("audit"));
+      expect(order.indexOf("pre-hook-finished")).toBeLessThan(order.indexOf("handler"));
+    expect(decisions().filter(({ decision }) => decision === "allow")).toHaveLength(1);
       return;
     }
     const f = await subject();
     const order: string[] = [];
-    const check = f.audit.assertPermissionAuditWritable.bind(f.audit);
-    vi.spyOn(f.audit, "assertPermissionAuditWritable").mockImplementation(() => { order.push("audit"); check(); });
     const execute = vi.fn(async () => { order.push("handler"); return "wrote"; });
     const registry = new ToolRegistry();
     registry.register(makeWriteProbeTool(execute));
@@ -594,7 +594,7 @@ describe("executor automated approval pause", () => {
     if (source === "fresh native") f.setLevel("high");
     const { hooks, reached, release } = heldPreToolUse();
     const { gate, cards, approve } = manualGate();
-    const executor = new ToolExecutor(registry, undefined, f.manager, undefined, gate, hooks, f.audit);
+    const executor = new ToolExecutor(registry, undefined, f.manager, undefined, gate, hooks);
     const pending = executor.executeAll([{ id: "common-gate-write", name: "write_probe", input }], {
       sessionId: SESSION_ID, executionCwd: f.root,
       permissionContext: userPermissionContext({ additionalDirectories: [f.root] }),
@@ -612,20 +612,20 @@ describe("executor automated approval pause", () => {
     }
     expect((await pending)[0].is_error).toBeUndefined();
     expect(execute).toHaveBeenCalledOnce();
-    expect(order.slice(-2)).toEqual(["audit", "handler"]);
-    expect(order.indexOf("pre-hook-finished")).toBeLessThan(order.lastIndexOf("audit"));
-    if (source === "late native") expect(order.indexOf("late-card-approved")).toBeLessThan(order.lastIndexOf("audit"));
+    expect(order.indexOf("pre-hook-finished")).toBeLessThan(order.indexOf("handler"));
+    expect(decisions().filter(({ decision }) => decision === "allow")).toHaveLength(1);
+    if (source === "late native") expect(order.indexOf("late-card-approved")).toBeLessThan(order.indexOf("handler"));
     expect(cards).toHaveLength(source === "fresh native" || source === "late native" ? 1 : 0);
   });
 
-  it("refuses the handler when the authenticated audit tail changes while a late native card is pending", async () => {
+  it("honors an approved late native card when its log sink throws", async () => {
     const f = await subject();
     const execute = vi.fn(async () => "wrote");
     const registry = new ToolRegistry();
     registry.register(makeWriteProbeTool(execute));
     const { hooks, reached, release } = heldPreToolUse();
     const { gate, cards, approve } = manualGate();
-    const executor = new ToolExecutor(registry, undefined, f.manager, undefined, gate, hooks, f.audit);
+    const executor = new ToolExecutor(registry, undefined, f.manager, undefined, gate, hooks);
     const pending = executor.executeAll([{ id: "tampered-pending-card", name: "write_probe", input: { path: join(f.root, "held.txt") } }], {
       sessionId: SESSION_ID, executionCwd: f.root,
       permissionContext: userPermissionContext({ additionalDirectories: [f.root] }),
@@ -634,14 +634,13 @@ describe("executor automated approval pause", () => {
     await f.pause();
     release();
     await vi.waitFor(() => expect(cards).toHaveLength(1));
-    corruptAuditTail(f.audit);
+    vi.spyOn(console, "log").mockImplementation(() => { throw new Error("sink unavailable"); });
     const settled = pending.then((results) => ({ results, error: undefined }), (error: unknown) => ({ results: undefined, error }));
     approve(cards[0]);
     const outcome = await settled;
-    expect(execute).not.toHaveBeenCalled();
-    const failure = outcome.error instanceof Error ? outcome.error.message : outcome.results?.[0].content;
-    expect(failure).toMatch(/permission audit active tail is not self-authenticated/);
-    if (outcome.results) expect(outcome.results[0].is_error).toBe(true);
+    expect(outcome.error).toBeUndefined();
+    expect(outcome.results?.[0]?.is_error).toBeUndefined();
+    expect(execute).toHaveBeenCalledOnce();
   });
 
   it.each(["approved", "expired"] as const)("keeps a late native card outside the execution ceiling until %s at the ordinary deadline", async (settlement) => {
@@ -651,7 +650,7 @@ describe("executor automated approval pause", () => {
     registry.register(makeWriteProbeTool(execute));
     const { hooks, reached, release } = heldPreToolUse();
     const { gate, cards, approve, parkedAt } = manualGate();
-    const executor = new ToolExecutor(registry, undefined, f.manager, undefined, gate, hooks, f.audit);
+    const executor = new ToolExecutor(registry, undefined, f.manager, undefined, gate, hooks);
     const pending = executor.executeAll([{ id: "long-wait-card", name: "write_probe", input: { path: join(f.root, "held.txt") } }], {
       sessionId: SESSION_ID, executionCwd: f.root,
       permissionContext: userPermissionContext({ additionalDirectories: [f.root] }),
@@ -690,7 +689,7 @@ describe("executor automated approval pause", () => {
     registry.register(makeWriteProbeTool(execute));
     const { hooks, reached, release } = heldPreToolUse();
     const { gate, cards, approve } = manualGate();
-    const executor = new ToolExecutor(registry, undefined, current.manager, undefined, gate, hooks, current.audit);
+    const executor = new ToolExecutor(registry, undefined, current.manager, undefined, gate, hooks);
     const pending = executor.executeAll([{ id: "held-automatic-write", name: "write_probe", input: { path: join(current.root, "held.txt") } }], {
       sessionId: SESSION_ID, executionCwd: current.root,
       permissionContext: userPermissionContext({ additionalDirectories: [current.root] }),
@@ -704,11 +703,7 @@ describe("executor automated approval pause", () => {
     expect(execute).not.toHaveBeenCalled();
     expect(cards[0]).toMatchObject({ sessionId: SESSION_ID, toolName: "write_probe", });
     expect(cards[0].reason).toBe("Automated approval is paused for this turn; human approval is required.");
-    const auditLines = readFileSync(current.audit.getPermissionAuditLogFile(), "utf8").trimEnd().split("\n");
-    expect(verifyChain(current.auditSecret, auditLines)).toEqual({ ok: true });
-    expect(auditLines.map((line) => JSON.parse(line))).toContainEqual(expect.objectContaining({
-      decision: "ask", tool: "write_probe", toolUseId: "held-automatic-write", reason: cards[0].reason,
-    }));
+    expect(decisions("held-automatic-write")).toContainEqual(expect.objectContaining({ decision: "ask", tool: "write_probe" }));
     approve(cards[0]);
     const [result] = await pending;
     expect(result.is_error).toBeUndefined();
@@ -730,7 +725,7 @@ describe("executor automated approval pause", () => {
     const postHook = vi.spyOn(hooks, "runPostToolUse");
     const lifecycle = vi.spyOn(hooks, "runLifecycleEvent");
     const { gate, cards } = manualGate();
-    const executor = new ToolExecutor(registry, undefined, current.manager, undefined, gate, hooks, current.audit);
+    const executor = new ToolExecutor(registry, undefined, current.manager, undefined, gate, hooks);
     const pending = executor.executeAll([{ id: "held-hook-refused-write", name: "write_probe", input: { path: join(current.root, "held.txt") } }], {
       sessionId: SESSION_ID, executionCwd: current.root,
       permissionContext: userPermissionContext({ additionalDirectories: [current.root] }),
@@ -751,7 +746,7 @@ describe("executor automated approval pause", () => {
       { toolName: "write_probe", denyReason: { source: "tool-executor", reason: denyReason } },
       { cwd: current.root },
     ]);
-    const rows = readFileSync(current.audit.getPermissionAuditLogFile(), "utf8").trimEnd().split("\n").map((line) => JSON.parse(line));
+    const rows = projectedDecisions();
     expect(rows).toContainEqual(expect.objectContaining({
       decision: "deny", toolUseId: "held-hook-refused-write",
       denyReasons: expect.arrayContaining([expect.objectContaining({ reason: denyReason })]),
@@ -759,19 +754,15 @@ describe("executor automated approval pause", () => {
     expect(rows.some((row) => row.decision === "ask" && row.toolUseId === "held-hook-refused-write")).toBe(false);
   });
 
-  it("does not show a late pause card or enter the handler when the required ask audit fails", async () => {
+  it("requires the late pause card even when the log sink throws", async () => {
     const current = await subject();
     const execute = vi.fn(async () => "wrote");
     const registry = new ToolRegistry();
     registry.register(makeWriteProbeTool(execute));
     const { hooks, reached, release } = heldPreToolUse();
-    const append = current.audit.appendPermissionAuditEntry.bind(current.audit);
-    vi.spyOn(current.audit, "appendPermissionAuditEntry").mockImplementation(async (entry) => {
-      if (entry.decision === "ask") throw new Error("late approval ask audit failed");
-      return append(entry);
-    });
-    const { gate, cards } = manualGate();
-    const executor = new ToolExecutor(registry, undefined, current.manager, undefined, gate, hooks, current.audit);
+    vi.spyOn(console, "log").mockImplementation(() => { throw new Error("sink unavailable"); });
+    const { gate, cards, approve } = manualGate();
+    const executor = new ToolExecutor(registry, undefined, current.manager, undefined, gate, hooks);
     const pending = executor.executeAll([{ id: "held-ask-audit-failed", name: "write_probe", input: { path: join(current.root, "held.txt") } }], {
       sessionId: SESSION_ID, executionCwd: current.root,
       permissionContext: userPermissionContext({ additionalDirectories: [current.root] }),
@@ -779,11 +770,11 @@ describe("executor automated approval pause", () => {
     await reached;
     await current.pause();
     release();
-    const [result] = await pending;
-    expect(result.is_error).toBe(true);
-    expect(result.content).toContain("late approval ask audit failed");
-    expect(cards).toHaveLength(0);
+    await vi.waitFor(() => expect(cards).toHaveLength(1));
     expect(execute).not.toHaveBeenCalled();
+    approve(cards[0]);
+    expect((await pending)[0].is_error).toBeUndefined();
+    expect(execute).toHaveBeenCalledOnce();
     expect(current.manager.isAutomatedApprovalPaused(SESSION_ID)).toBe(true);
   });
 
@@ -794,7 +785,7 @@ describe("executor automated approval pause", () => {
     registry.register(makeWriteProbeTool(execute));
     const { hooks, reached, release } = heldPreToolUse();
     const { gate, cards } = manualGate();
-    const executor = new ToolExecutor(registry, undefined, current.manager, undefined, gate, hooks, current.audit);
+    const executor = new ToolExecutor(registry, undefined, current.manager, undefined, gate, hooks);
     const pending = executor.executeAll([{ id: "held-unattended-write", name: "write_probe", input: { path: join(current.root, "held.txt") } }], {
       sessionId: SESSION_ID, executionCwd: current.root,
       permissionContext: userPermissionContext({
@@ -822,7 +813,7 @@ describe("executor automated approval pause", () => {
     registry.register(makeWriteProbeTool(execute));
     const { hooks, reached, release } = heldPreToolUse();
     const { gate, cards, approve } = manualGate();
-    const executor = new ToolExecutor(registry, undefined, current.manager, undefined, gate, hooks, current.audit);
+    const executor = new ToolExecutor(registry, undefined, current.manager, undefined, gate, hooks);
     const pending = executor.executeAll([{ id: "held-human-write", name: "write_probe", input: { path: join(current.root, "held.txt") } }], {
       sessionId: SESSION_ID, executionCwd: current.root,
       permissionContext: userPermissionContext({ additionalDirectories: [current.root] }),
@@ -853,7 +844,7 @@ describe("executor automated approval pause", () => {
     const held = heldHandlerFinalizers("late-host-permit", 2);
     const { gate, cards, approve } = manualGate();
     const request = vi.spyOn(gate, "requestAndWait");
-    const executor = new ToolExecutor(registry, undefined, f.manager, undefined, gate, undefined, f.audit);
+    const executor = new ToolExecutor(registry, undefined, f.manager, undefined, gate, undefined);
     const pending = executor.executeAll([{ id: "late-host-permit", name: "bash", input: { command, executionMode: "host", justification: "Read fixture output" } }], {
       sessionId: SESSION_ID, executionCwd: f.root,
       permissionContext: userPermissionContext({ additionalDirectories: [f.root] }),
@@ -923,7 +914,7 @@ describe("executor automated approval pause", () => {
       if (cards.length > 0) turn.abort(new HostExitAbortError());
       return resolved;
     });
-    const executor = new ToolExecutor(registry, undefined, f.manager, undefined, gate, undefined, f.audit);
+    const executor = new ToolExecutor(registry, undefined, f.manager, undefined, gate, undefined);
     const pending = executor.executeAll([{ id: "late-host-shutdown", name: "bash", input: { command: "printf late-shutdown", executionMode: "host", justification: "Read fixture output" } }], {
       sessionId: SESSION_ID, executionCwd: f.root, abortSignal: turn.signal,
       permissionContext: userPermissionContext({ additionalDirectories: [f.root] }),
@@ -939,7 +930,7 @@ describe("executor automated approval pause", () => {
     expect(turn.signal.aborted).toBe(true);
     expect(mint).toHaveBeenCalledTimes(1);
     expect(execute).not.toHaveBeenCalled();
-    const rows = readFileSync(f.audit.getPermissionAuditLogFile(), "utf8").trimEnd().split("\n").map((line) => JSON.parse(line));
+    const rows = projectedDecisions();
     expect(rows.at(-1)).toMatchObject({ decision: "deny", toolUseId: "late-host-shutdown", denyReasons: [{ reason: "host-shutdown" }], trustOrigin: "unknown" });
   });
 
@@ -953,7 +944,7 @@ describe("executor automated approval pause", () => {
     registry.register(shell);
     vi.spyOn(preparedShell, "prepareShellInvocation").mockImplementation(() => { throw new Error("snapshot unavailable"); });
     const { gate } = denyingGate();
-    const executor = new ToolExecutor(registry, undefined, f.manager, undefined, gate, undefined, f.audit);
+    const executor = new ToolExecutor(registry, undefined, f.manager, undefined, gate, undefined);
     const [result] = await executor.executeAll([{ id: "shell-prep-failure", name: "bash", input: { command, executionMode: "host", justification: "Read fixture output" } }], {
       sessionId: SESSION_ID, executionCwd: f.root,
       permissionContext: userPermissionContext({ trustOrigin: "llm-tool-arg", additionalDirectories: [f.root] }),
@@ -961,7 +952,7 @@ describe("executor automated approval pause", () => {
     expect(result.is_error).toBe(true);
     expect(result.content).toContain("Shell preparation failed: snapshot unavailable");
     expect(execute).not.toHaveBeenCalled();
-    const rows = readFileSync(f.audit.getPermissionAuditLogFile(), "utf8").trimEnd().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>)
+    const rows = projectedDecisions()
       .filter(row => row.toolUseId === "shell-prep-failure" && row.decision !== "ask");
     expect(rows).toEqual([expect.objectContaining({ decision: "deny", trustOrigin: "unknown" })]);
   });
@@ -980,7 +971,7 @@ describe("executor automated approval pause", () => {
     registry.register(shell);
     const held = heldHandlerFinalizers("late-recheck", 2);
     const { gate, cards, approve, deny } = manualGate();
-    const executor = new ToolExecutor(registry, undefined, f.manager, undefined, gate, undefined, f.audit);
+    const executor = new ToolExecutor(registry, undefined, f.manager, undefined, gate, undefined);
     const pending = executor.executeAll([{ id: "late-recheck", name: "bash", input: { command, executionMode: "host", justification: "Read fixture output" } }], {
       sessionId: SESSION_ID, executionCwd: f.root,
       permissionContext: userPermissionContext({ additionalDirectories: [f.root] }),
@@ -1041,7 +1032,7 @@ describe("executor automated approval pause", () => {
     registry.register(makeWriteProbeTool(execute));
     const held = heldHandlerFinalizers("late-write", 2);
     const { gate, cards, approve, deny } = manualGate();
-    const executor = new ToolExecutor(registry, undefined, f.manager, undefined, gate, undefined, f.audit);
+    const executor = new ToolExecutor(registry, undefined, f.manager, undefined, gate, undefined);
     const pending = executor.executeAll([{ id: "late-write", name: "write_probe", input: { path: join(f.root, "late.txt") } }], {
       sessionId: SESSION_ID, executionCwd: f.root,
       permissionContext: userPermissionContext({ additionalDirectories: [f.root] }),
@@ -1087,7 +1078,7 @@ describe("executor automated approval pause", () => {
     registry.register(shell);
     const held = heldHandlerFinalizers("rule-host-permit", 1);
     const { gate, cards } = denyingGate();
-    const executor = new ToolExecutor(registry, undefined, f.manager, undefined, gate, undefined, f.audit);
+    const executor = new ToolExecutor(registry, undefined, f.manager, undefined, gate, undefined);
     const pending = executor.executeAll([{ id: "rule-host-permit", name: "bash", input: { command, executionMode: "host", justification: "Read fixture output" } }], {
       sessionId: SESSION_ID, executionCwd: f.root,
       permissionContext: userPermissionContext({ additionalDirectories: [f.root] }),
@@ -1112,7 +1103,7 @@ describe("executor automated approval pause", () => {
     registry.register(makeWriteProbeTool(execute));
     const held = heldHandlerFinalizers("normal-human-policy-race", 1);
     const { gate, cards, approve } = manualGate();
-    const executor = new ToolExecutor(registry, undefined, f.manager, undefined, gate, undefined, f.audit);
+    const executor = new ToolExecutor(registry, undefined, f.manager, undefined, gate, undefined);
     const pending = executor.executeAll([{ id: "normal-human-policy-race", name: "write_probe", input: { path: join(f.root, "approved.txt") } }], {
       sessionId: SESSION_ID, executionCwd: f.root,
       permissionContext: userPermissionContext({ trustOrigin: "llm-tool-arg", additionalDirectories: [f.root] }),
@@ -1129,8 +1120,8 @@ describe("executor automated approval pause", () => {
     expect(execute).not.toHaveBeenCalled();
     expect(cards).toHaveLength(1);
     // The policy refused it, so the row carries the invocation's origin, never the answer's.
-    expect(readFileSync(f.audit.getPermissionAuditLogFile(), "utf8").split("\n").filter(Boolean).map(line => JSON.parse(line) as Record<string, unknown>)
-      .filter(row => row.toolUseId === "normal-human-policy-race" && row.decision !== "ask" && row.grantLifetime === undefined))
+    expect(projectedDecisions()
+      .filter(row => row.toolUseId === "normal-human-policy-race" && row.decision !== "ask"))
       .toEqual([expect.objectContaining({ decision: "deny", trustOrigin: "llm-tool-arg" })]);
   });
 
@@ -1157,7 +1148,7 @@ describe("executor automated approval pause", () => {
       const registry = new ToolRegistry();
       registry.register(tool);
       const { gate, cards } = denyingGate();
-      const executor = new ToolExecutor(registry, undefined, current.manager, undefined, gate, undefined, current.audit);
+      const executor = new ToolExecutor(registry, undefined, current.manager, undefined, gate, undefined);
       const [result] = await executor.executeAll([{ id: "changed-remembered-write", name: tool.name, input: { ...input, content: "changed" } }], {
         sessionId: SESSION_ID, executionCwd: current.root,
         permissionContext: userPermissionContext({ additionalDirectories: [current.root] }),
@@ -1256,21 +1247,15 @@ describe("executor automated approval pause", () => {
     await expect(memoryReview(current, { path, content: "new" }, memory, unwired)).rejects.toBeInstanceOf(JudgeContractError);
   });
 
-  it("propagates an authenticated audit failure from fresh memory review", async () => {
+  it("still performs fresh memory review when the log sink throws", async () => {
     const current = await subject();
     const path = join(current.root, "scoped.txt");
     const memory: ApprovalMemory = { kind: "key", key: "write-scope", scope: { kind: "path", path } };
     await remember(current.root, { path, content: "approved" }, memory);
     await current.review({ path: join(current.root, "seed.txt") });
-    const auditDirectory = current.audit.getAuditDir();
-    const name = readdirSync(auditDirectory).find((entry) => entry.endsWith(".permission-audit.jsonl"));
-    if (!name) throw new Error("Permission audit file missing");
-    const file = join(auditDirectory, name);
-    const lines = readFileSync(file, "utf8").trimEnd().split("\n");
-    const tail = JSON.parse(lines[lines.length - 1]);
-    tail.entryHash = "0".repeat(64);
-    lines[lines.length - 1] = JSON.stringify(tail);
-    writeFileSync(file, `${lines.join("\n")}\n`);
-    await expect(memoryReview(current, { path, content: "new" }, memory)).rejects.toThrow(/permission audit active tail is not self-authenticated/);
+    const dispatch = vi.spyOn(current.manager, "dispatchReviewer");
+    vi.spyOn(console, "log").mockImplementation(() => { throw new Error("sink unavailable"); });
+    await expect(memoryReview(current, { path, content: "new" }, memory)).resolves.toBeDefined();
+    expect(dispatch).toHaveBeenCalled();
   });
 });

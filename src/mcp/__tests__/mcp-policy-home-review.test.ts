@@ -1,3 +1,4 @@
+import { makeMcpTrustManager } from "../../__tests__/support/mcp-trust.js";
 // An organization policy file that exists in the Ave folder but still waits for home content review has no authority yet. Its
 // unread rules may forbid user trust, so user servers stay blocked until it is approved, and only an absent file keeps the default.
 import { useConfigurationOwner as configureTestOwner } from "../../__tests__/support/configuration-owner.js";
@@ -9,14 +10,11 @@ import { dirname, join } from "node:path";
 import { afterEach, assert, beforeEach, describe, expect, it, vi } from "vitest";
 import { useTempDirs as tempDirs, useTempPaths as tempPaths } from "../../__tests__/test-helpers.js";
 import { setFixtureOwner } from "../../__tests__/support/fixture-owner.js";
-import { unusedNetworkFetch } from "../../__tests__/support/network-fetch-stubs.js";
 import { _resetAveHomePrivacyForTest, ensureAveHomePrivate } from "../../shared/ave-home.js";
 import { migrateAveHomeConfiguration } from "../../shared/ave-home-configuration.js";
 import { _resetAveHomeTrustForTest, approveAveHomeTrustItems, evaluateAveHomeTrustAtBoot, getAveHomeTrustReview } from "../../shared/ave-home-trust.js";
 import { setAveHomeConfigurationOwner } from "../../shared/ave-home-configuration-access.js";
-import { ToolRegistry } from "../../tools/registry.js";
 import { McpGovernance } from "../mcp-governance.js";
-import { McpManager } from "../mcp-manager.js";
 import { userServerFingerprint, userServerTrustSecretId } from "../user-server-trust.js";
 import type { McpServerConfig } from "../types.js";
 
@@ -79,18 +77,13 @@ function writePolicy(dir: string): string {
   return path;
 }
 
-function manager(policyPath: string): McpManager {
-  return new McpManager(new McpGovernance(policyPath), new ToolRegistry(), unusedNetworkFetch, configPath,
-    { append: vi.fn(async () => undefined), log: vi.fn() } as never, undefined, undefined, secrets);
-}
-
 describe("organization policy awaiting home content review", () => {
   it("blocks user trust, including a stored grant, before and after the restrictive policy is approved", async () => {
     const dir = home();
     const policyPath = writePolicy(dir);
     boot(dir);
 
-    const pending = manager(policyPath);
+    const pending = makeMcpTrustManager(policyPath, configPath, secrets);
     const pendingState = await pending.getManagementState();
     expect(pendingState).toMatchObject({ policyStatus: "pending-review", userServersAllowed: false });
     expect(pendingState.servers[config.id]?.trusted).toBe(false);
@@ -102,7 +95,7 @@ describe("organization policy awaiting home content review", () => {
     assert.exists(review, "Expected the pending policy to be offered for review");
     approveAveHomeTrustItems(review.snapshotId);
     boot(dir);
-    const approved = manager(policyPath);
+    const approved = makeMcpTrustManager(policyPath, configPath, secrets);
     expect(await approved.getManagementState()).toMatchObject({ policyStatus: "active", userServersAllowed: false });
     await expect(approved.startServer(config.id)).rejects.toThrow("runtime approval not admitted by policy");
     expect(connect).not.toHaveBeenCalled();
@@ -112,7 +105,7 @@ describe("organization policy awaiting home content review", () => {
     const dir = home();
     boot(dir);
     const policyPath = join(dir, "governance", "mcp-policy.json");
-    const owner = manager(policyPath);
+    const owner = makeMcpTrustManager(policyPath, configPath, secrets);
     expect(await owner.getManagementState()).toMatchObject({ policyStatus: "absent", userServersAllowed: true });
     await expect(owner.startServer(config.id)).resolves.toEqual({ connected: true });
     expect(connect).toHaveBeenCalledOnce();

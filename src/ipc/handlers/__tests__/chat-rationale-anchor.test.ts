@@ -28,7 +28,6 @@ function makeFixture() {
       get: (key: string) =>
         key === "privacy" ? { piiRedactEnabled: true } : undefined,
     },
-    auditLogger: { log: vi.fn() },
   } as unknown as IpcDeps;
   const activity = createConversationActivityCoordinator();
   const context: ChatSendContext = {

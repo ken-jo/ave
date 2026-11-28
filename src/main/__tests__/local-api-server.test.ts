@@ -1,3 +1,4 @@
+import { trackPermissionEvents } from "../../__tests__/support/permission-events.js";
 // AVE_HOME points at a temporary directory; every real loopback listener is closed after each test.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
@@ -45,11 +46,12 @@ function stubSettings(
   } as unknown as SettingsService;
 }
 
+const permissionEvents = trackPermissionEvents();
+
 const SERVICE_KEYS: readonly string[] = [
   "settingsService",
   "conversationLoop",
   "memoryManager",
-  "auditLogger",
   "pluginRuntime",
   "pluginMarketplace",
 ];
@@ -60,7 +62,6 @@ function makeServices(
   getMode = "plan",
   approvalGate?: Pick<ApprovalGate, "requestAndWait">,
   features: Partial<FeatureFlags> = {},
-  auditLog?: (entry: unknown) => void,
 ): AppServices {
   const base = makeDeepProxy(SERVICE_KEYS) as Record<string, unknown>;
   return new Proxy(base, {
@@ -75,7 +76,6 @@ function makeServices(
       // When a test supplies a stub ApprovalGate, expose it so the wired external-mutation approver drives it. Otherwise fall through to the deep-proxy (the
       // approver still builds, but no mutation test exercises it).
       if (prop === "approvalGate" && approvalGate) return approvalGate;
-      if (prop === "auditLogger" && auditLog) return { log: auditLog };
       return Reflect.get(target, prop);
     },
     ownKeys() {
@@ -360,9 +360,8 @@ describe("local-api-server", () => {
       process.env.AVE_LOCAL_API = "1";
       process.env.AVE_A2A = "1";
       const emitted = vi.fn();
-      const audit = vi.fn();
       const result = await maybeStartLocalApiServer({
-        services: makeServices({}, "plan", undefined, {}, audit),
+        services: makeServices({}),
         createA2ARouter: () => {
           throw new Error("secret-shaped provider detail");
         },
@@ -380,9 +379,8 @@ describe("local-api-server", () => {
         "[a2a] initialization failed; route family disabled for this boot",
       );
       expect(JSON.stringify(emitted.mock.calls)).not.toContain("provider detail");
-      expect(audit).toHaveBeenCalledWith(expect.objectContaining({
-        type: "warn",
-        input: "a2a:loopback:initialization-failed",
+      expect(permissionEvents()).toContainEqual(expect.objectContaining({
+        event: "local_agent_request_refused", reasonCode: "initialization-failed",
       }));
     });
 
@@ -408,10 +406,9 @@ describe("local-api-server", () => {
 
     it("retains no empty listener and does not retry when A2A has no handler", async () => {
       process.env.AVE_A2A = "1";
-      const audit = vi.fn();
       const factory = vi.fn(() => null);
       const input = {
-        services: makeServices({}, "plan", undefined, {}, audit),
+        services: makeServices({}),
         createA2ARouter: factory,
         ...START_ARGS,
       };
@@ -419,9 +416,8 @@ describe("local-api-server", () => {
       await expect(maybeStartLocalApiServer(input)).resolves.toBeNull();
       expect(factory).toHaveBeenCalledOnce();
       expect(existsSync(join(home, "local-api"))).toBe(false);
-      expect(audit).toHaveBeenCalledWith(expect.objectContaining({
-        type: "warn",
-        input: "a2a:loopback:no-routable-handler",
+      expect(permissionEvents()).toContainEqual(expect.objectContaining({
+        event: "local_agent_request_refused", reasonCode: "no-routable-handler",
       }));
     });
   });
@@ -692,7 +688,7 @@ describe("local-api-server", () => {
   });
 
   describe("HTTP passthrough — approval-denied set-mode", () => {
-    it.each(["denied", "rejected", "expired", "unavailable", "cancelled"] as const)("audits the mode approval outcome before returning the public 403 (%s)", async (outcome) => {
+    it.each(["denied", "rejected", "expired", "unavailable", "cancelled"] as const)("logs the mode approval outcome before returning the public 403 (%s)", async (outcome) => {
       process.env.AVE_LOCAL_API = "1";
       const surface = {
         isDestroyed: () => false,
@@ -708,9 +704,8 @@ describe("local-api-server", () => {
       };
       const gate = new ApprovalGate(outcome === "unavailable" ? null : surface as never, undefined, outcome === "expired" ? 5 : undefined);
       const requestAndWait = vi.fn(gate.requestAndWait.bind(gate));
-      const audit = vi.fn();
       const result = await maybeStartLocalApiServer({
-        services: makeServices({}, "plan", { requestAndWait }, {}, audit),
+        services: makeServices({}, "plan", { requestAndWait }),
         ...START_ARGS,
       });
       const info = readInfo(home);
@@ -727,7 +722,7 @@ describe("local-api-server", () => {
       expect(res.status).toBe(403);
       expect(await res.json()).toEqual({ ok: false, error: EXTERNAL_MUTATION_DENIED });
       expect(requestAndWait).toHaveBeenCalledTimes(1);
-      expect(audit).toHaveBeenCalledWith(expect.objectContaining({ output: `approval=${outcome}` }));
+      expect(permissionEvents()).toContainEqual(expect.objectContaining({ event: "external_permission_refused", channel: PERMISSIONS.setMode, outcome }));
     });
   });
 });

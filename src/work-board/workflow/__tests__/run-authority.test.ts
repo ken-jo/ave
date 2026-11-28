@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, onTestFinished } from "vitest";
+import { collectPermissionEvents } from "../../../__tests__/support/permission-events.js";
 import { en } from "../../../i18n/messages/en.js";
 import { ko } from "../../../i18n/messages/ko.js";
 import type {
@@ -89,6 +90,8 @@ it.each<UnattendedQualification & { ok: false }>([
   const reason = { reasonCode: refusal.code, ...("tool" in refusal ? { reasonTool: refusal.tool } : {}) };
   expect(authoriseRunSource(scheduled({ unattendedAllowed: () => refusal }))).toEqual(refusal);
 
+  const capture = collectPermissionEvents();
+  onTestFinished(capture.restore);
   let qualifies = false;
   const h = await stageRunHarness({ workflow: { unattendedAllowed: () => qualifies ? { ok: true } : refusal } });
   try {
@@ -112,7 +115,7 @@ it.each<UnattendedQualification & { ok: false }>([
     const settled = await h.settleEvent();
     expect(settled).toMatchObject({ phase: "cancelled", ...reason });
     if (!("tool" in refusal)) expect(settled.reasonTool).toBeUndefined();
-    expect(h.audits).toEqual([{ itemId: id, runId: (await h.item(id)).runId, event: "work-run:authority-refused", code: refusal.code, ...("tool" in refusal ? { tool: refusal.tool } : {}) }]);
+    expect(capture.events).toContainEqual({ event: "workflow_authority_refused", itemId: id, runId: (await h.item(id)).runId, reasonCode: refusal.code });
     expect(h.children).toHaveLength(1);
   } finally {
     await h.cleanup();

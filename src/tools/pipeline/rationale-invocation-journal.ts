@@ -1,13 +1,10 @@
 import { isRationaleHumanApprovalActive } from "./rationale-control.js";
-import {
-  chmodSync,
-  closeSync,
-  mkdirSync,
-  openSync,
-} from "node:fs";
-import { dirname, isAbsolute } from "node:path";
-import { platform } from "node:process";
-import { computeLineHmac, readStableRegularFileUtf8, type SecretStore } from "../../audit/hmac-chain.js";
+import { createHmac } from "node:crypto";
+import { isAbsolute } from "node:path";
+import type { SecretStore } from "../../lib/protected-secret-store.js";
+import { readStableRegularFileUtf8 } from "../../lib/stable-regular-file.js";
+import { logPermissionEvent } from "../../lib/permission-log.js";
+import { preparePrivateFileDirectory } from "../../main/storage/feature-namespace.js";
 import { writeUtf8FileAtomicSync } from "../../lib/atomic-file.js";
 import { withFileLock } from "../../lib/with-file-lock.js";
 import { canonicalJsonEqual, canonicalStringify } from "../../shared/canonical-json.js";
@@ -24,7 +21,6 @@ import {
   type HostInvocationStartCommit,
   type HostInvocationStartLease,
   type InvocationAuditRecord,
-  type InvocationAuditSink,
 } from "./rationale-ticket-lifecycle.js";
 import type { RationaleRequiredControl } from "./rationale-control.js";
 import { timingSafeEqualHexDigest, sha256Hex } from "../../lib/hex-digest-equal.js";
@@ -42,14 +38,12 @@ const JOURNAL_GENESIS_DOMAIN = "ave:rationale-invocation-journal:genesis:v1";
 const CHECKPOINT_SCHEMA_VERSION = 1 as const;
 const CHECKPOINT_KIND = "rationale-invocation-journal-checkpoint" as const;
 const CHECKPOINT_KEY_DOMAIN = "ave:rationale-invocation-journal:checkpoint:v1";
-const CHECKPOINT_NAME_PREFIX = "rationale-invocation-journal-checkpoint-v1-";
+const CHECKPOINT_NAME_PREFIX = "invocation-execution-checkpoint-";
 const HEAD_SCHEMA_VERSION = 1 as const;
 const HEAD_KIND = "rationale-invocation-journal-head" as const;
 const HEAD_KEY_DOMAIN = "ave:rationale-invocation-journal:head:v1";
-const HEAD_NAME = "rationale-invocation-journal-head-v1";
+const HEAD_NAME = "invocation-execution-head";
 const MAX_CHECKPOINT_BYTES = 4 * 1024;
-
-type AuditVersion = 0 | 1 | 2;
 
 interface InvocationJournalEntry {
   authorized: InvocationAuditRecord;
@@ -59,7 +53,6 @@ interface InvocationJournalEntry {
   lease: HostInvocationStartLease;
   started: InvocationAuditRecord;
   terminal: InvocationAuditRecord | null;
-  pendingAuditVersions: AuditVersion[];
   updatedAt: number;
 }
 
@@ -113,18 +106,10 @@ interface LoadedJournalState {
   readonly head: InvocationJournalHead;
 }
 
-interface PendingAudit {
-  invocationDigest: string;
-  sessionId: string;
-  version: AuditVersion;
-  record: InvocationAuditRecord;
-  canonicalRecord: string;
-}
-
 export interface DurableHostInvocationStartCasStoreOptions {
   filePath: string;
-  auditSecret: string;
-  sealStore: SecretStore;
+  executionKey: string;
+  checkpointStore: SecretStore;
   writeFileAtomic?: typeof writeUtf8FileAtomicSync;
   now?: () => number;
   maxEntries?: number;
@@ -133,14 +118,11 @@ export interface DurableHostInvocationStartCasStoreOptions {
 
 export interface InvocationCrashRecoveryResult {
   recovered: number;
-  delivered: number;
 }
 
-// Audit delivery is at-least-once: deduplicate by invocationDigest and version without replaying invocation-start CAS.
-export type RecoveryInvocationAuditSink = (
-  sessionId: string,
-  record: InvocationAuditRecord,
-) => Promise<void> | void;
+function stateMac(key: string, payload: string): string {
+  return createHmac("sha256", key).update(payload).digest("hex");
+}
 
 function assertExactKeys(
   value: Record<string, unknown>,
@@ -160,18 +142,6 @@ function readStableUtf8(filePath: string, maxBytes: number): string | null {
 
 function emptySnapshot(): InvocationJournalSnapshot {
   return { schemaVersion: JOURNAL_SCHEMA_VERSION, revision: 0, entries: {} };
-}
-
-function auditForVersion(
-  entry: InvocationJournalEntry,
-  version: AuditVersion,
-): InvocationAuditRecord {
-  if (version === 0) return entry.authorized;
-  if (version === 1) return entry.started;
-  if (entry.terminal === null) {
-    throw new Error("terminal audit projection is pending without a terminal record");
-  }
-  return entry.terminal;
 }
 
 function terminalEvent(
@@ -196,7 +166,6 @@ function validateEntry(
     "lease",
     "started",
     "terminal",
-    "pendingAuditVersions",
     "updatedAt",
   ], "invocation journal entry");
 
@@ -235,23 +204,6 @@ function validateEntry(
     if (!canonicalJsonEqual(expectedTerminal, entry.terminal)) {
       throw new Error("journal terminal record is not a monotonic transition");
     }
-  }
-
-  if (!Array.isArray(entry.pendingAuditVersions)) {
-    throw new Error("journal pending audit versions must be an array");
-  }
-  let previous = -1;
-  for (const version of entry.pendingAuditVersions as unknown[]) {
-    if (version !== 0 && version !== 1 && version !== 2) {
-      throw new Error("journal contains an invalid pending audit version");
-    }
-    if (version <= previous) {
-      throw new Error("journal pending audit versions must be unique and ordered");
-    }
-    if (version === 2 && entry.terminal === null) {
-      throw new Error("journal cannot project a missing terminal record");
-    }
-    previous = version;
   }
 
   if (!Number.isFinite(entry.updatedAt) ||
@@ -302,7 +254,7 @@ function sealEnvelope(
   };
   return {
     ...unsigned,
-    mac: computeLineHmac(secret, canonicalStringify(unsigned)),
+    mac: stateMac(secret, canonicalStringify(unsigned)),
   };
 }
 
@@ -341,7 +293,7 @@ function parseEnvelope(
     previousMac: decoded.previousMac,
     snapshot: decoded.snapshot,
   };
-  const expectedMac = computeLineHmac(secret, canonicalStringify(unsigned));
+  const expectedMac = stateMac(secret, canonicalStringify(unsigned));
   if (!timingSafeEqualHexDigest(decoded.mac, expectedMac)) {
     throw new Error("invocation journal HMAC mismatch");
   }
@@ -365,7 +317,7 @@ function sealCheckpoint(
 ): InvocationJournalCheckpoint {
   return {
     ...unsigned,
-    seal: computeLineHmac(secret, canonicalStringify(unsigned)),
+    seal: stateMac(secret, canonicalStringify(unsigned)),
   };
 }
 
@@ -416,7 +368,7 @@ function parseCheckpoint(
     journalRevision: decoded.journalRevision as number,
     journalMac: decoded.journalMac,
   };
-  const expectedSeal = computeLineHmac(secret, canonicalStringify(unsigned));
+  const expectedSeal = stateMac(secret, canonicalStringify(unsigned));
   if (!timingSafeEqualHexDigest(decoded.seal, expectedSeal)) {
     throw new Error("invocation journal checkpoint seal mismatch");
   }
@@ -436,7 +388,7 @@ function sealHead(
 ): InvocationJournalHead {
   return {
     ...unsigned,
-    seal: computeLineHmac(secret, canonicalStringify(unsigned)),
+    seal: stateMac(secret, canonicalStringify(unsigned)),
   };
 }
 
@@ -480,7 +432,7 @@ function parseHead(raw: string, secret: string): InvocationJournalHead {
     journalRevision: decoded.journalRevision as number,
     journalMac: decoded.journalMac,
   };
-  const expectedSeal = computeLineHmac(secret, canonicalStringify(unsigned));
+  const expectedSeal = stateMac(secret, canonicalStringify(unsigned));
   if (!timingSafeEqualHexDigest(decoded.seal, expectedSeal)) {
     throw new Error("invocation journal head seal mismatch");
   }
@@ -519,14 +471,6 @@ function nextRevision(
   };
 }
 
-function addPendingVersion(
-  versions: readonly AuditVersion[],
-  version: AuditVersion,
-): AuditVersion[] {
-  return [...new Set([...versions, version])].sort((left, right) => left - right) as
-    AuditVersion[];
-}
-
 function snapshotFitsByteLimit(
   snapshot: InvocationJournalSnapshot,
   maxBytes: number,
@@ -548,10 +492,9 @@ function makeRoomForInvocation(input: {
   now: number;
 }): InvocationJournalSnapshot {
   const entries = { ...input.snapshot.entries };
-  const delivered = Object.entries(entries)
+  const retired = Object.entries(entries)
     .filter(([, entry]) =>
       entry.terminal !== null &&
-      entry.pendingAuditVersions.length === 0 &&
       (entry.authorizationExpiresAt === null || entry.authorizationExpiresAt <= input.now))
     .sort(([leftDigest, left], [rightDigest, right]) =>
       left.updatedAt - right.updatedAt || leftDigest.localeCompare(rightDigest));
@@ -566,7 +509,7 @@ function makeRoomForInvocation(input: {
     const exceedsByteLimit = !snapshotFitsByteLimit(candidate, input.maxBytes);
     if (!exceedsEntryLimit && !exceedsByteLimit) return candidate;
 
-    const compactable = delivered[compactableIndex];
+    const compactable = retired[compactableIndex];
     if (!compactable) {
       if (exceedsEntryLimit) {
         throw new Error("invocation journal has no safely compactable terminal entry");
@@ -588,16 +531,16 @@ export class DurableHostInvocationStartCasStore implements HostInvocationStartCa
   readonly #checkpointSecret: string;
   readonly #headSecret: string;
   readonly #genesisMac: string;
-  readonly #sealStore: SecretStore;
+  readonly #checkpointStore: SecretStore;
   readonly #writeFileAtomic: typeof writeUtf8FileAtomicSync;
   #tail: Promise<void> = Promise.resolve();
 
   constructor(options: DurableHostInvocationStartCasStoreOptions) {
     if (!isRecord(options) || typeof options.filePath !== "string" ||
         !isAbsolute(options.filePath) ||
-        typeof options.auditSecret !== "string" || options.auditSecret.length < 32 ||
-        !options.sealStore || typeof options.sealStore.read !== "function" ||
-        typeof options.sealStore.write !== "function" ||
+        typeof options.executionKey !== "string" || options.executionKey.length < 32 ||
+        !options.checkpointStore || typeof options.checkpointStore.read !== "function" ||
+        typeof options.checkpointStore.write !== "function" ||
         (options.writeFileAtomic !== undefined &&
           typeof options.writeFileAtomic !== "function") ||
         (options.now !== undefined && typeof options.now !== "function") ||
@@ -610,21 +553,21 @@ export class DurableHostInvocationStartCasStore implements HostInvocationStartCa
       throw new TypeError("durable invocation journal options are invalid");
     }
     this.#filePath = options.filePath;
-    this.#lockTargetPath = `${options.filePath}.lock-target`;
+    this.#lockTargetPath = options.filePath;
     this.#now = options.now ?? Date.now;
     this.#maxEntries = options.maxEntries ?? MAX_JOURNAL_ENTRIES;
     this.#maxBytes = options.maxBytes ?? MAX_JOURNAL_BYTES;
-    this.#journalSecret = computeLineHmac(options.auditSecret, JOURNAL_KEY_DOMAIN);
-    this.#checkpointSecret = computeLineHmac(
-      options.auditSecret,
+    this.#journalSecret = stateMac(options.executionKey, JOURNAL_KEY_DOMAIN);
+    this.#checkpointSecret = stateMac(
+      options.executionKey,
       CHECKPOINT_KEY_DOMAIN,
     );
-    this.#headSecret = computeLineHmac(options.auditSecret, HEAD_KEY_DOMAIN);
-    this.#genesisMac = computeLineHmac(
+    this.#headSecret = stateMac(options.executionKey, HEAD_KEY_DOMAIN);
+    this.#genesisMac = stateMac(
       this.#journalSecret,
       JOURNAL_GENESIS_DOMAIN,
     );
-    this.#sealStore = options.sealStore;
+    this.#checkpointStore = options.checkpointStore;
     this.#writeFileAtomic = options.writeFileAtomic ?? writeUtf8FileAtomicSync;
   }
 
@@ -633,7 +576,6 @@ export class DurableHostInvocationStartCasStore implements HostInvocationStartCa
     control: RationaleRequiredControl;
     authorized: InvocationAuditRecord;
     expectedInvocationVersion: 0;
-    persistAudit: InvocationAuditSink;
     now?: number;
   }): Promise<HostInvocationStartCommit | null> {
     const now = input.now ?? this.#now();
@@ -662,7 +604,6 @@ export class DurableHostInvocationStartCasStore implements HostInvocationStartCa
         lease,
         started: startedInvocationAudit,
         terminal: null,
-        pendingAuditVersions: [0, 1],
         updatedAt: now,
       };
       this.#writeSnapshot(state, makeRoomForInvocation({
@@ -676,21 +617,14 @@ export class DurableHostInvocationStartCasStore implements HostInvocationStartCa
       return { lease, startedInvocationAudit };
     });
 
-    if (committed === null) return null;
-    await this.#deliverPending(
-      input.authorized.invocationDigest,
-      (_sessionId, record) => input.persistAudit(record),
-    );
     return committed;
   }
 
   async commitTerminal(input: {
     lease: HostInvocationStartLease;
     terminal: InvocationAuditRecord;
-    persistAudit: InvocationAuditSink;
   }): Promise<boolean> {
     try {
-      if (typeof input.persistAudit !== "function") return false;
       validateInvocationTerminalForLease(input.terminal, input.lease);
     } catch {
       return false;
@@ -712,7 +646,6 @@ export class DurableHostInvocationStartCasStore implements HostInvocationStartCa
       const updated: InvocationJournalEntry = {
         ...entry,
         terminal: input.terminal,
-        pendingAuditVersions: addPendingVersion(entry.pendingAuditVersions, 2),
         updatedAt: Math.max(entry.updatedAt, entry.lease.startedAt, now),
       };
       this.#writeSnapshot(state, nextRevision(snapshot, {
@@ -721,26 +654,10 @@ export class DurableHostInvocationStartCasStore implements HostInvocationStartCa
       }));
       return true;
     });
-    if (!committed) return false;
-
-    try {
-      await this.#deliverPending(
-        input.lease.invocationDigest,
-        (_sessionId, record) => input.persistAudit(record),
-      );
-      return true;
-    } catch {
-      return false;
-    }
+    return committed;
   }
 
-  async recoverAfterCrash(input: {
-    persistAudit: RecoveryInvocationAuditSink;
-    now?: number;
-  }): Promise<InvocationCrashRecoveryResult> {
-    if (!isRecord(input) || typeof input.persistAudit !== "function") {
-      throw new TypeError("crash recovery requires an invocation audit sink");
-    }
+  async recoverAfterCrash(input: { now?: number } = {}): Promise<InvocationCrashRecoveryResult> {
     const now = input.now ?? this.#now();
     if (!Number.isFinite(now) || now < 0) {
       throw new Error("invalid crash recovery timestamp");
@@ -761,7 +678,6 @@ export class DurableHostInvocationStartCasStore implements HostInvocationStartCa
         entries[digest] = {
           ...entry,
           terminal,
-          pendingAuditVersions: addPendingVersion(entry.pendingAuditVersions, 2),
           updatedAt: Math.max(entry.updatedAt, entry.lease.startedAt, now),
         };
         count += 1;
@@ -770,73 +686,8 @@ export class DurableHostInvocationStartCasStore implements HostInvocationStartCa
       return count;
     });
 
-    const delivered = await this.#deliverPending(undefined, input.persistAudit);
-    return { recovered, delivered };
-  }
-
-  async #deliverPending(
-    invocationDigest: string | undefined,
-    persistAudit: RecoveryInvocationAuditSink,
-  ): Promise<number> {
-    let delivered = 0;
-    while (true) {
-      const pending = await this.#nextPending(invocationDigest);
-      if (pending === null) return delivered;
-      await persistAudit(pending.sessionId, pending.record);
-      delivered += 1;
-      await this.#markDelivered(pending);
-    }
-  }
-
-  async #nextPending(
-    invocationDigest: string | undefined,
-  ): Promise<PendingAudit | null> {
-    return this.#withLock(async () => {
-      const snapshot = this.#loadState().envelope.snapshot;
-      const digests = invocationDigest === undefined
-        ? Object.keys(snapshot.entries).sort()
-        : [invocationDigest];
-      for (const digest of digests) {
-        const entry = snapshot.entries[digest];
-        if (!entry || entry.pendingAuditVersions.length === 0) continue;
-        const version = entry.pendingAuditVersions[0];
-        const record = auditForVersion(entry, version);
-        return {
-          invocationDigest: digest,
-          sessionId: entry.sessionId,
-          version,
-          record,
-          canonicalRecord: canonicalStringify(record),
-        };
-      }
-      return null;
-    });
-  }
-
-  async #markDelivered(pending: PendingAudit): Promise<void> {
-    await this.#withLock(async () => {
-      const state = this.#loadState();
-      const snapshot = state.envelope.snapshot;
-      const entry = snapshot.entries[pending.invocationDigest];
-      if (!entry) {
-        throw new Error("invocation journal entry disappeared during audit projection");
-      }
-      if (!entry.pendingAuditVersions.includes(pending.version)) return;
-      const currentRecord = auditForVersion(entry, pending.version);
-      if (canonicalStringify(currentRecord) !== pending.canonicalRecord) {
-        throw new Error("invocation audit changed during projection");
-      }
-      const updated: InvocationJournalEntry = {
-        ...entry,
-        pendingAuditVersions: entry.pendingAuditVersions.filter(
-          (version) => version !== pending.version,
-        ),
-      };
-      this.#writeSnapshot(state, nextRevision(snapshot, {
-        ...snapshot.entries,
-        [pending.invocationDigest]: updated,
-      }));
-    });
+    logPermissionEvent("rationale_recovery", { recovered });
+    return { recovered };
   }
 
   #readEnvelope(): InvocationJournalEnvelope | null {
@@ -847,7 +698,7 @@ export class DurableHostInvocationStartCasStore implements HostInvocationStartCa
   #readCheckpoint(): InvocationJournalCheckpoint | null {
     const candidates: InvocationJournalCheckpoint[] = [];
     for (const slot of ["a", "b"] as const) {
-      const raw = this.#sealStore.read(
+      const raw = this.#checkpointStore.read(
         checkpointName(slot),
         MAX_CHECKPOINT_BYTES,
       );
@@ -867,7 +718,7 @@ export class DurableHostInvocationStartCasStore implements HostInvocationStartCa
   }
 
   #readHead(): InvocationJournalHead | null {
-    const raw = this.#sealStore.read(HEAD_NAME, MAX_CHECKPOINT_BYTES);
+    const raw = this.#checkpointStore.read(HEAD_NAME, MAX_CHECKPOINT_BYTES);
     if (raw === null) return null;
     if (Buffer.byteLength(raw, "utf8") > MAX_CHECKPOINT_BYTES) {
       throw new Error("invocation journal head exceeds size limit");
@@ -1028,7 +879,7 @@ export class DurableHostInvocationStartCasStore implements HostInvocationStartCa
       journalRevision: 0,
       journalMac: envelope.mac,
     });
-    this.#sealStore.write(checkpointName("a"), canonicalStringify(checkpoint));
+    this.#checkpointStore.write(checkpointName("a"), canonicalStringify(checkpoint));
     return checkpoint;
   }
 
@@ -1054,7 +905,7 @@ export class DurableHostInvocationStartCasStore implements HostInvocationStartCa
       journalRevision: revision,
       journalMac: envelope.mac,
     });
-    this.#sealStore.write(checkpointName(slot), canonicalStringify(checkpoint));
+    this.#checkpointStore.write(checkpointName(slot), canonicalStringify(checkpoint));
     return checkpoint;
   }
 
@@ -1068,22 +919,17 @@ export class DurableHostInvocationStartCasStore implements HostInvocationStartCa
       journalRevision: checkpoint.journalRevision,
       journalMac: checkpoint.journalMac,
     });
-    this.#sealStore.write(HEAD_NAME, canonicalStringify(head));
+    this.#checkpointStore.write(HEAD_NAME, canonicalStringify(head));
     return head;
   }
 
   async #withLock<T>(operation: () => Promise<T>): Promise<T> {
     const run = this.#tail.then(async () => {
-      const parent = dirname(this.#filePath);
-      mkdirSync(parent, { recursive: true, mode: 0o700 });
-      if (platform !== "win32") chmodSync(parent, 0o700);
-      const lockFd = openSync(this.#lockTargetPath, "a", 0o600);
-      closeSync(lockFd);
-      if (platform !== "win32") chmodSync(this.#lockTargetPath, 0o600);
+      await preparePrivateFileDirectory(this.#filePath);
       return withFileLock(
         this.#lockTargetPath,
         operation,
-        { stale: 30_000, retries: 8 },
+        { stale: 30_000, retries: 8, createTarget: false },
       );
     });
     this.#tail = run.then(() => undefined, () => undefined);

@@ -1,4 +1,5 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { collectPermissionEvents } from "../../../__tests__/support/permission-events.js";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi, onTestFinished } from "vitest";
 import { configureHostResources } from "../../../main/host-resources.js";
 import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
@@ -82,7 +83,6 @@ function withSandboxRuntime(value: unknown): never {
 const appWindows: Array<{ isDestroyed: () => boolean; webContents: unknown }> = [];
 
 const deps = {
-  auditLogger: { log: vi.fn() },
   pluginRuntime: { retireSandboxGrantsOutsideCeiling: vi.fn(async () => []) },
   getMainWindow: () => appWindows[0] ?? null,
   getAppWindows: () => appWindows,
@@ -397,18 +397,13 @@ describe("preview:read-file handler", () => {
   });
 
   it("writes an audit entry for a successful preview read", async () => {
-    const log = (deps as unknown as { auditLogger: { log: ReturnType<typeof vi.fn> } }).auditLogger.log;
-    log.mockClear();
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
     const res = (await invoke(CHANNELS.preview.readFile, OK_FRAME, join(root, "docs", "architecture.md"))) as {
       ok: boolean;
     };
     expect(res.ok).toBe(true);
-    expect(log).toHaveBeenCalledWith(
-      expect.objectContaining({
-        type: "info",
-        input: expect.stringContaining(CHANNELS.preview.readFile),
-      }),
-    );
+    expect(capture.events).toContainEqual(expect.objectContaining({ event: "preview_read_allowed", channel: CHANNELS.preview.readFile }));
   });
 });
 
@@ -456,7 +451,8 @@ describe("workspace handlers", () => {
     );
     rmSync(missingRoot, { recursive: true, force: true });
     additionalDirectories.value = [missingRoot];
-    const log = vi.fn();
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
     const revokeWorkspaceRoot = vi.fn(() => ({
       sessionDirectoriesRemoved: 0,
       turnDirectoriesRemoved: 0,
@@ -464,7 +460,6 @@ describe("workspace handlers", () => {
     }));
     const detachSessionsFromProject = vi.fn(async () => 0);
     const lifecycleDeps = {
-      auditLogger: { log },
       getMainWindow: () => null,
       memoryManager: { sessions: { detachSessionsFromProject } },
       conversationLoop: {
@@ -498,13 +493,10 @@ describe("workspace handlers", () => {
       expect(pendingWorkspaceRootRemovals.value).toHaveLength(1);
       expect(revokeWorkspaceRoot).toHaveBeenCalled();
       expect(detachSessionsFromProject).toHaveBeenCalledTimes(1);
-      const warningPayloads = log.mock.calls
-        .map(([entry]) => entry as { type?: string; input?: string; output?: string })
-        .filter((entry) => entry.type === "warn")
-        .map((entry) => `${entry.input ?? ""}\n${entry.output ?? ""}`);
-      expect(warningPayloads.some((payload) => payload.includes("cleanup-pending"))).toBe(true);
-      expect(warningPayloads.join("\n")).not.toContain("must-not-leak-list-path");
-      expect(warningPayloads.join("\n")).not.toContain(missingRoot);
+      expect(capture.events).toContainEqual(expect.objectContaining({ event: "workspace_root_reconciliation",
+        outcome: "cleanup-pending" }));
+      expect(JSON.stringify(capture.events)).not.toContain("must-not-leak-list-path");
+      expect(JSON.stringify(capture.events)).not.toContain(missingRoot);
     } finally {
       registerWorkspaceHandlers(deps);
     }
@@ -571,7 +563,6 @@ describe("workspace handlers", () => {
       directoriesRemoved: 0,
     }));
     const lifecycleDeps = {
-      auditLogger: { log: vi.fn() },
       getMainWindow: () => null,
       conversationLoop: { permissionManager: { prunePathGrantsUnderRoot: prunePathGrants } },
       routinesStore: { revokeWorkspaceRoot: pruneRoutineScopes },
@@ -602,7 +593,6 @@ describe("workspace handlers", () => {
       directoriesRemoved: 0,
     }));
     const lifecycleDeps = {
-      auditLogger: { log: vi.fn() },
       getMainWindow: () => null,
       conversationLoop: {
         permissionManager: { prunePathGrantsUnderRoot: prunePathGrants },
@@ -648,7 +638,6 @@ describe("workspace handlers", () => {
       directoriesRemoved: 0,
     }));
     registerWorkspaceHandlers({
-      auditLogger: { log: vi.fn() },
       getMainWindow: () => null,
       conversationLoop: {
         permissionManager: { prunePathGrantsUnderRoot: prunePathGrants },
@@ -783,18 +772,13 @@ describe("workspace handlers", () => {
   });
 
   it("pickRoot audits the allow-list widening on a successful persist", async () => {
-    const log = (deps as unknown as { auditLogger: { log: ReturnType<typeof vi.fn> } }).auditLogger.log;
-    log.mockClear();
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
     const picked = mkdtempSync(join(tmpdir(), "ave-ws-audit-"));
     showOpenDialogMock.mockResolvedValue({ canceled: false, filePaths: [picked] });
     const res = (await invoke(CHANNELS.workspace.pickRoot, OK_FRAME)) as { ok: boolean; added?: string };
     expect(res).toMatchObject({ ok: true, added: canonicalizePathForMatch(picked) });
-    expect(log).toHaveBeenCalledWith(
-      expect.objectContaining({
-        type: "info",
-        input: expect.stringContaining(CHANNELS.workspace.pickRoot),
-      }),
-    );
+    expect(capture.events).toContainEqual(expect.objectContaining({ event: "workspace_root_picked", channel: CHANNELS.workspace.pickRoot }));
     await cleanupTmpDir(picked);
   });
 
@@ -810,8 +794,8 @@ describe("workspace handlers", () => {
   });
 
   it("removeRoot removes an additional root and audits the shrink", async () => {
-    const log = (deps as unknown as { auditLogger: { log: ReturnType<typeof vi.fn> } }).auditLogger.log;
-    log.mockClear();
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
     const res = (await invoke(CHANNELS.workspace.removeRoot, OK_FRAME, root)) as {
       ok: boolean;
       removed?: string;
@@ -825,12 +809,7 @@ describe("workspace handlers", () => {
     );
     expect(completeWorkspaceRootRemovalPersistMock).toHaveBeenCalledTimes(1);
     expect(res.roots?.some((r) => r.path === root)).toBe(false);
-    expect(log).toHaveBeenCalledWith(
-      expect.objectContaining({
-        type: "info",
-        input: expect.stringContaining(CHANNELS.workspace.removeRoot),
-      }),
-    );
+    expect(capture.events).toContainEqual(expect.objectContaining({ event: "workspace_root_removed", channel: CHANNELS.workspace.removeRoot }));
   });
 
   it("removes a parent project while preserving a separately registered child root", async () => {
@@ -856,7 +835,6 @@ describe("workspace handlers", () => {
     }));
     const detachSessionsFromProject = vi.fn(async () => 1);
     registerWorkspaceHandlers({
-      auditLogger: { log: vi.fn() },
       getMainWindow: () => null,
       memoryManager: { sessions: { detachSessionsFromProject } },
       conversationLoop: {
@@ -914,7 +892,6 @@ describe("workspace handlers", () => {
     }));
     const detachSessionsFromProject = vi.fn(async () => 2);
     const lifecycleDeps = {
-      auditLogger: { log: vi.fn() },
       getMainWindow: () => null,
       memoryManager: {
         sessions: {
@@ -1008,7 +985,6 @@ describe("workspace handlers", () => {
       revokeWorkspaceRoot: subAgentRevoke,
     };
     const lifecycleDeps = {
-      auditLogger: { log: vi.fn() },
       getMainWindow: () => null,
       memoryManager: { sessions: { detachSessionsFromProject: primaryDetach } },
       conversationLoop: {
@@ -1073,7 +1049,8 @@ describe("workspace handlers", () => {
     ["NaN direct count", { liveScopesRevoked: Number.NaN }],
     ["incomplete directory counts", { sessionDirectoriesRemoved: 1 }],
   ])("keeps malformed %s live revoke results pending after attempting every phase", async (_label, result) => {
-    const log = vi.fn();
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
     const mainRevoke = vi.fn(() => result);
     const sideRevoke = vi.fn(() => ({
       sessionDirectoriesRemoved: 0,
@@ -1095,7 +1072,6 @@ describe("workspace handlers", () => {
     const prunePathGrants = vi.fn(async () => []);
     const detachSessionsFromProject = vi.fn(async () => 0);
     registerWorkspaceHandlers({
-      auditLogger: { log },
       getMainWindow: () => null,
       memoryManager: { sessions: { detachSessionsFromProject } },
       conversationLoop: {
@@ -1131,13 +1107,8 @@ describe("workspace handlers", () => {
       expect(detachSessionsFromProject).toHaveBeenCalledTimes(1);
       expect(completeWorkspaceRootRemovalPersistMock).not.toHaveBeenCalled();
       expect(pendingWorkspaceRootRemovals.value).toHaveLength(1);
-      const warning = log.mock.calls
-        .map(([entry]) => entry as { type?: string; input?: string })
-        .find((entry) =>
-          entry.type === "warn" &&
-          entry.input?.includes("WORKSPACE_ROOT_LIVE_SCOPE_REVOKE_INVALID_RESULT")
-        );
-      expect(warning).toBeDefined();
+      expect(capture.events).toContainEqual(expect.objectContaining({ event: "workspace_root_change_refused",
+        phase: "revoke-live-scopes", code: "WORKSPACE_ROOT_LIVE_SCOPE_REVOKE_INVALID_RESULT" }));
     } finally {
       registerWorkspaceHandlers(deps);
     }
@@ -1166,7 +1137,6 @@ describe("workspace handlers", () => {
       return { routinesUpdated: 0, directoriesRemoved: 0 };
     });
     const lifecycleDeps = {
-      auditLogger: { log: vi.fn() },
       getMainWindow: () => null,
       memoryManager: { sessions: { detachSessionsFromProject: vi.fn(async () => 0) } },
       conversationLoop: {
@@ -1210,7 +1180,8 @@ describe("workspace handlers", () => {
   });
 
   it("keeps removal inactive and pending when durable routine scope prune fails", async () => {
-    const log = vi.fn();
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
     const pruneError = Object.assign(new Error("must-not-leak-path"), { code: "EACCES" });
     const prunePathGrants = vi.fn(async () => []);
     const detachSessionsFromProject = vi.fn(async () => 0);
@@ -1218,7 +1189,6 @@ describe("workspace handlers", () => {
       throw pruneError;
     });
     const lifecycleDeps = {
-      auditLogger: { log },
       getMainWindow: () => null,
       memoryManager: { sessions: { detachSessionsFromProject } },
       conversationLoop: {
@@ -1250,22 +1220,17 @@ describe("workspace handlers", () => {
       expect(pruneRoutineScopes).toHaveBeenCalledTimes(1);
       expect(prunePathGrants).toHaveBeenCalledTimes(1);
       expect(detachSessionsFromProject).toHaveBeenCalledTimes(1);
-      const warning = log.mock.calls
-        .map(([entry]) => entry as { type?: string; input?: string })
-        .find((entry) => entry.type === "warn" && entry.input?.includes("prune-routine-scopes"));
-      expect(warning).toBeDefined();
-      expect(JSON.parse(warning!.input!)).toMatchObject({
-        lifecyclePhase: "prune-routine-scopes",
-        errorCode: "EACCES",
-      });
-      expect(warning!.input).not.toContain("must-not-leak-path");
+      expect(capture.events).toContainEqual(expect.objectContaining({ event: "workspace_root_change_refused",
+        phase: "prune-routine-scopes", code: "EACCES" }));
+      expect(JSON.stringify(capture.events)).not.toContain("must-not-leak-path");
       expect(JSON.stringify(res)).not.toContain("must-not-leak-path");
     } finally {
       registerWorkspaceHandlers(deps);
     }
   });
   it("revokes live scope and leaves cleanup pending when path-grant pruning fails", async () => {
-    const log = vi.fn();
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
     const revokeWorkspaceRoot = vi.fn(() => ({
       sessionDirectoriesRemoved: 0,
       turnDirectoriesRemoved: 0,
@@ -1276,7 +1241,6 @@ describe("workspace handlers", () => {
       code: "EIO",
     });
     const lifecycleDeps = {
-      auditLogger: { log },
       getMainWindow: () => null,
       memoryManager: { sessions: { detachSessionsFromProject } },
       conversationLoop: {
@@ -1310,15 +1274,9 @@ describe("workspace handlers", () => {
       expect(pendingWorkspaceRootRemovals.value).toHaveLength(1);
       expect(revokeWorkspaceRoot).toHaveBeenCalled();
       expect(detachSessionsFromProject).toHaveBeenCalledTimes(1);
-      const warning = log.mock.calls
-        .map(([entry]) => entry as { type?: string; input?: string })
-        .find((entry) => entry.type === "warn" && entry.input?.includes("prune-path-grants"));
-      expect(warning).toBeDefined();
-      expect(JSON.parse(warning!.input!)).toMatchObject({
-        lifecyclePhase: "prune-path-grants",
-        errorCode: "EIO",
-      });
-      expect(warning!.input).not.toContain("must-not-leak-grant-path");
+      expect(capture.events).toContainEqual(expect.objectContaining({ event: "workspace_root_change_refused",
+        phase: "prune-path-grants", code: "EIO" }));
+      expect(JSON.stringify(capture.events)).not.toContain("must-not-leak-grant-path");
       expect(JSON.stringify(res)).not.toContain("must-not-leak-grant-path");
     } finally {
       registerWorkspaceHandlers(deps);
@@ -1335,9 +1293,9 @@ describe("workspace handlers", () => {
       turnDirectoriesRemoved: 0,
       projectRebound: false,
     }));
-    const log = vi.fn();
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
     registerWorkspaceHandlers({
-      auditLogger: { log },
       getMainWindow: () => null,
       memoryManager: { sessions: { allowProjectRoot, detachSessionsFromProject } },
       conversationLoop: {
@@ -1363,7 +1321,7 @@ describe("workspace handlers", () => {
       expect(revokeWorkspaceRoot).toHaveBeenCalled();
       expect(allowProjectRoot).not.toHaveBeenCalled();
       expect(JSON.stringify(res)).not.toContain("must-not-leak-metadata-path");
-      expect(JSON.stringify(log.mock.calls)).not.toContain("must-not-leak-metadata-path");
+      expect(JSON.stringify(capture.events)).not.toContain("must-not-leak-metadata-path");
     } finally {
       registerWorkspaceHandlers(deps);
     }
@@ -1405,9 +1363,9 @@ describe("workspace handlers", () => {
       { pattern: "delete_file:path:/ws/c.log", toolName: "delete_file", tier: "read" as const, path: "/ws/c.log" },
     ];
     const prune = vi.fn(async () => prunedTuples);
-    const auditLog = vi.fn();
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
     const depsWithPm = {
-      auditLogger: { log: auditLog },
       getMainWindow: () => null,
       memoryManager: { sessions: { detachSessionsFromProject: vi.fn(async () => 0) } },
       conversationLoop: { permissionManager: { prunePathGrantsUnderRoot: prune } },
@@ -1425,17 +1383,9 @@ describe("workspace handlers", () => {
       expect(prune).toHaveBeenCalledWith(canonicalizePathForMatch(root), {
         preserveRoots: [],
       });
-      const infoEntry = auditLog.mock.calls
-        .map((c) => c[0] as { type: string; input: string })
-        .find((entry) => entry.type === "info" && entry.input.includes(CHANNELS.workspace.removeRoot));
-      expect(infoEntry).toBeTruthy();
-      const parsed = JSON.parse(infoEntry!.input) as {
-        prunedGrants: number;
-        prunedPatterns?: Array<{ tool: string; tier: string; path: string }>;
-      };
-      expect(parsed.prunedGrants).toBe(3);
-      expect(parsed.prunedPatterns).toHaveLength(3);
-      expect(parsed.prunedPatterns![0]).toMatchObject({ tool: "write_file", tier: "write" });
+      expect(capture.events).toContainEqual(expect.objectContaining({ event: "workspace_root_removed",
+        channel: CHANNELS.workspace.removeRoot, prunedGrants: 3 }));
+      expect(JSON.stringify(capture.events)).not.toContain("/ws/c.log");
       expect(JSON.stringify(res)).not.toContain("write_file:path:");
     } finally {
       registerWorkspaceHandlers(deps);
@@ -1470,7 +1420,6 @@ describe("workspace handlers", () => {
         countTurnsAbortedByWorkspaceRootRemoval: (root: string, context: unknown) => { overrides.asked?.push([root, context]); return answer ? 1 : 0; },
       });
       return {
-        auditLogger: { log: vi.fn() },
         getMainWindow: () => null,
         pluginRuntime: { retireSandboxGrantsOutsideCeiling: vi.fn(async () => []) },
         memoryManager: {
@@ -1674,7 +1623,6 @@ describe("workspace handlers", () => {
 
   it("keeps removal pending when the permission manager is unavailable", async () => {
     registerWorkspaceHandlers({
-      auditLogger: { log: vi.fn() },
       getMainWindow: () => null,
       routinesStore: {
         revokeWorkspaceRoot: vi.fn(async () => ({ routinesUpdated: 0, directoriesRemoved: 0 })),
@@ -1695,7 +1643,6 @@ describe("workspace handlers", () => {
 
   it("keeps removal pending when the routines store is unavailable", async () => {
     registerWorkspaceHandlers({
-      auditLogger: { log: vi.fn() },
       getMainWindow: () => null,
       conversationLoop: {
         permissionManager: { prunePathGrantsUnderRoot: vi.fn(async () => []) },
@@ -1850,14 +1797,14 @@ describe("workspace:drop-prepare handler (#1458 drag-drop add-root)", () => {
   });
 
   it("drop → dropPrepare → pickRoot(token) persists the folder and audits gesture=drop", async () => {
-    const log = (deps as unknown as { auditLogger: { log: ReturnType<typeof vi.fn> } }).auditLogger.log;
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
     const dropped = mkdtempSync(join(tmpdir(), "ave-ws-drop-flow-"));
     const prep = (await invoke(CHANNELS.workspace.dropPrepare, OK_FRAME, dropped)) as {
       ok: boolean;
       ackToken?: string;
     };
     expect(prep.ok).toBe(true);
-    log.mockClear();
     addAllowedDirectoryPersistMock.mockClear();
     const done = (await invoke(CHANNELS.workspace.pickRoot, OK_FRAME, { ackToken: prep.ackToken })) as {
       ok: boolean;
@@ -1865,12 +1812,7 @@ describe("workspace:drop-prepare handler (#1458 drag-drop add-root)", () => {
     };
     expect(done).toMatchObject({ ok: true, added: canonicalizePathForMatch(dropped) });
     expect(addAllowedDirectoryPersistMock).toHaveBeenCalledWith(canonicalizePathForMatch(dropped));
-    expect(log).toHaveBeenCalledWith(
-      expect.objectContaining({
-        type: "info",
-        input: expect.stringContaining('"gesture":"drop"'),
-      }),
-    );
+    expect(capture.events).toContainEqual(expect.objectContaining({ event: "workspace_root_picked", channel: CHANNELS.workspace.pickRoot, gesture: "drop" }));
     await cleanupTmpDir(dropped);
   });
 

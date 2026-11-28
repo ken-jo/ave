@@ -43,7 +43,7 @@ describe.skipIf(shouldSkipNativeSandboxTests())("terminal background egress thro
     streamClosed = 0;
     shown = "";
     wc = { send: vi.fn(), isDestroyed: () => false };
-    gate = new ApprovalGate(wc as never, undefined, 15_000, { log: vi.fn() } as never);
+    gate = new ApprovalGate(wc as never, undefined, 15_000);
     server = createServer((request, response) => {
       received += 1;
       if (request.url === "/stream") {

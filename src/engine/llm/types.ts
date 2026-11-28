@@ -498,6 +498,8 @@ export interface TurnSummary {
    */
   freshInputTokens: number;
   tokensOut: number;
+  /** Older summaries may omit whether usage was measured. */
+  usageReported?: boolean;
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
   /**

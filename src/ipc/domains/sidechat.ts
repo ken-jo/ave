@@ -1,3 +1,4 @@
+import { logPermissionEvent, permissionLogId } from "../../lib/permission-log.js";
 // Side chat owns independent loops and streams; never mutate the main conversation.
 import { ipcMain } from "electron";
 import { controlShellTask, listShellTasks } from "../../tools/shell-tools.js";
@@ -33,7 +34,7 @@ const MAX_PANE_TAB_ID_LENGTH = 256;
 const log = createLogger("sidechat");
 
 export function registerSideChatHandlers(deps: IpcDeps): void {
-  const { sideChatConversationLoop, paneChatLoops, auditLogger, settingsService } = deps;
+  const { sideChatConversationLoop, paneChatLoops, settingsService } = deps;
   let railShellOwnerId: number | undefined;
   const shellTaskSession = (sender: WebContents, expectedSessionId: unknown): string | null => {
     if (typeof expectedSessionId !== "string" || !isValidSessionId(expectedSessionId)) return null;
@@ -46,24 +47,24 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
       ? expectedSessionId : null;
   };
   ipcMain.handle(CHANNELS.sidechat.listShellTasks, (e, expectedSessionId: unknown) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.sidechat.listShellTasks, e); return []; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.sidechat.listShellTasks); return []; }
     const sessionId = shellTaskSession(e.sender, expectedSessionId);
     return sessionId === null ? [] : listShellTasks(sessionId);
   });
   ipcMain.handle(CHANNELS.sidechat.controlShellTask, (e, expectedSessionId: unknown, action: unknown, shellId?: unknown) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.sidechat.controlShellTask, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.sidechat.controlShellTask); return UNAUTHORIZED_FRAME; }
     if ((action !== "background" && action !== "stop") ||
         (shellId !== undefined && (typeof shellId !== "string" || shellId.length === 0 || shellId.length > 128))) return { ok: false, error: "invalid-shell-action" };
     const sessionId = shellTaskSession(e.sender, expectedSessionId);
     if (sessionId === null) return { ok: false, error: "session-changed" };
     const result = controlShellTask(sessionId, action, shellId as string | undefined);
-    auditLogger.log({ timestamp: new Date().toISOString(), sessionId, type: "info", input: JSON.stringify({ event: "shell_task_control", action, ok: result.ok }) });
+    logPermissionEvent("shell_task_control", { sessionId: permissionLogId(sessionId), action: permissionLogId(action), ok: result.ok });
     return result;
   });
 
   ipcMain.handle(CHANNELS.sidechat.getSubAgentTranscript, (e, payload: unknown): SubAgentTranscriptResult => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.sidechat.getSubAgentTranscript, e);
+      auditUnauthorized(CHANNELS.sidechat.getSubAgentTranscript);
       return { ok: false, error: "unauthorized-frame" };
     }
     // Resolve the origin's current session holder on every read.
@@ -100,27 +101,27 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
   if (!sideChatConversationLoop || !paneChatLoops) {
     const unavailable = () => ({ ok: false as const, error: "side-chat-unavailable" });
     ipcMain.handle(CHANNELS.sidechat.send, (e) => {
-      if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.sidechat.send, e); return UNAUTHORIZED_FRAME; }
+      if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.sidechat.send); return UNAUTHORIZED_FRAME; }
       return unavailable();
     });
     ipcMain.handle(CHANNELS.sidechat.new, (e) => {
-      if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.sidechat.new, e); return UNAUTHORIZED_FRAME; }
+      if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.sidechat.new); return UNAUTHORIZED_FRAME; }
       return unavailable();
     });
     ipcMain.handle(CHANNELS.sidechat.load, (e) => {
-      if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.sidechat.load, e); return UNAUTHORIZED_FRAME; }
+      if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.sidechat.load); return UNAUTHORIZED_FRAME; }
       return { ok: false as const, error: "side-chat-unavailable", messages: [] };
     });
     ipcMain.handle(CHANNELS.sidechat.abort, (e) => {
-      if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.sidechat.abort, e); return UNAUTHORIZED_FRAME; }
+      if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.sidechat.abort); return UNAUTHORIZED_FRAME; }
       return unavailable();
     });
     ipcMain.handle(CHANNELS.sidechat.paneHistory, (e) => {
-      if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.sidechat.paneHistory, e); return UNAUTHORIZED_FRAME; }
+      if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.sidechat.paneHistory); return UNAUTHORIZED_FRAME; }
       return unavailable();
     });
     ipcMain.handle(CHANNELS.sidechat.endPaneChat, (e) => {
-      if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.sidechat.endPaneChat, e); return UNAUTHORIZED_FRAME; }
+      if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.sidechat.endPaneChat); return UNAUTHORIZED_FRAME; }
       return unavailable();
     });
     return;
@@ -239,9 +240,9 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
   };
 
   ipcMain.handle(CHANNELS.sidechat.send, async (e, payload: unknown) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.sidechat.send, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.sidechat.send); return UNAUTHORIZED_FRAME; }
     const senderWindow = approvalOwnerWindow(e);
-    if (!senderWindow) { auditUnauthorized(auditLogger, CHANNELS.sidechat.send, e); return UNAUTHORIZED_FRAME; }
+    if (!senderWindow) { auditUnauthorized(CHANNELS.sidechat.send); return UNAUTHORIZED_FRAME; }
     const p = (payload ?? {}) as { input?: unknown; attachments?: unknown; originSessionId?: unknown; sendRequestId?: unknown; surface?: unknown; sessionId?: unknown; inputOrigin?: unknown; userActivation?: unknown };
     if (typeof p.input !== "string") {
       return { ok: false as const, error: "invalid-input" };
@@ -428,7 +429,7 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
   };
 
   ipcMain.handle(CHANNELS.sidechat.paneHistory, (e, payload: unknown) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.sidechat.paneHistory, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.sidechat.paneHistory); return UNAUTHORIZED_FRAME; }
     const tabId = paneTabId(payload);
     const senderWindow = mainWindowForContents(e.sender);
     if (tabId === undefined || !senderWindow) return { ok: false as const, error: "invalid-surface" };
@@ -445,11 +446,11 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
   });
 
   ipcMain.handle(CHANNELS.sidechat.endPaneChat, async (e, payload: unknown) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.sidechat.endPaneChat, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.sidechat.endPaneChat); return UNAUTHORIZED_FRAME; }
     const tabId = paneTabId(payload);
     const reason = payload && typeof payload === "object" ? (payload as Record<string, unknown>).reason : undefined;
     const senderWindow = approvalOwnerWindow(e);
-    if (!senderWindow) { auditUnauthorized(auditLogger, CHANNELS.sidechat.endPaneChat, e); return UNAUTHORIZED_FRAME; }
+    if (!senderWindow) { auditUnauthorized(CHANNELS.sidechat.endPaneChat); return UNAUTHORIZED_FRAME; }
     if (tabId === undefined || !senderWindow) return { ok: false as const, error: "invalid-surface" };
     if (heldByAnotherWindow(senderWindow.id, tabId)) return { ok: false as const, error: "invalid-surface" };
     if (reason !== "new" && reason !== "closed") return { ok: false as const, error: "invalid-input" };
@@ -483,9 +484,9 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
   });
 
   ipcMain.handle(CHANNELS.sidechat.new, async (e) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.sidechat.new, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.sidechat.new); return UNAUTHORIZED_FRAME; }
     const senderWindow = approvalOwnerWindow(e);
-    if (!senderWindow) { auditUnauthorized(auditLogger, CHANNELS.sidechat.new, e); return UNAUTHORIZED_FRAME; }
+    if (!senderWindow) { auditUnauthorized(CHANNELS.sidechat.new); return UNAUTHORIZED_FRAME; }
     if (railLoop.isSessionTransitioning()) return { ok: false as const, error: "streaming-active" };
     return railLoop.runSessionTransition("sidechat-new", async (lease) => {
       await abortTurnOf(railLoop);
@@ -496,9 +497,9 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
   });
 
   ipcMain.handle(CHANNELS.sidechat.load, async (e, sessionId: unknown) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.sidechat.load, e); return { ok: false as const, error: "unauthorized-frame", messages: [] }; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.sidechat.load); return { ok: false as const, error: "unauthorized-frame", messages: [] }; }
     const senderWindow = approvalOwnerWindow(e);
-    if (!senderWindow) { auditUnauthorized(auditLogger, CHANNELS.sidechat.load, e); return { ...UNAUTHORIZED_FRAME, messages: [] }; }
+    if (!senderWindow) { auditUnauthorized(CHANNELS.sidechat.load); return { ...UNAUTHORIZED_FRAME, messages: [] }; }
     if (!isValidSessionId(sessionId)) {
       return { ok: false as const, error: "invalid-session-id", messages: [] };
     }
@@ -522,7 +523,7 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
   });
 
   ipcMain.handle(CHANNELS.sidechat.abort, async (e, payload: unknown) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.sidechat.abort, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.sidechat.abort); return UNAUTHORIZED_FRAME; }
     const sendRequestId = payload && typeof payload === "object" && !Array.isArray(payload)
       ? (payload as Record<string, unknown>).sendRequestId
       : undefined;

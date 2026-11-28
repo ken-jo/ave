@@ -1,3 +1,4 @@
+import { trackPermissionEvents } from "../../__tests__/support/permission-events.js";
 // Resume rehydrates frozen history and scope; it never reauthorizes against the live parent registry.
 import { RULE_PROVENANCE } from "../../permissions/decision-provenance.js";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
@@ -8,7 +9,6 @@ import { join } from "node:path";
 import { t } from "../../i18n/index.js";
 import { ConversationLoop } from "../conversation-loop.js";
 import { MemoryManager } from "../../memory/memory-manager.js";
-import { AuditLogger } from "../../audit/audit-logger.js";
 import { openFeatureNamespace } from "../../main/storage/feature-namespace.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import { createDynamicTool } from "../../tools/base.js";
@@ -40,7 +40,6 @@ import { PermissionManager } from "../../permissions/permission-manager.js";
 import { authorizationRequiredStateForOutput } from "../../shared/authorization-required.js";
 import { deferred } from "../../__tests__/support/deferred.js";
 
-let loopAuditLoggers: AuditLogger[] = [];
 
 class ScriptedProvider implements LLMProvider {
   readonly vendor = "openai" as const;
@@ -86,9 +85,7 @@ class AbortAwareBlockingProvider implements LLMProvider {
 }
 
 function buildLoopDeps(toolRegistry: ToolRegistry) {
-  const auditLogger = new AuditLogger();
-  loopAuditLoggers.push(auditLogger);
-  return makeSubagentLoopDeps(toolRegistry, { auditLogger });
+  return makeSubagentLoopDeps(toolRegistry, {  });
 }
 
 function patchProvider(provider: LLMProvider) {
@@ -121,6 +118,8 @@ function noopTool(name: string) {
 
 const SESSION_ID_REGEX = /^(?:(?:sub|a2a-wire)-[a-z0-9]+-)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
+const permissionEvents = trackPermissionEvents();
+
 describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
   let tmpHome: string;
   let prevAveHome: string | undefined;
@@ -133,12 +132,10 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     process.env.AVE_HOME = tmpHome;
     memoryStores = [];
     approvalGates = [];
-    loopAuditLoggers = [];
   });
 
   afterEach(async () => {
     for (const gate of approvalGates) gate.disposeAll();
-    await Promise.all(loopAuditLoggers.map((logger) => logger.close()));
     for (const store of memoryStores) store.sessions.closeSearchIndex();
     if (prevAveHome === undefined) delete process.env.AVE_HOME;
     else process.env.AVE_HOME = prevAveHome;
@@ -3112,7 +3109,6 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     const subStore = makeSubStore();
     const namespace = openFeatureNamespace("subagent-messaging");
     const mailbox = new A2AAgentMessageMailbox(namespace);
-    const audit = vi.fn();
     const parentDeliver = vi.fn(
       async (input: {
         childSessionId: string;
@@ -3146,7 +3142,6 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     const bus = new A2AAgentMessageBus({
       parentBus: { deliverToParent: parentDeliver } as never,
       mailbox,
-      auditLogger: { log: audit } as never,
       resolveSender: (childSessionId) =>
         runner.resolveSubAgentSender(childSessionId),
       resolvePeer: (sender, recipient) =>
@@ -3195,9 +3190,8 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
       }>("agent-mailbox.json", { trees: [] });
       expect(stored.trees).toEqual([{ originSessionId, messageCount: 1 }]);
       expect(
-        audit.mock.calls.filter(([entry]) =>
-          String(entry.input).includes("delivered:parent"),
-        ),
+        permissionEvents().filter((entry) => entry.event === "agent_message_delivery"
+          && entry.sessionId === originSessionId && entry.outcome === "delivered" && entry.reasonCode === "parent"),
       ).toHaveLength(1);
     } finally {
       restore();
@@ -3219,7 +3213,6 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     const bus = new A2AAgentMessageBus({
       parentBus: { deliverToParent: parentDeliver } as never,
       mailbox,
-      auditLogger: { log: vi.fn() } as never,
       resolveSender: (childSessionId) =>
         runner.resolveSubAgentSender(childSessionId),
       resolvePeer: (sender, recipient) =>

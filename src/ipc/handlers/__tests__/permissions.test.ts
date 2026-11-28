@@ -138,18 +138,14 @@ describe("handleSetPermissionMode — rejected bypass does not short-circuit app
         choice: "deny-once" as const,
       })),
     };
-    const auditLogger = {
-      isPermissionAuditChainReady: vi.fn(() => true),
-      appendPermissionAuditEntry: vi.fn(async () => undefined),
-    };
+
     const deps = {
       conversationLoop: { permissionManager },
       approvalGate,
-      auditLogger,
       getMainWindow: vi.fn(() => null),
       getAppWindows: vi.fn(() => []),
     } as unknown as IpcDeps;
-    return { deps, permissionManager, approvalGate, auditLogger };
+    return { deps, permissionManager, approvalGate };
   }
 
   it("a rejected local-api-approval shape (user-keyboard trustOrigin) falls through to the ApprovalGate ask, which denies the durable mode change", async () => {

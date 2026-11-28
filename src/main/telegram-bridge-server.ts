@@ -6,7 +6,7 @@ import {
   createTailnetControllerReceiptStore,
   type TailnetControllerReceiptStore,
 } from "../api/tailnet-controller-receipt-store.js";
-import type { SecretStore } from "../audit/hmac-chain.js";
+import type { SecretStore } from "../lib/protected-secret-store.js";
 import type { ConversationSurfaceRuntime } from "../engine/conversation-surface-runtime.js";
 import {
   createPlatformBridgeDeliveryAdapter,

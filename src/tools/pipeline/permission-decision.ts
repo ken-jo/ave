@@ -1,19 +1,16 @@
-/** Permission rows discriminate on decision in a dedicated channel; telemetry rows use type. See docs/architecture/permission-policy-design.md, Layer 7. */
-import type { ToolCategory, ToolSource } from "../tools/types.js";
+import type { ToolCategory, ToolSource } from "../types.js";
 
 /** A row whose tool the host could not resolve records its category as unknown rather than being skipped. */
 export type AuditToolCategory = ToolCategory | "unknown";
-import type { ExecutionMode } from "../shared/permission-mode.js";
-import type { HookTrustOrigin, ScriptHookType, HookFailureReason } from "../hooks/script-hook-types.js";
-import type { HookSourceKind } from "../hooks/hook-source-policy.js";
-import type { HostShellExecutionPlanAuditProjection } from "../permissions/host-shell-execution-plan.js";
-import type { ExecutionPlanAuditProjection } from "../permissions/execution-router.js";
+import type { HookTrustOrigin, ScriptHookType, HookFailureReason } from "../../hooks/script-hook-types.js";
+import type { HookSourceKind } from "../../hooks/hook-source-policy.js";
+import type { HostShellExecutionPlanAuditProjection } from "../../permissions/host-shell-execution-plan.js";
+import type { ExecutionPlanAuditProjection } from "../../permissions/execution-router.js";
 import type {
   WorkloadBrokerOperation,
   WorkloadExecutionGrantProjection,
-} from "../workload/protocol.js";
-import type { JudgeAuditRecord } from "../permissions/judge/judge-engine.js";
-import type { RiskLevel } from "../shared/permission-review-status.js";
+} from "../../workload/protocol.js";
+import type { RiskLevel } from "../../shared/permission-review-status.js";
 
 
 /** Keep reviewer verdicts structurally compatible with RiskVerdict. */
@@ -51,8 +48,8 @@ export interface HookResult {
 /** Snapshot routine scope as an untyped record so audit shape survives runtime schema changes. */
 type RoutineScopeSnapshot = Record<string, unknown>;
 
-/** prevHash links exact serialized rows; entryHash authenticates the current tail and is optional only for older rows. */
-interface AuditCommon {
+/** Metadata shared by permission decisions. */
+interface PermissionDecisionFields {
   ts: string;
   auditId: string;
   toolUseId?: string;
@@ -78,13 +75,12 @@ interface AuditCommon {
 
   trustOrigin: HookTrustOrigin;
   /** Hex HMAC of the previous serialized line; the first row hashes genesis. */
-  prevHash: string;
-  entryHash?: string;
   readonly workloadBrokerCorrelation?: ToolExecutionAuditMetadata["workloadBrokerCorrelation"];
 }
 
 /** Host-owned correlation metadata must never carry renderer data or approval material. */
 export interface ToolExecutionAuditMetadata {
+  readonly correlationId?: string;
   readonly toolUseId?: string;
   readonly attempt?: number;
   readonly executionPlan?: HostShellExecutionPlanAuditProjection;
@@ -102,7 +98,7 @@ export interface ToolExecutionAuditMetadata {
 }
 
 /** Directory fields appear only for invocations declaring an explicit path surface. */
-interface AuditAllow extends AuditCommon {
+interface AuditAllow extends PermissionDecisionFields {
   decision: "allow";
   tool: string;
   source: ToolSource;
@@ -120,7 +116,7 @@ interface AuditAllow extends AuditCommon {
 }
 
 /** Ask records the prompt; the eventual gesture creates a separate allow or deny row. */
-interface AuditAsk extends AuditCommon {
+interface AuditAsk extends PermissionDecisionFields {
   decision: "ask";
   tool: string;
   source: ToolSource;
@@ -131,7 +127,7 @@ interface AuditAsk extends AuditCommon {
 }
 
 /** Short-circuit denials currently record one reason in the plural schema. */
-interface AuditDeny extends AuditCommon {
+interface AuditDeny extends PermissionDecisionFields {
   decision: "deny";
   tool: string;
   source: ToolSource;
@@ -142,94 +138,11 @@ interface AuditDeny extends AuditCommon {
   /** Who answered the allow this host refusal overrode; trustOrigin stays the host's. */
   answerTrustOrigin?: HookTrustOrigin;
   hookChain?: HookResult[];
-  /** What an invocation's terminal deny ended; the ledger writes it on every one. Rows without it are read through terminalDenyKindOf. */
+  /** What an invocation's terminal deny ended; the ledger writes it on every one. The ledger owns the terminal kind. */
   terminalKind?: AuditDenyKind;
 }
 
 /** A permission denial (a rule, a person, a hook, a host policy, an integrity failure), or a cancellation no permission decided. */
 export type AuditDenyKind = "denied" | "cancelled";
 
-function isAuditDenyKind(kind: unknown): kind is AuditDenyKind {
-  return kind === "denied" || kind === "cancelled";
-}
-
-// The first reasons a cancellation's row carried before terminalKind was written. A reason alone cannot always tell the kind (the
-// plugin runtime's shutdown is told from a retired generation by its error code, not its message), so new rows persist it.
-const LEGACY_CANCELLATION_REASONS: ReadonlySet<string> = new Set([
-  "user aborted turn",
-  "host-shutdown",
-  "Hook execution cancelled",
-  "Plugin generation admission denied: plugin runtime is shutting down",
-  "The permission request was stopped; the action was not executed.",
-]);
-const LEGACY_PLUGIN_ADMISSION_SHUTDOWN = /^Plugin generation admission denied: plugin '[^'\r\n]+' call 'generation admission' aborted: the plugin runtime is shutting down$/;
-
-/** The kind of a persisted deny row: its terminalKind when written, else derived from its first reason. */
-export function terminalDenyKindOf(entry: Pick<AuditDeny, "denyReasons" | "terminalKind">): AuditDenyKind {
-  if (Object.hasOwn(entry, "terminalKind")) {
-    if (!isAuditDenyKind(entry.terminalKind)) throw new TypeError("Invalid terminal deny kind");
-    return entry.terminalKind;
-  }
-  const first = entry.denyReasons[0]?.reason;
-  return first !== undefined && (LEGACY_CANCELLATION_REASONS.has(first) || LEGACY_PLUGIN_ADMISSION_SHUTDOWN.test(first)) ? "cancelled" : "denied";
-}
-
-/** Mode slash commands require user-keyboard origin; retain the origin for forensic verification. */
-interface AuditModeChange extends AuditCommon {
-  decision: "mode_change";
-  fromMode: ExecutionMode;
-  toMode: ExecutionMode;
-  durable: boolean;
-  /** confirmationSource distinguishes direct settings/slash consent from externally initiated approval. trustOrigin records the human click in both cases; older rows omit the source. */
-  confirmationSource?: "settings-ui" | "builtin-slash" | "local-api-approval";
-}
-
-/** Record and disable read-category plugins that attempt writes through the filesystem proxy. */
-interface AuditManifestViolation extends AuditCommon {
-  decision: "manifest_violation";
-  pluginId: string;
-  toolName: string;
-  attemptedOperation: string;
-}
-
-/** Active judge decisions belong on the authenticated chain with redacted requests; shadow decisions stay on the shadow channel. */
-interface AuditJudge extends AuditCommon {
-  decision: "judge";
-  tool: string;
-  source: ToolSource;
-  category: AuditToolCategory;
-  judgeRecord: JudgeAuditRecord;
-}
-
-export type PermissionAuditEntry =
-  | AuditJudge
-  | AuditAllow
-  | AuditAsk
-  | AuditDeny
-  | AuditModeChange
-  | AuditManifestViolation;
-
-/** The audit show projection resolves the terminal kind of historical deny rows. */
-export type PermissionAuditEntryView = Exclude<PermissionAuditEntry, AuditDeny> | (AuditDeny & { terminalKind: AuditDenyKind });
-
-export interface PermissionAuditIntegrity {
-  invalidTerminalKinds?: number;
-}
-
-export type PermissionAuditEntryInput = PermissionAuditEntry extends infer Entry
-  ? Entry extends PermissionAuditEntry
-    ? Omit<Entry, "prevHash" | "entryHash">
-    : never
-  : never;
-
-export function isPermissionAuditEntry(value: unknown): value is PermissionAuditEntry {
-  if (typeof value !== "object" || value === null) return false;
-  const obj = value as Record<string, unknown>;
-  return typeof obj.decision === "string" && typeof obj.auditId === "string"
-    && !hasInvalidAuditTerminalKind(obj);
-}
-
-export function hasInvalidAuditTerminalKind(value: unknown): boolean {
-  return typeof value === "object" && value !== null && Object.hasOwn(value, "terminalKind")
-    && !isAuditDenyKind((value as Record<string, unknown>).terminalKind);
-}
+export type PermissionAuditEntryInput = AuditAllow | AuditAsk | AuditDeny;

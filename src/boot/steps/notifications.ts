@@ -1,4 +1,5 @@
-/** Share one audit writer across plugins, hooks, and approvals; seed auth partitions before uninstall can run. */
+import { logPermissionEvent, permissionLogId } from "../../lib/permission-log.js";
+/** Seed authentication partitions before plugin uninstall can run. */
 import { NotificationService } from "../../main/notification-service.js";
 import {
   readPersistedPluginAuthPartitions,
@@ -12,43 +13,16 @@ import {
 } from "../../main/plugin-auth-partition-tracker.js";
 import { t } from "../../i18n/index.js";
 import { createLogger } from "../../lib/logger.js";
-import { initAdminPolicyAudit } from "../../lib/admin-policy-file.js";
 import type { BootContext } from "../context.js";
 
 const log = createLogger("ave");
 
-export async function setupAuditAndNotification(ctx: BootContext): Promise<void> {
+export async function setupNotifications(ctx: BootContext): Promise<void> {
   const { getMainWindow, aveHomeDocUpgradeMarkers } = ctx;
-
-  const { AuditLogger } = await import("../../audit/audit-logger.js");
-  const { ensureAuditSecret } = await import("../../audit/hmac-chain.js");
-  const { createHostSecretStore } = await import("../../audit/host-secret-store.js");
-  const bootAuditLogger = new AuditLogger();
-  const permissionAuditSecretStore = await createHostSecretStore(ctx.host.encryption);
-  await bootAuditLogger.setupPermissionAuditChain(
-    ensureAuditSecret(permissionAuditSecretStore),
-    permissionAuditSecretStore,
-  );
-  initAdminPolicyAudit(bootAuditLogger);
-
-  // Rotation must drain the runtime writer’s queue, not a separate maintenance logger.
-  const runAuditMaintenance = () => {
-    const auditCfg = ctx.settingsService.get("audit");
-    void bootAuditLogger.rotateAndPrune({
-      maxBytes: auditCfg.auditRotationMaxBytes,
-      retentionDays: auditCfg.auditRetentionDays,
-    }).catch((err: unknown) => {
-      log.warn({ err }, "rotateAndPrune failed");
-    });
-  };
-  runAuditMaintenance();
-  const auditMaintenanceTimer = setInterval(runAuditMaintenance, 60 * 60 * 1000);
-  auditMaintenanceTimer.unref?.();
 
   // Resolve the live main window after close and reopen.
   const notificationService = new NotificationService({
     getMainWindow,
-    auditLogger: bootAuditLogger,
     ...(ctx.host.desktop?.notificationOptions ?? {
       isReady: () => false,
       isAnyWindowFocused: () => false,
@@ -77,37 +51,22 @@ export async function setupAuditAndNotification(ctx: BootContext): Promise<void>
       (err as Error).message,
     );
   });
-  // Corrupt partition state must throw with an audit record rather than become an empty set.
+  // Corrupt partition state aborts startup and reports a warning.
   await readPersistedPluginAuthPartitions()
     .then((persisted) => {
       if (persisted !== null) seedPluginAuthPartitions(persisted);
     })
-    .catch(async (err) => {
-      const msg = (err as Error).message;
-      bootAuditLogger.log({
-        timestamp: new Date().toISOString(),
-        sessionId: "boot",
-        type: "error",
-        input: "plugin-auth-partition-store: load failed at boot",
-        output: msg,
-      });
-      await bootAuditLogger.flush();
+    .catch((err) => {
+      logPermissionEvent("plugin_auth_partition_load_failed", { sessionId: permissionLogId("boot") }, "warn");
       throw err;
     });
   wirePluginAuthPartitionPersistence({
     write: writePersistedPluginAuthPartitions,
     delete: deletePersistedPluginAuthPartitions,
-    onError: (msg) => {
-      bootAuditLogger.log({
-        timestamp: new Date().toISOString(),
-        sessionId: "boot",
-        type: "error",
-        input: "plugin-auth-partition-store: async write/delete failed",
-        output: msg,
-      });
+    onError: () => {
+      logPermissionEvent("plugin_auth_partition_write_failed", { sessionId: permissionLogId("boot") }, "warn");
     },
   });
 
-  ctx.bootAuditLogger = bootAuditLogger;
   ctx.notificationService = notificationService;
 }

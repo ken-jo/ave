@@ -19,7 +19,7 @@ IPC; they never reach host internals directly. The code entry points are
 - [Tool governance](./tool-governance.md): the single execution path every
   builtin, extension, MCP, and delegated-agent tool call takes.
 - [Permission policy](./permission-policy-design.md): approvals, the reviewer,
-  allowed directories, hooks, and the audit chain.
+  allowed directories, hooks, and structured permission logging.
 - [Session model v2](./session-model-v2.md): how sessions are stored, loaded,
   and restored.
 - [Permission decision tree](./permission-decision-tree.md): the owner-approved

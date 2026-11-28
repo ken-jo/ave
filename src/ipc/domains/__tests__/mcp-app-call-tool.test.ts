@@ -1,5 +1,6 @@
+import { collectPermissionEvents } from "../../../__tests__/support/permission-events.js";
 // Tool calls must clear sender, server-ownership, visibility, and permission gates.
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, onTestFinished } from "vitest";
 import { makeAppIpcInvoker } from "./test-helpers.js";
 
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
@@ -87,7 +88,6 @@ async function setup() {
     getPluginToolInvoker: () => invokePluginTool,
     requestPluginOperationGrant,
     settingsService: { get: vi.fn(() => ({})) },
-    auditLogger: { log: vi.fn() },
     pluginMarketplace: { list: vi.fn(async () => []) },
     getMainWindow: vi.fn(() => null),
     getAppWindows: vi.fn(() => []),
@@ -104,7 +104,9 @@ beforeEach(() => {
 
 describe("ave:mcp:call-tool — sender gate", () => {
   it("rejects an unauthorized sender frame before touching the backend", async () => {
-    const { deps, callFromApp, invokePluginTool } = await setup();
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
+    const { callFromApp, invokePluginTool } = await setup();
     const handler = handlers.get(CHANNEL)!;
 
     const result = await handler(
@@ -117,7 +119,7 @@ describe("ave:mcp:call-tool — sender gate", () => {
     expect(result).toEqual({ ok: false, error: "unauthorized-frame" });
     expect(callFromApp).not.toHaveBeenCalled();
     expect(invokePluginTool).not.toHaveBeenCalled();
-    expect(deps.auditLogger.log).toHaveBeenCalled(); // auditUnauthorized
+    expect(capture.events).toContainEqual(expect.objectContaining({ event: "ipc_sender_refused" }));
   });
 
   it("rejects a isolated app-resource frame (mutating channel ⇒ host-renderer-only)", async () => {
@@ -138,7 +140,9 @@ describe("ave:mcp:call-tool — sender gate", () => {
 
 describe("ave:mcp:call-tool — tool-owner == serverId (enforced once, here)", () => {
   it("denies a plugin card asking for a tool its plugin does not own", async () => {
-    const { deps, callFromApp } = await setup();
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
+    const { callFromApp } = await setup();
 
     const result = await invoke(
       CHANNEL,
@@ -154,9 +158,7 @@ describe("ave:mcp:call-tool — tool-owner == serverId (enforced once, here)", (
       message: "Tool 'other_plugin_tool' is not owned by MCP server 'acme-cards'",
     });
     expect(callFromApp).not.toHaveBeenCalled();
-    expect(deps.auditLogger.log).toHaveBeenCalledWith(
-      expect.objectContaining({ input: expect.stringContaining("cross-server call denied") }),
-    );
+    expect(capture.events).toContainEqual(expect.objectContaining({ event: "mcp_app_cross_server_denied" }));
   });
 
   it("denies an external card asking for a HOST BUILTIN (no mcpServerId ⇒ not owned)", async () => {
@@ -316,7 +318,9 @@ describe("ave:mcp:call-tool — allowed calls take the gated backend", () => {
   });
 
   it("turns a gate DENIAL into an outcome (never a throw across the IPC)", async () => {
-    const { deps, callFromApp } = await setup();
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
+    const { callFromApp } = await setup();
     callFromApp.mockRejectedValueOnce(new Error("Tool execution denied by user"));
 
     const result = await invoke(
@@ -332,8 +336,6 @@ describe("ave:mcp:call-tool — allowed calls take the gated backend", () => {
       error: "tool-call-failed",
       message: "Tool execution denied by user",
     });
-    expect(deps.auditLogger.log).toHaveBeenCalledWith(
-      expect.objectContaining({ input: expect.stringContaining("tools/call denied or failed") }),
-    );
+    expect(capture.events).toContainEqual(expect.objectContaining({ event: "mcp_app_tool_denied" }));
   });
 });

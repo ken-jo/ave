@@ -3,7 +3,7 @@
 import type { SandboxAskCallback } from "@anthropic-ai/sandbox-runtime";
 import { createLogger } from "../lib/logger.js";
 import { errorMessage } from "../shared/error-message.js";
-import { emitSandboxAudit } from "../audit/sandbox-audit-sink.js";
+import { emitSandboxAudit } from "./egress-logging.js";
 import type { PermissionManager } from "./permission-manager.js";
 import type { ApprovalGate } from "./approval-gate.js";
 import { closeEgressConnections, normalizeUnionForAsrt } from "./asrt-sandbox.js";

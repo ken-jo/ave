@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { AuditLogger } from "../../audit/audit-logger.js";
+
 import { createDynamicTool } from "../../tools/base.js";
 import { resolvePluginOperation } from "../../tools/plugin-operation-governance.js";
 import { resolveEnforcedCategory } from "../../tools/pipeline/risk-classification.js";
@@ -15,7 +15,7 @@ const tool = createDynamicTool({
   jsonSchema: { type: "object", properties: { operation: { type: "string" }, command: { type: "string" } } },
   execute: async () => ({ output: "state", isError: false }),
 });
-const auditLogger = { logShadow: () => undefined } as unknown as AuditLogger;
+
 const classifier = new RuleBasedRiskClassifier();
 
 describe("existing plugin invocation decisions", () => {
@@ -25,7 +25,7 @@ describe("existing plugin invocation decisions", () => {
       const operation = resolvePluginOperation(OPERATION_POLICY, finalInput, "model");
       const classificationInput = {
         tool, declaredCategory: tool.category, registeredCategoryFloor: tool.category, finalInput, correlationId: "command-corpus",
-        hostClassifiesRisk: true, sandboxFsContained: true, auditLogger, operationFloor: operation.rule.minimumRisk,
+        hostClassifiesRisk: true, sandboxFsContained: true, operationFloor: operation.rule.minimumRisk,
       };
       const category = resolveEnforcedCategory(classificationInput);
       const verdict = classifier.classify({

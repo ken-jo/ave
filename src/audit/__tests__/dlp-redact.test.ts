@@ -1,8 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
+import { watchPermissionEvents } from "../../__tests__/support/permission-events.js";
 import os from "node:os";
 import { pathToFileURL } from "node:url";
 import {
-  initDlpAudit,
   redactAuditPayload,
   redactForLLM,
   redactFsPath,
@@ -62,25 +62,14 @@ describe("redactForLLM", () => {
     expect(r.redacted).toBe("안녕하세요, Ave 입니다.");
   });
 
-  it("attributes audit rows to the session resolved at each redaction", () => {
-    const auditSessionIds: string[] = [];
-    let currentSessionId = "session-before-transition";
-    initDlpAudit(
-      { log: ({ sessionId }) => auditSessionIds.push(sessionId) },
-      () => currentSessionId,
-    );
+  it("emits counts and turn correlation without the redacted input", () => {
+    const events: Record<string, unknown>[] = [];
+    const spy = watchPermissionEvents((event) => events.push(event));
     try {
-      redactForLLM("first@example.com");
-      currentSessionId = "session-after-transition";
-      redactForLLM("second@example.com");
-
-      expect(auditSessionIds).toEqual([
-        "session-before-transition",
-        "session-after-transition",
-      ]);
+      expect(redactForLLM("alice@example.com", "turn-example").redacted).toBe("[REDACTED:EMAIL]");
+      expect(events).toEqual([{ event: "dlp_redaction", turnId: "turn-example", totalRedactions: 1 }]);
     } finally {
-      // Restore the module-global audit sink to avoid leaking it across files.
-      initDlpAudit(null, "unknown");
+      spy.mockRestore();
     }
   });
 });

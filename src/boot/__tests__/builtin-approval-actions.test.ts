@@ -20,7 +20,6 @@ afterEach(() => { setLocale(originalLocale); });
 vi.mock("../../core/model-catalog/bundled.js", () => ({ installBootModelCatalog: vi.fn(async () => {}) }));
 vi.mock("../../main/python-runtime.js", () => ({ PythonRuntimeBootstrapper: class {} }));
 vi.mock("../../main/bash-ast-validator.js", () => ({ BashAstValidator: class {} }));
-vi.mock("../../main/audit-service.js", () => ({ AuditService: class { async start() {} } }));
 vi.mock("../../main/app-shutdown.js", () => ({ registerShutdownHook: vi.fn() }));
 vi.mock("../../lib/log-file-sink.js", () => ({
   LOG_RETENTION_DAYS: 7, LOG_MAX_BYTES: 1000, reprunePersistedRetention: vi.fn(),

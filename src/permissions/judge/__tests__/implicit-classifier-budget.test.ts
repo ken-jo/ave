@@ -6,7 +6,7 @@ import { LlmRiskClassifier, type LlmReviewerProvider } from "../../reviewer/risk
 import { PermissionTestResources } from "../../__tests__/test-resources.js";
 import { setReviewerForTest } from "../../../__tests__/support/reviewer-judge.js";
 import { DEFAULT_JUDGE_SETTINGS } from "../judge-settings.js";
-import { collectingAudit, judgeInvocation, judgeRecords, scriptedStage } from "./judge-request-fixture.js";
+import { collectJudgeEvents, judgeInvocation, judgeRecords, scriptedStage } from "./judge-request-fixture.js";
 
 const resources = new PermissionTestResources();
 afterEach(async () => {
@@ -21,13 +21,13 @@ function subject(provider: LlmReviewerProvider) {
   const classifier = new LlmRiskClassifier(provider, "review-model", "deny", {}, {
     maxAttempts: 1, baseDelayMs: 0, jitterPct: 0,
   });
-  const audit = setReviewerForTest(manager, {
+  setReviewerForTest(manager, {
     classifier,
     cache: resources.makeVerdictCache(join(root, "cache.jsonl")),
     recentlyDenied: makeRecentlyDeniedStore(join(root, "denied.json")),
   });
   manager.setMode("auto");
-  return { root, manager, classifier, audit };
+  return { root, manager, classifier };
 }
 
 describe("implicit reviewer execution budget", () => {
@@ -44,14 +44,13 @@ describe("implicit reviewer execution budget", () => {
       },
     };
     const current = subject(provider);
-    let shadowAudit: ReturnType<typeof collectingAudit> | undefined;
+    const events = collectJudgeEvents();
     if (lane === "shadow") {
-      shadowAudit = collectingAudit();
       const stage = scriptedStage();
       current.manager.setJudge({
         settings: { ...DEFAULT_JUDGE_SETTINGS, chain: [stage], mode: "shadow" },
         chain: [{ settings: stage, judge: { id: "observer", version: "1", async judge() { return { decision: "deny", rationale: "shadow observation" }; } } }],
-        breaker: current.manager.getJudgeBreaker(), audit: shadowAudit.logger,
+        breaker: current.manager.getJudgeBreaker(),
       });
     }
     const invocation = judgeInvocation({
@@ -73,11 +72,7 @@ describe("implicit reviewer execution budget", () => {
     expect(before).toMatchObject({ outcome: "fresh", finalVerdict: { level: "low" } });
     expect(after).toMatchObject({ outcome: "fresh", verdict: { level: "low" }, judge: { judged: true, applied: true, decision: "allow" } });
     expect(calls).toBe(2);
-    const records = shadowAudit ? judgeRecords(shadowAudit) : current.audit.active.map((entry) => {
-      if (entry.decision !== "judge") throw new Error("Expected judge audit");
-      return entry.judgeRecord;
-    });
-    expect(records.at(-1)).toMatchObject({ applied: true, fallback: null, latencyMs: 16_000 });
+    expect(judgeRecords(events).at(-1)).toMatchObject({ applied: true, latencyMs: 16_000 });
     expect(current.manager.getJudgeBreaker().snapshot("budget-session")).toEqual({ consecutive: 0, total: 0, open: false });
   });
 

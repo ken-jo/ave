@@ -1,3 +1,4 @@
+import { logPermissionEvent, permissionLogId } from "../../lib/permission-log.js";
 import { routeInput } from "../../core/route-input.js";
 import { markCodeCheckpointUnavailable, withCodeCheckpoint } from "../../memory/code-checkpoints.js";
 import { runWithAgentObservationTurn } from "../../tools/agent-observation-context.js";
@@ -31,7 +32,6 @@ import { projectNextTurnInputTokens } from "../request-input-projection.js";
 import { carriedPluginIds } from "./tool-scope.js";
 import { fireContinuableStop } from "./lifecycle-hooks.js";
 import { turnExtensionPolicyContext } from "../../shared/turn-extension-policy.js";
-import { normalizeAiSdkUsageForCost } from "../llm/pricing.js";
 import { stripLeadingSlash } from "../../shared/slash-sanitizer.js";
 import { approveSkillMemoryEvidence } from "../../memory/skill-memory-policy.js";
 import { claimScheduledSkillEvidence, isDirectSkillMemoryOwnerInput } from "../../memory/skill-memory-service.js";
@@ -844,39 +844,7 @@ async function runTurnInSpan(
         ?? (result.usage && result.vendorProvider && result.vendorModel
           ? `${result.vendorProvider}/${result.vendorModel}`
           : routeResult.route);
-      const auditVendorProvider = isSubscriptionRuntime ? undefined : result.vendorProvider;
-      const auditTokenUsage = auditVendorProvider
-        ? normalizeAiSdkUsageForCost(
-          result.usage,
-          auditVendorProvider,
-        )
-        : undefined;
-      const auditUsageByModel = isSubscriptionRuntime
-        ? undefined
-        : result.usageByModel?.map((segment) => ({
-          ...segment,
-          tokenUsage: normalizeAiSdkUsageForCost(
-            segment.tokenUsage,
-            segment.vendorProvider,
-          ),
-        }));
-      self.auditLogger.logTurn({
-        sessionId: self.sessionId,
-        input,
-        output: result.text,
-        toolCalls: result.toolCalls.map((tc) => ({
-          name: tc.name,
-          isError: false,
-        })),
-        tokenUsage: auditTokenUsage,
-        usageByModel: auditUsageByModel,
-        ...(isSubscriptionRuntime && result.subscriptionUsage.length > 0
-          ? { subscriptionUsage: result.subscriptionUsage }
-          : {}),
-        toolExposure: postTurnToolExposure,
-        route: auditRoute,
-        ...(!isSubscriptionRuntime && result.modelSettings ? { modelSettings: result.modelSettings } : {}),
-      });
+      logPermissionEvent("conversation_turn_finished", { sessionId: permissionLogId(self.sessionId), route: permissionLogId(auditRoute) });
       self.deps.idleScheduler?.signalConversation();
     }
     transcriptPersistedAfterLoop = true;
@@ -958,6 +926,7 @@ async function runTurnInSpan(
         tokensIn: turnTokensIn,
         freshInputTokens: turnFreshInput,
         tokensOut: turnTokensOut,
+        usageReported: billableTurnUsage !== undefined || billableUsageByModel.length > 0 || subscriptionTurnUsage.length > 0,
         ...(turnCacheRead > 0 ? { cacheReadTokens: turnCacheRead } : {}),
         ...(turnCacheWrite > 0 ? { cacheWriteTokens: turnCacheWrite } : {}),
         ...(singleUsageModel

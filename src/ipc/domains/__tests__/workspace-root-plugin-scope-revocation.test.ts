@@ -63,7 +63,6 @@ import {
 
 const retireSandboxGrantsOutsideCeiling = vi.fn(async () => [] as string[]);
 const deps = {
-  auditLogger: { log: vi.fn() },
   pluginRuntime: { retireSandboxGrantsOutsideCeiling },
   getMainWindow: () => null,
   memoryManager: {

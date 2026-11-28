@@ -1,5 +1,6 @@
-import type { AuditLogger } from "../audit/audit-logger.js";
-import { terminalDenyKindOf, type AuditDenyKind, type PermissionAuditEntryInput } from "../audit/audit-schema.js";
+import { randomUUID } from "node:crypto";
+import { logPermissionEvent, permissionLogId } from "../lib/permission-log.js";
+import type { AuditDenyKind, PermissionAuditEntryInput } from "./pipeline/permission-decision.js";
 import { createLogger } from "../lib/logger.js";
 import { answeredApprovalProvenance, isAnsweredApprovalDenial, type ApprovalDecision } from "../permissions/approval-gate.js";
 import { errorMessage } from "../shared/error-message.js";
@@ -21,7 +22,7 @@ const enqueuedTerminals = new Set<TerminalLedger>();
 // Attempts a rationale card holds, by tool-use id, until its sealed start adopts them.
 const suspendedTerminals = new Map<string, TerminalLedger>();
 let closing: Promise<number> | undefined;
-let auditClosed = false;
+let admissionClosed = false;
 let shutdownStarted = false;
 let shutdownFailure: { error: unknown } | undefined;
 
@@ -63,20 +64,10 @@ export type TerminalDenialLifecycle = {
   governed(): boolean;
   fire(denial: TerminalDenial): Promise<unknown>;
 };
-/**
- * The attempt's terminal row. A deny row names its kind; any other row cannot. `logger` is absent when the chain is
- * neither set up nor required; `reason` is the finalized denial reason, defaulting to the row's first. `humanAnswered` marks
- * a deny a person settled, which an abort committed after it cannot turn into a cancellation.
- */
-type TerminalAudit = {
-  logger?: Pick<AuditLogger, "appendPermissionAuditEntry">;
-  generalWrite?: Promise<void>;
-};
 type TerminalRow = {
-  logger?: TerminalAudit["logger"];
   reason?: string;
   humanAnswered?: boolean;
-  prepareAudit?(denyKind: TerminalDenyKind | undefined, writeGeneral: boolean): TerminalAudit;
+  fields?: Readonly<Record<string, string | number | boolean | undefined>>;
 } & ({ entry: DenyEntry; kind: TerminalDenyKind } | { entry: Exclude<PermissionAuditEntryInput, { decision: "deny" }>; kind?: never });
 /**
  * Writes the attempt's terminal row; only the ledger hands one out. The call claims the attempt and enqueues the row
@@ -97,6 +88,7 @@ class TerminalClaimError extends Error {
 
 /** One terminal row per attempt. History, hooks and plain telemetry run after the claim and never undo it. */
 export interface InvocationTerminal {
+  readonly correlationId: string;
   readonly attempt: number;
   readonly owner: TerminalOwner;
   readonly state: TerminalState;
@@ -129,11 +121,16 @@ class TerminalLedger implements InvocationTerminal {
   #releaseAbort: (() => void) | undefined;
   #key: string | undefined;
   #integrityFailure = false;
-  #generalAuditAttempted = false;
   #signal: AbortSignal;
   #denyKind: TerminalDenyKind | undefined;
 
-  constructor(readonly tool: string, readonly attempt: number, signal: AbortSignal, lifecycle?: TerminalDenialLifecycle) {
+  constructor(
+    readonly tool: string,
+    readonly attempt: number,
+    signal: AbortSignal,
+    readonly correlationId: string,
+    lifecycle?: TerminalDenialLifecycle,
+  ) {
     this.#signal = signal;
     this.#lifecycle = lifecycle;
   }
@@ -172,13 +169,13 @@ class TerminalLedger implements InvocationTerminal {
 
   #refusal(by: TerminalOwner | "host"): TerminalClaimError | undefined {
     let refused: TerminalClaimError | undefined;
-    if (auditClosed) refused = new TerminalClaimError(`terminal row of ${this.tool} refused: the audit sink is closed`, "closed-sink");
+    if (admissionClosed) refused = new TerminalClaimError(`terminal row of ${this.tool} refused: shutdown closed admission`, "closed-sink");
     else if (this.#state !== "open") refused = new TerminalClaimError(`terminal row of ${this.tool} claimed twice`, "already-claimed");
     else if (by !== "host" && by !== this.#owner) refused = new TerminalClaimError(`terminal row of ${this.tool} claimed by ${by}, owned by ${this.#owner}`, "already-claimed");
     if (refused) {
       log.error("%s", refused.message);
       // Only an attempt left without its row is an audit loss; a late claim after the host wrote it is the fence working.
-      if (this.#state === "open") recordToolInvocationAuditFailure(refused);
+      if (this.#state === "open") recordToolInvocationFailure(refused);
       return refused;
     }
     return undefined;
@@ -202,35 +199,23 @@ class TerminalLedger implements InvocationTerminal {
       // attempt stays open and the host writes its one integrity denial.
       if (terminal.entry.decision === "deny" && terminal.kind !== "denied" && terminal.kind !== "cancelled") {
         const error = new Error(`deny row of ${this.tool} names no terminal kind`);
-        recordToolInvocationAuditFailure(error);
+        recordToolInvocationFailure(error);
         throw error;
       }
       if (this.#refusal(by)) return Promise.resolve();
       const { reason } = terminal;
       const cancellation = terminal.kind === "denied" ? this.#abortCancellation(terminal.humanAnswered === true || terminal.entry.denyReasons.some(({ source }) => source === "approval-gate")) : undefined;
-      // A deny row persists its kind, so a reader of the row and its PermissionDenied can never disagree.
-      const entry: PermissionAuditEntryInput = terminal.entry.decision !== "deny" ? terminal.entry
-        : cancellation === undefined ? { ...terminal.entry, terminalKind: terminal.kind }
-        : { ...terminal.entry, terminalKind: "cancelled", denyReasons: [{ reason: cancellation, source: "tool-executor" }, ...terminal.entry.denyReasons] };
-      const denyKind = entry.decision === "deny" ? terminalDenyKindOf(entry) : undefined;
-      let logger = terminal.logger;
-      let generalWrite: Promise<void> | undefined;
-      if (terminal.prepareAudit) {
-        const writeGeneral = !this.#generalAuditAttempted;
-        this.#generalAuditAttempted = true;
-        ({ logger, generalWrite } = terminal.prepareAudit(denyKind, writeGeneral));
-      }
+      const { entry } = terminal;
+      const denyKind = cancellation === undefined ? terminal.kind : "cancelled";
       this.#take();
       this.#denyKind = denyKind;
-      const append = logger ? appendTerminalRow(logger, entry) : Promise.resolve();
-      const audited = generalWrite ? append.then(() => generalWrite) : append;
-      this.#track(audited);
+      emitToolDecision(entry, { ...terminal.fields, terminalKind: denyKind, attempt: this.attempt, correlationId: this.correlationId });
+      this.#track(Promise.resolve());
       const lifecycle = this.#lifecycle;
       return (async () => {
         if (entry.decision === "deny" && denyKind === "denied" && lifecycle !== undefined && !lifecycle.governed()) {
           await lifecycle.fire(new LedgerDenial(reason ?? entry.denyReasons[0]?.reason ?? ""));
         }
-        await audited;
       })();
     };
     let written: Promise<T>;
@@ -244,11 +229,11 @@ class TerminalLedger implements InvocationTerminal {
       if (by === "host") {
         // The host's own writer failed first; nothing is left to write the row.
         log.error("host terminal row of %s failed before it was enqueued: %s", this.tool, errorMessage(error));
-        recordToolInvocationAuditFailure(error);
+        recordToolInvocationFailure(error);
         return;
       }
       log.error("terminal row of %s failed before it was enqueued: %s", this.tool, errorMessage(error));
-      recordToolInvocationAuditFailure(error);
+      recordToolInvocationFailure(error);
       this.#integrityFailure = true;
       // The host's own refusal: a selected answer whose record just failed would fail the host's row the same way.
       this.#selected = undefined;
@@ -276,7 +261,7 @@ class TerminalLedger implements InvocationTerminal {
       (error: unknown) => {
         this.#state = "failed";
         log.error("terminal row of %s failed: %s", this.tool, errorMessage(error));
-        recordToolInvocationAuditFailure(error);
+        recordToolInvocationFailure(error);
       },
     );
     commits.add(settled);
@@ -320,7 +305,7 @@ class TerminalLedger implements InvocationTerminal {
 
   nextAttempt(): InvocationTerminal {
     if (this.#state === "open") throw new TerminalClaimError(`attempt ${this.attempt} of ${this.tool} has no terminal row yet`, "already-claimed");
-    return new TerminalLedger(this.tool, this.attempt + 1, this.#signal, this.#lifecycle);
+    return new TerminalLedger(this.tool, this.attempt + 1, this.#signal, this.correlationId, this.#lifecycle);
   }
 }
 
@@ -339,13 +324,13 @@ export type ToolInvocationAdmission = {
 
 export function admitToolInvocation(tool: string, parent?: AbortSignal, resumeOf?: string): ToolInvocationAdmission {
   const held = resumeOf === undefined ? undefined : suspendedTerminals.get(resumeOf);
-  let ledger = held ?? new TerminalLedger(tool, 1, shutdown.signal);
+  let ledger = held ?? new TerminalLedger(tool, 1, shutdown.signal, randomUUID().replaceAll("-", ""));
   if (held) held.adopt();
   const signal = ledger.bindAbortSignal(parent);
-  if (auditClosed) {
+  if (admissionClosed) {
     // Its denial can no longer be written, so refuse it and fail the shutdown.
-    log.error("tool invocation admitted after audit close: %s", tool);
-    recordToolInvocationAuditFailure(new Error(`tool invocation admitted after audit close: ${tool}`));
+    log.error("tool invocation admitted after shutdown closed admission: %s", tool);
+    recordToolInvocationFailure(new Error(`tool invocation admitted after shutdown closed admission: ${tool}`));
     return { signal, terminal: ledger, suspend() {}, settle() {} };
   }
   let resolve!: () => void;
@@ -353,6 +338,7 @@ export function admitToolInvocation(tool: string, parent?: AbortSignal, resumeOf
   pending.add(completion);
   let suspended = false;
   const terminal: InvocationTerminal = {
+    correlationId: ledger.correlationId,
     get attempt() { return ledger.attempt; },
     get owner() { return ledger.owner; },
     get state() { return ledger.state; },
@@ -388,24 +374,23 @@ export function admitToolInvocation(tool: string, parent?: AbortSignal, resumeOf
   };
 }
 
-/** Forced shutdown: before the sink closes, the host enqueues the terminal row of every admitted attempt that has none. */
+/** Forced shutdown: the host claims the terminal row of every admitted attempt that has none. */
 function commitParkedHostTerminals(): void {
   for (const ledger of [...openTerminals]) void ledger.endByHost("host-shutdown", "host-shutdown")?.catch(() => {});
 }
 
-/** Bounded exit commit: the host's rows are enqueued, the sink closes after draining every enqueued append, and the deadline caps the wait. */
-export async function drainToolInvocationAuditForExit(
-  close: () => Promise<void>,
+/** Bounded exit commit for terminal outcomes. Hook work can outlive the forced reserve. */
+export async function drainToolInvocationsForExit(
   deadlineMs: number,
 ): Promise<"committed" | "timed-out" | "failed"> {
   commitParkedHostTerminals();
-  auditClosed = true;
+  admissionClosed = true;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<"timed-out">((resolve) => { timer = setTimeout(() => resolve("timed-out"), deadlineMs); });
   try {
     const committed = (async () => {
       await Promise.allSettled([...commits]);
-      await close();
+
       return shutdownFailure ? "failed" as const : "committed" as const;
     })().catch(() => "failed" as const);
     return await Promise.race([committed, deadline]);
@@ -428,8 +413,8 @@ export function commitTerminalRow<T>(
 }
 
 /** Admission unless the audit is closed; a closed refusal has no row left to write, so it fails nothing. */
-export function admitToolInvocationWhileAuditOpen(tool: string, parent?: AbortSignal, resumeOf?: string): ToolInvocationAdmission | undefined {
-  return auditClosed ? undefined : admitToolInvocation(tool, parent, resumeOf);
+export function admitToolInvocationWhileOpen(tool: string, parent?: AbortSignal, resumeOf?: string): ToolInvocationAdmission | undefined {
+  return admissionClosed ? undefined : admitToolInvocation(tool, parent, resumeOf);
 }
 
 /** Runs `claim` at the seal (now, if already sealed) so queued work is admitted while the audit is open. */
@@ -452,7 +437,7 @@ export function trackToolInvocationSettlement(settlement: Promise<unknown>): voi
   void settlement.then(
     () => { pending.delete(settlement); },
     (error: unknown) => {
-      recordToolInvocationAuditFailure(error);
+      recordToolInvocationFailure(error);
       pending.delete(settlement);
     },
   );
@@ -466,7 +451,7 @@ function isTerminalRow(entry: PermissionAuditEntryInput): boolean {
 
 function refuseSideRecord(message: string): never {
   const error = new Error(message);
-  recordToolInvocationAuditFailure(error);
+  recordToolInvocationFailure(error);
   throw error;
 }
 
@@ -479,53 +464,42 @@ function isPluginOperationRecord(entry: PermissionAuditEntryInput): boolean {
  * any deny that is not a plugin operation's record, with or without a tool-use id.
  */
 export async function appendToolInvocationAudit(
-  logger: Pick<AuditLogger, "appendPermissionAuditEntry">,
   entry: PermissionAuditEntryInput,
-): ReturnType<AuditLogger["appendPermissionAuditEntry"]> {
-  if (isTerminalRow(entry)) refuseSideRecord(`terminal row of ${"tool" in entry ? entry.tool : entry.decision} must be written through its invocation's ledger`);
+): Promise<void> {
+  if (isTerminalRow(entry)) refuseSideRecord(`terminal row of ${entry.tool} must be written through its invocation's ledger`);
   if (entry.decision === "deny" && !isPluginOperationRecord(entry)) refuseSideRecord(`deny row of ${entry.tool} is no plugin operation record`);
-  return appendTerminalRow(logger, entry);
+  emitToolDecision(entry);
 }
 
-/** The quit's refusal of a permission mode change: a deny that belongs to no invocation, so it carries no tool-use id. */
-export type ModeChangeRefusal = Extract<PermissionAuditEntryInput, { decision: "deny" }> & { category: "meta"; toolUseId?: never; pluginOperation?: never };
+const DENIAL_SOURCES = new Set([
+  "approval-gate", "directory-policy", "hook-input-mutation", "plugin-operation-execution",
+  "plugin-operation-grant", "rule", "script-hook", "sensitive-paths", "tool-executor",
+]);
 
-export async function appendModeChangeRefusal(
-  logger: Pick<AuditLogger, "appendPermissionAuditEntry">,
-  entry: ModeChangeRefusal,
-): ReturnType<AuditLogger["appendPermissionAuditEntry"]> {
-  if (entry.decision !== "deny" || "toolUseId" in entry || isPluginOperationRecord(entry)) {
-    refuseSideRecord(`mode change refusal of ${entry.tool} must belong to no invocation`);
-  }
-  return appendTerminalRow(logger, entry);
-}
-
-/** A directory grant: the allow beside an invocation's outcome naming the folder and exactly one lifetime or policy rule. */
-export type DirectoryGrantRecord = Extract<PermissionAuditEntryInput, { decision: "allow" }> & { directory: string; directoryAllowed: true };
-
-export async function appendDirectoryGrantRecord(
-  logger: Pick<AuditLogger, "appendPermissionAuditEntry">,
-  entry: DirectoryGrantRecord,
-): ReturnType<AuditLogger["appendPermissionAuditEntry"]> {
-  if (entry.decision !== "allow" || entry.directoryAllowed !== true || typeof entry.directory !== "string"
-    || (entry.grantLifetime === undefined) === (entry.policyRule === undefined)) {
-    refuseSideRecord(`directory grant of ${entry.tool} must name its folder and exactly one lifetime or policy rule`);
-  }
-  return appendTerminalRow(logger, entry);
-}
-
-async function appendTerminalRow(
-  logger: Pick<AuditLogger, "appendPermissionAuditEntry">,
+function emitToolDecision(
   entry: PermissionAuditEntryInput,
-): ReturnType<AuditLogger["appendPermissionAuditEntry"]> {
-  const append = logger.appendPermissionAuditEntry(entry);
-  try {
-    return await append;
-  } catch (error) {
-    recordToolInvocationAuditFailure(error);
-    throw error;
-  }
+  fields: Readonly<Record<string, string | number | boolean | undefined>> = {},
+): void {
+  if (!("tool" in entry)) return;
+  logPermissionEvent(entry.pluginOperation ? "plugin_operation_decision" : "permission_decision", {
+    ...fields,
+    tool: permissionLogId(entry.tool),
+    source: entry.source,
+    category: entry.category,
+    decision: entry.decision,
+    operation: permissionLogId(entry.pluginOperation?.operation) ?? fields.operation,
+    pluginId: permissionLogId(entry.pluginOperation?.pluginId),
+    operationOutcome: entry.pluginOperation?.outcome,
+    trustOrigin: entry.trustOrigin,
+    sandboxRoute: entry.executionRoute?.route ?? entry.executionPlan?.substrate,
+    reviewerRisk: entry.decision === "allow" ? entry.reviewer?.level : undefined,
+    denialSource: entry.decision === "deny"
+      ? entry.denyReasons.find(({ source }) => DENIAL_SOURCES.has(source))?.source
+      : undefined,
+    answerTrustOrigin: entry.decision === "deny" ? entry.answerTrustOrigin : undefined,
+  });
 }
+
 /**
  * Work the ceiling detached is not joined: a settlement before the seal commits its row, and the seal writes its
  * host-shutdown row instead and refuses the late commit.
@@ -540,7 +514,7 @@ export function trackDetachedToolInvocation(
   void settlement.then(
     () => { if (detached.delete(entry)) commitDetached(commitSettled); },
     (error: unknown) => {
-      if (detached.delete(entry)) recordToolInvocationAuditFailure(error);
+      if (detached.delete(entry)) recordToolInvocationFailure(error);
     },
   );
   // After the seal the interruption's indeterminate row is already written, so this entry ends with a second
@@ -567,7 +541,7 @@ function closeDetachedToolInvocations(): void {
   for (const commit of commits) commitDetached(commit);
 }
 
-export function recordToolInvocationAuditFailure(error: unknown): void {
+function recordToolInvocationFailure(error: unknown): void {
   if (shutdownStarted) shutdownFailure ??= { error };
 }
 
@@ -575,28 +549,28 @@ export function toolInvocationShutdownStarted(): boolean {
   return shutdownStarted;
 }
 
-export function beginToolInvocationAuditShutdown(): void {
+export function beginToolInvocationShutdown(): void {
   shutdownStarted = true;
 }
 
 /**
  * Claims run synchronously, so an abort refusal queues its row before this returns. A claimed tool that awaits first
  * (a deny firing a lifecycle hook) can meet an audit closed in the same tick. A permission row it then appends fails
- * and is recorded; only closeToolInvocationAudit turns that into a failed shutdown.
+ * and is recorded; only closeToolInvocations turns that into a failed shutdown.
  */
 export function sealToolInvocations(): void {
-  beginToolInvocationAuditShutdown();
+  beginToolInvocationShutdown();
   shutdown.abort(new HostExitAbortError());
   const claims = [...sealClaims];
   sealClaims.clear();
   for (const claim of claims) {
-    try { claim(); } catch (error) { recordToolInvocationAuditFailure(error); }
+    try { claim(); } catch (error) { recordToolInvocationFailure(error); }
   }
   closeDetachedToolInvocations();
 }
 
 /** Join admitted work, then close audit admission in the same step that observes the set empty. */
-export function closeToolInvocationAudit(close: () => Promise<void>): Promise<number> {
+export function closeToolInvocations(): Promise<number> {
   closing ??= (async () => {
     let count = 0;
     while (pending.size > 0 || commits.size > 0) {
@@ -604,10 +578,10 @@ export function closeToolInvocationAudit(close: () => Promise<void>): Promise<nu
       count += batch.length;
       await Promise.allSettled([...batch, ...commits]);
     }
-    auditClosed = true;
-    await close();
+    admissionClosed = true;
+
     // Failures recorded while close was pending still fail this shutdown.
-    if (shutdownFailure) throw new Error("shutdown invocation audit failed", { cause: shutdownFailure.error });
+    if (shutdownFailure) throw new Error("shutdown invocation drain failed", { cause: shutdownFailure.error });
     return count;
   })();
   return closing;

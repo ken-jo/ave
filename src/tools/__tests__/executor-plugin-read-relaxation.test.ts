@@ -67,7 +67,7 @@ function fixture(options: {
   const registry = new ToolRegistry();
   registry.register(tool);
   const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, options.hooks,
-    undefined, () => options.contained ?? true);
+    () => options.contained ?? true);
   const run = (headless = false) => executor.executeAll([
     { id: "resource", name: tool.name, input: options.category === "write" ? {} : { command: "git status" } },
   ], { sessionId: "plugin-pipeline", executionCwd: directory, permissionContext: userPermissionContext({ headless }) });

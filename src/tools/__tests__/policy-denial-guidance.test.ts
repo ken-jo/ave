@@ -169,7 +169,6 @@ async function runUnattended(
       undefined,
       undefined,
       undefined,
-      undefined,
     );
     // Headless calls have no interactive approval surface.
     const permissionContext: ToolPermissionContext = {

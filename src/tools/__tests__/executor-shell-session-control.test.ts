@@ -45,7 +45,6 @@ describe("ToolExecutor background shell session control", () => {
       new BashAstValidator({ mode: "deny" }),
       undefined,
       undefined,
-      undefined,
     );
   });
 
