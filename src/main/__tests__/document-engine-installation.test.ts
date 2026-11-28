@@ -1,6 +1,6 @@
 // The document engine is the LibreOffice the user installed (owner decision 2026-11-28): Ave finds and verifies it,
 // and installs, verifies and removes only its own part, the pinned HWP import extension. The cases set the platform to
-// macOS, the only one offered.
+// macOS, the only one offered; discovery checks execute permission with access(X_OK), which a Windows host also answers.
 import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

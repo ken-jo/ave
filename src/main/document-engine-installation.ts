@@ -83,9 +83,10 @@ function appCandidates(platform: NodeJS.Platform = process.platform): readonly I
   }));
 }
 
+/** A regular file this process may execute (the effective permission, not the mode bits alone). */
 async function isExecutableFile(path: string): Promise<boolean> {
   const stat = await fs.stat(path).catch(() => undefined);
-  return stat?.isFile() === true && (stat.mode & 0o111) !== 0;
+  return stat?.isFile() === true && await fs.access(path, constants.X_OK).then(() => true, () => false);
 }
 
 /** The first candidate whose engine and package tool both exist, canonicalised; undefined when none is installed. */
