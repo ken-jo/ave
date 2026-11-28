@@ -16,6 +16,7 @@ describe("Windows test shard runner", () => {
     const step = job.steps.find((entry: { name?: string }) => entry.name === "Run Windows regressions");
     expect(step.run).toBe("node .github/scripts/run-in-job.mjs bun run scripts/run-windows-test-list.mjs");
     expect(job.env.AVE_WINDOWS_TEST_SHARD).toBe(githubExpression("matrix.shard"));
+    expect(job.env.AVE_WINDOWS_TEST_TIERS).toBe(githubExpression("needs.build.outputs.windows_tiers"));
     expect(step.env.AVE_WINDOWS_TEST_PLAN).toBe(`${githubExpression("runner.temp")}/windows-ci/windows-plan.json`);
   });
   it("prepares once and preserves the complete shard across bounded commands", () => {
@@ -43,7 +44,8 @@ describe("Windows test shard runner entry point", () => {
   const root = resolve(import.meta.dirname, "../..");
   const runner = join(root, "scripts/run-windows-test-list.mjs");
   function run(env: Record<string, string>, args: string[] = []) {
-    const base = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("AVE_WINDOWS_TEST_")));
+    const base = Object.fromEntries(Object.entries(process.env)
+      .filter(([key]) => !key.startsWith("AVE_WINDOWS_TEST_") && key !== "AVE_CI_TEST_ONLY_PLAN"));
     return spawnSync(process.execPath, [runner, ...args], { cwd: root, encoding: "utf8", env: { ...base, ...env } });
   }
   function withPlan(mutate: (plan: ReturnType<typeof planWindowsTests>) => void, check: (path: string) => void) {
@@ -69,12 +71,12 @@ describe("Windows test shard runner entry point", () => {
   it("refuses an unknown shard ID and a plan that omits a collected suite", () => {
     withPlan(() => {}, path => {
       const unknown = String(WINDOWS_TEST_SHARDS.length + 1);
-      const result = run({ AVE_WINDOWS_TEST_PLAN: path, AVE_WINDOWS_TEST_SHARD: unknown });
+      const result = run({ AVE_WINDOWS_TEST_PLAN: path, AVE_WINDOWS_TEST_SHARD: unknown, AVE_WINDOWS_TEST_TIERS: "" });
       expect(result.status).not.toBe(0);
       expect(result.stderr).toContain(`Invalid Windows test shard: ${unknown}`);
     });
     withPlan(plan => { plan.shards[0]?.files.shift(); }, path => {
-      const result = run({ AVE_WINDOWS_TEST_PLAN: path, AVE_WINDOWS_TEST_SHARD: "1" });
+      const result = run({ AVE_WINDOWS_TEST_PLAN: path, AVE_WINDOWS_TEST_SHARD: "1", AVE_WINDOWS_TEST_TIERS: "" });
       expect(result.status).not.toBe(0);
       expect(result.stderr).toContain("Windows plan omits 1 collected suite(s)");
       expect(result.stdout).not.toContain("Windows shard 1:");

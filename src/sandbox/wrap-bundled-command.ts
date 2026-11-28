@@ -23,6 +23,7 @@ import { raceWithTimeout } from "../shared/abortable-deadline.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { errorMessage } from "../shared/error-message.js";
 import { isContainerHolderRouteEnabled } from "../shared/container-platform.js";
+import { provenLinuxHolderRoute } from "../permissions/linux-holder-route.js";
 import { createLogger } from "../lib/logger.js";
 import {
   liveMxcHolderWritableRoots,
@@ -45,7 +46,7 @@ import { newHolderLabels } from "../permissions/holder-label-sweep.js";
 import { provenSeatbeltHolderRoute } from "../permissions/seatbelt-holder-boot.js";
 import { withLocalityDecision } from "../shared/local-path-io.js";
 import { isFullyQualifiedWindowsPath } from "../shared/windows-path-spelling.js";
-import { getExtensionBackendPlan, getMacHolderCapability, onSandboxStatusChanged } from "../permissions/sandbox-capability.js";
+import { getExtensionBackendPlan, getMacHolderCapability, isPluginWorkerConfinementRequestedAtBoot, onSandboxStatusChanged } from "../permissions/sandbox-capability.js";
 import { listAuthorizedWorkspaceRoots } from "../permissions/workspace-authorized-roots.js";
 import type { SandboxWindowsExtensionPlan } from "../shared/sandbox-capability-info.js";
 import { createSandboxProcessHome, resolvedHostProcessOwner } from "../permissions/sandbox-process-home.js";
@@ -347,6 +348,9 @@ export function hostRuntimeReads(command: string): string[] {
 /** The selected boot plan routes extension holders to containers. A checking or rejected plan is refused by the guard. */
 export function isMxcExtensionBackendSelected(): boolean {
   if (!isContainerHolderRouteEnabled(process.platform)) return false;
+  // Linux has no extension plan: the holder route this app run's boot canary proved is the selection.
+  // Like a Windows plan, it selects nothing when the user turned extension isolation off.
+  if (process.platform === "linux") return isPluginWorkerConfinementRequestedAtBoot() && provenLinuxHolderRoute() !== undefined;
   const plan = getExtensionBackendPlan();
   return plan?.selectedBackend === "mxc" && plan.readiness === "ready";
 }

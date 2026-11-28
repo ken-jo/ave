@@ -50,6 +50,7 @@ jobs:
         github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
       shards: ${{ steps.plan.outputs.shards }}
       shard_count: ${{ steps.plan.outputs.shard_count }}
+      test_only: ${{ steps.plan.outputs.test_only }}
       # scripts/plan-vitest-tiers.mjs selects the opt-in tiers; a docs-only change selects none.
       census_tier: ${{ steps.tiers.outputs.census_tier || 'false' }}
       native_tier: ${{ steps.tiers.outputs.native_tier || 'false' }}
@@ -57,6 +58,7 @@ jobs:
       tier_job_native: ${{ steps.tiers.outputs.tier_job_native || 'false' }}
       vitest_tier_job: ${{ steps.tiers.outputs.vitest_tier_job || 'false' }}
       # A selected Windows tier runs even when the platform matrix is skipped.
+      windows_tiers: ${{ steps.tiers.outputs.windows_tiers }}
       windows_tier_tests: ${{ steps.docs-impact.outputs.docs_only != 'true' && steps.tiers.outputs.windows_tiers != '' }}
     env:
       # Parallel runners may share a home; each workspace owns its Bun cache.
@@ -468,19 +470,18 @@ jobs:
         run: rm -f ajv pino
       - name: Run script tests
         if: matrix.shard == 1
+        env:
+          AVE_CI_TEST_ONLY_PLAN: ${{ needs.build.outputs.test_only == 'true' && format('{0}/ci-plan/ci-plan.json', runner.temp) || '' }}
         run: bun run test:scripts
         working-directory: ave
       - name: Run the suite (coverage gate on nightly and dispatch)
         # The suite resolves entirely from ave/src. Sibling slugs appear
         # only as fixtures or mocked installer inputs.
         #
-        # Test-only diffs always keep changed tests, fixture readers, triggered
-        # locks and the must-run set; a test helper or setup module is never
-        # test-only and runs full off integration bases. Other main pushes use trusted selection
-        # over the push's before..HEAD diff, with uncertainty falling back to full.
-        # Category merges use strict affected selection; tags, schedule and dispatch run full.
-        # Integration-base PRs retain best traced selection on uncertainty and
-        # fail on an unresolved diff. Local pre-push is unchanged.
+        # Test-only PRs run changed suites in their existing jobs. Test helpers,
+        # setup and fixtures use the existing suite planner. Main pushes plan
+        # over before..HEAD and category merges use affected selection.
+        # Unresolved diffs, tags, schedule and dispatch run full.
         # Only schedule and dispatch instrument coverage and enforce thresholds.
         # The step summary names the mode and the rule that chose it.
         #
@@ -497,6 +498,7 @@ jobs:
         # AVE_CI_PLAN_FILE is that plan, AVE_CI_SHARD this shard's place in
         # the matrix (`vitest --shard`); a one-shard matrix runs it whole.
         env:
+          AVE_CI_TEST_ONLY_PLAN: ${{ needs.build.outputs.test_only == 'true' && format('{0}/ci-plan/ci-plan.json', runner.temp) || '' }}
           AVE_REQUIRE_SANDBOX_CASES: "1"
           AVE_SMOKE_PYTHON: ${{ steps.python.outputs.python-path }}
           AVE_VITEST_MAX_WORKERS: "4"
@@ -608,9 +610,17 @@ jobs:
         run: rm -f ajv pino
       # The default shards leave the native tier out on pull requests and main
       # pushes; this step runs it with the same sandbox requirement.
+      - &download-test-only-plan
+        name: Download the test-only suite plan
+        if: needs.build.outputs.test_only == 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with: &test-only-plan-artifact
+          name: ci-plan
+          path: ${{ runner.temp }}/ci-plan
       - name: Run the native tier
         if: needs.build.outputs.tier_job_native == 'true'
         env:
+          AVE_CI_TEST_ONLY_PLAN: ${{ needs.build.outputs.test_only == 'true' && format('{0}/ci-plan/ci-plan.json', runner.temp) || '' }}
           AVE_REQUIRE_SANDBOX_CASES: "1"
           AVE_SMOKE_PYTHON: ${{ steps.python.outputs.python-path }}
           AVE_VITEST_TIERS: native
@@ -622,6 +632,7 @@ jobs:
       - name: Run the complete encoded-unicode census
         if: needs.build.outputs.census_tier == 'true'
         env:
+          AVE_CI_TEST_ONLY_PLAN: ${{ needs.build.outputs.test_only == 'true' && format('{0}/ci-plan/ci-plan.json', runner.temp) || '' }}
           AVE_VITEST_TIERS: default,census
           AVE_VITEST_MAX_WORKERS: "4"
         run: bun run test:vitest -- run --silent=true src/permissions/__tests__/powershell-encoded-unicode/
@@ -1248,6 +1259,7 @@ jobs:
       # 45 s tests timed out.
       AVE_VITEST_MAX_WORKERS: "2"
       AVE_WINDOWS_TEST_SHARD: ${{ matrix.shard }}
+      AVE_WINDOWS_TEST_TIERS: ${{ needs.build.outputs.windows_tiers }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1318,8 +1330,14 @@ jobs:
       # The build job's plan assigns each one to exactly one shard; the runner
       # re-derives the collected set from this checkout and refuses a plan
       # that differs.
+      - &download-test-only-plan-after-docs-impact
+        name: Download the test-only suite plan
+        if: steps.docs-impact.outputs.docs_only != 'true' && needs.build.outputs.test_only == 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with: *test-only-plan-artifact
       - name: Run Windows regressions
         env:
+          AVE_CI_TEST_ONLY_PLAN: ${{ needs.build.outputs.test_only == 'true' && format('{0}/ci-plan/ci-plan.json', runner.temp) || '' }}
           AVE_WINDOWS_TEST_PLAN: ${{ runner.temp }}/windows-ci/windows-plan.json
           AVE_WINDOWS_PATH_KIND_SHA256: ${{ needs.windows-native-preparation.outputs.path_kind_sha256 }}
           AVE_WINDOWS_PATH_KIND_RECEIPT_SHA256: ${{ needs.windows-native-preparation.outputs.path_kind_receipt_sha256 }}
@@ -1354,6 +1372,7 @@ jobs:
       # 45 s tests timed out.
       AVE_VITEST_MAX_WORKERS: "2"
       AVE_WINDOWS_TEST_SHARD: ${{ matrix.shard }}
+      AVE_WINDOWS_TEST_TIERS: ${{ needs.build.outputs.windows_tiers }}
       AVE_WINDOWS_TEST_TIER: tiers
       AVE_VITEST_TIERS: default,native,census
     steps:
@@ -1414,8 +1433,10 @@ jobs:
           path: ${{ runner.temp }}/python-archives
           key: ${{ steps.python-archive.outputs.key }}
       # The plan assigns each selected tier suite to exactly one tier shard.
+      - *download-test-only-plan-after-docs-impact
       - name: Run Windows regressions
         env:
+          AVE_CI_TEST_ONLY_PLAN: ${{ needs.build.outputs.test_only == 'true' && format('{0}/ci-plan/ci-plan.json', runner.temp) || '' }}
           AVE_WINDOWS_TEST_PLAN: ${{ runner.temp }}/windows-ci/windows-plan.json
           AVE_WINDOWS_PATH_KIND_SHA256: ${{ needs.windows-native-preparation.outputs.path_kind_sha256 }}
           AVE_WINDOWS_PATH_KIND_RECEIPT_SHA256: ${{ needs.windows-native-preparation.outputs.path_kind_receipt_sha256 }}
@@ -1499,9 +1520,12 @@ jobs:
         run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1 -QueryFailureFixture
       - *windows-provision
       - *windows-path-kind-rust
+      - *download-test-only-plan-after-docs-impact
       - name: Run script tests
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
+        env:
+          AVE_CI_TEST_ONLY_PLAN: ${{ needs.build.outputs.test_only == 'true' && format('{0}/ci-plan/ci-plan.json', runner.temp) || '' }}
         run: node .github/scripts/run-in-job.mjs bun run test:scripts
       - *windows-cleanup
 
@@ -1747,10 +1771,12 @@ jobs:
       - name: Show the git the regressions run against
         if: steps.docs-impact.outputs.docs_only != 'true'
         run: git --version
+      - *download-test-only-plan-after-docs-impact
       - name: Run macOS permission regressions
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         env:
+          AVE_CI_TEST_ONLY_PLAN: ${{ needs.build.outputs.test_only == 'true' && format('{0}/ci-plan/ci-plan.json', runner.temp) || '' }}
           AVE_REQUIRE_SANDBOX_CASES: "1"
           AVE_REQUIRE_PUBLISHER_FIXTURES: "1"
         run: >
@@ -1971,10 +1997,12 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: node .github/scripts/python-download-mirror.mjs
+      - *download-test-only-plan-after-docs-impact
       - name: Run Linux confinement regressions
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         env:
+          AVE_CI_TEST_ONLY_PLAN: ${{ needs.build.outputs.test_only == 'true' && format('{0}/ci-plan/ci-plan.json', runner.temp) || '' }}
           AVE_REQUIRE_SANDBOX_CASES: "1"
           AVE_REQUIRE_PUBLISHER_FIXTURES: "1"
           AVE_SMOKE_PYTHON: ${{ steps.python.outputs.python-path }}
@@ -1985,6 +2013,12 @@ jobs:
           src/permissions/__tests__/mxc-linux.test.ts
           src/permissions/__tests__/mxc-linux-raw-ip.test.ts
           src/permissions/__tests__/mxc-linux-placeholders.test.ts
+          src/permissions/__tests__/mxc-linux-holder-launch.test.ts
+          src/permissions/__tests__/mxc-linux-holder-request.test.ts
+          src/permissions/__tests__/mxc-linux-holder-thread.test.ts
+          src/permissions/__tests__/linux-extension-start.test.ts
+          src/sandbox/__tests__/linux-holder-selection.test.ts
+          src/boot/__tests__/sandbox-init-linux-holder.test.ts
           src/tools/__tests__/mxc-shell-source.test.ts
           src/plugins/isolation/__tests__/confined-plugin-child.test.ts
           src/plugins/isolation/__tests__/plugin-stderr.test.ts
@@ -2010,15 +2044,93 @@ jobs:
         if: steps.docs-impact.outputs.docs_only != 'true' && needs.build.outputs.docs_only != 'true'
         working-directory: ave
         env:
+          AVE_CI_TEST_ONLY_PLAN: ${{ needs.build.outputs.test_only == 'true' && format('{0}/ci-plan/ci-plan.json', runner.temp) || '' }}
           AVE_RUN_MXC_LINUX_BOUNDARY: "1"
           AVE_VITEST_MAX_WORKERS: "2"
         # A suite whose cases all skipped would pass, so the JSON report must show every case passed.
         run: |
-          bun run test:vitest -- run --reporter=default --reporter=json --outputFile="$RUNNER_TEMP/linux-shell-boundary.json" \
-            src/permissions/__tests__/mxc-linux-boundary.native.test.ts \
+          suites=(
+            src/permissions/__tests__/mxc-linux-boundary.native.test.ts
+            src/permissions/__tests__/mxc-linux-filter-helper.native.test.ts
+            src/permissions/__tests__/mxc-linux-holder-boundary.native.test.ts
+            src/permissions/__tests__/mxc-linux-holder-canary.native.test.ts
+            src/permissions/__tests__/mxc-linux-holder-watch.test.ts
             src/permissions/__tests__/mxc-linux-placeholders.test.ts
+          )
+          if [[ -n "$AVE_CI_TEST_ONLY_PLAN" ]]; then
+            selected=$(node scripts/lib/ci-test-only-selection.mjs "${suites[@]}")
+            if [[ -z "$selected" ]]; then
+              echo "::notice::test-only diff: 0 files for this job"
+              exit 0
+            fi
+            suites=()
+            while IFS= read -r suite; do suites+=("$suite"); done <<< "$selected"
+            unset AVE_CI_TEST_ONLY_PLAN
+          fi
+          bun run test:vitest -- run --reporter=default --reporter=json --outputFile="$RUNNER_TEMP/linux-shell-boundary.json" "${suites[@]}"
           jq -e '.numPassedTests > 0 and .numPendingTests == 0 and .numTodoTests == 0 and .numFailedTests == 0' \
             "$RUNNER_TEMP/linux-shell-boundary.json"
+      # Design 2.5: holders need only bwrap. With slirp4netns hidden the shell canary reports it missing, and the holder
+      # canary and the holder suite still pass. Every system tool folder is searched whatever PATH says, so it is moved.
+      - &linux-holders-without-slirp
+        name: Run the Linux holder suites without slirp4netns
+        if: steps.docs-impact.outputs.docs_only != 'true' && needs.build.outputs.docs_only != 'true'
+        working-directory: ave
+        env:
+          AVE_CI_TEST_ONLY_PLAN: ${{ needs.build.outputs.test_only == 'true' && format('{0}/ci-plan/ci-plan.json', runner.temp) || '' }}
+          AVE_RUN_MXC_LINUX_BOUNDARY: "1"
+          AVE_EXPECT_NO_SLIRP4NETNS: "1"
+          AVE_VITEST_MAX_WORKERS: "2"
+        run: |
+          suites=(
+            src/permissions/__tests__/mxc-linux-holder-boundary.native.test.ts
+            src/permissions/__tests__/mxc-linux-holder-canary.native.test.ts
+          )
+          if [[ -n "$AVE_CI_TEST_ONLY_PLAN" ]]; then
+            selected=$(node scripts/lib/ci-test-only-selection.mjs "${suites[@]}")
+            if [[ -z "$selected" ]]; then
+              echo "::notice::test-only diff: 0 files for this job"
+              exit 0
+            fi
+            suites=()
+            while IFS= read -r suite; do suites+=("$suite"); done <<< "$selected"
+            unset AVE_CI_TEST_ONLY_PLAN
+          fi
+          slirp=$(command -v slirp4netns)
+          trap 'sudo mv "$slirp.hidden" "$slirp"' EXIT
+          sudo mv "$slirp" "$slirp.hidden"
+          if command -v slirp4netns; then exit 1; fi
+          bun run test:vitest -- run --reporter=default --reporter=json --outputFile="$RUNNER_TEMP/linux-holders-no-slirp.json" "${suites[@]}"
+          jq -e '.numPassedTests > 0 and .numPendingTests == 0 and .numTodoTests == 0 and .numFailedTests == 0' \
+            "$RUNNER_TEMP/linux-holders-no-slirp.json"
+      # N19 at ptrace_scope 0: a holder must not reach its unfiltered bridge even where Yama allows ptrace of a parent.
+      # The bridge's non-dumpable step is the mechanism; the dumpable control is built here with the pinned toolchain.
+      - &linux-bridge-ptrace-scope-zero
+        name: Prove the holder bridge at ptrace_scope 0
+        if: steps.docs-impact.outputs.docs_only != 'true' && needs.build.outputs.docs_only != 'true'
+        working-directory: ave
+        env:
+          AVE_CI_TEST_ONLY_PLAN: ${{ needs.build.outputs.test_only == 'true' && format('{0}/ci-plan/ci-plan.json', runner.temp) || '' }}
+          AVE_RUN_MXC_LINUX_BOUNDARY: "1"
+          AVE_VITEST_MAX_WORKERS: "2"
+        run: |
+          suite=src/permissions/__tests__/mxc-linux-filter-helper.native.test.ts
+          if [[ -n "$AVE_CI_TEST_ONLY_PLAN" ]]; then
+            selected=$(node scripts/lib/ci-test-only-selection.mjs "$suite")
+            if [[ -z "$selected" ]]; then
+              echo "::notice::test-only diff: 0 files for this job"
+              exit 0
+            fi
+            unset AVE_CI_TEST_ONLY_PLAN
+          fi
+          previous=$(cat /proc/sys/kernel/yama/ptrace_scope)
+          trap 'sudo sysctl -w kernel.yama.ptrace_scope="$previous"' EXIT
+          sudo sysctl -w kernel.yama.ptrace_scope=0
+          command -v cargo
+          bun run test:vitest -- run --reporter=default --reporter=json --outputFile="$RUNNER_TEMP/linux-bridge-scope-zero.json" \
+            "$suite" -t "native Linux proxy bridge"
+          jq -e '[.testResults[].assertionResults[] | select(.title | test("every route into its bridge|non-dumpable step")) | .status]
+            | length == 2 and all(. == "passed")' "$RUNNER_TEMP/linux-bridge-scope-zero.json"
 
   linux-confinement-x64:
     name: Linux shell container boundary (x64)
@@ -2059,4 +2171,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
       - *linux-container-prove
+      - *download-test-only-plan
       - *linux-shell-boundary
+      - *linux-holders-without-slirp
+      - *linux-bridge-ptrace-scope-zero

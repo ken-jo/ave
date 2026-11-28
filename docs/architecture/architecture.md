@@ -3338,7 +3338,7 @@ The [decision tree](permission-decision-tree.md) states the policy: what is priv
 
 **Windows ACL route for a home directly under the OS profile.** On the ACL route, an Ave home directly under the OS profile (the default `%USERPROFILE%\.ave`) gets no root deny, because a stamp also denies `FILE_DELETE_CHILD` inheritably on the target's parent, and on the profile root that propagates through the whole profile and exceeds the init timeout. Instead each existing top-level child directory that is not wholly re-allowed is denied as its own directory row, so the parent stamp lands on the Ave home. File rows inside those children are dropped; `sessions` and `certs` keep their floor rows; granted grandchildren (a plugin or MCP server directory) are re-opened by their explicit allow exactly as under the relocated root. Each composition (one shell command, one extension or worker child spawn) takes one boundary snapshot: it reads the home's top-level entries once (one readdir, no recursion) and pins the home and each entry that is not wholly re-allowed through the shared non-following path facts, and the floor, session policy, masks, evidence, read/write projections and deny targets of that composition all use it. Nothing is cached across commands or spawns; the next invocation takes a fresh snapshot, and a refusal holds for the rest of its composition. Only a home the native walk reports absent projects no child: a home that is, or lies beneath, a link or any other reparse point (dangling or not), a home that cannot be listed or pinned, and an entry that is a link or any other reparse point or vanishes between listing and pinning all refuse confinement instead of launching with fewer denies. The readdir may list a linked home's target before the refusal, but no linked projection is ever accepted or stamped. Residual set: top-level files of the Ave home stay file rows (see the file-row limit below), and a top-level child created after enumeration is not covered by that projection; the next projection denies it. Entry names are case-folded, so case-distinct siblings in a case-sensitive directory are not supported and no coverage is claimed for them. A relocated Ave home gets the root deny. The [Windows container route](#windows-agent-shells-in-microsoft-execution-containers) declares the full Ave home read boundary at its roots.
 
-Limit of file rows (home dotfiles such as `.gitconfig` and `.npmrc`, and the top-level files of a Windows profile-child Ave home on the ACL route): Linux bind masks and Windows ACL stamps are bound to the file object present at spawn, so a long-lived confined child can read a file the host replaces by rename-over. A file absent at spawn has no object to bind; it is held only by that backend's absent-path handling, which this boundary does not change. macOS seatbelt rules are path-based, so neither case reopens a denied path there. Per-exec shells re-apply masks and stamps on every spawn.
+Limit of file rows (home dotfiles such as `.gitconfig` and `.npmrc`, and the top-level files of a Windows profile-child Ave home on the ACL route): Linux bind masks and the Windows ACL route's stamps are bound to the file object present at spawn, so a long-lived confined child can read a file the host replaces by rename-over, and on Linux can also write a write-protected one (measured: the mask is a mount on the old file, and the rename detaches it). A file absent at spawn has no object to bind; it is held only by that backend's absent-path handling, which this boundary does not change. macOS seatbelt rules follow the path (measured: a read-denied and a write-protected file both stay denied after the replace). The Windows container's write rule follows the path (measured: still not writable); its read-deny case is stated here only once measured. Per-exec shells re-apply masks and stamps on every spawn.
 
 Absent protected names on Windows (owner decision 2026-11-24): an ACL can
 only deny an existing object, and Ave never creates a placeholder in the
@@ -3500,8 +3500,18 @@ paths before the ranker runs. A directory the resolver cannot enumerate
 stays masked, and a grant that would reopen it refuses the launch.
 
 The runtime root holds a PID-marker registry of the created directories and
-their owners. Concurrent launches retain shared entries until their last owner
-exits. Boot and the next launch sweep entries whose recorded owners are gone,
+their owners. A directory is journalled as pending before it is created, so a
+crash in between leaves an entry the sweep can retire. A pending folder is
+removed only when it is empty, under its recorded parent, and newer than its
+entry. A journal that cannot be read refuses every launch by name until a
+restart. The boot sweep, which holds the host instance lock, sets it aside as
+`shell-placeholders.corrupt-<time>.json` and starts empty, with one notice that
+empty folders from before may remain.
+Concurrent launches retain shared entries until their last owner
+exits. A launch holds every tracked folder its rows equal or sit under. It
+denies another run's live placeholder under its own write roots, and validates
+its folders again when the command exits. A folder replaced on the host
+meanwhile is named in the result (`container-placeholder-changed`). Boot and the next launch sweep entries whose recorded owners are gone,
 checking process start identities to detect PID reuse. Cleanup only removes
 empty directories whose identities and parents still match. A parent containing
 an ordinary sibling written by the command stays in place. Linux shells use
@@ -3530,10 +3540,12 @@ container must read the listener's 403 refusal, and the host must record the
 nonce. The other targets are `192.0.2.1:443` and `[2001:db8::1]:443`, a
 just-closed port and a TCP arrival listener on the host's primary IPv4, and a
 UDP nonce sent to a host-side listener, which is checked by arrival only. `rawIp` is `blocked`
-only when the control passed, both documentation addresses were refused, and
-nothing reached the host. A refusal is local (EPERM or EACCES), or, for the IPv6
-target with no route, a network namespace holding only `lo`.
-The launcher's slirp4netns network drops direct connects rather than refusing
+only when the control passed, both documentation addresses were refused,
+nothing reached the host, and the UDP datagram was measured: sent and waited
+for, or refused locally. An unmeasured datagram leaves `udp-unmeasured`.
+No canary has observed a TCP policy refusal (EPERM or EACCES) through the
+launcher's slirp4netns network, so on it none counts as refused.
+That network drops direct connects rather than refusing
 them, so on it a timeout alone is never evidence. A dropped target counts as
 refused by arrival only when all of these hold:
 - a TCP listener on the host's primary IPv4 took an unconfined connect from Ave;
@@ -3543,9 +3555,20 @@ refused by arrival only when all of these hold:
   proxy. The container cannot read its own firewall, so Ave reads the restore
   payloads the launcher's network supervisor applied while the container runs.
 
+The arrival listener counts the connections it accepts: only one, the
+control's, is clean. A native control opens the container's firewall from the
+container's own user namespace and sees its connect arrive, so the path does
+deliver. A host whose primary IPv4 lies in slirp4netns' own network
+(`10.0.2.0/24`) would not, so it publishes `unknown` (`arrival-unprovable`).
+The launcher writes no IPv6 restore payload on a kernel without an IPv6 stack,
+so such a host reads no firewall and is always `unknown`. The payloads are read
+through one descriptor each, opened without following links, and count only
+when this account owns them and nobody else can write them or their folder;
+the canary's launcher runs under umask 077 for that reason.
+
 Any arrival, at either listener, makes the verdict `unknown`, and a listener
 that cannot bind leaves it `unknown` without making the container unavailable.
-The published evidence kind is `measured`, `structural` or `arrival`.
+The published evidence kind is `arrival` for this backend.
 The verdict lives in memory for the boot. An unmeasured or unavailable
 container reports `unknown`. Settings names
 missing packages and provides distribution-specific install commands. An
@@ -3553,9 +3576,35 @@ unavailable shell route applies the existing no-confinement floor, including
 its session waiver and exact saved host-command rule when the floor is the only
 reason to ask. Headless runs deny. A failed contained launch is refused.
 
+The request carries no environment, because the launcher would put it on
+bwrap's command line, where any local process can read it. The shell's
+environment is a 0600 script beside the request under the runtime root, checked
+against its hash at launch. The launch writes those bytes into a socket on
+descriptor 9 and closes its side. It is never the file: the launcher's own shell
+inside the container keeps descriptor 9 open for the whole run, and a file there
+could be reopened for writing through `/proc`. The contained shell reads the
+socket whole with `/bin/cat` into its positional parameters, loads it once in
+a subshell (bash started as `sh` ends the shell on a failed assignment) and
+then for real, and closes it before the command. This is proved natively under
+dash and under bash started as `sh`. Every name must be one a POSIX
+shell can export and does not own; any other name refuses the launch. The
+filter helper closes every inherited descriptor but 9 and 4, among them one to
+the launcher's user namespace. Once the environment has loaded under the
+filter, the shell writes one byte on descriptor 4 just before the command. A
+shell whose environment did not load exits 125 with no such byte, reported as
+`container-environment-failed`, never as the command's status. A launcher error
+with no such byte is a refused start. A launcher error after it is a failed run
+(`container-run-failed`): its output is returned, because the command may have
+run in part. The boot canary keeps at most 64 KiB of its launcher's output and
+stops a launcher that writes more.
+
 Cancellation sends TERM to the launcher and escalates to its process group
 after two seconds if necessary. The launcher also enforces the command deadline,
-and a run it ends that way is reported as timed out. Git quarantine runs after
+and a run it ends that way is reported as timed out. A launcher stopped by a
+signal cannot remove its own `/tmp/mxc-bwrap-proxy-*` state folder, so the
+launch removes it afterwards. The launch reads the folder's path from the argv
+of that launcher's network supervisor while the command runs. It never sweeps
+any other folder. Git quarantine runs after
 every launch. The command shares stderr with the launcher, so an error line
 there is never read as the launcher's verdict. A refused start is read only
 from the launcher's own log, which it writes into the request's staging folder
@@ -3563,6 +3612,71 @@ under the runtime root, out of the container's reach. The request staging and
 placeholder holds are released after exit. The extra
 network setup adds roughly 0.1–0.2 seconds to a typical command on the measured
 arm64 host.
+
+### Linux extensions and hooks in containers
+
+**Status: built, route off.** The holder path below is built and tested, but the Linux holder route is off
+(`holderRoute: false` in `src/shared/container-platform.ts`): today Linux extensions and hooks still run on the
+existing sandbox, no Linux extension start asks for the no-backend consent, and no holder canary runs at boot. This
+section describes what the route does once it is switched on; the decision tree gains its Linux text with that
+switch.
+
+Once the Linux holder route is on, extension processes (plugin children, MCP
+stdio servers, the worker parent and workers) and hooks run as holders: each its
+own bwrap sandbox, started by Ave, with a network namespace that holds only
+`lo`. Holders need `bwrap` alone; the shells' `slirp4netns`, `iptables`, `ip`,
+`nsenter` and `unshare` are not used, so a host without them contains its
+extensions and hooks while its shells take the no-confinement floor. Settings
+shows the two lines separately, each with its own missing-package list.
+
+**Translation.** Ave writes the holder's bubblewrap request, as for a shell, and
+runs the pinned `lxc-exec` once with a private capture folder first on its
+`PATH`. That folder holds one file named `bwrap`, a byte copy of the pinned
+seccomp helper, which records the launcher's call (each argument and the bytes
+of its `--file` and `--seccomp` descriptors) instead of running it. Before
+anything runs, the record must pass the structure checks: one record, the
+required isolation words, every option on the measured allowlist, `--file` and
+`--seccomp` as the only descriptor options, the exact program after `--`, and
+every bind destination outside the launcher's baseline taken from the request
+(a file deny is the launcher's `--ro-bind /dev/null`). A failure is
+`request-rejected`, with no fallback. Ave then runs the recorded call itself,
+with the system `bwrap` whose identity boot recorded, through the managed-child
+gate, and admits it by a digest of the request, the call and the program.
+**When the launcher pin changes,** a golden test of the option sequence for one
+fixed request fails in the native CI step, so a person reads the new shape
+before any user's machine runs it.
+
+**The bridge.** Inside the namespace the helper listens on
+`127.0.0.1:3128` and forwards each connection to the holder's own invocation
+proxy socket, a Unix socket file Ave main holds. The proxy variables name that
+port. The helper makes itself non-dumpable before it forwards, so a holder
+cannot reach the unfiltered bridge even at `ptrace_scope` 0, and the holder's
+own process gets the Unix-socket filter.
+
+**Verified.** The ready byte arrives after the filters are in place; the
+resident set (outer bwrap, inner bwrap, bridge) is read then. A stop sends TERM
+to the holder's own process, waits, then TERM to bwrap and KILL to its group,
+and is verified only when all three residents are gone. Otherwise the stop is
+"cleanup unverified" and the existing quarantine applies. A per-holder marker
+under the runtime root lets the next boot stop a holder an exited Ave left
+running, matched by start time and executable, before the first listener opens.
+
+**Boot.** A holder canary, separate from the shells', proves the route: the
+pinned programs, the runtime root, a trusted `bwrap` and its namespaces, the
+capture folder, then one real holder with a filesystem deny beside a control,
+the bridge, the Unix-socket filter and no nested user namespace. The first
+failure is the reason Settings shows. While it runs, starts wait; unproven,
+each start asks once (headless leaves it unstarted) and a hook has no
+substrate. The holder's raw IP is measured in its own namespace: `blocked`
+needs the control through the bridge, `ENETUNREACH` for IPv4 (and IPv6 or
+structural absence), no TCP or UDP arrival at the host's address with the
+arrival control passed, and only `lo`; anything less is `unknown`.
+
+**Limits.** A file deny binds the file present at spawn (above). A revocation
+between the gate and the ready byte is caught by the post-start recheck, which
+stops the holder. The offline host children (local inference, the document
+engine) stay on the existing sandbox on Linux, because the document engine needs
+a Unix socket the holder's filter refuses.
 
 ### Windows agent shells in Microsoft Execution Containers
 

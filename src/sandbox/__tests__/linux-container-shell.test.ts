@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -21,6 +21,14 @@ describe("Linux launcher verdict from its own log", () => {
     expect(launcherOutcomeFromLog(START_FAILED)).toBe("refused");
     expect(launcherOutcomeFromLog(PARSE_FAILED)).toBe("refused");
     expect(launcherOutcomeFromLog("")).toBe("unrecorded");
+  });
+
+  it("reads a bare exit line, with no text after the number", () => {
+    expect(launcherOutcomeFromLog(stamp("Exit code: 0\n"))).toBe("exited");
+    expect(launcherOutcomeFromLog(stamp("Exit code: 7"))).toBe("exited");
+    expect(launcherOutcomeFromLog(stamp("Exit code: -1\nError: Bubblewrap: slirp4netns exited during startup\n"))).toBe("refused");
+    expect(launcherOutcomeFromLog(stamp("Exit code: -1\nError: script timed out after 1000ms\n"))).toBe("timed-out");
+    expect(launcherOutcomeFromLog(stamp("Exit code: 0x0\n"))).toBe("unrecorded");
   });
 });
 
@@ -44,7 +52,7 @@ describe.runIf(process.platform !== "win32")("Linux container shell exit classif
 
   // A stand-in launcher: copies its environment descriptor, writes the given log to `--log-file`, the given stderr, and
   // exits with the given status.
-  async function run(log: string, stderr: string, status: number) {
+  async function run(log: string, stderr: string, status: number, options: { readonly started?: boolean; readonly stdout?: string } = {}) {
     const staging = mkdtempSync(join(root, "shell-"));
     lastStaging = staging;
     const launcher = join(staging, "launcher");
@@ -52,18 +60,22 @@ describe.runIf(process.platform !== "win32")("Linux container shell exit classif
     writeFileSync(join(staging, "stderr"), stderr);
     writeFileSync(launcher, `#!/bin/sh\n[ "$1" = --log-file ] || exit 90\n[ "$3" = --config ] || exit 91\n`
       + `cat <&9 > ${JSON.stringify(join(staging, "received-environment"))} || exit 92\n`
+      // A started command: the shell's bootstrap inside writes the ready byte, and the command prints.
+      + (options.started === true ? `printf '\\n' >&4 || exit 93\nexec 4>&-\nprintf %s ${JSON.stringify(options.stdout ?? "")}\n` : "")
       + `cat ${JSON.stringify(join(staging, "log"))} >> "$2"\ncat ${JSON.stringify(join(staging, "stderr"))} >&2\nexit ${status}\n`);
     chmodSync(launcher, 0o755);
     const { completion, child } = startMxcLinuxShell({ launcher, helper: "/bin/true", env: { PATH: "/usr/bin:/bin" } },
       stage(staging), 10_000, new AbortController().signal, () => {}, "test:linux-shell-exit");
-    child.stdout.resume();
+    const stdout: Buffer[] = [];
+    child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
     child.stderr.resume();
-    return completion;
+    const exit = await completion;
+    return { ...exit, stdout: Buffer.concat(stdout).toString("utf8") };
   }
 
   it("keeps a command's own 255 and error envelope as an exit status, not a refused start", async () => {
-    await expect(run(EXITED_255, `${FORGED_ENVELOPE}\nRunner completed in 1 ms\nExit code: -1\n`, 255))
-      .resolves.toMatchObject({ code: 255, rejected: false, timedOut: false, cancelled: false });
+    await expect(run(EXITED_255, `${FORGED_ENVELOPE}\nRunner completed in 1 ms\nExit code: -1\n`, 255, { started: true }))
+      .resolves.toMatchObject({ code: 255, rejected: false, runFailed: false, timedOut: false, cancelled: false });
   });
 
   it("reports the launcher's own timeout as timed out", async () => {
@@ -73,6 +85,54 @@ describe.runIf(process.platform !== "win32")("Linux container shell exit classif
   it("reports a refused start only from the launcher log", async () => {
     await expect(run(START_FAILED, "", 255)).resolves.toMatchObject({ rejected: true, timedOut: false });
     await expect(run(PARSE_FAILED, "", 1)).resolves.toMatchObject({ code: 1, rejected: true });
+  });
+
+  it("reports a launcher failure after the command started as a failed run with its output, not a refused start", async () => {
+    await expect(run(START_FAILED, "", 255, { started: true, stdout: "partial output" }))
+      .resolves.toMatchObject({ rejected: false, runFailed: true, timedOut: false, cancelled: false, stdout: "partial output" });
+    // Control: the same log with no ready byte is a refused start.
+    await expect(run(START_FAILED, "", 255)).resolves.toMatchObject({ rejected: true, runFailed: false });
+  });
+
+  it("names a shell whose environment did not load, before its ready byte, as a refused start", async () => {
+    await expect(run(stamp("Exit code: 125 (0x7D)\n"), "", 125)).resolves.toMatchObject({ rejected: true, environmentFailed: true, runFailed: false });
+    // The filter helper failing to start the shell exits before the ready byte too: a refused start, not the command's.
+    for (const code of [126, 127]) {
+      await expect(run(stamp(`Exit code: ${code}\n`), "", code)).resolves.toMatchObject({ rejected: true, environmentFailed: false });
+    }
+    // Control: a command that itself exits 125 after the ready byte is its own status.
+    await expect(run(stamp("Exit code: 125 (0x7D)\n"), "", 125, { started: true }))
+      .resolves.toMatchObject({ code: 125, rejected: false, environmentFailed: false });
+  });
+
+  it("keeps a launcher timeout after the command started as timed out", async () => {
+    await expect(run(TIMED_OUT, "", 255, { started: true })).resolves.toMatchObject({ rejected: false, runFailed: false, timedOut: true });
+  });
+
+  it.runIf(process.platform === "linux")("removes its own launcher's network state folder after a killed run, and no other", async () => {
+    const staging = mkdtempSync(join(root, "shell-"));
+    const own = mkdtempSync("/tmp/mxc-bwrap-proxy-");
+    const other = mkdtempSync("/tmp/mxc-bwrap-proxy-");
+    try {
+      const launcher = join(staging, "launcher");
+      // As the pinned launcher: its network supervisor is a child named by its argv, handed the state folder.
+      writeFileSync(launcher, `#!/bin/sh\nsh -c 'sleep 3' mxc-bwrap-proxy-supervisor ${JSON.stringify(own)} > /dev/null 2>&1 4>&- &\n`
+        + "printf '\\n' >&4\nexec 4>&-\nwait\n");
+      chmodSync(launcher, 0o755);
+      const controller = new AbortController();
+      const { completion, child } = startMxcLinuxShell({ launcher, helper: "/bin/true", env: { PATH: "/usr/bin:/bin" } },
+        stage(staging), 10_000, controller.signal, () => {}, "test:linux-shell-state");
+      child.stdout.resume();
+      child.stderr.resume();
+      await new Promise(resolve => setTimeout(resolve, 300));
+      controller.abort();
+      await expect(completion).resolves.toMatchObject({ cancelled: true });
+      expect(existsSync(own)).toBe(false);
+      expect(existsSync(other)).toBe(true);
+    } finally {
+      rmSync(own, { recursive: true, force: true });
+      rmSync(other, { recursive: true, force: true });
+    }
   });
 
   it("refuses to reuse an existing launcher log", async () => {

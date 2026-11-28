@@ -43,7 +43,8 @@ import {
   type EgressProtocolCoverage,
   type SandboxCapabilityInfo,
   type ContainerRawIpProbeVerdict,
-  type MacRawIpUnknownReason,
+  type LinuxRawIpUnknownReason, type MacRawIpUnknownReason,
+  type SandboxContainerHolderUnavailableReason,
   type SandboxContainerShellUnavailableReason,
   type SandboxMxcUnavailableReason,
   type SandboxWindowsExtensionReason,
@@ -220,6 +221,31 @@ const LINUX_CONTAINER_REASON_KEY = {
   "namespaces-unavailable": "permissionsTab.osSandboxLinuxContainerReasonNamespacesUnavailable",
 } as const satisfies Record<SandboxContainerShellUnavailableReason, string>;
 
+const LINUX_HOLDER_REASON_KEY = {
+  "unsupported-arch": "permissionsTab.osSandboxLinuxContainerReasonUnsupportedArch",
+  "binary-missing": "permissionsTab.osSandboxLinuxContainerReasonBinaryMissing",
+  "launcher-mismatch": "permissionsTab.osSandboxLinuxContainerReasonLauncherMismatch",
+  "runtime-root-unproved": "permissionsTab.osSandboxLinuxContainerReasonRuntimeRootUnproved",
+  "request-rejected": "permissionsTab.osSandboxLinuxHolderReasonRequestRejected",
+  "capture-folder-untrusted": "permissionsTab.osSandboxLinuxHolderReasonCaptureFolderUntrusted",
+  "tools-missing": "permissionsTab.osSandboxLinuxHolderReasonToolsMissing",
+  "namespaces-unavailable": "permissionsTab.osSandboxLinuxContainerReasonNamespacesUnavailable",
+  "holder-start-failed": "permissionsTab.osSandboxLinuxHolderReasonHolderStartFailed",
+} as const satisfies Record<SandboxContainerHolderUnavailableReason, string>;
+
+/** The second Linux line (design 6.3): extensions and hooks run as holders, which need bwrap alone. */
+function LinuxHolderStatus({ status }: { status: NonNullable<SandboxCapabilityInfo["containerHolder"]> }) {
+  const { t } = useTranslation();
+  return (
+    <div data-testid="os-sandbox-linux-holder" data-state={status.state}
+      className="rounded-md border bg-muted/(--opacity-light) px-3 py-2 text-dense text-muted-foreground">
+      <p>{status.state === "checking" ? t("permissionsTab.osSandboxLinuxHolderChecking")
+        : status.state === "available" ? `${t("permissionsTab.osSandboxLinuxHolderAvailable")} ${macRawIpSentence(status.rawIpProbe)}`
+          : t("permissionsTab.osSandboxLinuxHolderUnavailable", { reason: t(LINUX_HOLDER_REASON_KEY[status.reason]) })}</p>
+    </div>
+  );
+}
+
 const LINUX_TOOL_PACKAGES = new Map([
   ["bwrap", "bubblewrap"], ["slirp4netns", "slirp4netns"], ["ip", "iproute2"],
   ["unshare", "util-linux"], ["nsenter", "util-linux"], ["iptables", "iptables"],
@@ -240,7 +266,7 @@ function LinuxContainerStatus({ status }: { status: NonNullable<SandboxCapabilit
   return (
     <div data-testid="os-sandbox-linux-container" data-state={status.state}
       className="space-y-1 rounded-md border bg-muted/(--opacity-light) px-3 py-2 text-dense text-muted-foreground">
-      <p>{status.state === "available" ? t("permissionsTab.osSandboxLinuxContainerAvailable")
+      <p>{status.state === "available" ? `${t("permissionsTab.osSandboxLinuxContainerAvailable")} ${macRawIpSentence(status.rawIpProbe)}`
         : t("permissionsTab.osSandboxLinuxContainerUnavailable", { reason: t(LINUX_CONTAINER_REASON_KEY[status.reason]) })}</p>
       {commands.length > 0 ? (
         <dl className="space-y-1">
@@ -265,9 +291,10 @@ const MAC_RAW_IP_REASON_KEY = {
   "no-evidence": "permissionsTab.osSandboxMacContainerRawIpReasonNoEvidence",
   "control-failed": "permissionsTab.osSandboxMacContainerRawIpReasonControlFailed",
   "udp-unmeasured": "permissionsTab.osSandboxMacContainerRawIpReasonUdpUnmeasured",
-} as const satisfies Record<MacRawIpUnknownReason, string>;
+  "arrival-unprovable": "permissionsTab.osSandboxLinuxContainerRawIpReasonArrivalUnprovable",
+} as const satisfies Record<MacRawIpUnknownReason | LinuxRawIpUnknownReason, string>;
 
-/** The measured raw-IP sentence for an available macOS container; an unmeasured one reads as not confirmed. */
+/** The measured raw-IP sentence for an available macOS or Linux container; an unmeasured one reads as not confirmed. */
 function macRawIpSentence(rawIp: ContainerRawIpProbeVerdict | undefined): string {
   const verdict = rawIp ?? { rawIp: "unknown", reason: "no-evidence" } as const;
   return verdict.rawIp === "blocked" ? t("permissionsTab.osSandboxMacContainerRawIpBlocked")
@@ -1287,6 +1314,7 @@ export function PermissionsTab({
   const windowsSubstrate = sandboxCapability?.windowsSubstrate ?? null;
   const macContainer = sandboxCapability?.platform === "darwin" ? sandboxCapability.containerShell : undefined;
   const linuxContainer = sandboxCapability?.platform === "linux" ? sandboxCapability.containerShell : undefined;
+  const linuxHolder = sandboxCapability?.platform === "linux" ? sandboxCapability.containerHolder : undefined;
 
   // The OS sandbox disclosure reads its own host snapshot and never waits on the panel reads; only the two rows that state stored settings do.
   const settingsNotice = panelLoadNotice("os-sandbox-settings", ["settings"]);
@@ -1448,6 +1476,7 @@ export function PermissionsTab({
             </p>
           ) : null}
           {linuxContainer ? <LinuxContainerStatus status={linuxContainer} /> : null}
+          {linuxHolder ? <LinuxHolderStatus status={linuxHolder} /> : null}
           {windowsSubstrate ? (
             <div
               data-testid="os-sandbox-windows-substrate"

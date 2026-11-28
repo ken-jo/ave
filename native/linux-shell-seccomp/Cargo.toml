@@ -9,6 +9,10 @@ publish = false
 name = "apply-seccomp"
 path = "src/main.rs"
 
+[features]
+# Test-only: a bridge left dumpable, the control for the native bridge boundary case. Never built for packaging.
+dumpable-bridge-control = []
+
 [dependencies]
 libc = "=0.2.177"
 seccompiler = "=0.5.0"

@@ -3,6 +3,7 @@ import { availableParallelism } from "node:os";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { runCommand, splitArgumentsWithinBudget } from "./hooks/spawn-command.mjs";
+import { EMPTY_TEST_ONLY_NOTICE, intersectTestOnlyFiles, readTestOnlyFiles } from "./lib/ci-test-only-selection.mjs";
 import { collectedVitestFiles, isCollectedVitestFile } from "./lib/vitest-collection.mjs";
 import { CENSUS_TIER_TESTS, NATIVE_TIER_TESTS } from "./lib/vitest-tiers.mjs";
 
@@ -14,6 +15,17 @@ export const WINDOWS_TEST_SHARDS = [1, 2, 3, 4, 5, 6, 7, 8];
 export const WINDOWS_TEST_WORKERS = 2;
 export const WINDOWS_TIER_TEST_SHARDS = [1, 2, 3];
 const WINDOWS_PLAN_TIERS = ["native", "census"];
+
+/** AVE_WINDOWS_TEST_TIERS names the tiers the build job selected, comma-separated. */
+export function windowsPlanTiers(value) {
+  if (value === undefined) {
+    throw new Error("AVE_WINDOWS_TEST_TIERS is unset. For local replay, set AVE_WINDOWS_TEST_TIERS= for a plan with no tiers or set AVE_WINDOWS_TEST_TIERS to the build's comma-separated tier list.");
+  }
+  const tiers = value.split(",").map(tier => tier.trim()).filter(Boolean);
+  for (const tier of tiers) if (!WINDOWS_PLAN_TIERS.includes(tier)) throw new Error(`Unknown Windows test tier: ${tier}`);
+  if (new Set(tiers).size !== tiers.length) throw new Error("AVE_WINDOWS_TEST_TIERS repeats a tier");
+  return tiers;
+}
 
 /** The collected suites the default shards run. */
 export function defaultWindowsSuites(collected) {
@@ -43,11 +55,14 @@ export function windowsTestCommands(files, bun = "bun.exe") {
  * Check that a plan assigns every collected suite to exactly one fixed,
  * non-empty shard. The reference is the caller's own checkout, not the plan.
  */
-export function assertWindowsPlan(plan, collected) {
+export function assertWindowsPlan(plan, collected, expectedTiers) {
   assertShardAssignment(plan?.shards, WINDOWS_TEST_SHARDS, defaultWindowsSuites(collected), "Windows plan");
   const tiers = plan?.tiers;
   if (!Array.isArray(tiers) || tiers.some(tier => !WINDOWS_PLAN_TIERS.includes(tier)) || new Set(tiers).size !== tiers.length) {
     throw new Error(`Windows plan tiers must be a subset of ${WINDOWS_PLAN_TIERS.join(", ")}`);
+  }
+  if (tiers.length !== expectedTiers.length || expectedTiers.some(tier => !tiers.includes(tier))) {
+    throw new Error("Windows plan tiers differ from the build selection");
   }
   if (tiers.length === 0) {
     if (!Array.isArray(plan.tierShards) || plan.tierShards.length !== 0) throw new Error("Windows plan without tiers must have no tier shards");
@@ -74,11 +89,11 @@ function assertShardAssignment(shards, ids, collected, what) {
 }
 
 /** The files of one default or tier shard after the plan is checked against the checkout at root. */
-export function windowsShardFiles(plan, shard, root, tier = "default") {
+export function windowsShardFiles(plan, shard, root, expectedTiers, tier = "default") {
   if (tier !== "default" && tier !== "tiers") throw new Error(`Invalid Windows test tier: ${tier}`);
   const ids = tier === "default" ? WINDOWS_TEST_SHARDS : WINDOWS_TIER_TEST_SHARDS;
   if (!ids.includes(shard)) throw new Error(`Invalid Windows test shard: ${shard}`);
-  assertWindowsPlan(plan, collectedVitestFiles(root));
+  assertWindowsPlan(plan, collectedVitestFiles(root), expectedTiers);
   if (tier === "tiers" && plan.tiers.length === 0) throw new Error("The Windows plan selects no tier");
   return (tier === "default" ? plan.shards : plan.tierShards).find(bucket => bucket.id === shard).files;
 }
@@ -99,7 +114,14 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
   if (process.argv.length !== 2) throw new Error("The Windows shard runner takes its plan and shard from the environment");
   const { AVE_WINDOWS_TEST_PLAN: planPath, AVE_WINDOWS_TEST_SHARD: shard, AVE_WINDOWS_TEST_TIER: tier = "default" } = process.env;
   if (!planPath || !/^[1-9]\d*$/u.test(shard ?? "")) throw new Error("A Windows test shard requires AVE_WINDOWS_TEST_PLAN and AVE_WINDOWS_TEST_SHARD");
-  const files = windowsShardFiles(JSON.parse(readFileSync(planPath, "utf8")), Number(shard), process.cwd(), tier);
+  const selection = readTestOnlyFiles();
+  const expectedTiers = windowsPlanTiers(process.env.AVE_WINDOWS_TEST_TIERS);
+  const inventory = windowsShardFiles(JSON.parse(readFileSync(planPath, "utf8")), Number(shard), process.cwd(), expectedTiers, tier);
+  const files = intersectTestOnlyFiles(inventory, selection);
+  if (files.length === 0) {
+    console.log(EMPTY_TEST_ONLY_NOTICE);
+    process.exit(0);
+  }
   console.log(`Windows ${tier} shard ${shard}: ${files.length} suite(s), ${availableParallelism()} logical CPU(s)`);
   runWindowsTests(files);
 }

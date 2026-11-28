@@ -1,13 +1,14 @@
 import { execFileSync, spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { createSocket, type Socket as UdpSocket } from "node:dgram";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
 import { connect, createServer, type Server } from "node:net";
 import { networkInterfaces } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { t } from "../../i18n/index.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import { containerTarget } from "../../shared/container-platform.js";
 import { createContainedShellLifecycle } from "../../tools/contained-shell-lifecycle.js";
@@ -16,14 +17,36 @@ import { prepareMxcPosixShellLaunch } from "../../tools/mxc-posix-shell-launch.j
 import { openEgressInvocation } from "../egress-invocations.js";
 import { startEgressRelayService, stopEgressRelayService } from "../egress-relay/relay.js";
 import { launcherPathFor, pinnedLauncherSha256 } from "../mxc-launcher.js";
-import { _runLinuxCanaryForTest as runCanary, detectHostMxcLinuxShellSupport, requireMxcLinuxShellPrograms } from "../mxc-linux.js";
+import { _runLinuxCanaryForTest as runCanary, buildBubblewrapShellRequest, detectHostMxcLinuxShellSupport, requireMxcLinuxShellPrograms } from "../mxc-linux.js";
 import { LINUX_RAW_IP_PROBER, primaryIpv4 } from "../mxc-linux-raw-ip.js";
+import { startMxcLinuxShell } from "../../sandbox/linux-container-shell.js";
+import { openInvocationProxyListener } from "../egress-invocation-listener.js";
+import { posixPolicyLookups, rankPosixContainerRows } from "../mxc-posix.js";
+import { buildPolicyModel, policyGrantRow } from "../policy-model.js";
 import { _forgetMxcRuntimeRootForTest, currentMxcRuntimeHost, establishMxcRuntimeRoot, requireMxcContainerStartRoot } from "../mxc-runtime-root.js";
 import { __resetActiveSandboxCapabilityForTest, __resetContainerShellSubstrateForTest, __resetSandboxRequestedAtBootForTest,
   setActiveSandboxCapability, setContainerShellSubstrate, setShellSandboxRequestedAtBoot } from "../sandbox-capability.js";
 import { quoteSandboxWrappedWord as quote } from "../sandbox-wrapped-command.js";
 
 const NATIVE = process.env.AVE_RUN_MXC_LINUX_BOUNDARY === "1";
+
+/** `python3 -c` program: enter pid's user and network namespaces and exec argv[2:] with CAP_NET_ADMIN ambient. */
+const AMBIENT_NET_ADMIN_EXEC = `import ctypes, os, sys
+libc = ctypes.CDLL(None, use_errno=True)
+pid = sys.argv[1]
+for kind, flag in (("user", 0x10000000), ("net", 0x40000000)):
+    fd = os.open(f"/proc/{pid}/ns/{kind}", os.O_RDONLY)
+    if libc.setns(fd, flag) != 0: raise OSError(ctypes.get_errno(), f"setns {kind}")
+    os.close(fd)
+class Header(ctypes.Structure): _fields_ = [("version", ctypes.c_uint32), ("pid", ctypes.c_int)]
+class Data(ctypes.Structure): _fields_ = [("effective", ctypes.c_uint32), ("permitted", ctypes.c_uint32), ("inheritable", ctypes.c_uint32)]
+header, data = Header(0x20080522, 0), (Data * 2)()
+if libc.capget(ctypes.byref(header), data) != 0: raise OSError(ctypes.get_errno(), "capget")
+data[0].inheritable |= 1 << 12
+if libc.capset(ctypes.byref(header), data) != 0: raise OSError(ctypes.get_errno(), "capset")
+if libc.prctl(47, 2, 12, 0, 0) != 0: raise OSError(ctypes.get_errno(), "ambient")
+os.execvp(sys.argv[2], sys.argv[2:])
+`;
 
 describe.runIf(NATIVE)("native Linux shell container boundary", () => {
   let root: string;
@@ -179,6 +202,22 @@ describe.runIf(NATIVE)("native Linux shell container boundary", () => {
     expect(existsSync(join(work, ".ave", "commands"))).toBe(false);
   });
 
+  it("names a placeholder the host replaced while the command ran, at exit", async () => {
+    startEgressRelayService({ ask: async () => false });
+    const { launch } = await prepare("touch ready; while test ! -e release; do sleep 0.02; done");
+    const pending = run(launch);
+    await vi.waitFor(() => expect(existsSync(join(work, "ready"))).toBe(true));
+    // Moved aside, so the replacement cannot reuse the inode number a removed folder would free.
+    renameSync(join(work, ".vscode"), join(work, "moved-vscode"));
+    mkdirSync(join(work, ".vscode"));
+    writeFileSync(join(work, "release"), "");
+    const result = await pending;
+    expect(result.code, result.stderr).toBe(0);
+    expect(result).toMatchObject({ cleanupNotice: expect.stringContaining(t("sandboxPolicy.linuxPlaceholderChanged", { path: join(work, ".vscode") })) });
+    rmSync(join(work, ".vscode"), { recursive: true });
+    rmSync(join(work, "moved-vscode"), { recursive: true });
+  });
+
   it("keeps overlapping placeholder owners until the final shell exits", async () => {
     startEgressRelayService({ ask: async () => false });
     const first = await prepare("touch a-ready; while test ! -e release-a; do sleep 0.02; done");
@@ -282,6 +321,40 @@ ${address6 === undefined ? "print('refused')" : `print(tcp(socket.AF_INET6, ('${
     });
   });
 
+  it("delivers the container's own connect to the arrival listener through the backend when its firewall is open", async () => {
+    const programs = await requireMxcLinuxShellPrograms(resources);
+    // The control for the arrival evidence above: the same canary with the launcher's egress firewall opened from the
+    // container's own user namespace, which this account owns, so no root is needed. What the container then sends
+    // must reach the host-side listeners, so "nothing arrived" above is a measurement of the drop, not of the path.
+    const ownNet = readlinkSync("/proc/self/ns/net");
+    const descendants = (pid: number): number[] => {
+      const children = readdirSync(`/proc/${pid}/task`).flatMap(task =>
+        readFileSync(`/proc/${pid}/task/${task}/children`, "utf8").trim().split(/\s+/u).filter(Boolean).map(Number));
+      return [...children, ...children.flatMap(descendants)];
+    };
+    const prober = `for i in $(seq 100); do [ -e firewall-open ] && break; sleep 0.05; done\n${LINUX_RAW_IP_PROBER}`;
+    const duringRun = async ({ launcherPid, working }: { readonly launcherPid: number | undefined; readonly working: string }) => {
+      if (launcherPid === undefined) throw new Error("no launcher pid");
+      let inside: number | undefined;
+      await vi.waitFor(() => {
+        inside = descendants(launcherPid).find(pid => {
+          try { return readlinkSync(`/proc/${pid}/ns/net`) !== ownNet && !readFileSync(`/proc/${pid}/cmdline`, "utf8").includes("slirp4netns"); } catch { return false; }
+        });
+        expect(inside).toBeDefined();
+        expect(existsSync(join(working, "control"))).toBe(true);
+      }, { timeout: 5_000 });
+      // nsenter here has no --keep-caps: join the user and network namespaces, then carry CAP_NET_ADMIN across exec
+      // as an ambient capability, as the launcher's own supervisor holds it.
+      for (const table of ["iptables", "ip6tables"]) {
+        execFileSync("python3", ["-I", "-c", AMBIENT_NET_ADMIN_EXEC, String(inside), table, "-I", "MXC_EGRESS", "1", "-j", "ACCEPT"]);
+      }
+      writeFileSync(join(working, "firewall-open"), "");
+    };
+    const result = await runCanary(requireMxcContainerStartRoot(), programs, undefined, { prober, duringRun });
+    expect(result).toMatchObject({ state: "available", rawIpProbe: { rawIp: "unknown", reason: "raw-ip-reachable" } });
+    expect(result.state === "available" ? result.rawIpProbe.reachableTargets : []).toEqual(expect.arrayContaining(["ta"]));
+  });
+
   it("reports an arrival at the host-side TCP listener during the run as unknown, raw-ip-reachable", async () => {
     const programs = await requireMxcLinuxShellPrograms(resources);
     let forced = false;
@@ -323,6 +396,22 @@ ${address6 === undefined ? "print('refused')" : `print(tcp(socket.AF_INET6, ('${
     });
   });
 
+  it("stops reading a canary launcher's output past its bound and stops the launcher", async () => {
+    const programs = await requireMxcLinuxShellPrograms(resources);
+    const scratch = mkdtempSync(join(requireMxcContainerStartRoot(), "canary-flood-"));
+    try {
+      // The dry run passes through; the real run floods stdout before it would start the real launcher.
+      const marker = join(scratch, "launcher-reached");
+      const flooding = join(scratch, "flooding-launcher");
+      writeFileSync(flooding, `#!/bin/sh\ncase " $* " in *" --dry-run "*) exec ${quote(programs.launcher)} "$@" ;; esac\n`
+        + `head -c 4194304 /dev/zero\n: > ${quote(marker)}\nexec ${quote(programs.launcher)} "$@"\n`, { mode: 0o755 });
+      expect(await runCanary(requireMxcContainerStartRoot(), { ...programs, launcher: flooding })).toEqual({ state: "shell-start-failed" });
+      expect(existsSync(marker)).toBe(false);
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   it("keeps the container available when the raw-IP prober stalls", async () => {
     const programs = await requireMxcLinuxShellPrograms(resources);
     const started = Date.now();
@@ -362,6 +451,23 @@ ${address6 === undefined ? "print('refused')" : `print(tcp(socket.AF_INET6, ('${
     expect(readFileSync(join(work, "seen-token"), "utf8")).toBe(secret);
   });
 
+  it("leaves the command no process in its namespace that holds the environment's descriptor", async () => {
+    startEgressRelayService({ ask: async () => false });
+    // Any process the command can see whose descriptor 9 is a file (the environment script, once) could be reopened
+    // for writing through /proc. The launcher's own shell keeps descriptor 9 for the whole run, so it must be a pipe.
+    const { launch } = await prepare([
+      "for fd in /proc/[0-9]*/fd/9; do",
+      '  [ -f "$fd" ] || continue',
+      '  printf "holder %s\\n" "$fd"; if (printf x >> "$fd") 2>/dev/null; then echo appended; fi',
+      "done",
+      'printf "marker %s\\n" "$AVE_MARKER"',
+    ].join("\n"), { env: { AVE_MARKER: "present" } });
+    const result = await run(launch);
+    expect(result.code, result.stderr).toBe(0);
+    // Delivered, and no process in the namespace holds it as a file.
+    expect(result.stdout).toBe("marker present\n");
+  });
+
   it("tunnels a verified TLS response through the invocation proxy", async () => {
     const hostname = "shell-boundary.example";
     const key = join(root, "server.key");
@@ -394,6 +500,8 @@ ${address6 === undefined ? "print('refused')" : `print(tcp(socket.AF_INET6, ('${
 
   it("stops a separate-session descendant and removes placeholders after cancellation", async () => {
     startEgressRelayService({ ask: async () => false });
+    const stateDirs = () => new Set(readdirSync("/tmp").filter(name => name.startsWith("mxc-bwrap-proxy-")));
+    const before = stateDirs();
     const { launch, lease } = await prepare("setsid /bin/sh -c 'while :; do echo tick >> ticks; sleep 0.02; done' & wait");
     const result = run(launch);
     const ticks = join(work, "ticks");
@@ -404,6 +512,8 @@ ${address6 === undefined ? "print('refused')" : `print(tcp(socket.AF_INET6, ('${
     const stopped = readFileSync(ticks, "utf8");
     await new Promise(resolve => setTimeout(resolve, 150));
     expect(readFileSync(ticks, "utf8")).toBe(stopped);
+    // The launcher was killed before it could remove its own network state folder; the launch removed it.
+    expect([...stateDirs()].filter(name => !before.has(name))).toEqual([]);
   });
 
   it("passes through command exit status, including 255 without a launcher error", async () => {
@@ -422,6 +532,54 @@ ${address6 === undefined ? "print('refused')" : `print(tcp(socket.AF_INET6, ('${
     expect(result.stderr).toContain(forged[0]);
     expect(result).toHaveProperty("cleanupNotice");
     expect(existsSync(join(work, "child", ".git", "hooks", "pre-commit"))).toBe(false);
+  });
+
+  it("reports a launcher that failed after the command started as a failed run with its output, never a refused start", async () => {
+    const programs = await requireMxcLinuxShellPrograms(resources);
+    const scratch = mkdtempSync(join(requireMxcContainerStartRoot(), "run-failed-"));
+    const proxy = await openInvocationProxyListener({ upstream: () => undefined });
+    try {
+      const model = buildPolicyModel({ floors: [], launchGrants: [policyGrantRow(work, "rw", "launch-grant", true)], userGrants: [], extensionManifests: [] });
+      const grants = rankPosixContainerRows(model, "bubblewrap", posixPolicyLookups(work, false));
+      const staged = async (commandLine: string, name: string) => {
+        const folder = join(scratch, name);
+        mkdirSync(folder);
+        const { request, environment } = buildBubblewrapShellRequest({ grants, lookups: posixPolicyLookups(work, false), cwd: work,
+          commandLine, timeoutMs: 10_000, env: { PATH: "/usr/bin:/bin" }, proxyUrl: proxy.url, helper: programs.helper });
+        const requestPath = join(folder, "request.json");
+        const environmentPath = join(folder, "environment.sh");
+        writeFileSync(requestPath, JSON.stringify(request), { mode: 0o600 });
+        writeFileSync(environmentPath, environment, { mode: 0o600 });
+        const digest = (path: string) => createHash("sha256").update(readFileSync(path)).digest("hex");
+        return { requestPath, requestSha256: digest(requestPath), environmentPath, environmentSha256: digest(environmentPath) };
+      };
+      // The real launcher runs the command; the stand-in then records a launcher error after it, as a launcher that
+      // failed after the start does. Only the shell's bootstrap inside the container can have written the ready byte.
+      const failing = join(scratch, "failing-launcher");
+      writeFileSync(failing, `#!/bin/sh\n${quote(programs.launcher)} "$@"\nstatus=$?\n`
+        + `printf 'Exit code: -1 (0xFFFFFFFF)\\nError: forced after the start\\n' >> "$2"\nexit "$status"\n`, { mode: 0o755 });
+      const runWith = async (commandLine: string, name: string) => {
+        const { child, completion } = startMxcLinuxShell({ ...programs, launcher: failing }, await staged(commandLine, name), 10_000,
+          new AbortController().signal, () => {}, "test:linux-shell-run-failed");
+        let stdout = "";
+        child.stdout.setEncoding("utf8").on("data", (value: string) => { stdout += value; });
+        child.stderr.resume();
+        return { ...await completion, stdout };
+      };
+      expect(await runWith("printf 'started\\n'", "started")).toMatchObject({ rejected: false, runFailed: true, stdout: "started\n" });
+      // Control: a request the launcher refuses before anything runs (its working directory is gone) stays refused.
+      const gone = await staged("printf never", "refused");
+      writeFileSync(gone.requestPath, readFileSync(gone.requestPath, "utf8").replace(JSON.stringify(work), JSON.stringify(join(work, "absent"))));
+      gone.requestSha256 = createHash("sha256").update(readFileSync(gone.requestPath)).digest("hex");
+      const { child, completion } = startMxcLinuxShell({ ...programs, launcher: failing }, gone, 10_000,
+        new AbortController().signal, () => {}, "test:linux-shell-run-failed");
+      child.stdout.resume();
+      child.stderr.resume();
+      expect(await completion).toMatchObject({ rejected: true, runFailed: false });
+    } finally {
+      await proxy.close();
+      rmSync(scratch, { recursive: true, force: true });
+    }
   });
 
   it("reports the launcher's own timeout as timed out and still quarantines", async () => {
@@ -480,7 +638,7 @@ ${address6 === undefined ? "print('refused')" : `print(tcp(socket.AF_INET6, ('${
       symlinkSync(target, join(work, ".vscode"));
       const { launch } = await prepare("rm .vscode && mkdir .vscode && printf x > .vscode/tasks.json");
       // A bind mount cannot hold a link's own entry, so the write policy withholds the root that could replace it.
-      expect(launch.narrowedWriteRoots).toContainEqual({ root: work, reason: "routing-link" });
+      expect(launch.narrowedWriteRoots).toContainEqual({ root: work, reason: "routing-link", link: join(work, ".vscode") });
       const result = await run(launch);
       expect(result.code, result.stderr).not.toBe(0);
       expect(lstatSync(join(work, ".vscode")).isSymbolicLink()).toBe(true);

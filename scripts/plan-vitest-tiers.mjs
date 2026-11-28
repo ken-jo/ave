@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { appendFileSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { testOnlyFilesFromPlan } from "./lib/ci-test-only-selection.mjs";
 import { CENSUS_TIER_TESTS, NATIVE_TIER_TESTS } from "./lib/vitest-tiers.mjs";
 import { readPlanFile } from "./run-ci-suite.mjs";
 
@@ -67,19 +68,32 @@ function decodePlan(plan) {
 }
 
 /**
- * eventName and ref are the GitHub event; plan is the written CI suite plan; changedPaths is null when the diff is unresolved.
+ * eventName, ref and baseRef describe the GitHub event; plan is the written CI suite plan; changedPaths is null when the diff is unresolved.
  * Pull requests select a tier from the diff and a fully traced affected plan. Main pushes always select the native tier and
  * select the census like a pull request. A full, empty or best-effort plan and every other event select all tiers.
  */
-export function planVitestTiers({ eventName, ref, plan, changedPaths }) {
+export function planVitestTiers({ eventName, ref, baseRef, plan, changedPaths }) {
   const mainPush = eventName === "push" && ref === "refs/heads/main";
   const all = reason => ({ census: true, native: true, reason });
   if (eventName !== "pull_request" && !mainPush) return all(`${eventName} runs every tier`);
+  const selected = eventName === "pull_request" ? testOnlyFilesFromPlan(plan) : null;
+  if (selected !== null) {
+    const changed = new Set(Array.isArray(changedPaths) ? changedPaths : []);
+    if (!Array.isArray(changedPaths) || changed.size !== plan.testOnlyChanges.length
+      || plan.testOnlyChanges.some(({ path }) => !changed.has(path))) {
+      throw new Error("Invalid test-only CI plan: tier diff does not match");
+    }
+    if (baseRef?.startsWith("integration/")) return all("an integration-base test-only PR schedules every tier");
+    return {
+      census: selected.some(path => CENSUS_TIER_TESTS.includes(path)),
+      native: selected.some(path => NATIVE_TIER_TESTS.includes(path)),
+      reason: "test-only diff: changed files in each tier",
+    };
+  }
   if (!Array.isArray(changedPaths)) return all("the diff is unresolved");
   const decoded = decodePlan(plan);
   if (decoded === null) return all("the suite plan is unreadable");
   if (decoded.mode === "full") return all("the full plan runs every tier");
-  if (decoded.tests.length === 0) return all("the affected plan selects no test");
   if (!tracedPlanReason(eventName, decoded.reason)) return all("the affected plan is best-effort");
   const infrastructure = changedPaths.find(path => TIER_INFRASTRUCTURE.includes(path));
   if (infrastructure) return all(`${infrastructure} defines the tiers`);
@@ -143,12 +157,12 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
   const [planFile] = process.argv.slice(2);
   const eventName = process.env.GITHUB_EVENT_NAME;
   if (!planFile || !eventName) throw new Error("Usage: GITHUB_EVENT_NAME=<event> node scripts/plan-vitest-tiers.mjs <ci-plan.json>");
-  let plan = null;
-  try { plan = JSON.parse(readFileSync(planFile, "utf8")); } catch { /* An unreadable plan selects every tier. */ }
+  const plan = readPlanFile(readFileSync(planFile, "utf8"), process.cwd());
   const needsDiff = eventName === "pull_request" || (eventName === "push" && process.env.GITHUB_REF === "refs/heads/main");
   const tiers = planVitestTiers({
     eventName,
     ref: process.env.GITHUB_REF,
+    baseRef: process.env.GITHUB_BASE_REF,
     plan,
     changedPaths: needsDiff ? changedPathsFor(eventName, process.env.AVE_CI_DIFF_BASE) : [],
   });

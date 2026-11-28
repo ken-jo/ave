@@ -19,11 +19,11 @@ import {
   selectMessageCatalogChecks,
   selectTriggeredLockSuites,
 } from "./hooks/pre-push-source-policy.mjs";
+import { expandMustRunTests, MUST_RUN_TESTS_PATH } from "./lib/ci-must-run-tests.mjs";
+import { TEST_ONLY_REASON, testOnlyFilesForDiff, testOnlyLinuxTests } from "./lib/ci-test-only-selection.mjs";
 import { ciShardCount, readPlanFile, runsCoverage } from "./verify-ci-shard-count.mjs";
 
-export { readPlanFile };
-
-export const MUST_RUN_TESTS_PATH = "config/ci-must-run-tests.json";
+export { expandMustRunTests, MUST_RUN_TESTS_PATH, readPlanFile, testOnlyFilesForDiff };
 
 // Broad affected selections use the full suite on non-integration bases.
 export const AFFECTED_TEST_LIMIT = 600;
@@ -96,43 +96,6 @@ export function testRunsRepoCodeOutOfProcess(testPath, readText) {
     }
   }
   return false;
-}
-
-// Directory entries expand to collected tests; stale entries selecting nothing fail.
-export function expandMustRunTests(document, trackedTests, changedPaths) {
-  const groups = document?.groups;
-  if (!groups || typeof groups !== "object" || Array.isArray(groups)) {
-    throw new Error(`${MUST_RUN_TESTS_PATH} must hold a "groups" object`);
-  }
-  const triggers = document.triggers ?? {};
-  if (!triggers || typeof triggers !== "object" || Array.isArray(triggers)) throw new Error("must-run triggers must be an object");
-  for (const [group, paths] of Object.entries(triggers)) {
-    if (!Object.hasOwn(groups, group) || !Array.isArray(paths) || paths.length === 0 || paths.some((path) => typeof path !== "string" || !isCanonicalGitPath(path.replace(/\/$/u, "")))) {
-      throw new Error(`invalid must-run triggers for ${group}`);
-    }
-  }
-  const selected = new Set();
-  for (const [group, entries] of Object.entries(groups)) {
-    if (!Array.isArray(entries) || entries.length === 0) {
-      throw new Error(`${MUST_RUN_TESTS_PATH} group "${group}" must list at least one path`);
-    }
-    for (const entry of entries) {
-      if (typeof entry !== "string" || entry.length === 0) {
-        throw new Error(`${MUST_RUN_TESTS_PATH} group "${group}" holds a non-path entry`);
-      }
-      const matches = entry.endsWith("/")
-        ? trackedTests.filter((test) => test.startsWith(entry))
-        : trackedTests.filter((test) => test === entry);
-      if (matches.length === 0) {
-        throw new Error(`${MUST_RUN_TESTS_PATH} group "${group}" entry ${entry} selects no collected test file`);
-      }
-      const triggered = changedPaths === undefined || !Object.hasOwn(triggers, group)
-        || changedPaths.some((path) => triggers[group].some((prefix) => path.startsWith(prefix)));
-      if (triggered) for (const test of matches) selected.add(test);
-    }
-  }
-  if (selected.size === 0) throw new Error(`${MUST_RUN_TESTS_PATH} must select at least one collected test file`);
-  return [...selected].sort();
 }
 
 // Reject malformed shard values so the aggregate cannot misreport coverage.
@@ -317,15 +280,15 @@ function trackedVitestFiles() {
   return git(["ls-files", "-z", "--", "src", "test"]).split("\0").filter((path) => path && isCollectedVitestFile(path)).sort();
 }
 
-function rawDiff(base, what) {
-  const entries = parseGitRawDiff(git(["diff", "--no-renames", "--raw", "-z", base, "HEAD", "--"]));
+function rawDiff(base, what, detection = ["--no-renames"]) {
+  const entries = parseGitRawDiff(git(["diff", ...detection, "--raw", "-z", base, "HEAD", "--"]));
   return entries === null ? { reason: `${what} could not be parsed` } : { entries, base };
 }
 
 function pullRequestChanges() {
   const parents = git(["rev-list", "--parents", "-n", "1", "HEAD"]).trim().split(" ").slice(1);
   if (parents.length !== 2) return { reason: `HEAD has ${parents.length} parent(s), not a pull request merge commit` };
-  return rawDiff(parents[0], "the merge commit's diff");
+  return rawDiff(parents[0], "the merge commit's diff", ["--find-renames", "--find-copies-harder", "-l0"]);
 }
 
 const FULL_SHA = /^[0-9a-f]{40}$/u;
@@ -377,13 +340,25 @@ export function planCiSuite(eventName, { headRef, baseRef, ref, before } = {}) {
     changes = { reason: error instanceof Error ? error.message : String(error) };
   }
   if (changes.reason) {
-    if (!mainPush && baseRef.startsWith("integration/")) {
-      throw new Error(`integration base requires a resolved pull request diff: ${changes.reason}`);
-    }
     return full(changes.reason);
   }
+  if (!mainPush && changes.entries.some(({ status }) => /^[RC]/u.test(status))) {
+    return full("the pull request renames or copies files");
+  }
+  const testOnlyFiles = mainPush ? null : testOnlyFilesForDiff(changes.entries);
   const trackedTests = trackedVitestFiles();
-  const mustRunTests = expandMustRunTests(JSON.parse(readFileSync(MUST_RUN_TESTS_PATH, "utf8")), trackedTests, changes.entries.map(({ path }) => path));
+  const mustRunDocument = JSON.parse(readFileSync(MUST_RUN_TESTS_PATH, "utf8"));
+  if (testOnlyFiles !== null) {
+    const guards = expandMustRunTests(mustRunDocument, trackedTests, []);
+    return {
+      mode: "affected",
+      reason: TEST_ONLY_REASON,
+      tests: testOnlyLinuxTests(testOnlyFiles, guards),
+      testOnlyFiles,
+      testOnlyChanges: changes.entries,
+    };
+  }
+  const mustRunTests = expandMustRunTests(mustRunDocument, trackedTests, changes.entries.map(({ path }) => path));
   const textCache = new Map();
   const plan = selectCiTests({
     changes: changes.entries,
@@ -420,7 +395,9 @@ export function planCiSuite(eventName, { headRef, baseRef, ref, before } = {}) {
 // Only proven renderer-only patches omit native regression runners. Unknown
 // paths and broad plans retain all platforms, including on scheduled releases.
 export function platformChecksRequired(eventName, plan, changes, baseRef) {
-  if (eventName === "pull_request" && baseRef?.startsWith("integration/")) return false;
+  if (eventName === "pull_request" && (!Array.isArray(changes) || changes.some(({ status }) => /^[RC]/u.test(status)))) return true;
+  // A selected suite may require a platform job outside the integration shortcut.
+  if (eventName === "pull_request" && baseRef?.startsWith("integration/")) return plan.testOnlyFiles !== undefined;
   if (plan.mode === "full" || !["pull_request", "push"].includes(eventName) || !Array.isArray(changes) || changes.length === 0) return true;
   return changes.some(({ path }) => path === "src/ui/renderer/types.ts" || !["src/ui/renderer/", "src/components/", "src/i18n/messages/"].some((prefix) => path.startsWith(prefix)));
 }
@@ -448,7 +425,11 @@ export function ciSuiteArguments(plan, coverage, shard = null) {
 }
 
 function runPlan(plan, coverage, shard) {
-  return spawnSync(process.execPath, ciSuiteArguments(plan, coverage, shard), { stdio: "inherit" });
+  // This plan already includes the unconditional guards, alongside the changed suites.
+  return spawnSync(process.execPath, ciSuiteArguments(plan, coverage, shard), {
+    stdio: "inherit",
+    env: { ...process.env, AVE_CI_TEST_ONLY_PLAN: "" },
+  });
 }
 
 if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
@@ -458,7 +439,7 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
     if (process.argv[2] === "--write-plan" && !writePlanAt) throw new Error("--write-plan needs a file path");
     const planFile = process.env.AVE_CI_PLAN_FILE;
     const plan = planFile && !writePlanAt
-      ? readPlanFile(readFileSync(planFile, "utf8"))
+      ? readPlanFile(readFileSync(planFile, "utf8"), process.cwd())
       : planCiSuite(process.env.GITHUB_EVENT_NAME, {
         headRef: process.env.GITHUB_HEAD_REF,
         baseRef: process.env.GITHUB_BASE_REF,
@@ -478,6 +459,7 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
       writeSummary(plan, coverage);
       if (process.env.GITHUB_OUTPUT) {
         appendFileSync(process.env.GITHUB_OUTPUT, `shards=${JSON.stringify(shards)}\nshard_count=${shardCount}\nplatform_checks=${platforms}\n`);
+        if (plan.testOnlyFiles !== undefined) appendFileSync(process.env.GITHUB_OUTPUT, "test_only=true\n");
         if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, `\nNative platform checks: ${platforms ? "required" : "not selected (renderer-only diff)"}.\n`);
       }
       process.exit(0);
@@ -485,6 +467,9 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
     const shard = parseCiShard(process.env.AVE_CI_SHARD);
     console.log(`[ci-suite] ${describeRun(plan, coverage)}${shard ? `, shard ${shard}` : ""}: ${plan.reason}`);
     if (!planFile) writeSummary(plan, coverage);
+    if (process.env.AVE_CI_TEST_ONLY_PLAN && plan.testOnlyFiles === undefined) {
+      throw new Error("The test-only CI plan has no selection");
+    }
     const result = runPlan(plan, coverage, shard);
     if (result.error) throw result.error;
     process.exitCode = result.status ?? 1;

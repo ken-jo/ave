@@ -301,7 +301,7 @@ describe("Electron Node-mode Vitest runner", () => {
     expect(mainBlock).toBeGreaterThanOrEqual(0);
     const ensureCall = runnerSource.indexOf("ensureGeneratedAssets();", mainBlock);
     const skillBuild = runnerSource.indexOf(".buildSkillScripts({ directory })", mainBlock);
-    const launch = runnerSource.indexOf("runVitestUnderElectron(process.argv.slice(2),", mainBlock);
+    const launch = runnerSource.indexOf("runVitestUnderElectron(args,", mainBlock);
     expect(ensureCall).toBeGreaterThan(mainBlock);
     expect(skillBuild).toBeGreaterThan(ensureCall);
     expect(launch).toBeGreaterThan(skillBuild);
