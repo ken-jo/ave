@@ -1,5 +1,6 @@
 import { logPermissionEvent, permissionLogId } from "../lib/permission-log.js";
 
+import { loadBundledModelCatalog } from "../core/model-catalog/bundled.js";
 import type { RunModelSettings } from "../shared/run-model-settings.js";
 import { detectFromStream, type DetectorResult } from "../engine/checkpoint-detector.js";
 import type { GenericMessage, TokenUsage, TokenUsageByModel } from "../engine/llm/types.js";
@@ -8,6 +9,7 @@ import type { IdleSchedulerService } from "../main/idle-scheduler.js";
 import type { SettingsService } from "../data/settings-store.js";
 import { createLogger } from "../lib/logger.js";
 import { EMPTY_ASSISTANT_RESPONSE_TEXT } from "../lib/chat-stream-state.js";
+import { maskSensitiveData } from "../shared/dlp.js";
 import { activeLlmRouteModel, isLLMVendor } from "../shared/llm-vendor-defaults.js";
 import { catalogChatModelIds, vendorHasCatalogProvider } from "../shared/model-catalog/vendor-models.js";
 import type { SubscriptionUsageTelemetry } from "../shared/subscription-runtime.js";
@@ -166,7 +168,9 @@ export class PostTurnHookChain {
         (llmSettings ? activeLlmRouteModel(llmSettings) : undefined);
       const providerId = permissionLogId(provider);
       const route = ctx.tokenUsage && providerId && model && isLLMVendor(provider)
-        && vendorHasCatalogProvider(provider) && catalogChatModelIds(provider).includes(model)
+        && vendorHasCatalogProvider(provider)
+        && catalogChatModelIds(provider, await loadBundledModelCatalog()).includes(model)
+        && maskSensitiveData(model).detections.length === 0
         ? `${providerId}/${model}`
         : permissionLogId(ctx.route);
       logPermissionEvent("post_turn_hook_finished", { sessionId: permissionLogId(ctx.sessionId), route });

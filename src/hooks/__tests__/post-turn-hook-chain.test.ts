@@ -7,6 +7,7 @@ import type { MemoryManager } from "../../memory/memory-manager.js";
 import type { SettingsService } from "../../data/settings-store.js";
 import { fakeLlmSettings } from "../../shared/__tests__/fake-llm-settings.js";
 import { EMPTY_ASSISTANT_RESPONSE_TEXT } from "../../lib/chat-stream-state.js";
+import { activeModelCatalog, installModelCatalog } from "../../shared/model-catalog/active.js";
 
 function createMessages(): GenericMessage[] {
   // Use more than preserveRecentMessages=12 messages so compaction actually runs.
@@ -461,19 +462,37 @@ describe("PostTurnHookChain", () => {
       expect(completion()).toEqual([expect.objectContaining({ route: "claude/claude-sonnet-4-6" })]);
     });
 
-    it("falls back to the route classification for a credential-shaped model identifier", async () => {
-      await makeChain().run({
-        sessionId: "session-redacted-route",
-        messages: createMessages(),
-        input: "Ask a question",
-        output: "Answer",
-        toolCalls: [],
-        route: "llm",
-        tokenUsage: { inputTokens: 1, outputTokens: 1 },
-        vendorModel: `sk-${"a".repeat(48)}`,
+    it.each([
+      ["a credential-shaped identifier", `sk-${"a".repeat(48)}`],
+      ["an ordinary identifier", "example-active-only-model"],
+    ])("logs only the route for %s found only in the active catalog", async (_label, model) => {
+      const catalog = activeModelCatalog();
+      const provider = catalog.providers.openai;
+      installModelCatalog({
+        ...catalog,
+        providers: {
+          ...catalog.providers,
+          openai: { models: { ...provider.models, [model]: { ...provider.models["gpt-5.4-mini"], id: model } } },
+        },
       });
+      try {
+        await makeChain().run({
+          sessionId: "session-redacted-route",
+          messages: createMessages(),
+          input: "Ask a question",
+          output: "Answer",
+          toolCalls: [],
+          route: "llm",
+          tokenUsage: { inputTokens: 1, outputTokens: 1 },
+          vendorProvider: "openai",
+          vendorModel: model,
+        });
 
-      expect(completion()).toEqual([expect.objectContaining({ route: "llm" })]);
+        expect(completion()).toEqual([expect.objectContaining({ route: "llm" })]);
+        expect(JSON.stringify(permissionEvents())).not.toContain(model);
+      } finally {
+        installModelCatalog(catalog);
+      }
     });
 
     it("omits a free-form model identifier from a token-bearing custom route", async () => {
