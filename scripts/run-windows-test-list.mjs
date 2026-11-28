@@ -18,7 +18,9 @@ const WINDOWS_PLAN_TIERS = ["native", "census"];
 
 /** AVE_WINDOWS_TEST_TIERS names the tiers the build job selected, comma-separated. */
 export function windowsPlanTiers(value) {
-  if (value === undefined) throw new Error("AVE_WINDOWS_TEST_TIERS must name the selected tiers, or be empty");
+  if (value === undefined) {
+    throw new Error("AVE_WINDOWS_TEST_TIERS is unset. For local replay, set AVE_WINDOWS_TEST_TIERS= for a plan with no tiers or set AVE_WINDOWS_TEST_TIERS to the build's comma-separated tier list.");
+  }
   const tiers = value.split(",").map(tier => tier.trim()).filter(Boolean);
   for (const tier of tiers) if (!WINDOWS_PLAN_TIERS.includes(tier)) throw new Error(`Unknown Windows test tier: ${tier}`);
   if (new Set(tiers).size !== tiers.length) throw new Error("AVE_WINDOWS_TEST_TIERS repeats a tier");
@@ -59,8 +61,7 @@ export function assertWindowsPlan(plan, collected, expectedTiers) {
   if (!Array.isArray(tiers) || tiers.some(tier => !WINDOWS_PLAN_TIERS.includes(tier)) || new Set(tiers).size !== tiers.length) {
     throw new Error(`Windows plan tiers must be a subset of ${WINDOWS_PLAN_TIERS.join(", ")}`);
   }
-  if (expectedTiers !== undefined
-    && (tiers.length !== expectedTiers.length || expectedTiers.some(tier => !tiers.includes(tier)))) {
+  if (tiers.length !== expectedTiers.length || expectedTiers.some(tier => !tiers.includes(tier))) {
     throw new Error("Windows plan tiers differ from the build selection");
   }
   if (tiers.length === 0) {
@@ -114,7 +115,7 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
   const { AVE_WINDOWS_TEST_PLAN: planPath, AVE_WINDOWS_TEST_SHARD: shard, AVE_WINDOWS_TEST_TIER: tier = "default" } = process.env;
   if (!planPath || !/^[1-9]\d*$/u.test(shard ?? "")) throw new Error("A Windows test shard requires AVE_WINDOWS_TEST_PLAN and AVE_WINDOWS_TEST_SHARD");
   const selection = readTestOnlyFiles();
-  const expectedTiers = selection === null ? undefined : windowsPlanTiers(process.env.AVE_WINDOWS_TEST_TIERS);
+  const expectedTiers = windowsPlanTiers(process.env.AVE_WINDOWS_TEST_TIERS);
   const inventory = windowsShardFiles(JSON.parse(readFileSync(planPath, "utf8")), Number(shard), process.cwd(), expectedTiers, tier);
   const files = intersectTestOnlyFiles(inventory, selection);
   if (files.length === 0) {

@@ -298,19 +298,43 @@ it("lets an empty Windows shard succeed only after validating the full assignmen
   assert.equal(empty.stdout, "::notice::test-only diff: 0 files for this job\n");
   const missingTiers = run([suite, mustRun, ...extra], {});
   assert.equal(missingTiers.status, 1);
-  assert.match(missingTiers.stderr, /AVE_WINDOWS_TEST_TIERS must name the selected tiers/u);
+  assert.match(missingTiers.stderr, /AVE_WINDOWS_TEST_TIERS is unset/u);
   const invalid = run([suite, mustRun, ...extra.slice(0, -1), suite]);
   assert.equal(invalid.status, 1);
   assert.match(invalid.stderr, /Windows plan assigns a suite twice/u);
 });
 
-it("replays a Windows shard with only the plan and shard ID", (t) => {
+for (const { name, tier, declaration, error } of [
+  {
+    name: "requires an explicit Windows tier declaration for local replay",
+    tier: "default",
+    error: /For local replay, set AVE_WINDOWS_TEST_TIERS= for a plan with no tiers or set AVE_WINDOWS_TEST_TIERS to the build's comma-separated tier list/u,
+  },
+  {
+    name: "rejects an omitted build-selected native tier in unfiltered Windows CI",
+    tier: "tiers",
+    declaration: "native,census",
+    error: /Windows plan tiers differ from the build selection/u,
+  },
+  {
+    name: "rejects unexpected artifact tiers in unfiltered Windows CI with an empty build declaration",
+    tier: "default",
+    declaration: "",
+    error: /Windows plan tiers differ from the build selection/u,
+  },
+  {
+    name: "replays a Windows shard with a matching tier declaration",
+    tier: "tiers",
+    declaration: "census",
+  },
+]) it(name, (t) => {
   const repo = fixture(t);
   const census = ["head", "middle", "tail"].map(part => `src/permissions/__tests__/powershell-encoded-unicode/bash-${part}-first.test.ts`);
   const extra = Array.from({ length: 3 }, (_, index) => `src/core/__tests__/extra-${index}.test.ts`);
   const files = [suite, mustRun, ...extra, ...census];
   const shards = paths => paths.map((path, index) => ({ id: index + 1, files: [path] }));
-  for (const path of files) repo.file(path, "// suite\n");
+  const native = "src/permissions/__tests__/mxc-extension-admission.windows.test.ts";
+  for (const path of [...files, native]) repo.file(path, "// suite\n");
   repo.git("add", ".");
   repo.file("windows.json", JSON.stringify({ shards: shards(files), tiers: ["census"], tierShards: shards(census) }));
   repo.file("package.json", JSON.stringify({ scripts: { "test:prepare": "bun prepare.mjs", "test:vitest": "bun run-shard.mjs" } }));
@@ -319,15 +343,23 @@ it("replays a Windows shard with only the plan and shard ID", (t) => {
   const runner = fileURLToPath(new URL("../../scripts/run-windows-test-list.mjs", import.meta.url));
   const env = Object.fromEntries(Object.entries(process.env)
     .filter(([key]) => !key.startsWith("AVE_WINDOWS_TEST_") && key !== "AVE_CI_TEST_ONLY_PLAN"));
+  if (declaration !== undefined) env.AVE_WINDOWS_TEST_TIERS = declaration;
   const result = spawnSync(process.execPath, [runner], {
     cwd: repo.root, encoding: "utf8", env: {
       ...env, AVE_WINDOWS_TEST_PLAN: join(repo.root, "windows.json"), AVE_WINDOWS_TEST_SHARD: "1",
+      AVE_WINDOWS_TEST_TIER: tier, AVE_CI_TEST_ONLY_PLAN: "",
     },
   });
   assert.ifError(result.error);
-  assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /^prepared$/mu);
-  assert.ok(result.stdout.split(/\r?\n/u).includes(`ran run ./${suite}`), result.stdout);
+  if (error) {
+    assert.equal(result.status, 1, result.stdout);
+    assert.match(result.stderr, error);
+    assert.equal(result.stdout, "");
+  } else {
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /^prepared$/mu);
+    assert.ok(result.stdout.split(/\r?\n/u).includes(`ran run ./${census[0]}`), result.stdout);
+  }
 });
 
 for (const operation of ["rename", "copy"]) {
