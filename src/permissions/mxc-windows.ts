@@ -8,6 +8,7 @@ import { lstatSync } from "node:fs";
 import { BlockList, isIPv4, isIPv6 } from "node:net";
 import { gzipSync } from "node:zlib";
 import type { ProbeOutput } from "@microsoft/mxc-sdk/v1";
+import { XMLParser, XMLValidator } from "fast-xml-parser";
 import { z } from "zod";
 import { win32SystemBinary, windowsSystemRoot } from "../shared/windows-system-path.js";
 import { WIN32_POWERSHELL_STARTUP_ARGS } from "../shared/powershell-startup-policy.js";
@@ -453,11 +454,40 @@ function classifyMxcHostIpv6Route(line: string): MxcHostIpv6Route {
   }
 }
 
+function isMxcHostLookupProgress(stderr: string): boolean {
+  const header = /^#< CLIXML\r?\n/u.exec(stderr);
+  if (!header) return false;
+  const xml = stderr.slice(header[0].length);
+  // Accept only the serialized progress envelope. Reject XML features that
+  // can hide or reinterpret records, including declarations and namespaces on children.
+  const root = /^<Objs Version="1\.1\.0\.1" xmlns="http:\/\/schemas\.microsoft\.com\/powershell\/2004\/04">/u.exec(xml);
+  if (!root || !/<\/Objs>[ \t\r\n]*$/u.test(xml)) return false;
+  const records = xml.slice(root[0].length, xml.lastIndexOf("</Objs>"));
+  const tags = /<[A-Za-z][A-Za-z0-9]*(?:[ \t\r\n]+[A-Za-z][A-Za-z0-9]*[ \t\r\n]*=[ \t\r\n]*(?:"[^"<]*"|'[^'<]*'))*[ \t\r\n]*\/?>|<\/[A-Za-z][A-Za-z0-9]*[ \t\r\n]*>/gu;
+  const unsupported = /xmlns\s*=|&(?!(?:amp|lt|gt|quot|apos);)|\]\]>|[^\t\n\r\u0020-\uD7FF\uE000-\uFFFD\u{10000}-\u{10FFFF}]/u;
+  if (records.replace(tags, "").includes("<") || unsupported.test(records) || XMLValidator.validate(xml) !== true) return false;
+
+  const parser = new XMLParser({
+    preserveOrder: true,
+    ignoreAttributes: false,
+    parseTagValue: false,
+    processEntities: false,
+  });
+  const [document] = parser.parse(xml);
+  const children = document?.Objs;
+  if (!Array.isArray(children) || children.length === 0) return false;
+  // Stream attributes belong only on the top-level records.
+  return children.length === [...records.matchAll(/<Obj[ \t\r\n/>]/gu)].length
+    && children.length === [...records.matchAll(/[ \t\r\n]S[ \t\r\n]*=/gu)].length
+    && children.every(child => Array.isArray(child.Obj) && child[":@"]?.["@_S"] === "progress");
+}
+
 async function lookupMxcHostNetwork(
   deps: DetectMxcSupportDeps, timeoutMs: number,
 ): Promise<{ readonly hostIpv6Route: MxcHostIpv6Route; readonly lan?: MxcLanProbeTarget }> {
   const shell = win32SystemBinary("WindowsPowerShell/v1.0/powershell", { SystemRoot: deps.systemRoot });
   const command = `
+$ProgressPreference = 'SilentlyContinue'
 $ErrorActionPreference = 'Stop'
 $env:PSModulePath = [IO.Path]::Combine($PSHOME, 'Modules')
 try {
@@ -479,7 +509,8 @@ if ($port) { [Console]::WriteLine(('{0}:{1}' -f $address, $port)) }
     if (result.code !== 0) return { hostIpv6Route: "unknown" };
     const [first = "", ...rest] = result.stdout.trim().split(/\r?\n/);
     const hasRouteEvidence = first.startsWith(MXC_IPV6_ROUTES_MARKER);
-    const hostIpv6Route = hasRouteEvidence && !result.stderr && rest.length <= 1 ? classifyMxcHostIpv6Route(first) : "unknown";
+    const hostIpv6Route = hasRouteEvidence && rest.length <= 1 && (!result.stderr || isMxcHostLookupProgress(result.stderr))
+      ? classifyMxcHostIpv6Route(first) : "unknown";
     const match = /^([\d.]+):(\d+)$/.exec(hasRouteEvidence ? rest.join("\n") : result.stdout.trim());
     if (match === null) return { hostIpv6Route };
     const [, address = "", portText] = match;

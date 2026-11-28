@@ -32,6 +32,16 @@ const REFUSED: NonNullable<ReturnType<typeof parseMxcRawIpProbeEvidence>> = {
 };
 const PROBE_ID = "a".repeat(32);
 const EVIDENCE_LINE = evidenceFrame(PROBE_ID);
+const HOST_LOOKUP_PROGRESS = [
+  "#< CLIXML",
+  '<Objs Version="1.1.0.1" xmlns="http://schemas.microsoft.com/powershell/2004/04">'
+    + '<Obj S="progress" RefId="0"><TN RefId="0"><T>System.Management.Automation.PSCustomObject</T><T>System.Object</T></TN>'
+    + '<MS><I64 N="SourceId">1</I64><PR N="Record"><AV>처음 사용하기 위해 모듈을 준비하는 중입니다.</AV>'
+    + '<AI>0</AI><Nil /><PI>-1</PI><PC>-1</PC><T>Completed</T><SR>-1</SR><SD> </SD></PR></MS></Obj>'
+    + '<Obj S="progress" RefId="1"><TNRef RefId="0" />'
+    + '<MS><I64 N="SourceId">2</I64><PR N="Record"><AV>Get-NetRoute -AddressFamily IPv6</AV>'
+    + '<AI>42</AI><Nil /><PI>-1</PI><PC>100</PC><T>Completed</T><SR>0</SR><SD>1/1 완료</SD></PR></MS></Obj></Objs>',
+].join("\r\n");
 
 function evidenceFrame(id: string, evidence = REFUSED): string {
   return `AVE_MXC_RAW_IP ${id} ${JSON.stringify(evidence)}\r\n`;
@@ -272,6 +282,14 @@ describe("raw IP startup observation", () => {
       { scenario: "scoped global prefix", prefix: "2001:db8:1::%12/48" },
       { scenario: "missing frame" },
       { scenario: "failed lookup", prefix: "2001:db8:1::/48", stderr: "Route lookup failed" },
+      { scenario: "CLIXML progress only", prefix: "2001:db8:1::/48", stderr: HOST_LOOKUP_PROGRESS, structural: true },
+      { scenario: "CLIXML progress with a default route", prefix: "::/0", stderr: HOST_LOOKUP_PROGRESS },
+      { scenario: "CLIXML progress with an error object", prefix: "2001:db8:1::/48", stderr: HOST_LOOKUP_PROGRESS.replace('S="progress" RefId="1"', 'S="Error" RefId="1"') },
+      { scenario: "CLIXML progress with an error string", prefix: "2001:db8:1::/48", stderr: HOST_LOOKUP_PROGRESS.replace("</Objs>", '<S S="Error">Route lookup failed</S></Objs>') },
+      { scenario: "nested CLIXML error", prefix: "2001:db8:1::/48", stderr: HOST_LOOKUP_PROGRESS.replace("<Nil />", '<Obj S="Error" RefId="2" />') },
+      { scenario: "undeclared XML entity", prefix: "2001:db8:1::/48", stderr: HOST_LOOKUP_PROGRESS.replace("<AV>", "<AV>&invalid;") },
+      { scenario: "malformed CLIXML", prefix: "2001:db8:1::/48", stderr: HOST_LOOKUP_PROGRESS.replace("</Obj></Objs>", "</Objs>") },
+      { scenario: "text after CLIXML progress", prefix: "2001:db8:1::/48", stderr: `${HOST_LOOKUP_PROGRESS}\r\nRoute lookup failed` },
       { scenario: "unrelated route", prefix: "2001:db8:1::/48", structural: true },
       { scenario: "default route", prefix: "::/0" },
       { scenario: "exact T6 route", prefix: "2001:db8::1/128" },
