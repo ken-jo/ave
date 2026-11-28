@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const measured = vi.hoisted(() => ({ calls: 0, at: undefined as number | undefined, then: undefined as (() => void) | undefined }));
+const measured = vi.hoisted(() => ({ calls: 0, at: undefined as number | undefined, after: undefined as (() => void) | undefined }));
 
 vi.mock("../../shared/container-platform.js", async (actual) => {
   const real = await actual<typeof import("../../shared/container-platform.js")>();
@@ -21,7 +21,7 @@ vi.mock("../holder-admission-darwin.js", async (actual) => {
     const identity = real.measurePosixExecutableIdentity(command);
     measured.calls += 1;
     // After this measure returns, the gate goes on to release the holder; the revocation lands on the next turn.
-    if (measured.calls === measured.at && measured.then) setImmediate(measured.then);
+    if (measured.calls === measured.at && measured.after) setImmediate(measured.after);
     return identity;
   } };
 });
@@ -61,7 +61,7 @@ describe.runIf(NATIVE)("macOS holder revoked during its start (native)", () => {
     __setProvenSeatbeltHolderRouteForTest({ helper: verifyHolderSweepHelper(RESOURCES), launchers: measureSeatbeltHolderLaunchers() });
     setMacHolderCapability({ state: "ready" });
     setMacExtensionPlan(READY);
-    Object.assign(measured, { calls: 0, at: undefined, then: undefined });
+    Object.assign(measured, { calls: 0, at: undefined, after: undefined });
   });
 
   afterEach(async () => {
@@ -101,11 +101,11 @@ describe.runIf(NATIVE)("macOS holder revoked during its start (native)", () => {
         return holder;
       }
       // The control's count of measures tells which one is the gate's recheck: the last before the start returns.
-      Object.assign(measured, { calls: 0, at: undefined, then: undefined });
+      Object.assign(measured, { calls: 0, at: undefined, after: undefined });
       const control = await spawnMxcConfinedChild({ ...spec, label: `test:${name}-control`, holder: {} });
       const last = measured.calls;
       await control.release();
-      Object.assign(measured, { calls: 0, at: last, then: revoke });
+      Object.assign(measured, { calls: 0, at: last, after: revoke });
       const holder = await spawnMxcConfinedChild(spec);
       started.push(holder);
       return holder;
@@ -145,7 +145,7 @@ describe.runIf(NATIVE)("macOS holder revoked during its start (native)", () => {
     const control = await spawnSeatbeltOfflineHolder({ label: "test:offline-control", command: "/bin/sleep", args: [String(++sleepSeconds)], baseEnv: { PATH } });
     const controlMeasures = measured.calls;
     await control.release();
-    Object.assign(measured, { calls: 0, at: controlMeasures, then: () => setMacHolderCapability({ state: "checking" }) });
+    Object.assign(measured, { calls: 0, at: controlMeasures, after: () => setMacHolderCapability({ state: "checking" }) });
     const seconds = ++sleepSeconds;
     await expectRevoked({ seconds, holder: spawnSeatbeltOfflineHolder({ label: "test:offline", command: "/bin/sleep", args: [String(seconds)], baseEnv: { PATH } }) });
   });
