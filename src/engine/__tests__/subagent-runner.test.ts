@@ -3791,3 +3791,60 @@ describe("SubAgentRunner — host input taint", () => {
     }
   });
 });
+
+it("advertises only safe declared tools from a scheduled stage envelope", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ave-scheduled-tool-scope-"));
+  const registry = new ToolRegistry();
+  registry.register(new ReadFileTool());
+  registry.register(new WriteFileTool());
+  for (const [name, source, unattendedEffect] of [
+    ["mcp_declared", "mcp", "safe"],
+    ["mcp_undeclared", "mcp", "safe"],
+    ["mcp_unknown", "mcp", "unknown"],
+    ["mcp_outward", "mcp", "outward"],
+    ["plugin_declared", "plugin", "safe"],
+    ["builtin_egress", "builtin", "safe"],
+  ] as const) {
+    registry.register(createDynamicTool({
+      name, source, unattendedEffect, category: "read", description: name, jsonSchema: { type: "object" },
+      ...(source === "plugin" && { pluginId: "declared" }),
+      ...(source === "mcp" && { mcpServerId: "fixture" }),
+      ...(source === "builtin" && { arbitraryEgress: true }),
+      execute: vi.fn(async () => ({ output: "Unexpected execution", isError: false })),
+    }));
+  }
+  const permissionManager = new PermissionManager(join(dir, "permissions.json"));
+  permissionManager.setUnattendedToolEffectResolver(createToolEffectResolver(registry));
+  const provider = new ScriptedProvider(endTurnScript("Finished"));
+  const runner = new SubAgentRunner({
+    parentDeps: buildLoopDeps(registry, { permissionManager }), toolRegistry: registry, subAgentMemoryManager: fakeSubAgentMemoryManager(),
+  });
+  const { hasProviderSpy, refreshProviderSpy } = patchLoopProvider(provider);
+  let sessionId: string | undefined;
+  try {
+    const result = await runner.spawn({
+      title: "Scheduled report", instructions: "Read report input", toolScope: PARENT_ALL_TOOL_SCOPE,
+      projectRoot: dir, originSessionId: workBoardOriginSessionId(97), unattendedStage: { runKey: "report-run", stageId: "report" },
+    }, {
+      onLinked: ({ childSessionId }) => {
+        sessionId = childSessionId;
+        registerUnattendedStage(childSessionId, {
+          runKey: "report-run", stageId: "report", workspaceRoot: dir, isolation: { proven: true },
+          envelope: {
+            tools: ["read_file", "write_file", "builtin_egress"], readRoots: [], writePaths: ["report.txt"],
+            commands: [], network: [], mcpReadOnlyTools: ["mcp_declared", "mcp_unknown", "mcp_outward"], mcpGenerationTools: [],
+            pluginGenerationTools: [{ name: "plugin_declared", effect: "generate", dataSent: false }],
+            outputs: [], budget: { rounds: 1, minutes: 1, costUsd: 0 },
+          },
+        });
+      },
+    });
+    expect(result.ok).toBe(true);
+    expect(provider.observedToolNames[0]?.sort()).toEqual(["mcp_declared", "plugin_declared", "read_file", "write_file"]);
+  } finally {
+    if (sessionId) endUnattendedStage(sessionId);
+    hasProviderSpy.mockRestore();
+    refreshProviderSpy.mockRestore();
+    await cleanupTmpDir(dir);
+  }
+});

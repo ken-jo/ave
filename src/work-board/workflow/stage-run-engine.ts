@@ -17,6 +17,8 @@ import type { WorkBoardStore } from "../../main/work-board-store.js";
 import type { WorkflowTemplateStore } from "../../main/workflow-template-store.js";
 import type { RunEnd, RunEndCause, RunRemovalCause } from "../../main/workflow-run-store.js";
 import { requiredTier } from "../../permissions/permission-manager.js";
+import { createToolEffectResolver, unattendedEnvelopeTool } from "../../permissions/tool-effect-evidence.js";
+import { admittedUnattendedStage } from "../../permissions/unattended-lane-registry.js";
 import { updateApprovalSurface } from "../../permissions/approval-surface-registry.js";
 import type { RunScopeHooks } from "../../permissions/run-scope.js";
 import { raceWithAbort } from "../../shared/abortable-deadline.js";
@@ -1456,8 +1458,12 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       const profile = agentName ? await beforeDeadline(() => deps.getAgentProfile?.(agentName) ?? Promise.resolve(null)) : null;
       if (stage.agentName && !profile) throw new Error(`agent profile not found: ${stage.agentName}`);
       const readOnly = stage.toolScope === "read";
-      const readTools = readOnly ? runner.parentToolRegistry().listAll()
-        .filter(lane === "unattended" ? isUnattendedReadTool : tool => requiredTier(tool.category) === "read")
+      const registry = runner.parentToolRegistry();
+      const envelope = lane === "unattended" ? admittedUnattendedStage(runKey, stageId)?.envelope : undefined;
+      const effects = createToolEffectResolver(registry);
+      const readTools = readOnly ? registry.listAll()
+        .filter(tool => envelope ? unattendedEnvelopeTool(tool, envelope, effects)
+          : lane === "unattended" ? isUnattendedReadTool(tool) : requiredTier(tool.category) === "read")
         .map(tool => tool.name) : [];
       const revision = run.gate?.type === "human" && run.gate.status === "changes_requested" && run.gate.note !== undefined && run.output !== undefined
         ? { priorOutput: run.output, note: run.gate.note, ...(run.taint ? { taint: run.taint } : {}) }

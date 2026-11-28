@@ -116,7 +116,7 @@ export function resolveToolScope(
       activeToolNames,
       forcedToolNames,
       includeBuiltins: true,
-      includeMcp: deps.headless !== true,
+      includeMcp: includesMcp(deps),
       // Unattended input is untrusted and cannot access arbitrary-egress builtins.
       includeEgress: deps.headless !== true,
       deferral,
@@ -131,9 +131,13 @@ export function carriedPluginIds(scope: ToolScope): Set<string> {
   return carried;
 }
 
+function includesMcp(deps: ConversationLoopDeps): boolean {
+  return deps.headless !== true || deps.unattendedMcpEnabled === true;
+}
+
 function scopedToolNameSet(deps: ConversationLoopDeps, activePluginIds: Set<string>,
 ): Set<string> {
-    const includeMcp = deps.headless !== true;
+    const includeMcp = includesMcp(deps);
     const names = new Set<string>();
   // Model-hidden app tools cannot count toward eager limits or become preloaded.
     for (const tool of deps.toolRegistry.getModelVisibleTools()) {

@@ -1,4 +1,5 @@
-import type { EnvelopeToolRef } from "../shared/workflow-template-types.js";
+import type { EnvelopeToolRef, StageEnvelope } from "../shared/workflow-template-types.js";
+import { isModelExposedTool, type Tool } from "../tools/base.js";
 import type { ToolRegistry } from "../tools/registry.js";
 
 export type ToolEffectEvidence = "outward" | "safe" | "unknown";
@@ -36,4 +37,16 @@ export function createToolEffectResolver(registry: Pick<ToolRegistry, "findByNam
       return tool?.source === TOOL_SOURCE_BY_COLLECTION[collection] ? tool.unattendedEffect ?? "unknown" : "unknown";
     },
   };
+}
+
+export function unattendedEnvelopeTool(tool: Tool, envelope: StageEnvelope, effects: ToolEffectResolver): boolean {
+  if (!isModelExposedTool(tool) || tool.requiresAttendedStage || tool.arbitraryEgress || tool.requiresMcpScope || tool.appInvokable) return false;
+  const { name, source } = tool;
+  if (source === "builtin") return envelope.tools.includes(name) && effects.effectOf({ collection: "tools", name }) === "safe";
+  if (source === "plugin") {
+    return envelope.pluginGenerationTools.some(entry => entry.name === name)
+      && effects.effectOf({ collection: "pluginGenerationTools", name }) === "safe";
+  }
+  return (envelope.mcpReadOnlyTools.includes(name) && effects.effectOf({ collection: "mcpReadOnlyTools", name }) === "safe")
+    || (envelope.mcpGenerationTools.some(entry => entry.name === name) && effects.effectOf({ collection: "mcpGenerationTools", name }) === "safe");
 }
