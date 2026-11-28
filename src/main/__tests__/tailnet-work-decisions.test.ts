@@ -11,7 +11,7 @@ import { foldCanonicalPathSeparators } from "../../permissions/sensitive-paths.j
 import type { TailnetRequestedOutputDecision, TailnetWorkDecisionRequest } from "../../shared/tailnet-work-decisions.js";
 import { watchPermissionEvents } from "../../__tests__/support/permission-events.js";
 import { ToolRegistry } from "../../tools/registry.js";
-import { autoStageOf, stageOf } from "../../work-board/workflow/__tests__/stage-fixtures.js";
+import { autoStageOf, emptyStageEnvelope, stageOf } from "../../work-board/workflow/__tests__/stage-fixtures.js";
 import { stageRunHarness } from "../../work-board/workflow/__tests__/stage-run-harness.js";
 import { createHostGit } from "../../work-board/workflow/host-git.js";
 import { createRequestedOutputHooks, requestedOutputHash } from "../../work-board/workflow/requested-outputs.js";
@@ -167,7 +167,7 @@ it("lists and binds the registered Windows project when a template uses native s
 it("attaches a schedule with the exact pin and removes a routine created for a refused attachment", async () => {
   const { h, decide, routines, log } = await fixture();
   await h.runThenEnd(async () => {
-    const version = await h.confirm([stageOf("a")]);
+    const version = await h.confirm([stageOf("a", { envelope: emptyStageEnvelope() })]);
     const pin = h.pinOf(version);
     const request = { ...base, kind: "schedule-attachment", input: { ...pin, expectedScope: { kind: "all" }, schedule: { repeat: { kind: "cron", expression: "0 9 * * *" } } } } as const;
     await expect(decide({ ...request, input: { ...request.input, graphHash: staleHash } })).resolves.toEqual({ ok: false, error: "graph-hash-mismatch" });
@@ -184,8 +184,8 @@ it("attaches a schedule with the exact pin and removes a routine created for a r
 it.each(["archived pin", "last failure"] as const)("includes the desktop schedule's %s when reviewing reattachment", async detail => {
   const { h, decide, routines, runtime } = await fixture();
   await h.runThenEnd(async () => {
-    const prior = h.pinOf(await h.confirm([stageOf("prior")]));
-    const next = h.pinOf(await h.confirm([stageOf("next")]));
+    const prior = h.pinOf(await h.confirm([stageOf("prior", { envelope: emptyStageEnvelope() })]));
+    const next = h.pinOf(await h.confirm([stageOf("next", { envelope: emptyStageEnvelope() })]));
     const attached = await decide({ ...base, kind: "schedule-attachment", input: {
       ...prior, expectedScope: { kind: "all" }, schedule: { repeat: { kind: "cron", expression: "0 9 * * *" } },
     } });
@@ -213,8 +213,8 @@ it.each(["archived pin", "last failure"] as const)("includes the desktop schedul
 it("withholds the prior schedule pin after its current template scope leaves the authorized projects", async () => {
   const { h, decide, routines, runtime } = await fixture();
   await h.runThenEnd(async () => {
-    const prior = h.pinOf(await h.confirm([stageOf("prior")]));
-    const next = h.pinOf(await h.confirm([stageOf("next")]));
+    const prior = h.pinOf(await h.confirm([stageOf("prior", { envelope: emptyStageEnvelope() })]));
+    const next = h.pinOf(await h.confirm([stageOf("next", { envelope: emptyStageEnvelope() })]));
     const attached = await decide({ ...base, kind: "schedule-attachment", input: {
       ...prior, expectedScope: { kind: "all" }, schedule: { repeat: { kind: "cron", expression: "0 9 * * *" } },
     } });
@@ -236,7 +236,7 @@ it("withholds the prior schedule pin after its current template scope leaves the
 it("approves an ordinary stage gate through the authenticated remote dispatcher", async () => {
   const { h, decide, runtime } = await fixture();
   await h.runThenEnd(async () => {
-    const version = await h.confirm([stageOf("review")]);
+    const version = await h.confirm([stageOf("review", { envelope: emptyStageEnvelope() })]);
     const itemId = await h.addItem(version);
     const start = h.start(itemId, h.local(version));
     (await h.untilLive(1, itemId))[0].finish();
@@ -378,7 +378,7 @@ it("leaves a plan pending when authority is lost in its board transaction", asyn
 it("shares the desktop review binding for a conversation proposal and makes owner-initiated denial local", async () => {
   const { h, runtime, decide } = await fixture();
   await h.runThenEnd(async () => {
-    const draft = { name: "Review this graph", scope: { kind: "all" as const }, stages: [stageOf("a")], edges: [] };
+    const draft = { name: "Review this graph", scope: { kind: "all" as const }, stages: [stageOf("a", { envelope: emptyStageEnvelope() })], edges: [] };
     const proposal = h.templates.propose(evidence.conversationId, draft);
     const hidden = h.templates.propose("other-conversation", { ...draft, name: "Other conversation" });
     const reviews = await runtime.list(evidence);

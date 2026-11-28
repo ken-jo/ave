@@ -431,7 +431,7 @@ export interface TemplateRoutineFire {
 
 interface TemplateAttachmentReader {
   listByRoutine(id: string): Promise<ScheduleAttachment[]>;
-  listActiveScheduleAttachments(scheduleIds: ReadonlySet<string>): Promise<ReadonlyMap<string, { attachment: ScheduleAttachment; template: WorkflowTemplate }>>;
+  listActiveScheduleAttachments(scheduleIds: ReadonlySet<string>): Promise<ReadonlyMap<string, { attachment: ScheduleAttachment; template: WorkflowTemplate; needsNewVersion: boolean }>>;
 }
 
 export class RoutinesStore {
@@ -527,11 +527,12 @@ export class RoutinesStore {
       if (routine.execution !== "template-run") return routine;
       const active = attachments.get(routine.id);
       if (!active) return { ...routine, templateAttention: "attachment-missing" };
-      const { attachment, template } = active;
+      const { attachment, template, needsNewVersion } = active;
       const scope = attachmentScopeMatches(attachment, template);
+      const templateAttention = !scope.ok ? scope.code : needsNewVersion ? "needs-new-version" : undefined;
       const { projectRoot: _originalProject, ...record } = routine;
       return {
-        ...record, attachmentId: attachment.id, ...(scope.ok ? {} : { templateAttention: scope.code }),
+        ...record, attachmentId: attachment.id, ...(templateAttention && { templateAttention }),
         ...(attachment.approvedScope.kind === "project" ? { projectRoot: attachment.approvedScope.projectRoot } : {}),
       };
     });

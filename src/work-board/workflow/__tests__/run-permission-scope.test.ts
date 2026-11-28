@@ -246,8 +246,7 @@ it("links a scheduled grandchild with the same lane, workspace and envelope as i
       network: [], outputs: [], mcpReadOnlyTools: [], mcpGenerationTools: [], pluginGenerationTools: [],
     } })]);
     const id = await h.addItem(version);
-    await expect(h.attach(version)).rejects.toMatchObject({ code: "schedule-requires-read-only" });
-    // Provide a future lane's approved attachment to exercise inheritance while the shipped attachment guard is active.
+    // Provide the exact attachment under test so the inheritance assertions can use a fixed identity.
     const pin: TemplateVersionPin = { templateId: version.templateId, version: version.version, graphHash: version.graphHash };
     const attachment: ScheduleAttachment = {
       ...pin, id: "attachment", scheduleId: "daily", approvedScope: { kind: "all" },

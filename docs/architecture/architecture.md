@@ -2679,6 +2679,14 @@ Owner-away cards wait without a timeout by default; optional `permissions.ownerA
 Permission-policy file precedence, conservative handling of administrative read
 failures, and edit locking follow [Policy Files](permission-policy-design.md#policy-files).
 
+### Scheduled stage isolation
+
+Schedule attachment and fire use the pinned template version's capability envelopes and the live tool effect resolver. A version without an envelope on every stage needs a new confirmation and attachment. Existing attachments remain readable with their original pins.
+
+An all-read-only version runs with the same host read tools on every OS. Any other version needs a contained shell plan with measured direct-IP blocking. The host checks its proof at stage admission and again at session link. If a linked stage loses proof, the stage and its descendants lose their unattended tool authority for that attempt.
+
+A contained scheduled shell writes in its stage workspace and its invocation's private home. Inside the host home, reads can reopen the workspace, the declared read roots and exact local directories found on the host's PATH. The PATH directories are read-only and cannot pierce the protected floor or user denies. The run evidence and audit record the admitted PATH directories. Saved-session history and system Git configuration stay denied.
+
 On Windows, sandbox write denies beneath machine roots (`ProgramData`, the
 program-files roots and the system directory) are omitted unless a grant
 strictly beneath the machine root contains the target: ordinary ACLs already

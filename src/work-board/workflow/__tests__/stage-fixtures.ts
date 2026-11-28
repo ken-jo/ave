@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, parse, sep } from "node:path";
 import { PermissionManager } from "../../../permissions/permission-manager.js";
-import type { TemplateGraph, TemplateStage, TemplateVersion, WorkItemStageRun } from "../../../shared/workflow-template-types.js";
+import type { StageEnvelope, TemplateGraph, TemplateStage, TemplateVersion, WorkItemStageRun } from "../../../shared/workflow-template-types.js";
 import { graphHashOf } from "../../template-graph.js";
 
 /** Writes one fixture file under `root`, making its folders. */
@@ -91,6 +91,13 @@ export function setPath(file: string, path: readonly (string | number)[], value:
 
 export function stageOf(id: string, over: Partial<TemplateStage> = {}): TemplateStage {
   return { id, name: `Stage ${id}`, goal: `Do ${id}`, inputs: [], toolScope: "read", allowSubAgents: false, gate: { type: "human" }, ...over };
+}
+
+export function emptyStageEnvelope(): StageEnvelope {
+  return {
+    tools: [], readRoots: [], writePaths: [], commands: [], network: [], mcpReadOnlyTools: [],
+    mcpGenerationTools: [], pluginGenerationTools: [], outputs: [], budget: { rounds: 5, minutes: 5, costUsd: 0 },
+  };
 }
 
 /** A stage whose gate passes on its own once the stage ends well. */

@@ -8,12 +8,13 @@ import { endUnattendedStage, inheritUnattendedStage, unattendedStageOf } from ".
 import { turnExtensionPolicyContext } from "../../shared/turn-extension-policy.js";
 import type { StageEnvelope, TemplateStage } from "../../shared/workflow-template-types.js";
 import type { RemovedRun } from "../workflow-run-store.js";
-import { runScopePermissions, setPath, stageOf } from "../../work-board/workflow/__tests__/stage-fixtures.js";
+import { emptyStageEnvelope, runScopePermissions, setPath, stageOf } from "../../work-board/workflow/__tests__/stage-fixtures.js";
 import type { StageWorkspaceProvider } from "../../work-board/workflow/stage-workspace.js";
 import { gitFixture } from "../../work-board/workflow/__tests__/stage-git-fixture.js";
 import { stageRunHarness, unavailableOutputAdapter } from "../../work-board/workflow/__tests__/stage-run-harness.js";
 import * as sandboxCapability from "../../permissions/sandbox-capability.js";
 import * as shellPolicy from "../../permissions/asrt-sandbox.js";
+import type { ToolEffectResolver } from "../../permissions/tool-effect-evidence.js";
 import { buildHostShellExecutionPlan } from "../../permissions/host-shell-execution-plan.js";
 import { projectWorkflowRun } from "../../work-board/workflow/run-read-projection.js";
 import { collectPermissionEvents } from "../../__tests__/support/permission-events.js";
@@ -55,7 +56,7 @@ it("refuses a stage without an envelope in a mixed schedule before spawn", async
   });
 });
 
-it("runs a read-only schedule with an envelope under the interim permission policy", async () => {
+it("runs a read-only schedule with an envelope without isolation", async () => {
   const manager = runScopePermissions();
   manager.setMode("allow");
   const h = await stageRunHarness({
@@ -167,7 +168,7 @@ it("the production parts give a discard the project of each run whose record wen
     const A = "/projects/a";
     const B = "/projects/b";
     const version = await h.confirm([stageOf("a")]);
-    const onB = await h.confirm([stageOf("a")], { scope: { kind: "project", projectRoot: B } });
+    const onB = await h.confirm([stageOf("a", { envelope: emptyStageEnvelope() })], { scope: { kind: "project", projectRoot: B } });
     const attachment = await h.attach(onB, { kind: "project", projectRoot: B });
     const card = await h.addItem(version, A);
     const scheduled = await h.addItem(onB, B);
@@ -441,29 +442,23 @@ function isolationPlan(rawIp: "blocked" | "unknown") {
   };
 }
 
-async function isolationHarness(onSpawn?: () => void) {
+async function isolationHarness(onSpawn?: () => void, effects: ToolEffectResolver | null = { effectOf: () => "safe" }) {
   const manager = runScopePermissions();
   manager.setUnattendedToolEffectResolver({ effectOf: () => "safe" });
   const h = await stageRunHarness({
     onSpawn,
     wiring: (store, harness) => ({
-      ...workflowEngineExtensions(store, harness.templates, manager, unavailableOutputAdapter),
+      ...workflowEngineExtensions(store, harness.templates, manager, unavailableOutputAdapter, effects),
       workspace: harness.workspace, workspaceBinding: undefined,
-      unattendedAllowed: () => ({ ok: true }),
     }),
   });
   return { h, manager };
 }
 
 async function pinIsolationSchedule(h: Awaited<ReturnType<typeof stageRunHarness>>, stage: TemplateStage) {
-  const baseline = await h.confirm([auto("a")]);
-  const { id: attachmentId, source } = await h.attach(baseline);
-  const version = await h.confirm([stage], { id: baseline.templateId });
-  const pin = h.pinOf(version);
-  setPath(join(h.dir, "templates.json"), ["templates", 0, "scheduleAttachments", 0], {
-    ...await h.templates.getAttachment(attachmentId), ...pin,
-  });
-  return { version, source: { ...source, pin }, itemId: await h.addItem(version) };
+  const version = await h.confirm([stage]);
+  const { source } = await h.attach(version);
+  return { version, source, itemId: await h.addItem(version) };
 }
 
 it.each([
@@ -565,4 +560,15 @@ it("records the exact admitted PATH folder in audit and run evidence", async () 
     plan.mockRestore();
     vi.unstubAllEnvs();
   }
+});
+
+it("refuses an all-tools scheduled version when boot has no effect resolver", async () => {
+  const { h } = await isolationHarness(undefined, null);
+  await h.runThenEnd(async () => {
+    const { itemId, source } = await pinIsolationSchedule(h, {
+      ...auto("a"), toolScope: "all", envelope: emptyStageEnvelope(),
+    });
+    expect(await h.start(itemId, source)).toMatchObject({ status: "error", reasonCode: "unattended-not-read-only" });
+    expect(h.children).toHaveLength(0);
+  });
 });

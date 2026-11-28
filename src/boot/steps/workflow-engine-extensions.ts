@@ -33,9 +33,9 @@ type WorkflowEngineExtensions = Pick<
   "runs" | "workspace" | "workspaceBinding" | "authoriseRunSource" | "passConditions" | "unattendedAllowed" | "lane" | "outputs" | "runScope"
 >;
 
-/** The one place the stage scheduler's replaceable parts are chosen. Each later part swaps its own line here and nowhere else. Run state
- * is the board store's covered run file. Every stage works in its own folder under the home's `worktrees`, bound to its session, and with
- * no lane only an all-read-only version may run unattended. A run's "Allow for this run" grants and its stage sessions' reviewer
+/** The stage scheduler's host dependencies. Run state
+ * is the board store's covered run file. Every stage works in its own folder under the home's `worktrees`, bound to its session.
+ * A run's "Allow for this run" grants and its stage sessions' reviewer
  * breakers are held by the permission manager and end as the run tells it. */
 export function workflowEngineExtensions(store: WorkBoardStore, templates: Pick<WorkflowTemplateStore, "getAttachment" | "resolveVersion">, permissionManager: PermissionManager, outputAdapter: GovernedOutputAdapter, effects: ToolEffectResolver | null = null): WorkflowEngineExtensions {
   const runs = boardRunState(store);
@@ -114,12 +114,7 @@ export function workflowEngineExtensions(store: WorkBoardStore, templates: Pick<
     workspaceBinding: { bind: bindStageWorkspace, unbind: unbindStageWorkspace },
     authoriseRunSource,
     passConditions: createPassConditionRegistry(),
-    unattendedAllowed: version => {
-      const qualification = qualifyUnattended(version, effects);
-      if (!qualification.ok && "tool" in qualification) return qualification;
-      // The interim lane admits only read-only graphs and does not require an envelope.
-      return isAllReadOnlyVersion(version) ? { ok: true } : { ok: false, code: "unattended-not-read-only" };
-    },
+    unattendedAllowed: version => qualifyUnattended(version, effects),
     lane: {
       ...unattendedLaneHooks,
       admit: async ({ runKey, stageId, envelope, workspaceRoot }) => {

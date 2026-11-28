@@ -85,7 +85,8 @@ export function registerWorkflowTemplateHandlers(
     }
     const routines = deps.routinesStore;
     if (!routines) throw new TemplateStoreUnavailableError();
-    const { attachment: result } = await attachWorkflowSchedule(store, routines, request, () => mintHostDecisionProof("local-desktop"));
+    const { attachment: result } = await attachWorkflowSchedule(store, routines, request,
+      createToolEffectResolver(deps.toolRegistry), () => mintHostDecisionProof("local-desktop"));
     logPermissionEvent("template_schedule_attached", { sessionId: permissionLogId(`work-board:${result.templateId}`) });
     return result;
   });

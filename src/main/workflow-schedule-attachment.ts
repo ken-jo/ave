@@ -1,5 +1,6 @@
 import { logPermissionEvent, permissionLogId } from "../lib/permission-log.js";
 import type { ScheduleAttachmentRequest } from "../shared/workflow-template-types.js";
+import type { ToolEffectResolver } from "../permissions/tool-effect-evidence.js";
 import { attachmentScopeMatches, requireTemplate } from "../work-board/template-graph.js";
 import { WorkDecisionAuthorityError } from "../work-board/work-decision-authority.js";
 import { resolveAuthorizedWorkspaceProject } from "./project-root-authorization.js";
@@ -11,6 +12,7 @@ export async function attachWorkflowSchedule(
   store: WorkflowTemplateStore,
   routines: RoutinesStore,
   request: ScheduleAttachmentRequest,
+  effects: ToolEffectResolver,
   mintProof: () => HostDecisionProof,
 ) {
   const { templateId, version, graphHash, expectedScope } = request;
@@ -38,7 +40,7 @@ export async function attachWorkflowSchedule(
     try {
       requireTemplate(routines.list().some(routine => routine.id === id && routine.execution === "template-run"), "routine-not-found");
       return await routines.writeTemplateAttachment(id, approvedScope, () =>
-        store.attachSchedule({ templateId, version, graphHash, scheduleId: id }, proof, approvedScope, { requireCurrent: true }));
+        store.attachSchedule({ templateId, version, graphHash, scheduleId: id }, proof, approvedScope, { requireCurrent: true, effects }));
     } catch (error) {
       if (created) {
         try { await remove(); }

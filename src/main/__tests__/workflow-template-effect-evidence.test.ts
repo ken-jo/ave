@@ -103,13 +103,13 @@ it("returns no mark for safe evidence and keeps marked and unmarked confirmation
   expect(await readFile(path())).toEqual(markedFile);
 });
 
-it("refuses a marked version at attach under the interim limit", async () => {
+it("refuses a marked version at attach when its tool effect is unknown", async () => {
   const { response } = await confirmVersion();
   expect(response.unattended).toMatchObject({ ok: false, code: "tool-effect-unknown" });
   const { templateId, version, graphHash } = response.version;
   const before = await readFile(path());
   await expect(store.attachSchedule({ templateId, version, graphHash, scheduleId: "daily" },
-    mintHostDecisionProof("local-desktop"), { kind: "all" })).rejects.toMatchObject({ code: "schedule-requires-read-only" });
+    mintHostDecisionProof("local-desktop"), { kind: "all" })).rejects.toMatchObject({ code: "tool-effect-unknown" });
   expect(await readFile(path())).toEqual(before);
 });
 

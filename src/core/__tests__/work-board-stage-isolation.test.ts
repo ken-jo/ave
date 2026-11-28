@@ -7,8 +7,12 @@ import { deferred } from "../../__tests__/support/deferred.js";
 import { type Bound, boundWait, within } from "../../__tests__/support/signal-wait.js";
 import { workflowEngineExtensions } from "../../boot/steps/workflow-engine-extensions.js";
 import { boundStageWorkspace, isOwnStageWorkspacePath } from "../../permissions/stage-workspace-binding.js";
+import { buildHostShellExecutionPlan } from "../../permissions/host-shell-execution-plan.js";
+import * as sandboxCapability from "../../permissions/sandbox-capability.js";
+import type { ToolEffectResolver } from "../../permissions/tool-effect-evidence.js";
+import { unattendedStageOf } from "../../permissions/unattended-lane-registry.js";
 import { aveHome } from "../../shared/ave-home.js";
-import { runScopePermissions, stageOf } from "../../work-board/workflow/__tests__/stage-fixtures.js";
+import { autoStageOf, emptyStageEnvelope, runScopePermissions, stageOf } from "../../work-board/workflow/__tests__/stage-fixtures.js";
 import { stageRunHarness, unavailableOutputAdapter } from "../../work-board/workflow/__tests__/stage-run-harness.js";
 import type { StageWorkspaceProvider } from "../../work-board/workflow/stage-workspace.js";
 import { createStageWorkspaceProvider } from "../../work-board/workflow/stage-workspaces.js";
@@ -18,9 +22,9 @@ const WORKSPACE_WAIT_MS = 5_000;
 const workspaceBound: Bound = expire => boundWait(expire, WORKSPACE_WAIT_MS);
 /** The provider the production wiring chose for the engine now running. */
 let production: StageWorkspaceProvider;
-async function withProductionParts(run: (h: Harness) => Promise<void>): Promise<void> {
+async function withProductionParts(run: (h: Harness) => Promise<void>, effects?: ToolEffectResolver): Promise<void> {
   const h = await stageRunHarness({ observeRunWork: true, wiring: (store, { templates, waking }) => {
-    const parts = workflowEngineExtensions(store, templates, runScopePermissions(), unavailableOutputAdapter);
+    const parts = workflowEngineExtensions(store, templates, runScopePermissions(), unavailableOutputAdapter, effects);
     production = parts.workspace;
     const release = production.release.bind(production);
     const discard = production.discard.bind(production);
@@ -31,6 +35,38 @@ async function withProductionParts(run: (h: Harness) => Promise<void>): Promise<
   await h.runThenEnd(() => run(h));
 }
 const folderOf = (child: Harness["children"][number]): string => child.input.projectRoot ?? "";
+
+it("admits the real bound stage workspace for an all-tools schedule with measured plan evidence", async () => {
+  const plan = vi.spyOn(sandboxCapability, "getHostShellExecutionPlan").mockReturnValue({
+    ...buildHostShellExecutionPlan({
+      platform: process.platform, requestedSandbox: true, activeCapability: {
+        kind: "asrt", platform: process.platform, confidence: "verified", reason: "Test boundary",
+        confines: { filesystem: true, process: true, network: true },
+      },
+    }),
+    substrate: "mxc",
+    egressProtocolCoverage: { dns: "brokered", rawIp: "blocked" },
+  });
+  try {
+    await withProductionParts(async h => {
+      const version = await h.confirm([autoStageOf("a", { toolScope: "all", envelope: emptyStageEnvelope() })]);
+      const { source } = await h.attach(version);
+      const id = await h.addItem(version);
+      const run = h.start(id, source);
+      const [child] = await h.untilLive(1);
+      const workspaceRoot = realpathSync.native(folderOf(child));
+      expect(workspaceRoot.startsWith(join(realpathSync.native(aveHome()), "worktrees"))).toBe(true);
+      expect(boundStageWorkspace(child.sessionId)).toBe(workspaceRoot);
+      expect(unattendedStageOf(child.sessionId)).toMatchObject({
+        workspaceRoot, isolation: { proven: true, profile: { writeRoots: [workspaceRoot] } },
+      });
+      child.finish();
+      expect(await run).toMatchObject({ status: "completed" });
+    }, { effectOf: () => "safe" });
+  } finally {
+    plan.mockRestore();
+  }
+});
 /** As a stop between a record's removal and the discard, or a board recovery, leaves it: a run folder with an output folder and no run
  * record. */
 async function left(run: { itemId: number; runId: string; runKey: string }): Promise<string> {

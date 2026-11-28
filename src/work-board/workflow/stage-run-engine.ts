@@ -37,7 +37,7 @@ import type {
   WorkItemStageRun,
 } from "../../shared/workflow-template-types.js";
 import { isUnattendedReadTool } from "../../tools/base.js";
-import { isAllReadOnlyVersion, WorkflowTemplateError } from "../template-graph.js";
+import { isAllReadOnlyVersion, qualifyUnattended, WorkflowTemplateError } from "../template-graph.js";
 import { WORK_DECISION_AUTHORITY_REVOKED, WorkDecisionAuthorityError, type WorkDecisionAuthority } from "../work-decision-authority.js";
 import type { AuthoriseRunSource, RunAuthorityVerdict } from "./run-authority.js";
 import type { RunPin, StageFailure } from "./shipped-shapes.js";
@@ -389,7 +389,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   let kept = new Set<string>();
   let keeping: Promise<Adopted> | null = null;
   const unattendedAllowed = deps.unattendedAllowed
-    ?? ((version: TemplateVersion): UnattendedQualification => isAllReadOnlyVersion(version) ? { ok: true } : { ok: false, code: "unattended-not-read-only" });
+    ?? ((version: TemplateVersion): UnattendedQualification => qualifyUnattended(version, null));
 
   function wake(state: RunState): void {
     const waiters = [...state.waiters];

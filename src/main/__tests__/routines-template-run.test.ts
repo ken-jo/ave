@@ -12,7 +12,7 @@ import { createRoutineScheduleTool } from "../../tools/routine-schedule.js";
 import { createStageWorkspaceProvider } from "../../work-board/workflow/stage-workspaces.js";
 import { deferred } from "../../__tests__/support/deferred.js";
 import { untilAsserted } from "../../__tests__/support/signal-wait.js";
-import { autoStageOf, runScopePermissions, stageOf } from "../../work-board/workflow/__tests__/stage-fixtures.js";
+import { autoStageOf, runScopePermissions, setPath, stageOf } from "../../work-board/workflow/__tests__/stage-fixtures.js";
 import { stageRunHarness, unavailableOutputAdapter } from "../../work-board/workflow/__tests__/stage-run-harness.js";
 import { mayFire } from "../../work-board/workflow/schedule-breaker.js";
 import { RoutinesScheduler } from "../routines-scheduler.js";
@@ -46,7 +46,7 @@ async function setup(h: Awaited<ReturnType<typeof stageRunHarness>>) {
   scheduler.onTemplateRun(event => { dispatches.push(fire(event)); });
   const add = (at?: string) => store.add(input(at), proof());
   const attach = (scheduleId: string, version: TemplateVersion, scope: TemplateScope = { kind: "all" }) =>
-    store.withTemplateSchedule(scheduleId, () => h.templates.attachSchedule({ scheduleId, ...h.pinOf(version) }, proof(), scope));
+    store.withTemplateSchedule(scheduleId, async () => (await h.attach(version, scope, scheduleId)).attachment);
   const takeDispatch = () => {
     const result = dispatches.shift();
     if (!result) throw new Error("Missing template scheduler dispatch");
@@ -154,6 +154,30 @@ it("a detached schedule refuses to fire and an orphan is listed as needs reattac
   expect((await f.store.listScheduleDisplay()).routines[0].templateAttention).toBe("attachment-missing");
   expect(await f.rows()).toEqual([]);
   expect(await f.h.templates.listByRoutine(routine.id)).toEqual([expect.objectContaining({ id: attachment.id, detachedAt: expect.any(String) })]);
+}));
+
+it("loads a historical read-only attachment and displays that its pinned version needs an envelope", () => fixture(async f => {
+  const routine = await f.add();
+  const version = await f.h.confirm([autoStageOf("first")]);
+  const approval = proof();
+  const attachment = {
+    ...f.h.pinOf(version), id: "historical-attachment", scheduleId: routine.id,
+    approvedScope: { kind: "all" }, who: "user", at: approval.decidedAt, origin: approval.origin,
+  };
+  setPath(join(f.h.dir, "templates.json"), ["templates", 0, "scheduleAttachments"], [attachment]);
+  expect(await f.h.templates.getAttachment(attachment.id)).toEqual(attachment);
+  expect((await f.store.listScheduleDisplay()).routines).toEqual([expect.objectContaining({
+    attachmentId: attachment.id, templateAttention: "needs-new-version",
+  })]);
+  await (await f.dispatch(routine.id)).result;
+  expect(f.store.list()[0].lastFailure).toMatchObject({ reason: "unattended-not-read-only" });
+  expect(await f.rows()).toEqual([]);
+  expect(f.h.children).toEqual([]);
+}, {
+  wiring: (store, { templates, workspace }) => ({
+    ...workflowEngineExtensions(store, templates, runScopePermissions(), unavailableOutputAdapter, { effectOf: () => "safe" }),
+    workspace,
+  }),
 }));
 
 it("a refused start records scope-changed, creates no item and lists the schedule as needs reattach", () => fixture(async f => {

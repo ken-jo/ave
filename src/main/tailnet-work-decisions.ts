@@ -294,7 +294,7 @@ export function createTailnetWorkDecisions(services: Partial<TailnetWorkDecision
     if (request.kind === "schedule-attachment") {
       const scope = request.input.expectedScope;
       const scoped = withProjectAuthority(evidence, scope.kind === "project" ? scope.projectRoot : undefined);
-      const { attachment: result } = await attachWorkflowSchedule(templates, routines, request.input,
+      const { attachment: result } = await attachWorkflowSchedule(templates, routines, request.input, effects,
         () => mintProof(scoped));
       return { ok: true, kind: request.kind, attachmentId: result.id, scheduleId: result.scheduleId };
     }

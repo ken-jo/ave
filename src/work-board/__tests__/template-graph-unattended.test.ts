@@ -48,11 +48,12 @@ it.each(collections)("answers unknown for a null resolver with an entry in %s", 
   expect(qualifyUnattended(input, null)).toMatchObject({ ok: false, code: "tool-effect-unknown", tool: { collection } });
 });
 
-it("qualifies a version with an envelope on every stage and no envelope tools", () => {
+it("requires a resolver for an all-tools version even when it declares no tools", () => {
   const input = graph();
   const envelope = requiredValue(input.stages[0].envelope);
   for (const collection of collections) envelope[collection] = [];
-  expect(qualifyUnattended(input, null)).toEqual({ ok: true });
+  expect(qualifyUnattended(input, null)).toEqual({ ok: false, code: "unattended-not-read-only" });
+  expect(qualifyUnattended(input, { effectOf: () => "unknown" })).toEqual({ ok: true });
 });
 
 it.each(["web_fetch", "web_search"])("refuses to qualify %s without an unattended network route", name => {

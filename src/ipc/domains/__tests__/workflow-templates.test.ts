@@ -1,3 +1,4 @@
+import { emptyStageEnvelope } from "../../../work-board/workflow/__tests__/stage-fixtures.js";
 import { trackPermissionEvents } from "../../../__tests__/support/permission-events.js";
 import { captureWorkBoardTestGesture, invokeWithWorkBoardTestKey, pressWorkBoardTestKey, workBoardTestSender } from "../../../__tests__/support/work-board-ipc.js";
 import { beforeEach, expect, it, vi } from "vitest";
@@ -361,7 +362,7 @@ it("requires a local keyboard gesture and owner frame for schedule attachments a
   expect(await handler(WORK_BOARD.templateAttachSchedule)({ ...event, senderFrame: {} }, request)).toEqual({ ok: false, error: "unauthorized-frame" });
   expect(store.attachSchedule).not.toHaveBeenCalled();
   expect(await invokeWithWorkBoardTestKey(handler, WORK_BOARD.templateAttachSchedule, event, request)).toEqual({ ok: true, value: {} });
-  expect(store.attachSchedule).toHaveBeenCalledWith({ templateId: "t", version: 1, graphHash: request.graphHash, scheduleId: "daily" }, expect.objectContaining({ origin: "local-desktop", auditId: expect.any(String), decidedAt: expect.any(String) }), allScope, { requireCurrent: true });
+  expect(store.attachSchedule).toHaveBeenCalledWith({ templateId: "t", version: 1, graphHash: request.graphHash, scheduleId: "daily" }, expect.objectContaining({ origin: "local-desktop", auditId: expect.any(String), decidedAt: expect.any(String) }), allScope, { requireCurrent: true, effects: expect.objectContaining({ effectOf: expect.any(Function) }) });
   expect(await handler(WORK_BOARD.templateAttachSchedule)(event, request)).toEqual({ ok: false, error: "user-keyboard-required" });
   expect(store.attachSchedule).toHaveBeenCalledOnce();
 });
@@ -442,7 +443,7 @@ it("passes the resolved authorized project snapshot to attachment storage", asyn
   const { event, store } = setup(); store.get.mockResolvedValueOnce({ template: { id: "t", currentVersion: 1, scope: { kind: "project", projectRoot: "/projects/a/" } } } as never);
   const request = { templateId: "t", version: 1, graphHash: "a".repeat(64), scheduleId: "daily", expectedScope: { kind: "project", projectRoot: "/projects/a" } };
   expect(await invokeWithWorkBoardTestKey(handler, WORK_BOARD.templateAttachSchedule, event, request)).toMatchObject({ ok: true });
-  expect(store.attachSchedule).toHaveBeenCalledWith({ templateId: "t", version: 1, graphHash: request.graphHash, scheduleId: "daily" }, expect.anything(), request.expectedScope, { requireCurrent: true });
+  expect(store.attachSchedule).toHaveBeenCalledWith({ templateId: "t", version: 1, graphHash: request.graphHash, scheduleId: "daily" }, expect.anything(), request.expectedScope, { requireCurrent: true, effects: expect.objectContaining({ effectOf: expect.any(Function) }) });
   vi.mocked(resolveAuthorizedWorkspaceProject).mockReturnValue({ authorized: false, project: null });
 });
 
@@ -483,7 +484,7 @@ async function withScheduleApproval(body: (f: {
     routines.bindTemplateAttachments(templates);
     const { event } = setup({ workflowTemplateStore: templates, routinesStore: routines });
     const confirm = async (id?: string, toolScope: "all" | "read" = "read", scope: TemplateScope = allScope) => {
-      const { template, draft } = await templates.draft(id ?? null, { ...graph, scope, stages: [{ ...graph.stages[0], toolScope, gate: { type: "human" } }] });
+      const { template, draft } = await templates.draft(id ?? null, { ...graph, scope, stages: [{ ...graph.stages[0], toolScope, gate: { type: "human" }, ...(toolScope === "read" && { envelope: emptyStageEnvelope() }) }] });
       if (!draft) throw new Error("Draft was not saved");
       const { version } = await templates.confirmDraft(template.id, { expectedGraphHash: draft.graphHash, expectedDraftRevision: draft.revision }, { who: "user", origin: "local-desktop" }, unknownToolEffects);
       return version;
