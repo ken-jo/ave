@@ -614,7 +614,7 @@ jobs:
         name: Download the test-only suite plan
         if: needs.build.outputs.test_only == 'true'
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
+        with: &test-only-plan-artifact
           name: ci-plan
           path: ${{ runner.temp }}/ci-plan
       - name: Run the native tier
@@ -1330,7 +1330,11 @@ jobs:
       # The build job's plan assigns each one to exactly one shard; the runner
       # re-derives the collected set from this checkout and refuses a plan
       # that differs.
-      - *download-test-only-plan
+      - &download-test-only-plan-after-docs-impact
+        name: Download the test-only suite plan
+        if: steps.docs-impact.outputs.docs_only != 'true' && needs.build.outputs.test_only == 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with: *test-only-plan-artifact
       - name: Run Windows regressions
         env:
           AVE_CI_TEST_ONLY_PLAN: ${{ needs.build.outputs.test_only == 'true' && format('{0}/ci-plan/ci-plan.json', runner.temp) || '' }}
@@ -1429,7 +1433,7 @@ jobs:
           path: ${{ runner.temp }}/python-archives
           key: ${{ steps.python-archive.outputs.key }}
       # The plan assigns each selected tier suite to exactly one tier shard.
-      - *download-test-only-plan
+      - *download-test-only-plan-after-docs-impact
       - name: Run Windows regressions
         env:
           AVE_CI_TEST_ONLY_PLAN: ${{ needs.build.outputs.test_only == 'true' && format('{0}/ci-plan/ci-plan.json', runner.temp) || '' }}
@@ -1516,7 +1520,7 @@ jobs:
         run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1 -QueryFailureFixture
       - *windows-provision
       - *windows-path-kind-rust
-      - *download-test-only-plan
+      - *download-test-only-plan-after-docs-impact
       - name: Run script tests
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
@@ -1767,7 +1771,7 @@ jobs:
       - name: Show the git the regressions run against
         if: steps.docs-impact.outputs.docs_only != 'true'
         run: git --version
-      - *download-test-only-plan
+      - *download-test-only-plan-after-docs-impact
       - name: Run macOS permission regressions
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
@@ -1993,7 +1997,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: node .github/scripts/python-download-mirror.mjs
-      - *download-test-only-plan
+      - *download-test-only-plan-after-docs-impact
       - name: Run Linux confinement regressions
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
