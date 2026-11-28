@@ -134,7 +134,7 @@ export function DocumentEngineInstallContent({ onDismiss, api = getApi().documen
       : working ? []
         : ready ? [{ label: t("documentEngine.uninstall"), disabled: acting, run: () => { void handleAction("uninstall"); } }]
           : [{ label: t(error ? "documentEngine.retry" : "documentEngine.install"), disabled: acting || (!state && !error) || !supported, run: () => { void handleAction("install"); } }];
-  if (!statusReadFailed && !working && !ready && (error === "integrity-failed" || error === "signature-failed")) {
+  if (!statusReadFailed && !working && !ready && (error === "integrity-failed" || error === "signature-failed" || state?.legacyPayload === true)) {
     historyActions.push({ label: t("documentEngine.uninstall"), disabled: acting, run: () => { void handleAction("uninstall"); } });
   }
   const announcedByHistory = useBannerNotice("banner:document-engine", onDismiss ? {
@@ -192,7 +192,7 @@ export function DocumentEngineInstallContent({ onDismiss, api = getApi().documen
           <Trash2 aria-hidden="true" className="mr-1 h-3.5 w-3.5" />{t("documentEngine.uninstall")}</Button>
           : <Button type="button" size="sm" disabled={acting || (!state && !error) || !supported} onClick={() => void handleAction("install")}>
             {t(error ? "documentEngine.retry" : "documentEngine.install")}</Button>}
-      {!statusReadFailed && !working && !ready && (error === "integrity-failed" || error === "signature-failed")
+      {!statusReadFailed && !working && !ready && (error === "integrity-failed" || error === "signature-failed" || state?.legacyPayload === true)
         ? <Button type="button" size="sm" variant="outline" disabled={acting} onClick={() => void handleAction("uninstall")}>
           <Trash2 aria-hidden="true" className="mr-1 h-3.5 w-3.5" />{t("documentEngine.uninstall")}</Button> : null}
       {onDismiss ? <Button type="button" size="sm" variant="ghost" onClick={onDismiss}>{t("documentEngine.later")}</Button> : null}

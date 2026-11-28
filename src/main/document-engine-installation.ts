@@ -166,7 +166,20 @@ async function assertNamespace(): Promise<boolean> {
   }
 }
 
-async function readReceipt(): Promise<InstallationReceipt | null> {
+/**
+ * The receipt of the confined Linux x64 payload earlier Ave builds installed, validated as they validated it (seven keys,
+ * schema 2, their release identity, a slot name and two digests). Accepted only for removal.
+ */
+function isLegacyLinuxReceipt(receipt: Record<string, unknown>): boolean {
+  const digest = (value: unknown): boolean => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+  return process.platform === "linux" && process.arch === "x64" && Object.keys(receipt).length === 7 && receipt.schema === 2
+    && receipt.version === "26.8.1" && receipt.platform === "linux" && receipt.arch === "x64"
+    && typeof receipt.slot === "string" && /^slot-[a-f0-9-]{36}$/.test(receipt.slot)
+    && digest(receipt.treeDigest) && digest(receipt.identityDigest);
+}
+
+/** `remove`: the uninstall's read, which on Linux also accepts the legacy payload's receipt. */
+async function readReceipt(purpose: "use" | "remove" = "use"): Promise<InstallationReceipt | null> {
   if (!await assertNamespace()) return null;
   const path = join(namespace.dir, "installation.json");
   let handle;
@@ -187,8 +200,12 @@ async function readReceipt(): Promise<InstallationReceipt | null> {
     const raw: unknown = JSON.parse(buffer.subarray(0, bytesRead).toString("utf8"));
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("Invalid receipt");
     const receipt = raw as Record<string, unknown>;
-    // An unsupported platform has no receipt Ave could have written: any one is refused, as main refused it.
-    if (appCandidates() === undefined) throw new Error("Receipt on an unsupported platform");
+    // An unsupported platform holds no receipt this build can use. Windows never had one, so any receipt is refused there,
+    // as main refused it; Linux keeps one exception: removing the payload an earlier build installed.
+    if (appCandidates() === undefined) {
+      if (purpose === "remove" && isLegacyLinuxReceipt(receipt)) return { schema: 2, slot: receipt.slot as string };
+      throw new Error("Receipt on an unsupported platform");
+    }
     if ((receipt.schema !== 2 && receipt.schema !== 3) || typeof receipt.slot !== "string" || !/^slot-[a-f0-9-]{36}$/.test(receipt.slot)
       || receipt.schema === 3 && Object.keys(receipt).length !== 2) throw new Error("Invalid receipt identity");
     return { schema: receipt.schema, slot: receipt.slot };
@@ -340,7 +357,12 @@ export async function getDocumentEngineInstallationState(): Promise<DocumentEngi
   if (transientState?.root === namespace.dir && transientState.state.phase !== "ready" && transientState.state.phase !== "absent") {
     return { ...transientState.state };
   }
-  if (appCandidates() === undefined) return stateFor("unsupported");
+  if (appCandidates() === undefined) {
+    // Linux: offer removal of an earlier build's payload; a receipt that is not one leaves the plain unsupported state.
+    const legacy = process.platform === "linux" && !uninstalling
+      && await readReceipt("remove").then(receipt => receipt !== null, () => false);
+    return legacy ? { ...stateFor("unsupported"), legacyPayload: true } : stateFor("unsupported");
+  }
   const app = await findInstalledApp();
   if (!app) return stateFor("app-missing");
   if (uninstalling) return stateFor("absent");
@@ -501,7 +523,7 @@ export async function uninstallDocumentEngine(beforeRemove?: () => Promise<void>
   installations.clear();
   try {
     await beforeRemove?.();
-    const receipt = await readReceipt();
+    const receipt = await readReceipt("remove");
     if (!receipt) { transientState = undefined; return; }
     await removeSlot(receipt.slot);
     await fs.unlink(join(namespace.dir, "installation.json"));

@@ -149,6 +149,23 @@ describe("optional document engine installation", () => {
     expect(install).not.toHaveBeenCalled();
   });
 
+  it("offers only removal, with main's uninstall label, for a payload an earlier build left on Linux", async () => {
+    const { api, install, uninstall } = installation({ ...UNSUPPORTED, legacyPayload: true });
+    render(<DocumentEngineInstallContent darwin={false} api={api} />);
+    const remove = await screen.findByRole("button", { name: "Uninstall engine" });
+    expect(screen.getByRole("button", { name: "Download and install" })).toBeDisabled();
+    fireEvent.click(remove);
+    await waitFor(() => expect(uninstall).toHaveBeenCalledTimes(1));
+    expect(install).not.toHaveBeenCalled();
+  });
+
+  it("offers no removal on an unsupported platform without such a payload", async () => {
+    const { api } = installation(UNSUPPORTED);
+    render(<DocumentEngineInstallContent darwin={false} api={api} />);
+    await screen.findByTestId("document-engine-size");
+    expect(screen.queryByRole("button", { name: "Uninstall engine" })).toBeNull();
+  });
+
   it("keeps main's English copy, size line and availability text off macOS", async () => {
     const { api } = installation(UNSUPPORTED);
     render(<DocumentEngineInstallContent darwin={false} api={api} />);

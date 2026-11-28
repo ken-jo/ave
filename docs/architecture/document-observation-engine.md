@@ -75,15 +75,21 @@ for the app only at the platform's standard locations, never on PATH:
 - Windows: not offered; the session's readiness check knows only the POSIX
   single-instance pipe.
 - Linux: not offered (lead decision 2026-11-28, pending the owner's
-  correction). The unconfined office's `/tmp` pipe accepts forwarded command
-  lines, and a wrapped Linux extension may reach Unix sockets, so it could drive
-  the office to read files as the user. Linux is offered from the slice 8 route
-  flip, once that pipe is proven unreachable from wraps.
+  correction). Earlier builds offered a confined Linux x64 engine; Linux loses
+  it until the slice 8 route flip. The unconfined office's `/tmp` pipe accepts
+  forwarded command lines, and a wrapped Linux extension may reach Unix sockets,
+  so it could drive the office to read files as the user. Linux is offered again
+  from the slice 8 flip, once that pipe is proven unreachable from wraps.
 
-On Windows and Linux the status is `unsupported` with main's payload and copy,
-the install action returns `unsupported-platform` before any discovery,
-download or signature check, and any receipt is refused as integrity-failed,
-as main refused it.
+On Windows and Linux the status is `unsupported` with the same payload and copy
+Windows had before, and the install action returns `unsupported-platform`
+before any discovery, download or signature check. On Windows any receipt is
+refused as integrity-failed, as it always was. On Linux the payload an earlier
+build installed can still be removed. Its schema-2 receipt is validated as that
+build validated it (seven keys, release 26.8.1 linux x64, slot name, digests),
+and the slot must be a plain private directory in the namespace. The status
+then carries `legacyPayload` and the card offers "Uninstall engine". Any other
+receipt is refused.
 
 Ave admits the app it finds once per app identity, off the main thread and
 without blocking status reads (`verifying-installation`):

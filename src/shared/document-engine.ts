@@ -15,4 +15,9 @@ export interface DocumentEngineInstallationState {
   downloadedBytes: number;
   installedBytes: number;
   error?: DocumentEngineInstallationError;
+  /**
+   * Linux only: the engine is unsupported there until the slice 8 flip (lead decision 2026-11-28), but a confined payload
+   * an earlier Ave installed is still on disk and may be removed. Absent everywhere else.
+   */
+  legacyPayload?: true;
 }

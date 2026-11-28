@@ -194,13 +194,30 @@ describe("the document engine the user installed", () => {
   });
 });
 
-// Windows and Linux are not offered (Linux: lead decision 2026-11-28, pending the owner): each behaves exactly as main
-// did on Windows, before any discovery, download, signature check or receipt action.
+// Windows and Linux are not offered. Windows behaves exactly as main did. Linux (lead decision 2026-11-28, pending the
+// owner) loses the engine main offered until the slice 8 flip: it is refused like Windows before any discovery,
+// download or signature check, except that the confined payload main installed can still be removed.
+const HOST_ARCH = process.arch;
+const LEGACY_SLOT = "slot-00000000-0000-4000-8000-000000000000";
+/** The receipt main wrote for its confined Linux x64 payload. */
+const legacyReceipt = (overrides: Record<string, unknown> = {}): string => JSON.stringify({ schema: 2, version: "26.8.1",
+  platform: "linux", arch: "x64", slot: LEGACY_SLOT, treeDigest: "a".repeat(64), identityDigest: "b".repeat(64), ...overrides });
+
+async function placeLegacyPayload(receipt: string): Promise<string> {
+  const slot = join(home, "document-engine", LEGACY_SLOT);
+  await mkdir(join(slot, "program"), { recursive: true, mode: 0o700 });
+  await writeFile(join(slot, "program", "soffice.bin"), "payload");
+  await writeFile(join(home, "document-engine", "installation.json"), receipt);
+  return slot;
+}
+
 describe.each(["win32", "linux"] as const)("the document engine on %s", (platform) => {
   beforeEach(() => {
     installer._setDocumentEngineAppCandidatesForTest(undefined);
     setProcessPlatform(platform);
+    Object.defineProperty(process, "arch", { value: "x64", configurable: true });
   });
+  afterEach(() => { Object.defineProperty(process, "arch", { value: HOST_ARCH, configurable: true }); });
 
   it("reports main's unsupported payload and offers nothing", async () => {
     expect(await installer.getDocumentEngineInstallationState()).toEqual({ phase: "unsupported", version: "26.8.1",
@@ -217,13 +234,56 @@ describe.each(["win32", "linux"] as const)("the document engine on %s", (platfor
     expect(await readdir(home)).toEqual([]);
   });
 
-  it("refuses every receipt, as main did, and removes nothing", async () => {
-    const slot = "slot-00000000-0000-4000-8000-000000000000";
-    await mkdir(join(home, "document-engine", slot), { recursive: true, mode: 0o700 });
-    const receipt = join(home, "document-engine", "installation.json");
-    await writeFile(receipt, JSON.stringify({ schema: 3, slot }));
+  it("refuses a receipt of this build's own kind and removes nothing", async () => {
+    await placeLegacyPayload(JSON.stringify({ schema: 3, slot: LEGACY_SLOT }));
     await expect(installer.uninstallDocumentEngine()).rejects.toMatchObject({ code: "integrity-failed" });
-    expect(await readdir(join(home, "document-engine"))).toEqual(expect.arrayContaining([slot, "installation.json"]));
-    await expect(installer.getDocumentEngineInstallationState()).resolves.toMatchObject({ phase: "unsupported" });
+    expect(await readdir(join(home, "document-engine"))).toEqual(expect.arrayContaining([LEGACY_SLOT, "installation.json"]));
+    expect(await installer.getDocumentEngineInstallationState()).toEqual({ phase: "unsupported", version: "26.8.1",
+      downloadBytes: fixtures.extension.length, downloadedBytes: 0, installedBytes: 0 });
+  });
+});
+
+describe("a payload main installed", () => {
+  beforeEach(() => {
+    installer._setDocumentEngineAppCandidatesForTest(undefined);
+    Object.defineProperty(process, "arch", { value: "x64", configurable: true });
+  });
+  afterEach(() => { Object.defineProperty(process, "arch", { value: HOST_ARCH, configurable: true }); });
+
+  it("on Linux is offered for removal, removed by uninstall, and the engine stays unsupported", async () => {
+    setProcessPlatform("linux");
+    const slot = await placeLegacyPayload(legacyReceipt());
+    expect(await installer.getDocumentEngineInstallationState()).toEqual({ phase: "unsupported", version: "26.8.1",
+      downloadBytes: fixtures.extension.length, downloadedBytes: 0, installedBytes: 0, legacyPayload: true });
+    expect(await installer.getVerifiedDocumentEngineInstallation(new AbortController().signal)).toBeNull();
+    await installer.uninstallDocumentEngine();
+    expect(await readdir(join(home, "document-engine"))).toEqual([]);
+    await expect(readFile(join(slot, "program", "soffice.bin"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await installer.getDocumentEngineInstallationState()).toEqual({ phase: "unsupported", version: "26.8.1",
+      downloadBytes: fixtures.extension.length, downloadedBytes: 0, installedBytes: 0 });
+    expect(fixtures.fetch).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["another arch", { arch: "arm64" }],
+    ["another version", { version: "26.8.2" }],
+    ["an extra key", { extra: true }],
+    ["a path in the slot name", { slot: "../outside" }],
+  ])("on Linux with %s is refused, kept, and not offered", async (_case, overrides) => {
+    setProcessPlatform("linux");
+    await placeLegacyPayload(legacyReceipt(overrides));
+    expect(await installer.getDocumentEngineInstallationState()).not.toHaveProperty("legacyPayload");
+    await expect(installer.uninstallDocumentEngine()).rejects.toMatchObject({ code: "integrity-failed" });
+    expect(await readdir(join(home, "document-engine"))).toEqual(expect.arrayContaining([LEGACY_SLOT, "installation.json"]));
+  });
+
+  it("on Windows is refused and kept, exactly as main refused any receipt", async () => {
+    setProcessPlatform("win32");
+    await placeLegacyPayload(legacyReceipt({ platform: "win32" }));
+    await expect(installer.uninstallDocumentEngine()).rejects.toMatchObject({ code: "integrity-failed" });
+    expect(await readdir(join(home, "document-engine"))).toEqual(expect.arrayContaining([LEGACY_SLOT, "installation.json"]));
+    await placeLegacyPayload(legacyReceipt());
+    await expect(installer.uninstallDocumentEngine()).rejects.toMatchObject({ code: "integrity-failed" });
+    expect(await installer.getDocumentEngineInstallationState()).not.toHaveProperty("legacyPayload");
   });
 });
