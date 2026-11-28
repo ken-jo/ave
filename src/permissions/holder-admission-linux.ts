@@ -179,6 +179,7 @@ export async function startLinuxContainerHolder(input: {
     const watched = claim;
     const holder = await startLinuxHolder(call, {
       label: input.label, bwrap: route.bwrap, cwd: request.process.cwd, admittedDigest: admitted, currentDigest: digest,
+      online: input.proxySocket !== "offline",
       assertStillValid: () => {
         const check = (): void => {
           input.recheck();

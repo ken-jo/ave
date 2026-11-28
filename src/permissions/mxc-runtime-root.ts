@@ -9,6 +9,7 @@ import { posix as posixPath, win32 as winPath } from "node:path";
 import { isPackagedElectronProcess } from "../boot/dev-flags.js";
 import { createLogger } from "../lib/logger.js";
 import { renameDirectorySyncOnce } from "../lib/transient-fs-lock-retry.js";
+import { parseProcStat } from "../main/terminal/shell-process.js";
 import { aveHome } from "../shared/ave-home.js";
 import { AVE_HOME_ISOLATION_GUARD_ACTIVE } from "../shared/ave-home-test-guard.js";
 import { MxcProcessContractError } from "./mxc-extension-errors.js";
@@ -58,10 +59,7 @@ function processExists(pid: number): boolean {
 
 function linuxProcessStart(pid: number): string | null {
   try {
-    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-    // The command name may hold spaces and parentheses; the fields after its closing one start at field 3 (state).
-    const startTicks = stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19];
-    if (startTicks === undefined || !/^\d+$/u.test(startTicks)) return null;
+    const startTicks = parseProcStat(pid, readFileSync(`/proc/${pid}/stat`, "utf8")).starttime;
     // Ticks count from boot, so the boot is part of the identity.
     const boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
     return boot.length === 0 ? null : `${boot}:${startTicks}`;

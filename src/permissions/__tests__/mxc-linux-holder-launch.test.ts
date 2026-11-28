@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   assertLinuxCaptureFolder, checkBwrapCall, establishLinuxCaptureFolder, LINUX_HOLDER_OPTIONS_FD, linuxHolderReplay, parseBwrapRecord,
-  translateLinuxHolderRequest,
+  readLinuxResidentSet, translateLinuxHolderRequest, type LinuxProcessReader,
 } from "../mxc-linux-holder-launch.js";
 
 // The record the helper writes when it runs as `bwrap` (native/linux-shell-seccomp/src/main.rs `capture_record`).
@@ -171,5 +171,55 @@ describe.runIf(process.platform !== "win32")("Linux holder capture folder and tr
 
   it("refuses a launcher that made no call", async () => {
     await expect(translate("exit 0")).rejects.toThrow("made no bwrap call");
+  });
+});
+
+// Review #758 P2-3 and P3-2: the set at the ready byte is outer bwrap, inner bwrap, the launcher's `sh -c` when it did
+// not exec (measured: dash keeps it), the helper, and the holder under the bridge when online. A member that cannot be
+// read is named, never filled in from the one above it.
+describe("Linux holder resident set", () => {
+  const launcher = ["sh", "-c", "'/app/apply-seccomp' --ready-fd 4 -- '/usr/bin/node' 'server.js'"];
+  type Entry = { readonly children?: readonly number[] | undefined; readonly parent?: number; readonly words?: readonly string[] };
+  // outer 10 -> inner 11 -> launcher sh 12 -> helper 13 -> (online) holder 14 -> the holder's own child 15
+  function reader(over: Record<number, Entry | undefined> = {}): LinuxProcessReader {
+    const tree: Record<number, Entry | undefined> = {
+      10: { children: [11] }, 11: { children: [12], parent: 10 }, 12: { children: [13], parent: 11, words: launcher },
+      13: { children: [14], parent: 12, words: ["/app/apply-seccomp", "--ready-fd", "4"] }, 14: { children: [15], parent: 13 },
+      15: { children: [], parent: 14 }, ...over,
+    };
+    return {
+      start: (pid) => tree[pid] === undefined ? null : `boot:${pid}`,
+      parent: (pid) => tree[pid]?.parent,
+      children: (pid) => tree[pid]?.children,
+      commandLine: (pid) => tree[pid] === undefined ? undefined : tree[pid]?.words ?? ["x"],
+    };
+  }
+
+  it("reads the full set online, with the launcher's shell and the holder as the bridge's single child", () => {
+    expect(readLinuxResidentSet(10, true, launcher, reader())).toMatchObject({
+      processes: [{ pid: 10 }, { pid: 11 }, { pid: 12 }, { pid: 13 }], helper: { pid: 13 }, holder: { pid: 14, start: "boot:14" },
+    });
+  });
+
+  it("reads the set where the launcher's shell executed the helper itself", () => {
+    const set = readLinuxResidentSet(10, true, launcher, reader({ 11: { children: [13], parent: 10 }, 12: undefined, 13: { children: [14], parent: 11 } }));
+    expect(set).toMatchObject({ processes: [{ pid: 10 }, { pid: 11 }, { pid: 13 }], helper: { pid: 13 }, holder: { pid: 14 } });
+  });
+
+  it("takes the helper as the holder offline, never the holder's own child", () => {
+    // Offline the helper executed the holder; a holder with exactly one child of its own keeps its TERM.
+    const set = readLinuxResidentSet(10, false, launcher, reader({ 13: { children: [15], parent: 12 }, 14: undefined, 15: { children: [], parent: 13 } }));
+    expect(set).toMatchObject({ processes: [{ pid: 10 }, { pid: 11 }, { pid: 12 }, { pid: 13 }], helper: { pid: 13 }, holder: { pid: 13 } });
+  });
+
+  it.each([
+    ["a kernel without /proc children", { 10: { children: undefined } }, "the outer bwrap's children cannot be read"],
+    ["an inner bwrap that is gone", { 11: undefined }, "the child of the outer bwrap is gone"],
+    ["an inner bwrap with two children", { 11: { children: [12, 16], parent: 10 } }, "the inner bwrap has 2 children, not one"],
+    ["a launcher shell with no child", { 12: { children: [], parent: 11, words: launcher } }, "the launcher shell has 0 children, not one"],
+    ["a bridge with no child", { 13: { children: [], parent: 12 } }, "the bridge has 0 children, not one"],
+    ["a holder under another parent", { 14: { children: [], parent: 99 } }, "the holder under the bridge is gone"],
+  ] as const)("names %s instead of shrinking the set", (_name, over, reason) => {
+    expect(readLinuxResidentSet(10, true, launcher, reader(over))).toBe(reason);
   });
 });

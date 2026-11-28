@@ -8,8 +8,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import seccompPins from "../mxc-linux-seccomp-pins.json" with { type: "json" };
 import { buildBubblewrapHolderRequest, requireMxcLinuxShellPrograms } from "../mxc-linux.js";
 import { posixPolicyLookups } from "../mxc-posix.js";
+import { measurePosixExecutableIdentity } from "../holder-admission-darwin.js";
 import {
-  establishLinuxCaptureFolder, linuxFileIdentity, linuxHolderLaunchDigest, linuxHolderReplay, startLinuxHolder, type StartLinuxHolderOptions,
+  establishLinuxCaptureFolder, linuxHolderLaunchDigest, linuxHolderReplay, startLinuxHolder, type StartLinuxHolderOptions,
   translateLinuxHolderRequest,
 } from "../mxc-linux-holder-launch.js";
 import { __resetManagedChildProcessesForTest } from "../../main/managed-child-processes.js";
@@ -177,7 +178,7 @@ describe.runIf(NATIVE)("native Linux holder start and stop", () => {
     const prepared = await prepare(script, argv);
     const events: string[] = [];
     const holder = await startLinuxHolder(prepared.call, {
-      label: "test:linux-holder", bwrap: { path: BWRAP, identity: linuxFileIdentity(BWRAP) }, cwd: work,
+      label: "test:linux-holder", bwrap: { path: BWRAP, identity: measurePosixExecutableIdentity(BWRAP) }, cwd: work, online: false,
       admittedDigest: prepared.admitted, currentDigest: prepared.digest, assertStillValid: () => { events.push("recheck"); },
       beforeRelease: async () => { events.push("before-release"); }, afterVerifiedStop: async () => { events.push("after-verified-stop"); },
       ...over,
@@ -240,7 +241,7 @@ describe.runIf(NATIVE)("native Linux holder start and stop", () => {
     // bwrap itself fails before the helper runs: the request's working directory is gone.
     rmSync(work, { recursive: true });
     const refused = startLinuxHolder(prepared.call, {
-      label: "test:linux-holder", bwrap: { path: BWRAP, identity: linuxFileIdentity(BWRAP) }, cwd: root,
+      label: "test:linux-holder", bwrap: { path: BWRAP, identity: measurePosixExecutableIdentity(BWRAP) }, cwd: root, online: false,
       admittedDigest: prepared.admitted, currentDigest: prepared.digest, assertStillValid: () => {},
     });
     await expect(refused).rejects.toMatchObject({ reason: "holder-start-failed" });
@@ -285,7 +286,7 @@ describe.runIf(NATIVE)("native Linux holder row-2 admission", () => {
     const programs = await requireMxcLinuxShellPrograms(resources);
     setProvenLinuxHolderRoute({
       programs, helperSha256: pin, captureFolder: establishLinuxCaptureFolder(requireMxcContainerStartRoot(), programs.helper, pin),
-      bwrap: { path: BWRAP, identity: linuxFileIdentity(BWRAP) },
+      bwrap: { path: BWRAP, identity: measurePosixExecutableIdentity(BWRAP) },
     });
   });
   afterEach(async () => {

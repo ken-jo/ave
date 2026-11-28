@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { _detectMxcLinuxShellSupportForTest as detect, _trustedLinuxPathForTest, buildBubblewrapShellRequest } from "../mxc-linux.js";
+import { _detectMxcLinuxShellSupportForTest as detect, _trustedLinuxPathForTest, buildBubblewrapShellRequest, linuxHolderBwrap } from "../mxc-linux.js";
 import seccompPins from "../mxc-linux-seccomp-pins.json" with { type: "json" };
 import { posixPolicyLookups } from "../mxc-posix.js";
 
@@ -99,5 +99,21 @@ describe("checked-in Linux shell filters", () => {
     // Attribute patterns here use `*` within one path segment only.
     const matches = (pattern: string) => new RegExp(`^${pattern.split("*").map(part => part.replace(/[.+?^${}()|[\]\\]/gu, "\\$&")).join("[^/]*")}$`, "u").test(path);
     expect(rules.some(([pattern, ...attributes]) => pattern !== undefined && matches(pattern) && attributes.includes("binary"))).toBe(true);
+  });
+});
+
+// Review #758 P3-1: a run's marker is compared with `/proc/<pid>/exe`, so bwrap is recorded as the file a link names.
+describe.runIf(process.platform !== "win32")("the holder route's bwrap", () => {
+  it("is recorded as the file an alternatives-style link resolves to", () => {
+    const root = realpathSync.native(mkdtempSync(join(tmpdir(), "ave-bwrap-link-")));
+    try {
+      const real = join(root, "bwrap.real");
+      writeFileSync(real, "#!/bin/sh\n", { mode: 0o755 });
+      symlinkSync(real, join(root, "bwrap"));
+      expect(linuxHolderBwrap(join(root, "bwrap")).path).toBe(real);
+      expect(linuxHolderBwrap(join(root, "bwrap")).identity).toBe(linuxHolderBwrap(real).identity);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

@@ -18,10 +18,11 @@ import type {
   LinuxRawIpVerdict, SandboxContainerHolderSupport, SandboxContainerHolderUnavailableReason, SandboxContainerShellSupport,
   SandboxContainerShellUnavailableReason,
 } from "../shared/sandbox-capability-info.js";
+import { measurePosixExecutableIdentity } from "./holder-admission-darwin.js";
 import type { ProvenLinuxHolderRoute } from "./linux-holder-route.js";
 import { MxcHolderStartRefusedError } from "./mxc-extension-errors.js";
 import {
-  establishLinuxCaptureFolder, linuxFileIdentity, linuxHolderLaunchDigest, startLinuxHolder, translateLinuxHolderRequest,
+  establishLinuxCaptureFolder, linuxHolderLaunchDigest, startLinuxHolder, translateLinuxHolderRequest,
 } from "./mxc-linux-holder-launch.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { INVOCATION_PROXY_REFUSED_STATUS, openInvocationProxyListener, openInvocationProxySocketListener } from "./egress-invocation-listener.js";
@@ -748,19 +749,20 @@ export async function detectHostMxcLinuxHolderSupport(resources: HostResources, 
   let root: string;
   try { root = requireMxcContainerStartRoot(); } catch { return unavailable("runtime-root-unproved"); }
   // Holders need bwrap alone: a host without slirp4netns still contains its extensions and hooks (design 2.5).
-  const bwrap = directories.map(directory => posix.join(directory, "bwrap")).find(executable);
-  if (bwrap === undefined || !trustedTool(bwrap)) return unavailable("tools-missing", ["bwrap"]);
+  const found = directories.map(directory => posix.join(directory, "bwrap")).find(executable);
+  if (found === undefined || !trustedTool(found)) return unavailable("tools-missing", ["bwrap"]);
+  const bwrap = linuxHolderBwrap(found);
   const helperSha256 = filterPins[helperArch];
   let captureFolder: string;
   try { captureFolder = establishLinuxCaptureFolder(root, helper, helperSha256); } catch { return unavailable("capture-folder-untrusted"); }
   try {
-    await runFile(bwrap, ["--unshare-user", "--unshare-net", "--die-with-parent", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "/bin/true"],
+    await runFile(bwrap.path, ["--unshare-user", "--unshare-net", "--die-with-parent", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "/bin/true"],
       { env, signal, timeout: TOOL_TIMEOUT_POLICY.mxcLinuxShellProbeMs, killSignal: "SIGKILL" });
   } catch {
     signal?.throwIfAborted();
     return unavailable("namespaces-unavailable");
   }
-  const route: ProvenLinuxHolderRoute = { programs, helperSha256, captureFolder, bwrap: { path: bwrap, identity: linuxFileIdentity(bwrap) } };
+  const route: ProvenLinuxHolderRoute = { programs, helperSha256, captureFolder, bwrap };
   try {
     const rawIpProbe = await runLinuxHolderCanary(root, route, signal);
     return { support: { state: "available", ...(rawIpProbe === undefined ? {} : { rawIpProbe }) }, route };
@@ -769,6 +771,15 @@ export async function detectHostMxcLinuxHolderSupport(resources: HostResources, 
     log.warn("Linux holder canary failed: %s", errorMessage(error));
     return unavailable(error instanceof MxcHolderStartRefusedError && error.reason === "request-rejected" ? "request-rejected" : "holder-start-failed");
   }
+}
+
+/**
+ * The system bwrap as holders record it: the file it resolves to. A run's marker is matched against `/proc/<pid>/exe`,
+ * which is never a link, so an alternatives or Nix link recorded as found would never match its orphan (review #758 P3-1).
+ */
+export function linuxHolderBwrap(found: string): ProvenLinuxHolderRoute["bwrap"] {
+  const path = realpathSync.native(found);
+  return { path, identity: measurePosixExecutableIdentity(path) };
 }
 
 /** A canary hook the native tests use to add an interface to the holder's namespace while it runs (N22). */
@@ -854,7 +865,7 @@ async function runLinuxHolderCanary(
       const digest = () => linuxHolderLaunchDigest({ request: bytes, call, executable: "/bin/sh" });
       const admitted = digest();
       const holder = await startLinuxHolder(call, {
-        label: "linux-holder-canary", bwrap: route.bwrap, cwd: request.process.cwd, admittedDigest: admitted, currentDigest: digest,
+        label: "linux-holder-canary", bwrap: route.bwrap, cwd: request.process.cwd, admittedDigest: admitted, currentDigest: digest, online: true,
         assertStillValid: () => { route.programs.validate(); held.validate(); },
         recordHolder: (pid) => held.recordHolder(pid, route.bwrap.path),
         startMs: TOOL_TIMEOUT_POLICY.mxcLinuxHolderStartMs,

@@ -42,12 +42,8 @@ function programName(raw: string): string {
   return basename(raw.trim()).replace(/^-/u, "");
 }
 
-// Fields after the `(comm)` of `/proc/<pid>/stat`, which may itself hold spaces and parentheses.
 async function linuxStat(pid: number): Promise<{ ttyNr: number; tpgid: number }> {
-  const stat = await readFile(`/proc/${pid}/stat`, "utf-8");
-  const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
-  // state ppid pgrp session tty_nr tpgid …
-  return { ttyNr: Number(fields[4]), tpgid: Number(fields[5]) };
+  return parseProcStat(pid, await readFile(`/proc/${pid}/stat`, "utf-8"));
 }
 
 async function readLinux(ptyPid: number): Promise<TerminalForegroundReading> {

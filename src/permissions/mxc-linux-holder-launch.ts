@@ -1,6 +1,6 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, copyFileSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { chmodSync, copyFileSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { posix } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -8,8 +8,11 @@ import { isMainThread } from "node:worker_threads";
 import {
   type ConfirmedExit, type ManagedResources, observeManagedProcessGroup, spawnGatedManagedProcess,
 } from "../main/managed-child-processes.js";
+import { parseProcStat } from "../main/terminal/shell-process.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { MxcHolderStartRefusedError, MxcProcessCleanupError, MxcProcessContractError } from "./mxc-extension-errors.js";
+import { measurePosixExecutableIdentity } from "./holder-admission-darwin.js";
+import { currentMxcRuntimeHost } from "./mxc-runtime-root.js";
 
 /**
  * The translation step of a Linux extension holder (design 1.3). The pinned launcher turns Ave's request into one
@@ -276,12 +279,6 @@ export async function translateLinuxHolderRequest(input: {
 // The run (design 1.4, 1.5, 5): the gate shell execs the system bwrap with the replay; the helper inside writes the
 // ready byte once the filter is on.
 
-/** A file's identity: replaced, rewritten or touched files differ. */
-export function linuxFileIdentity(path: string): string {
-  const { dev, ino, size, mtimeNs, ctimeNs } = statSync(path, { bigint: true });
-  return `${dev}:${ino}:${size}:${mtimeNs}:${ctimeNs}`;
-}
-
 /** The system bwrap as the holder canary found it; every run compares it again. */
 interface LinuxHolderBwrap {
   readonly path: string;
@@ -292,7 +289,7 @@ interface LinuxHolderBwrap {
 export function linuxHolderLaunchDigest(input: { readonly request: Buffer; readonly call: LinuxHolderCall; readonly executable: string }): string {
   const hash = createHash("sha256");
   for (const part of [input.request, Buffer.from(JSON.stringify([input.call.options, input.call.command])), input.call.seccomp,
-    input.call.resolver ?? Buffer.alloc(0), Buffer.from(linuxFileIdentity(input.executable))]) {
+    input.call.resolver ?? Buffer.alloc(0), Buffer.from(measurePosixExecutableIdentity(input.executable))]) {
     hash.update(String(part.length)).update(":").update(part);
   }
   return hash.digest("hex");
@@ -334,62 +331,83 @@ export interface StartLinuxHolderOptions {
   readonly afterVerifiedStop?: () => Promise<void>;
   readonly resources?: ManagedResources;
   readonly startMs?: number;
+  /** Whether the call bridges a proxy socket: the helper is then the bridge and the holder its child (design 2.3). */
+  readonly online: boolean;
 }
 
 const DIAGNOSTIC_BYTES = 4 * 1024;
 
 type ResidentProcess = { readonly pid: number; readonly start: string };
 
-function processStart(pid: number): string | undefined {
-  try {
-    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-    // Field 22 (start time), counted after the command name's closing parenthesis.
-    return stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19];
-  } catch {
-    return undefined;
-  }
+/** What the resident set is read from. Production reads `/proc` through the runtime host; a unit test supplies its own. */
+export interface LinuxProcessReader {
+  /** The runtime host's start identity (boot and start ticks), or null once the process is gone. */
+  start(pid: number): string | null;
+  parent(pid: number): number | undefined;
+  /** The pids `/proc/<pid>/task/<pid>/children` lists, or undefined when it cannot be read. */
+  children(pid: number): readonly number[] | undefined;
+  /** The words of `/proc/<pid>/cmdline`, or undefined when it cannot be read. */
+  commandLine(pid: number): readonly string[] | undefined;
 }
 
-function processParent(pid: number): number | undefined {
-  try {
-    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-    return Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1]);
-  } catch {
-    return undefined;
-  }
-}
-
-function onlyChild(pid: number): number | undefined {
-  try {
-    const children = readFileSync(`/proc/${pid}/task/${pid}/children`, "utf8").trim().split(/\s+/u).filter(Boolean).map(Number);
-    return children.length === 1 ? children[0] : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function resident(pid: number | undefined): ResidentProcess | undefined {
-  if (pid === undefined) return undefined;
-  const start = processStart(pid);
-  return start === undefined ? undefined : { pid, start };
-}
-
-/** Still the same process: alive with the start time recorded at the ready byte. */
-function alive(process: ResidentProcess): boolean {
-  return processStart(process.pid) === process.start;
-}
+const procReader: LinuxProcessReader = {
+  start: (pid) => currentMxcRuntimeHost().processStart(pid),
+  parent: (pid) => {
+    try { return parseProcStat(pid, readFileSync(`/proc/${pid}/stat`, "utf8")).ppid; } catch { return undefined; }
+  },
+  children: (pid) => {
+    try {
+      return readFileSync(`/proc/${pid}/task/${pid}/children`, "utf8").trim().split(/\s+/u).filter(Boolean).map(Number);
+    } catch {
+      return undefined;
+    }
+  },
+  commandLine: (pid) => {
+    try { return readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").slice(0, -1); } catch { return undefined; }
+  },
+};
 
 /**
- * The resident set at the ready byte: outer bwrap, inner bwrap, the helper (the bridge when online), and the holder's
- * own pid, which is the bridge's single child, or the helper itself once it executed the holder offline.
+ * The resident set at the ready byte: outer bwrap, inner bwrap, the launcher's `sh -c` when that shell did not exec its
+ * one command (dash does not), and the filter helper, each the single child of the one before. Online the helper is
+ * the bridge and the holder is its single child; offline the helper executed the holder and is it. Anything short of
+ * that is named, never filled in: a missing member would shrink what "verified" means.
  */
-function residentSet(outer: number) {
-  const outerBwrap = resident(outer);
-  const innerBwrap = resident(outerBwrap === undefined ? undefined : onlyChild(outer));
-  const helper = resident(innerBwrap === undefined ? undefined : onlyChild(innerBwrap.pid));
-  const holderChild = helper === undefined ? undefined : onlyChild(helper.pid);
-  const holder = holderChild === undefined ? helper : resident(holderChild);
-  return { processes: [outerBwrap, innerBwrap, helper].filter((entry): entry is ResidentProcess => entry !== undefined), holder, helper };
+export function readLinuxResidentSet(outer: number, online: boolean, launcherCommand: readonly string[], reader: LinuxProcessReader = procReader):
+  { readonly processes: readonly ResidentProcess[]; readonly holder: ResidentProcess; readonly helper: ResidentProcess } | string {
+  const member = (pid: number, name: string): ResidentProcess | string => {
+    const start = reader.start(pid);
+    return start === null ? `the ${name} is gone` : { pid, start };
+  };
+  const only = (parent: ResidentProcess, name: string): ResidentProcess | string => {
+    const children = reader.children(parent.pid);
+    if (children === undefined) return `the ${name}'s children cannot be read`;
+    if (children.length !== 1) return `the ${name} has ${children.length} children, not one`;
+    return member(children[0] as number, `child of the ${name}`);
+  };
+  const outerBwrap = member(outer, "outer bwrap");
+  if (typeof outerBwrap === "string") return outerBwrap;
+  const innerBwrap = only(outerBwrap, "outer bwrap");
+  if (typeof innerBwrap === "string") return innerBwrap;
+  const below = only(innerBwrap, "inner bwrap");
+  if (typeof below === "string") return below;
+  // The launcher's shell is recognised by its exact words, `sh -c <the request's command line>`, never by its name.
+  const words = reader.commandLine(below.pid);
+  if (words === undefined) return "the inner bwrap's child cannot be read";
+  const shell = words.length === launcherCommand.length && words.every((word, index) => word === launcherCommand[index]) ? below : undefined;
+  const helper = shell === undefined ? below : only(shell, "launcher shell");
+  if (typeof helper === "string") return helper;
+  const processes = [outerBwrap, innerBwrap, ...(shell === undefined ? [] : [shell]), helper];
+  if (!online) return { processes, holder: helper, helper };
+  const holder = only(helper, "bridge");
+  if (typeof holder === "string") return holder;
+  if (reader.parent(holder.pid) !== helper.pid) return "the holder under the bridge is gone";
+  return { processes, holder, helper };
+}
+
+/** Still the same process: alive with the start identity recorded at the ready byte. */
+function alive(process: ResidentProcess): boolean {
+  return procReader.start(process.pid) === process.start;
 }
 
 type StartObservation =
@@ -424,7 +442,7 @@ export async function startLinuxHolder(call: LinuxHolderCall, options: StartLinu
     },
     assertStillValid: () => {
       options.assertStillValid();
-      if (linuxFileIdentity(options.bwrap.path) !== options.bwrap.identity) {
+      if (measurePosixExecutableIdentity(options.bwrap.path) !== options.bwrap.identity) {
         throw new MxcHolderStartRefusedError("integrity", "the system bwrap changed since the holder canary proved it");
       }
       if (options.currentDigest() !== options.admittedDigest) {
@@ -457,7 +475,15 @@ export async function startLinuxHolder(call: LinuxHolderCall, options: StartLinu
   });
   ready.destroy();
   child.stderr?.off("data", onDiagnostic);
-  const set = observation.kind === "ready" && child.pid !== undefined ? residentSet(child.pid) : { processes: [], holder: undefined, helper: undefined };
+  // The resident set, read once at the ready byte (review #758 P2-3). One short of a member stops and refuses the start
+  // below, unless the whole run already ended, which leaves nothing resident to stop.
+  let set: { readonly processes: readonly ResidentProcess[]; readonly holder?: ResidentProcess; readonly helper?: ResidentProcess } = { processes: [] };
+  let unread: string | undefined;
+  if (observation.kind === "ready") {
+    const read = readLinuxResidentSet(child.pid as number, options.online, call.command);
+    if (typeof read === "string") unread = read;
+    else set = read;
+  }
 
   let disposing: Promise<ConfirmedExit> | undefined;
   const dispose = (reason = "holder released"): Promise<ConfirmedExit> => disposing ??= (async () => {
@@ -466,7 +492,7 @@ export async function startLinuxHolder(call: LinuxHolderCall, options: StartLinu
     // 1. The holder's own TERM, so it can see it: TERM to bwrap ends the namespace before the holder runs its handler.
     //    Signalled only while it is still the process recorded at the ready byte, under the same parent.
     const holder = set.holder;
-    if (holder !== undefined && alive(holder) && (set.helper === holder || processParent(holder.pid) === set.helper?.pid)) {
+    if (holder !== undefined && alive(holder) && (set.helper === holder || procReader.parent(holder.pid) === set.helper?.pid)) {
       try { process.kill(holder.pid, "SIGTERM"); } catch { /* gone since the check */ }
     }
     // 2. Its grace, ended early when bwrap closes.
@@ -499,8 +525,20 @@ export async function startLinuxHolder(call: LinuxHolderCall, options: StartLinu
     const what = `the launch ended before the holder started (${observation.signal ?? `exit ${observation.code}`})`;
     throw new MxcHolderStartRefusedError("holder-start-failed", diagnostic.trim() ? `${what}: ${diagnostic.trim()}` : what);
   }
+  if (unread !== undefined) {
+    // The process's own exit, not its streams' close: a caller reads the holder's output only once the start returns.
+    const ended = child.exitCode !== null || child.signalCode !== null || await Promise.race([
+      new Promise<true>((resolve) => child.once("exit", () => resolve(true))),
+      sleep(TOOL_TIMEOUT_POLICY.processTreeKillMs, false, { ref: false }),
+    ]);
+    if (!ended) {
+      await dispose("holder resident set incomplete");
+      throw new MxcHolderStartRefusedError("holder-start-failed", `the holder's resident set at its ready byte is incomplete: ${unread}`);
+    }
+  }
   const holderProcess: LinuxHolderProcess = Object.freeze({
-    pid: set.holder?.pid ?? (child.pid as number),
+    // Only a run that ended before its set could be read has no holder pid; the outer bwrap's then names that run.
+    pid: set.holder === undefined ? child.pid as number : set.holder.pid,
     stdin: child.stdin as Writable,
     stdout: child.stdout as Readable,
     stderr: child.stderr as Readable,
