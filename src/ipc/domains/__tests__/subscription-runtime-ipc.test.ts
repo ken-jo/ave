@@ -221,7 +221,10 @@ beforeEach(async () => {
   localeMock.normalizeLocale.mockImplementation((value: unknown) => typeof value === "string" ? value : "en");
   localeMock.tryLoadLocaleMessages.mockResolvedValue(true);
   runtimeServiceMock.get.mockResolvedValue(runtime);
-  runtime.getStatus.mockImplementation(async (provider: SubscriptionRuntimeId) => readyStatus(provider));
+  runtime.getStatus.mockImplementation(async (provider: SubscriptionRuntimeId, options?: { onLiveRead?: () => void }) => {
+    options?.onLiveRead?.();
+    return readyStatus(provider);
+  });
   runtime.getCachedStatus.mockReturnValue(undefined);
   runtime.chooseExecutable.mockImplementation(async (provider: SubscriptionRuntimeId) => readyStatus(provider));
   runtime.forgetExecutable.mockImplementation(async (provider: SubscriptionRuntimeId) => readyStatus(provider));
@@ -657,17 +660,51 @@ describe("common subscription runtime IPC", () => {
     expect(currentLlm().activeChatRuntime).toEqual(selection);
   });
 
+  it("publishes a live disconnect even when a later read returns cached status", async () => {
+    const selection = { kind: "subscription", provider: "codex", model: "example-model" } as const;
+    const { deps } = makeStatefulSelectionDeps({
+      provider: "openai", vendors: { openai: { model: "example-api-model", baseUrl: null } }, activeChatRuntime: selection,
+    });
+    const send = vi.fn();
+    deps.getAppWindows.mockReturnValue([{
+      isDestroyed: () => false,
+      webContents: { isDestroyed: () => false, send },
+    }]);
+    const { registerSettingsHandlers } = await import("../settings.js");
+    registerSettingsHandlers(deps as never);
+    const channel = CHANNELS.settings.subscriptionRuntimeStatus;
+    const connected = readyStatus("codex");
+    const signedOut = { ...connected, connection: "signed-out" } as const;
+    const live = deferred<SubscriptionRuntimeStatus>();
+    const readModels = () => send.mock.calls.filter(([name]) => name === SETTINGS.updated).map(([, snapshot]) => snapshot.activeChatModel);
+
+    runtime.getStatus.mockResolvedValueOnce(connected);
+    await invoke(channel, "codex");
+    await vi.waitFor(() => expect(readModels()).toEqual([selection]));
+    runtime.getStatus.mockReturnValueOnce(live.promise).mockResolvedValueOnce(connected);
+    const refresh = invoke(channel, "codex", { refresh: true });
+    await vi.waitFor(() => expect(runtime.getStatus).toHaveBeenCalledTimes(2));
+    await expect(invoke(channel, "codex")).resolves.toEqual({ ok: true, status: connected });
+    live.resolve(signedOut);
+    await expect(refresh).resolves.toEqual({ ok: true, status: signedOut });
+    await vi.waitFor(() => expect(readModels()).toEqual([selection, { kind: "none", reason: "no-connected-provider" }]));
+
+    runtime.getStatus.mockResolvedValueOnce(connected);
+    await expect(invoke(channel, "codex")).resolves.toEqual({ ok: true, status: connected });
+    expect(readModels()).toEqual([selection, { kind: "none", reason: "no-connected-provider" }]);
+  });
+
   it("serves settings status and catalog reads from the runtime cache unless the user asks to check again", async () => {
     const deps = makeDeps();
     const { registerSettingsHandlers } = await import("../settings.js");
     registerSettingsHandlers(deps as never);
 
     await invoke("ave:settings:subscription:status", "claude-code");
-    expect(runtime.getStatus).toHaveBeenLastCalledWith("claude-code", { allowCached: true });
+    expect(runtime.getStatus).toHaveBeenLastCalledWith("claude-code", expect.objectContaining({ allowCached: true }));
     await invoke("ave:settings:subscription:status", "claude-code", { refresh: true });
-    expect(runtime.getStatus).toHaveBeenLastCalledWith("claude-code", { allowCached: false });
+    expect(runtime.getStatus).toHaveBeenLastCalledWith("claude-code", expect.objectContaining({ allowCached: false }));
     await invoke("ave:settings:subscription:status", "claude-code", { refresh: "yes" });
-    expect(runtime.getStatus).toHaveBeenLastCalledWith("claude-code", { allowCached: true });
+    expect(runtime.getStatus).toHaveBeenLastCalledWith("claude-code", expect.objectContaining({ allowCached: true }));
     await invoke("ave:settings:subscription:list-models", "codex");
     expect(runtime.listModels).toHaveBeenLastCalledWith("codex", { allowCached: true });
   });

@@ -1207,10 +1207,11 @@ export class SubscriptionRuntimeService {
   // Read-only status. A connected account remains unavailable until verify() proves isolation.
   async getStatus(
     runtimeId: SubscriptionRuntimeId,
-    options: SubscriptionReadOptions = {},
+    options: SubscriptionReadOptions & { onLiveRead?: () => void } = {},
   ): Promise<SubscriptionRuntimeStatus> {
     this.assertRunning();
     return this.withStableErrors(() => this.readThrough(this.cachedStatuses, runtimeId, options, async () => {
+      options.onLiveRead?.();
       if (runtimeId === "codex") {
         const refreshPlanUsage = options.allowCached !== true || !this.planUsage.get("codex");
         return this.projectCodexStatus(await this.codexClient.getStatus(refreshPlanUsage));

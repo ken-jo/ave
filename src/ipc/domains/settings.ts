@@ -464,7 +464,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
   };
   const publishActiveSubscriptionStatus = (
     provider: SubscriptionRuntimeId,
-    request: number,
+    request: number | undefined,
     result: SubscriptionRuntimeActionResult,
     notify: boolean,
   ): void => {
@@ -1100,8 +1100,11 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     // Explicit refreshes re-run discovery; other card reads may reuse a settled status.
     const refresh = typeof optionsValue === "object" && optionsValue !== null
       && (optionsValue as { refresh?: unknown }).refresh === true;
-    const request = startStatusRequest(providerValue);
-    const result = await runSubscriptionAction(providerValue, (runtime, provider) => runtime.getStatus(provider, { allowCached: !refresh }));
+    let request = refresh ? startStatusRequest(providerValue) : undefined;
+    const result = await runSubscriptionAction(providerValue, (runtime, provider) => runtime.getStatus(provider, {
+      allowCached: !refresh,
+      onLiveRead: () => { request ??= startStatusRequest(provider); },
+    }));
     publishActiveSubscriptionStatus(providerValue, request, result, true);
     return result;
   });
