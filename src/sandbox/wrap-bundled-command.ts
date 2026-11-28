@@ -38,6 +38,7 @@ import type { HostShellExecutionPlan } from "../permissions/host-shell-execution
 import { assertMxcReleaseGateEvidence } from "../permissions/mxc-extension-admission.js";
 import { admitWindowsLookupPaths } from "../permissions/admitted-obligation.js";
 import { MxcProcessCleanupError, MxcProcessContractError } from "../permissions/mxc-extension-errors.js";
+import { posixExecutableReadRoot } from "../permissions/mxc-posix.js";
 import { planWindowsExtensionHolder } from "../permissions/mxc-extension-readiness.js";
 import { isWindowsPathAtOrUnder } from "../permissions/mxc-windows.js";
 import { measurePosixExecutableIdentity, posixHolderPaths, seatbeltHolderEnvironment, seatbeltHolderProcess } from "../permissions/holder-admission-darwin.js";
@@ -925,7 +926,7 @@ export async function spawnMxcBundledHolder(input: MxcBundledHolderInput): Promi
   assertWriteGrantsOutsideConfinementState(input.allowWrite, declaredConfinementStatePaths());
   const staging = createHolderStaging();
   const allowWrite = [...new Set([...input.allowWrite, staging.root])];
-  const allowRead = [...new Set([...input.allowRead, ...(posixLaunch?.files ?? [executable]).map(file => hostPath().dirname(file))])];
+  const allowRead = [...new Set([...input.allowRead, ...(posixLaunch?.files.map(file => posixExecutableReadRoot(file)) ?? [hostPath().dirname(executable)])])];
   const cwd = input.cwd ?? staging.home;
   let spawned: Awaited<ReturnType<typeof spawnMxcConfinedChild>>;
   try {

@@ -1,5 +1,7 @@
 import { setProcessPlatform } from "../../../__tests__/support/process-platform.js";
-import { win32 as winPath } from "node:path";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, win32 as winPath } from "node:path";
 import { PassThrough } from "node:stream";
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import type { ContainerRequest } from "@microsoft/mxc-sdk/v1";
@@ -468,12 +470,39 @@ describe("macOS plugin child admission", () => {
     const child = await spawnMxcPluginChild(launch, intent);
     const spec = spawn.mock.calls[0]?.[0] as MxcConfinedChildSpec;
     expect(spec).toMatchObject({ stagingRoot: staging, allowWrite: ["/Users/u/.ave/plugins/Kit/data", staging],
-      // The entry sits in the packaged archive, which the runtime's own directory covers.
-      allowRead: ["/Users/u/.ave/plugins/Kit", "/Applications/Ave.app/Contents/MacOS"] });
+      // The runtime reads its bundle's Contents (Frameworks, and the entry's packaged archive in Resources) as a grant.
+      allowRead: ["/Users/u/.ave/plugins/Kit", "/Applications/Ave.app/Contents"] });
     expect(spec).not.toHaveProperty("assertRequest");
     expect(child.containerConfinement).toBe("macos-seatbelt");
     child.link.terminate("done");
     await child.waitForExit();
+  });
+
+  it.runIf(process.platform === "darwin")("grants an unpacked entry's nearest node_modules and its package.json, and no more of the checkout", async () => {
+    const { owned } = fixture();
+    const staging = "/ave-runtime/staging/0123456789abcdef0123456789abcdef";
+    const checkout = realpathSync.native(mkdtempSync(join(tmpdir(), "ave-dev-checkout-")));
+    try {
+      mkdirSync(join(checkout, "node_modules"));
+      writeFileSync(join(checkout, "package.json"), "{}");
+      mkdirSync(join(checkout, ".cache", "child"), { recursive: true });
+      spawn.mockReset().mockImplementation(async () => ({ process: owned, confinement: "macos-seatbelt", release: vi.fn(async () => {}) }));
+      const child = await spawnMxcPluginChild({ home: `${staging}/home`, temp: `${staging}/temp`,
+        filesystemOwnership: { readRoots: [], writeRoots: [staging], hostStorageRoots: [] },
+        signal: new AbortController().signal, assertCurrent: vi.fn(), release: vi.fn() }, {
+        pluginId: "mac-probe", command: `${checkout}/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron`,
+        args: [join(checkout, ".cache", "child", "plugin-child-main.mjs")], cwd: "/srv/kit",
+        envelope: { read: ["/srv/kit"], write: [] }, floorPierces: [], baseEnv: {},
+      });
+      // The runtime's bundle Contents, the entry's folder, the node_modules its external packages load from, and the
+      // package.json Node reads for its scope; the checkout itself stays ungranted.
+      expect((spawn.mock.calls[0]![0] as MxcConfinedChildSpec).allowRead).toEqual(["/srv/kit",
+        `${checkout}/node_modules/electron/dist/Electron.app/Contents`, join(checkout, ".cache", "child"), join(checkout, "node_modules"), join(checkout, "package.json")]);
+      child.link.terminate("done");
+      await child.waitForExit();
+    } finally {
+      rmSync(checkout, { recursive: true, force: true });
+    }
   });
 
   it("grants an entry directory outside every read root once, with POSIX containment", async () => {

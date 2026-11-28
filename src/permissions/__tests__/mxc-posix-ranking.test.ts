@@ -3,7 +3,7 @@ import type { ContainerBackend } from "../../shared/container-platform.js";
 import { describe, expect, it } from "vitest";
 import {
   _assertPosixDenyOutcomesForTest, _rankPosixContainerRowsForTest,
-  PosixContainerPolicyError, rankPosixContainerRows, type PosixPolicyLookups, type PosixPolicyRefusal,
+  PosixContainerPolicyError, posixExecutableReadRoot, rankPosixContainerRows, type PosixPolicyLookups, type PosixPolicyRefusal,
 } from "../mxc-posix.js";
 import { buildPolicyModel, policyFloorRow, policyGrantRow, type PolicyFloorRow, type PolicyGrantRow } from "../policy-model.js";
 
@@ -55,6 +55,32 @@ describe("POSIX container filesystem ranking", () => {
     expect(() => rankPosixContainerRows(model([], read("/work")), "seatbelt", {
       ...lookups, canonical: () => { throw error; },
     })).toThrow(error);
+  });
+
+  it("reads a macOS app bundle's whole Contents for its executable, and only the executable's folder otherwise", () => {
+    expect(posixExecutableReadRoot("/Applications/Ave.app/Contents/MacOS/Ave", "darwin")).toBe("/Applications/Ave.app/Contents");
+    expect(posixExecutableReadRoot("/work/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron", "darwin"))
+      .toBe("/work/node_modules/electron/dist/Electron.app/Contents");
+    expect(posixExecutableReadRoot("/opt/ave/runtime", "darwin")).toBe("/opt/ave");
+    expect(posixExecutableReadRoot("/work/Contents/MacOS/tool", "darwin")).toBe("/work/Contents/MacOS");
+    expect(posixExecutableReadRoot("/work/Ave.app/Contents/MacOS/Ave", "linux")).toBe("/work/Ave.app/Contents/MacOS");
+  });
+
+  it("keeps a bundle's Contents readable under a crowded carved folder, and a user deny over the bundle still drops it", () => {
+    // A deny under /private/tmp carves it; its many siblings exceed the grant limit, so all of them are withheld.
+    const crowded: PosixPolicyLookups = { ...lookups, canonical: (path) => path, children: (folder) => folder === "/private/tmp"
+      ? Array.from({ length: 450 }, (_, index) => `lane-${index}`) : [] };
+    const bundle = "/private/tmp/w1/node_modules/electron/dist/Electron.app";
+    const frameworks = `${bundle}/Contents/Frameworks/Electron Framework.framework/Electron Framework`;
+    const rank = (runtime: string, ...floors: PolicyFloorRow[]) => rankPosixContainerRows(
+      model([deny("/private/tmp/home/plugins"), ...floors], read("/"), read(runtime), read("/private/tmp/home/plugins/Kit")), "seatbelt", crowded);
+    const readable = (rows: readonly string[]) => rows.some(row => frameworks.startsWith(`${row}/`));
+    // Control: the executable's folder alone leaves the frameworks beside it to the carve, which withheld them.
+    const macos = rank(posixExecutableReadRoot(`${bundle}/Contents/MacOS/Electron`, "linux"));
+    expect(macos.carvedReadLimitedAt).toContain("/private/tmp");
+    expect(readable(macos.readonly)).toBe(false);
+    expect(readable(rank(posixExecutableReadRoot(`${bundle}/Contents/MacOS/Electron`, "darwin")).readonly)).toBe(true);
+    expect(readable(rank(`${bundle}/Contents`, deny(bundle, "user-deny")).readonly)).toBe(false);
   });
 
   it("uses path segments and folds aliases only on a case-folding volume", () => {

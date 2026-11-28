@@ -132,6 +132,19 @@ function pathKey(path: string, foldsCase: boolean): string {
   return foldsCase ? path.normalize("NFC").toLowerCase() : path;
 }
 
+/**
+ * The folder a POSIX holder reads its executable's runtime from. On macOS an app bundle's executable loads its
+ * frameworks and resources from beside `Contents/MacOS`, so the read is the bundle's `Contents`; otherwise it is the
+ * executable's own folder. As a grant it holds wherever the bundle sits, never depending on the read carve.
+ */
+export function posixExecutableReadRoot(executable: string, platform: NodeJS.Platform = process.platform): string {
+  const folder = posix.dirname(executable);
+  if (platform !== "darwin") return folder;
+  const contents = posix.dirname(folder);
+  return posix.basename(folder) === "MacOS" && posix.basename(contents) === "Contents" && posix.dirname(contents).endsWith(".app")
+    ? contents : folder;
+}
+
 export function atOrUnder(path: string, root: string, foldsCase: boolean): boolean {
   const key = pathKey(path, foldsCase);
   const parent = pathKey(root, foldsCase);
