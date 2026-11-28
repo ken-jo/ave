@@ -18,6 +18,7 @@ import { existsSync, readdirSync } from "node:fs";
 import { spawnMxcConfinedChild, type MxcConfinedChildSpawn, type MxcConfinedChildSpec } from "../confined-child.js";
 import { startEgressRelayService, stopEgressRelayService } from "../egress-relay/relay.js";
 import { setProvenLinuxHolderRoute } from "../linux-holder-route.js";
+import { __resetSandboxRequestedAtBootForTest, setPluginWorkerConfinementRequestedAtBoot } from "../sandbox-capability.js";
 import { currentMxcRuntimeHost, establishMxcRuntimeRoot, requireMxcContainerStartRoot, _forgetMxcRuntimeRootForTest } from "../mxc-runtime-root.js";
 import { forgetIssuedContainerHome, recordIssuedContainerHome } from "../sandbox-home-registry.js";
 import { spawnMxcBundledHolder, type MxcBundledHolder } from "../../sandbox/wrap-bundled-command.js";
@@ -278,6 +279,8 @@ describe.runIf(NATIVE)("native Linux holder row-2 admission", () => {
     vi.stubEnv("AVE_TEST_SANDBOX_BASE", root);
     cache = currentMxcRuntimeHost().cacheHome;
     establishMxcRuntimeRoot();
+    // Extension isolation requested, as the adapters' selection requires on every platform.
+    setPluginWorkerConfinementRequestedAtBoot(true);
     startEgressRelayService({ ask: async () => false });
     const programs = await requireMxcLinuxShellPrograms(resources);
     setProvenLinuxHolderRoute({
@@ -289,6 +292,7 @@ describe.runIf(NATIVE)("native Linux holder row-2 admission", () => {
     await Promise.allSettled(started.splice(0).map(holder => holder.release()));
     for (const home of homes.splice(0)) forgetIssuedContainerHome(home);
     setProvenLinuxHolderRoute(undefined);
+    __resetSandboxRequestedAtBootForTest();
     await stopEgressRelayService();
     _forgetMxcRuntimeRootForTest(cache);
     vi.unstubAllEnvs();

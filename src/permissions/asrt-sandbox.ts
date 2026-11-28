@@ -1528,9 +1528,11 @@ export function assertExtensionStartAllowed(options?: { readonly backend: "mxc";
     return;
   }
   const legacy = options !== undefined && "backend" in options ? undefined : options;
-  // Linux once its holder route is on (design 6.3): while the holder canary runs, a start waits as a checking plan
-  // makes it wait; once the route is proven every start takes the holder.
-  const linuxHolderPlatform = process.platform === "linux" && containerPlatform;
+  // Linux once its holder route is on and extension isolation was requested (design 6.3): while the holder canary runs,
+  // a start waits as a checking plan makes it wait; once the route is proven every start takes the holder. A host-owned
+  // process is outside this floor and keeps its own gate, and a user who turned isolation off is not routed or asked.
+  const linuxHolderPlatform = process.platform === "linux" && containerPlatform && isPluginWorkerConfinementRequestedAtBoot()
+    && legacy?.hostOwned !== true;
   if (linuxHolderPlatform && getLinuxHolderSupport()?.state === "checking") throw new MxcExtensionReadinessRefusedError();
   if (linuxHolderPlatform && provenLinuxHolderRoute() !== undefined) {
     throw legacy?.holder === "worker" ? new WorkerTransportUnsupportedError() : new MxcNativeEntryRequiredError();

@@ -13,6 +13,7 @@ const { assertExtensionStartAllowed } = await import("../asrt-sandbox.js");
 const { EXTENSION_START_CONSENT_REQUIRED_CODE } = await import("../extension-start-consent.js");
 const { MxcExtensionReadinessRefusedError, MxcNativeEntryRequiredError, MxcProcessContractError, WorkerTransportUnsupportedError } = await import("../mxc-extension-errors.js");
 const { setProvenLinuxHolderRoute } = await import("../linux-holder-route.js");
+const { isMxcExtensionBackendSelected } = await import("../../sandbox/wrap-bundled-command.js");
 const {
   __resetActiveSandboxCapabilityForTest, __resetContainerShellSubstrateForTest, __resetSandboxRequestedAtBootForTest, getHostShellExecutionPlan,
   setActiveSandboxCapability, setContainerShellSubstrate, setLinuxHolderSupport, setPluginWorkerConfinementRequestedAtBoot, setShellSandboxRequestedAtBoot,
@@ -74,6 +75,24 @@ describe("a Linux extension start once the holder route is on (design 6.3)", () 
       .toThrow(MxcNativeEntryRequiredError);
     expect(() => assertExtensionStartAllowed({ holder: "worker" })).toThrow(WorkerTransportUnsupportedError);
     expect(() => assertExtensionStartAllowed({ backend: "mxc" })).not.toThrow();
+  });
+
+  it("does not route or ask when the user turned extension isolation off, proven or not", () => {
+    setPluginWorkerConfinementRequestedAtBoot(false);
+    setLinuxHolderSupport({ state: "unavailable", reason: "namespaces-unavailable" });
+    expect(legacyStart()).toBe("started");
+    setLinuxHolderSupport({ state: "available" });
+    setProvenLinuxHolderRoute(PROVEN);
+    expect(legacyStart()).toBe("started");
+    expect(isMxcExtensionBackendSelected()).toBe(false);
+    setPluginWorkerConfinementRequestedAtBoot(true);
+    expect(isMxcExtensionBackendSelected()).toBe(true);
+  });
+
+  it("keeps a host-owned process on its own gate once the route is proven", () => {
+    setLinuxHolderSupport({ state: "available" });
+    setProvenLinuxHolderRoute(PROVEN);
+    expect(() => assertExtensionStartAllowed({ hostOwned: true })).not.toThrow(MxcNativeEntryRequiredError);
   });
 
   it("does not ask while the route is off", () => {

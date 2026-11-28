@@ -46,7 +46,7 @@ import { newHolderLabels } from "../permissions/holder-label-sweep.js";
 import { provenSeatbeltHolderRoute } from "../permissions/seatbelt-holder-boot.js";
 import { withLocalityDecision } from "../shared/local-path-io.js";
 import { isFullyQualifiedWindowsPath } from "../shared/windows-path-spelling.js";
-import { getExtensionBackendPlan, getMacHolderCapability, onSandboxStatusChanged } from "../permissions/sandbox-capability.js";
+import { getExtensionBackendPlan, getMacHolderCapability, isPluginWorkerConfinementRequestedAtBoot, onSandboxStatusChanged } from "../permissions/sandbox-capability.js";
 import { listAuthorizedWorkspaceRoots } from "../permissions/workspace-authorized-roots.js";
 import type { SandboxWindowsExtensionPlan } from "../shared/sandbox-capability-info.js";
 import { createSandboxProcessHome, resolvedHostProcessOwner } from "../permissions/sandbox-process-home.js";
@@ -349,7 +349,8 @@ export function hostRuntimeReads(command: string): string[] {
 export function isMxcExtensionBackendSelected(): boolean {
   if (!isContainerHolderRouteEnabled(process.platform)) return false;
   // Linux has no extension plan: the holder route this app run's boot canary proved is the selection.
-  if (process.platform === "linux") return provenLinuxHolderRoute() !== undefined;
+  // Like a Windows plan, it selects nothing when the user turned extension isolation off.
+  if (process.platform === "linux") return isPluginWorkerConfinementRequestedAtBoot() && provenLinuxHolderRoute() !== undefined;
   const plan = getExtensionBackendPlan();
   return plan?.selectedBackend === "mxc" && plan.readiness === "ready";
 }

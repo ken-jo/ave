@@ -54,12 +54,16 @@ describe.runIf(NATIVE)("native Linux holder canary (design 6.3)", () => {
     expect(leftovers()).toEqual([]);
   });
 
-  // CI's second run (design 2.5): a host without slirp4netns has no shell container, yet contains extensions and hooks.
-  it.runIf(process.env.AVE_EXPECT_NO_SLIRP4NETNS === "1")("proves the holder route on a host without slirp4netns", async () => {
+  // Design 2.5: holders need only bwrap. CI's second run hides slirp4netns: the shells then have no container, yet the
+  // holder route is proven. In the normal run both are available.
+  it("proves the holder route whether or not the host has slirp4netns", async () => {
     establishMxcRuntimeRoot();
-    await expect(detectHostMxcLinuxShellSupport(resources)).resolves.toMatchObject({
-      state: "unavailable", reason: "tools-missing", detail: expect.arrayContaining(["slirp4netns"]),
-    });
+    const shell = await detectHostMxcLinuxShellSupport(resources);
+    if (process.env.AVE_EXPECT_NO_SLIRP4NETNS === "1") {
+      expect(shell).toMatchObject({ state: "unavailable", reason: "tools-missing", detail: expect.arrayContaining(["slirp4netns"]) });
+    } else {
+      expect(shell).toMatchObject({ state: "available" });
+    }
     await expect(detectHostMxcLinuxHolderSupport(resources)).resolves.toMatchObject({ support: { state: "available" } });
   });
 
