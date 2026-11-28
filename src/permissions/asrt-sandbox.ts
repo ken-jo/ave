@@ -1573,7 +1573,7 @@ function sensitiveReadFloorRows(userDataDir = _baseTrustedSettings?.userDataDir)
 }
 
 // Every spelling of the Ave home the sensitive table anchors to. Read-denied as a whole directory, so a child added later, a file created after a stamp, or a rename-over beneath it stays denied; a wrap re-opens only children AVE_HOME_READ_REALLOWS names.
-function aveHomeReadBoundaryRoots(): string[] {
+export function aveHomeReadBoundaryRoots(): string[] {
   const seen = new Set<string>();
   return [aveHome(), ...sensitiveDenyHomes().map((home) => join(home, ".ave"))].filter((root) => {
     const key = caseFoldForMatch(resolve(root));

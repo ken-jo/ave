@@ -55,6 +55,14 @@ export function assertShellExportableName(name: string): void {
   }
 }
 
+/**
+ * A container holder's whole environment, PATH included: every name valid and none that selects startup files,
+ * imports functions or steers the loader. The configured part is checked by `assertConfiguredLauncherEnvironment`.
+ */
+export function assertContainedHolderEnvironment(env: Readonly<Record<string, string>>): void {
+  for (const [name, value] of Object.entries(env)) assertTargetOperand(name, value, name);
+}
+
 export function assertConfiguredLauncherEnvironment(env: NodeJS.ProcessEnv): void {
   const windows = process.platform === "win32";
   for (const [name, value] of Object.entries(env)) {

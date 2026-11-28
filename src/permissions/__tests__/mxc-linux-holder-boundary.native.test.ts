@@ -1,11 +1,13 @@
 import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { createServer as createUnixServer } from "node:net";
 import { join, resolve } from "node:path";
 import type { Writable } from "node:stream";
 import { collectStream as collect } from "../../__tests__/support/collect-stream.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import seccompPins from "../mxc-linux-seccomp-pins.json" with { type: "json" };
-import { requireMxcLinuxShellPrograms } from "../mxc-linux.js";
+import { buildBubblewrapHolderRequest, requireMxcLinuxShellPrograms } from "../mxc-linux.js";
+import { posixPolicyLookups } from "../mxc-posix.js";
 import { establishLinuxCaptureFolder, linuxHolderReplay, translateLinuxHolderRequest } from "../mxc-linux-holder-launch.js";
 
 const NATIVE = process.env.AVE_RUN_MXC_LINUX_BOUNDARY === "1";
@@ -56,6 +58,29 @@ describe.runIf(NATIVE)("native Linux holder translation", () => {
     ]);
     expect(call.command).toEqual(["sh", "-c", "/bin/echo holder"]);
     expect(call.seccomp.length).toBeGreaterThan(0);
+  });
+
+  it("translates the holder request Ave builds, with its proxy socket as a read-only row", async () => {
+    const programs = await requireMxcLinuxShellPrograms(resources);
+    const socketPath = join(root, "proxy.sock");
+    const server = createUnixServer(() => {});
+    await new Promise<void>(done => server.listen(socketPath, done));
+    try {
+      const request = buildBubblewrapHolderRequest({
+        grants: { readwrite: [work], readonly: ["/usr", "/etc"], denied: [], chainFolders: [], ungrantedDenies: [] },
+        lookups: { ...posixPolicyLookups(root, false) }, argv: ["/usr/bin/true"], cwd: work, env: { TOKEN: "x" },
+        proxySocket: socketPath, helper: programs.helper,
+      });
+      const requestPath = join(root, "holder-request.json");
+      writeFileSync(requestPath, JSON.stringify(request), { mode: 0o600 });
+      const call = await translateLinuxHolderRequest({ launcher: programs.launcher, env: programs.env,
+        captureFolder: establishLinuxCaptureFolder(root, programs.helper, pin), helperSha256: pin, bwrap: BWRAP,
+        requestPath, logPath: `${requestPath}.log`, request });
+      expect(call.options.join(" ")).toContain(`--ro-bind ${socketPath} ${socketPath}`);
+      expect(call.command).toEqual(["sh", "-c", request.process.commandLine]);
+    } finally {
+      await new Promise<void>(done => server.close(() => done()));
+    }
   });
 
   it("replays the call with the options on a descriptor: the holder gets its environment, no command line holds it", async () => {

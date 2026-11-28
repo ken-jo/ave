@@ -16,7 +16,11 @@ import { isRecord } from "../shared/is-record.js";
 import type { LinuxRawIpVerdict, SandboxContainerShellSupport, SandboxContainerShellUnavailableReason } from "../shared/sandbox-capability-info.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { INVOCATION_PROXY_REFUSED_STATUS, openInvocationProxyListener } from "./egress-invocation-listener.js";
-import { assertShellExportableName } from "./launcher-environment.js";
+import {
+  appOwnedSandboxPrivateRoots, aveHomeReadBoundaryRoots, getDefaultSensitiveReadDenyPaths, getDefaultSensitiveWriteDenyEntries,
+  getProtectedReadDenyFloor, getUserReadDenies, getUserWriteDenies, runWithSandboxWritePreflight,
+} from "./asrt-sandbox.js";
+import { assertContainedHolderEnvironment, assertShellExportableName } from "./launcher-environment.js";
 import { launcherPathFor, pinnedLauncherSha256 } from "./mxc-launcher.js";
 import { holdMxcLinuxPlaceholders } from "./mxc-linux-placeholders.js";
 import {
@@ -26,7 +30,8 @@ import {
 import filterPins from "./mxc-linux-seccomp-pins.json" with { type: "json" };
 import { atOrUnder, canonicalPath, posixPolicyLookups, rankPosixContainerRows, type PosixFilesystemGrants, type PosixPolicyLookups } from "./mxc-posix.js";
 import { requireMxcContainerStartRoot } from "./mxc-runtime-root.js";
-import { buildPolicyModel, policyFloorRow, policyGrantRow } from "./policy-model.js";
+import { buildPolicyModel, type PolicyFloorRow, type PolicyModel, policyFloorRow, policyGrantRow } from "./policy-model.js";
+import { buildMandatorySandboxWritePolicy } from "./sandbox-write-policy.js";
 import { containsGlobChars, globPatternBaseDir } from "./sandbox-path-spelling.js";
 import { quoteSandboxWrappedWord as quote } from "./sandbox-wrapped-command.js";
 import { getConfiguredSessionReadPolicy } from "./sensitive-paths.js";
@@ -287,19 +292,20 @@ export async function detectHostMxcLinuxShellSupport(resources: HostResources, s
   });
 }
 
-export function buildBubblewrapShellRequest(input: {
+/**
+ * What every Linux container request shares (design 1.2): the working directory inside the grants and outside every
+ * deny, the filter helper's folder as a read-only row that no deny covers, the 400-row cap, and the environment
+ * without proxy variables.
+ */
+function bubblewrapRequestCore(input: {
   readonly grants: PosixFilesystemGrants;
   readonly lookups: PosixPolicyLookups;
-  readonly commandLine: string;
   readonly cwd: string;
-  readonly timeoutMs: number;
   readonly env: Readonly<Record<string, string>>;
-  readonly proxyUrl: string;
   readonly helper: string;
+  readonly extraReadonly?: readonly string[];
 }) {
   const { grants, lookups } = input;
-  const port = Number(/^http:\/\/127\.0\.0\.1:([1-9][0-9]{0,4})$/u.exec(input.proxyUrl)?.[1]);
-  if (!Number.isInteger(port) || port > 65535) throw new Error("Container proxy must be an IPv4 loopback listener");
   const cwd = canonicalPath(input.cwd, true, lookups);
   const covering = (paths: readonly string[]) => Math.max(-1, ...paths.filter(path => atOrUnder(cwd, path, false)).map(path => path.length));
   const access = covering([...grants.readwrite, ...grants.readonly]);
@@ -311,7 +317,7 @@ export function buildBubblewrapShellRequest(input: {
   if (grants.denied.some((path) => atOrUnder(helper, path, false) || atOrUnder(path, helperFolder, false))) {
     throw new Error("Container filter helper is covered by a filesystem deny");
   }
-  const readonlyPaths = grants.readonly.includes(helperFolder) ? grants.readonly : [...grants.readonly, helperFolder];
+  const readonlyPaths = [...new Set([...grants.readonly, helperFolder, ...input.extraReadonly ?? []])];
   if (grants.readwrite.length + readonlyPaths.length + grants.denied.length > 400) {
     throw new Error("Container grant limit exceeded by the filter helper");
   }
@@ -320,6 +326,23 @@ export function buildBubblewrapShellRequest(input: {
   // Git expects its global config to be a file. A masked, absent config has no settings to read.
   if (home !== undefined && input.env.GIT_CONFIG_GLOBAL === undefined
     && grants.placeholders?.some(row => row.path === posix.join(home, ".gitconfig"))) env.GIT_CONFIG_GLOBAL = "/dev/null";
+  return { cwd, helper, readonlyPaths, env };
+}
+
+export function buildBubblewrapShellRequest(input: {
+  readonly grants: PosixFilesystemGrants;
+  readonly lookups: PosixPolicyLookups;
+  readonly commandLine: string;
+  readonly cwd: string;
+  readonly timeoutMs: number;
+  readonly env: Readonly<Record<string, string>>;
+  readonly proxyUrl: string;
+  readonly helper: string;
+}) {
+  const { grants } = input;
+  const port = Number(/^http:\/\/127\.0\.0\.1:([1-9][0-9]{0,4})$/u.exec(input.proxyUrl)?.[1]);
+  if (!Number.isInteger(port) || port > 65535) throw new Error("Container proxy must be an IPv4 loopback listener");
+  const { cwd, helper, readonlyPaths, env } = bubblewrapRequestCore(input);
   // The environment arrives on its descriptor, a socket Ave writes and closes, which the shell reads whole and closes
   // before the command. It is read into the positional parameters, never a named variable the environment could
   // hold; the trailing `.` proves the read finished and keeps trailing newlines. The script is loaded once in a
@@ -348,6 +371,134 @@ export function buildBubblewrapShellRequest(input: {
     },
     environment: linuxShellEnvironmentScript(env),
   } as const;
+}
+
+/** The loopback port a holder's bridge binds in its own network namespace and forwards to its proxy socket. */
+export const LINUX_HOLDER_BRIDGE_PORT = 3128;
+const LINUX_HOLDER_READY_FD = 4;
+const HOLDER_PROXY_NAMES = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"] as const;
+
+/**
+ * A Linux extension holder's launcher request (design 1.2). No proxy URL and no timeout: the launcher then uses its
+ * isolated network mode, the one whose bwrap call can be replayed, and a holder lives until it is stopped. The
+ * holder's proxy socket is the one extra read-only row; the bridge forwards the holder's loopback port to it, and only
+ * the proxy variables travel on the helper's command line. An offline holder has neither.
+ */
+export function buildBubblewrapHolderRequest(input: {
+  readonly grants: PosixFilesystemGrants;
+  readonly lookups: PosixPolicyLookups;
+  readonly argv: readonly string[];
+  readonly cwd: string;
+  readonly env: Readonly<Record<string, string>>;
+  readonly proxySocket: string | "offline";
+  readonly helper: string;
+}) {
+  if (input.argv.length === 0) throw new Error("Linux holder needs a program to run");
+  // An environment that selects startup files, imports functions or steers the loader refuses by name.
+  assertContainedHolderEnvironment(input.env);
+  const online = input.proxySocket !== "offline";
+  if (online && !posix.isAbsolute(input.proxySocket)) throw new Error("Linux holder proxy socket must be an absolute path");
+  const { cwd, helper, readonlyPaths, env } = bubblewrapRequestCore({ ...input, ...(online ? { extraReadonly: [input.proxySocket] } : {}) });
+  const proxyUrl = `http://127.0.0.1:${LINUX_HOLDER_BRIDGE_PORT}`;
+  const proxyWords = online ? [
+    "--proxy-bridge", String(LINUX_HOLDER_BRIDGE_PORT), input.proxySocket,
+    ...[...HOLDER_PROXY_NAMES.map(name => `${name}=${proxyUrl}`), "NO_PROXY=localhost,127.0.0.1,::1", "no_proxy=localhost,127.0.0.1,::1"]
+      .flatMap(assignment => ["--env", assignment]),
+  ] : [];
+  const words = [helper, "--ready-fd", String(LINUX_HOLDER_READY_FD), "--close-other-fds", ...proxyWords, "--", ...input.argv];
+  return {
+    version: "0.9.0-alpha",
+    containment: "bubblewrap",
+    process: {
+      commandLine: words.map(quote).join(" "), cwd, inheritDefaultEnv: false,
+      env: Object.entries(env).map(([name, value]) => `${name}=${value}`),
+    },
+    filesystem: { readwritePaths: input.grants.readwrite, readonlyPaths, deniedPaths: input.grants.denied },
+    network: { egress: { default: "deny" }, ingress: { default: "deny", hostLoopback: "deny" } },
+  } as const;
+}
+
+/** Any spelling of the root: a read base is the builder's to add, never a caller's. */
+function isRootSpelling(path: string): boolean {
+  return posix.normalize(path) === "/";
+}
+
+/**
+ * The rows of every Linux container, from one place (design 1.2): the read base and every floor are added here.
+ * `derivedRows` are rows Ave computes from the caller's grants (saved-session projections, the mandatory write
+ * policy's literal rows); a caller passes grants and pierces only, and one that passes a read base is refused.
+ */
+export function linuxContainerPolicyModel(input: {
+  readonly allowRead: readonly string[];
+  readonly allowWrite: readonly string[];
+  readonly denyRead: readonly string[];
+  readonly userDenyRead: readonly string[];
+  readonly floorPierces: readonly string[];
+  readonly derivedRows: readonly PolicyFloorRow[];
+  readonly programs: { readonly launcher: string; readonly helper: string };
+}): PolicyModel {
+  const base = [...input.allowRead, ...input.allowWrite, ...input.floorPierces].find(isRootSpelling);
+  if (base !== undefined) throw new Error(`A Linux container caller passed the read base ${JSON.stringify(base)}`);
+  const userDenyRead = input.userDenyRead;
+  const protectedFloor = getProtectedReadDenyFloor().filter(path => !userDenyRead.includes(path));
+  const runtimeRoot = requireMxcContainerStartRoot();
+  const denyRead = input.denyRead.includes(runtimeRoot) ? input.denyRead : [...input.denyRead, runtimeRoot];
+  return buildPolicyModel({
+    floors: [
+      ...input.derivedRows,
+      ...getDefaultSensitiveWriteDenyEntries().map(entry => policyFloorRow(typeof entry === "string" ? entry : entry.path, "ro", "protected-name", true)),
+      ...getUserWriteDenies().map(entry => policyFloorRow(
+        typeof entry === "string" ? entry : entry.path, "ro", "protected-name", typeof entry !== "string" && entry.literal === true,
+      )),
+      ...[input.programs.launcher, input.programs.helper].map(path => policyFloorRow(posix.dirname(path), "ro", "protected-name", true)),
+      ...denyRead.map(path => policyFloorRow(path, "denied", "read-boundary", false)),
+      ...protectedFloor.map(path => policyFloorRow(path, "denied", "secrets", false)),
+      ...userDenyRead.map(path => policyFloorRow(path, "denied", "user-deny", false)),
+    ],
+    userGrants: [],
+    extensionManifests: [],
+    launchGrants: [
+      ...input.allowWrite.map(path => policyGrantRow(path, "rw", "launch-grant", false)),
+      ...["/", ...input.allowRead].map(path => policyGrantRow(path, "ro", "launch-grant", false)),
+      ...input.floorPierces.map(path => policyGrantRow(path, "ro", "floor-pierce", false)),
+    ],
+  });
+}
+
+/**
+ * A holder's rows from its grants alone: the mandatory write policy over its write roots and the saved-session
+ * projections are derived here, so an empty caller still denies a sensitive read, a protected-name write and the Ave
+ * home.
+ */
+export async function linuxHolderPolicyModel(input: {
+  readonly allowRead: readonly string[];
+  readonly allowWrite: readonly string[];
+  readonly floorPierces: readonly string[];
+  readonly lookups: PosixPolicyLookups;
+  readonly programs: { readonly launcher: string; readonly helper: string };
+  readonly signal?: AbortSignal;
+}): Promise<{ readonly model: PolicyModel; readonly mandatory: ReturnType<typeof buildMandatorySandboxWritePolicy> }> {
+  const sensitive = getDefaultSensitiveWriteDenyEntries();
+  const routingPaths = sensitive.map(entry => typeof entry === "string" ? entry : entry.path);
+  const signal = input.signal ?? new AbortController().signal;
+  const mandatory = await runWithSandboxWritePreflight(signal, () => buildMandatorySandboxWritePolicy(input.allowWrite, undefined, routingPaths,
+    routingPaths.filter(path => path.startsWith("/") && !containsGlobChars(path))));
+  const userDenyRead = getUserReadDenies();
+  // The read boundaries a shell's caller states for it, which a holder caller never passes: the sensitive read floor,
+  // the Ave home and the sandbox private roots (the same set as a macOS holder's floor).
+  const denyRead = [...getDefaultSensitiveReadDenyPaths(), ...aveHomeReadBoundaryRoots(), ...appOwnedSandboxPrivateRoots()];
+  const reads = await projectLinuxSavedSessionDenies({
+    denyRead, userDenyRead, lookups: input.lookups,
+    grants: ["/", ...input.allowRead, ...mandatory.allowWrite, ...input.floorPierces], signal,
+  });
+  const literalRows = mandatory.denyWrite.map(entry => policyFloorRow(typeof entry === "string" ? entry : entry.path, "ro", "protected-name", true));
+  return {
+    mandatory,
+    model: linuxContainerPolicyModel({
+      allowRead: input.allowRead, allowWrite: mandatory.allowWrite, denyRead: reads.denyRead, userDenyRead: reads.userDenyRead,
+      floorPierces: input.floorPierces, derivedRows: [...reads.rows, ...literalRows], programs: input.programs,
+    }),
+  };
 }
 
 const LINUX_CANARY_STDOUT_LIMIT = 64 * 1024;

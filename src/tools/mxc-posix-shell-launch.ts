@@ -1,14 +1,14 @@
 import { createHash } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+import { basename, join } from "node:path";
 import { t } from "../i18n/index.js";
 import { getHostResources } from "../main/host-resources.js";
 import {
   aveHomeReadBoundaryCovering, getDefaultSensitiveWriteDenyEntries, getProtectedReadDenyFloor,
-  getUserReadDenies, getUserWriteDenies, protectedReadDenyMatcher, runWithSandboxWritePreflight,
+  getUserReadDenies, protectedReadDenyMatcher, runWithSandboxWritePreflight,
 } from "../permissions/asrt-sandbox.js";
 import { buildSeatbeltShellRequest } from "../permissions/mxc-macos.js";
-import { buildBubblewrapShellRequest, projectLinuxSavedSessionDenies, requireMxcLinuxShellPrograms } from "../permissions/mxc-linux.js";
+import { buildBubblewrapShellRequest, linuxContainerPolicyModel, projectLinuxSavedSessionDenies, requireMxcLinuxShellPrograms } from "../permissions/mxc-linux.js";
 import { ContainerPlaceholderChangedError, holdMxcLinuxPlaceholders, takeMxcLinuxPlaceholderRecoveryNotice } from "../permissions/mxc-linux-placeholders.js";
 import { atOrUnder, posixPathFoldsCase, posixPolicyLookups, rankPosixContainerRows, type PosixFilesystemGrants } from "../permissions/mxc-posix.js";
 import { requireMxcContainerStartRoot } from "../permissions/mxc-runtime-root.js";
@@ -76,19 +76,18 @@ export async function prepareMxcPosixShellLaunch(input: PreparePosixShellInput, 
   const reads = linux ? await projectLinuxSavedSessionDenies({
     denyRead, userDenyRead, lookups, grants: [...allowRead, ...mandatory.allowWrite, ...input.floorPierces], signal: lifecycle.signal,
   }) : { denyRead, userDenyRead, rows: [] };
-  const model = shellPolicyModel({
+  // Linux rows come from the one Linux container builder, shared with extension holders; macOS keeps its own.
+  const model = programs !== undefined ? linuxContainerPolicyModel({
+    allowRead: input.allowRead.filter(admittedPath), allowWrite: mandatory.allowWrite,
+    denyRead: reads.denyRead, userDenyRead: reads.userDenyRead, floorPierces: input.floorPierces,
+    derivedRows: [...reads.rows, ...mandatory.literalRows, ...mandatory.patternRows], programs,
+  }) : shellPolicyModel({
     allowRead, allowWrite: mandatory.allowWrite,
     denyRead: reads.denyRead, userDenyRead: reads.userDenyRead, protectedFloor,
     denyWrite: [],
     floorPierces: input.floorPierces,
   }, [...reads.rows, ...mandatory.literalRows, ...mandatory.patternRows, ...sensitive.map(entry =>
-    policyFloorRow(typeof entry === "string" ? entry : entry.path, "ro", "protected-name", linux || typeof entry !== "string")),
-    ...(linux ? getUserWriteDenies().map(entry => policyFloorRow(
-      typeof entry === "string" ? entry : entry.path, "ro", "protected-name", typeof entry !== "string" && entry.literal === true,
-    )) : []),
-    ...(programs === undefined ? [] : [programs.launcher, programs.helper].map(path =>
-      policyFloorRow(dirname(path), "ro", "protected-name", true))),
-  ]);
+    policyFloorRow(typeof entry === "string" ? entry : entry.path, "ro", "protected-name", typeof entry !== "string"))]);
   const roots = [hostHome, input.cwd, ...mandatory.allowWrite];
   const foldsCase = !linux && roots.every(path => posixPathFoldsCase(lookups.canonical(path)));
 
