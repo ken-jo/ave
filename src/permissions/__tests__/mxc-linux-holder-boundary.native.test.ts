@@ -726,8 +726,7 @@ except OSError as error:
       const waiting: ((row: string) => void)[] = [];
       holder.process.stdout.on("data", (chunk: Buffer) => {
         buffered += chunk.toString();
-        let at: number;
-        while ((at = buffered.indexOf("\n")) >= 0) {
+        for (let at = buffered.indexOf("\n"); at >= 0; at = buffered.indexOf("\n")) {
           const row = buffered.slice(0, at);
           buffered = buffered.slice(at + 1);
           waiting.shift()?.(row);
