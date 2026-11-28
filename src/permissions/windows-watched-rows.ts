@@ -237,7 +237,9 @@ export function claimMxcWatchedRows(rows: readonly MxcWatchedRow[], context: Wat
           try {
             // The folder the ranker admitted, by the helper's identity, read between two looks at the same object.
             const before = entryAt(anchor, true);
-            const [facts] = pinWindowsPaths([anchor]);
+            // Windows names the folder by volume serial and file id; the Linux ranker records its device and inode there.
+            const facts = process.platform !== "linux" ? pinWindowsPaths([anchor])[0]
+              : before === undefined ? undefined : { volumeSerial: String(before.dev), fileId: String(before.ino) };
             const known = watched.get(key(target));
             if (before?.isDirectory() === true && !before.isSymbolicLink() && sameIdentity(anchor, before)
               && facts?.volumeSerial === row.volumeSerial && facts.fileId === row.fileId

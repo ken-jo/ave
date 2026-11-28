@@ -272,6 +272,20 @@ describe.runIf(process.platform === "linux")("Linux placeholder ownership", () =
     expect(existsSync(leaf)).toBe(false);
   });
 
+  it("lets a long-lived holder mask another run's placeholder and own it only until its ready byte", async () => {
+    const shell = await holdMxcLinuxPlaceholders(lookups, rank, host);
+    const holder = await holdMxcLinuxPlaceholders(lookups, rank, host);
+    // Masked: the holder's container denies the shell's placeholder, so it cannot remove it.
+    expect(holder.grants.denied).toContain(leaf);
+    await holder.releaseForeignClaims();
+    holder.validate();
+    await shell.release();
+    // The holder no longer owns it, so the shell's run end removes it; the holder's own run entry stays.
+    expect(existsSync(leaf)).toBe(false);
+    expect(existsSync(join(work, "missing"))).toBe(false);
+    await holder.release();
+  });
+
   describe("a holder run whose Ave exited (boot orphan stop)", () => {
     const noPlaceholders = (policyLookups: PosixPolicyLookups) => rankPosixContainerRows(buildPolicyModel({
       floors: [], launchGrants: [policyGrantRow(work, "rw", "launch-grant", true)], userGrants: [], extensionManifests: [],

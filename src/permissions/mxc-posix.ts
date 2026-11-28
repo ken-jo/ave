@@ -3,7 +3,7 @@ import { posix } from "node:path";
 import { sameFileIdentity } from "../lib/file-identity.js";
 import type { ContainerBackend } from "../shared/container-platform.js";
 import { canonicalWhereItExists } from "./mxc-runtime-root.js";
-import { mxcPolicyRows, type MxcFilesystemGrants, type MxcPolicyRows } from "./mxc-windows.js";
+import { mxcPolicyRows, type MxcFilesystemGrants, type MxcPolicyRows, type MxcWatchedRow } from "./mxc-windows.js";
 import { userDenyCoversPierce, type PolicyModel } from "./policy-model.js";
 
 type NestedGrantRule = "deny-wins" | "most-specific";
@@ -26,6 +26,11 @@ export interface PosixPolicyLookups {
   directoryIdentity(path: string): { readonly device: bigint; readonly inode: bigint } | undefined;
   readonly home: string;
   readonly foldsCase: boolean;
+  /**
+   * Bubblewrap only: write roots whose absent protected names are watched rather than held by a placeholder (a
+   * long-lived holder's user folders, design 7). Such a name is in no list; it is returned in `watched`.
+   */
+  readonly watchedRoots?: readonly string[];
 }
 
 export type PosixPolicyRefusal =
@@ -392,6 +397,7 @@ function applyBubblewrapRows(result: PosixFilesystemGrants, lookups: PosixPolicy
   const writeRows = new Set(readwrite);
   const pins = new Set<string>();
   const placeholders: BubblewrapPlaceholder[] = [];
+  const watched: MxcWatchedRow[] = [];
   const projectedReadonly: string[] = [];
   const projectedDenied: string[] = [];
   // A nested write root is a mount point, but the folders above it inside the enclosing write root are not. Renaming one
@@ -430,6 +436,12 @@ function applyBubblewrapRows(result: PosixFilesystemGrants, lookups: PosixPolicy
     if (identity === undefined) {
       throw new PosixContainerPolicyError("placeholder-parent-unproved", `Container cannot prove a parent of: ${path}`);
     }
+    if (lookups.watchedRoots?.some((root) => atOrUnder(enclosing, root, lookups.foldsCase)) === true) {
+      // Neither emitted nor created: the nearest existing folder's identity, checked again at the start and the release.
+      watched.push({ path, anchor: ancestor, volumeSerial: String(identity.device), fileId: String(identity.inode) });
+      for (const folder of parents) pins.delete(folder);
+      continue;
+    }
     placeholders.push({ path, ancestor, ...identity, parents });
     projectedDenied.push(path);
   }
@@ -439,7 +451,8 @@ function applyBubblewrapRows(result: PosixFilesystemGrants, lookups: PosixPolicy
   if (firstExcess !== undefined) {
     throw new PosixContainerPolicyError("grant-limit-exceeded", `Container grant limit (${MAX_CARVE_GRANTS}) exceeded at: ${firstExcess}`);
   }
-  return { ...result, readwrite: writable, readonly: projectedReadonly, denied: projectedDenied, pins: [...pins], placeholders };
+  return { ...result, readwrite: writable, readonly: projectedReadonly, denied: projectedDenied, pins: [...pins], placeholders,
+    ...(watched.length === 0 ? {} : { watched }) };
 }
 
 /** Rank the literal rows and retain the carve information needed to render the profile. */

@@ -418,6 +418,17 @@ export function buildBubblewrapHolderRequest(input: {
   } as const;
 }
 
+/**
+ * Which of a holder's write roots watch their absent protected names instead of holding them with placeholders
+ * (design 7.1): only a long-lived holder's (plugin child, worker) roots outside every Ave-owned root. A placeholder in
+ * a user folder would stand there for the holder's whole life. The plugin does not choose.
+ */
+export function linuxHolderWatchedRoots(writeRoots: readonly string[], longLived: boolean): string[] {
+  if (!longLived) return [];
+  const aveOwned = [...aveHomeReadBoundaryRoots(), ...appOwnedSandboxPrivateRoots(), requireMxcContainerStartRoot()];
+  return writeRoots.filter(root => !aveOwned.some(owned => atOrUnder(root, owned, false)));
+}
+
 /** Any spelling of the root: a read base is the builder's to add, never a caller's. */
 function isRootSpelling(path: string): boolean {
   return posix.normalize(path) === "/";

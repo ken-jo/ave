@@ -115,7 +115,13 @@ function isPendingFolderOurs(path: string, notBefore: string): boolean {
 /** Remove only empty directories of the recorded identity, in leaf-to-root order. */
 function retireRun(registry: PlaceholderRegistry, id: string): void {
   registry.runs = registry.runs.filter((run) => run.id !== id);
+  dropOwnership(registry, id, () => true);
+}
+
+/** Drops `id` from the directories `drop` selects, removing each that has no owner left and is still ours. */
+function dropOwnership(registry: PlaceholderRegistry, id: string, drop: (path: string) => boolean): void {
   for (const directory of registry.directories.toSorted((a, b) => b.path.length - a.path.length)) {
+    if (!drop(directory.path)) continue;
     directory.owners = directory.owners.filter((owner) => owner !== id);
     if (directory.owners.length > 0) continue;
     try {
@@ -225,6 +231,11 @@ export interface MxcLinuxPlaceholderHold<Grants> {
   recordLauncher(pid: number): Promise<void>;
   /** A Linux holder's run entry, written even when it owns no placeholder: Ave's pid and its outer bwrap. */
   recordHolder(pid: number, executable: string): Promise<void>;
+  /**
+   * A long-lived holder, at its ready byte: give up the other runs' placeholders it held while its container was
+   * mounted (design 7.3). Its mask of each stays; when their own run ends the folder goes, and the name is watched.
+   */
+  releaseForeignClaims(): Promise<void>;
   release(): Promise<void>;
 }
 
@@ -258,6 +269,7 @@ export async function holdMxcLinuxPlaceholders<Grants extends PosixFilesystemGra
     const grants: Grants = foreignLeaves.length === 0 ? ranked
       : { ...ranked, denied: [...ranked.denied, ...foreignLeaves.map((directory) => directory.path)] };
     const owned = new Set<PlaceholderRegistry["directories"][number]>();
+    const created = new Set<string>();
     const owner = { pid: host.pid, start: host.processStart(host.pid) };
     if (owner.start === null) throw new Error("Container placeholder owner could not be proved");
     registry.runs.push({ id, owner });
@@ -281,6 +293,7 @@ export async function holdMxcLinuxPlaceholders<Grants extends PosixFilesystemGra
       registry.directories.push(directory);
       tracked.set(path, directory);
       owned.add(directory);
+      created.add(path);
       saveRegistry(journal, registry);
       mkdirSync(path, { mode: 0o755 });
       const identity = directoryIdentity(path);
@@ -350,6 +363,17 @@ export async function holdMxcLinuxPlaceholders<Grants extends PosixFilesystemGra
           saveRegistry(journal, registry);
         }, lockOptions);
         holderRecorded = true;
+      },
+      async releaseForeignClaims() {
+        const foreign = [...owned].filter((directory) => !created.has(directory.path));
+        if (foreign.length === 0) return;
+        await withFileLock(journal, async () => {
+          const registry = readRegistry(journal);
+          dropOwnership(registry, id, (path) => !created.has(path));
+          registry.directories = registry.directories.filter((directory) => directory.owners.length > 0);
+          saveRegistry(journal, registry);
+        }, lockOptions);
+        for (const directory of foreign) owned.delete(directory);
       },
       async release() {
         if (owned.size === 0 && !holderRecorded) return;
