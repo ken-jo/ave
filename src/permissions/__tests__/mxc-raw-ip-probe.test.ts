@@ -32,6 +32,16 @@ const REFUSED: NonNullable<ReturnType<typeof parseMxcRawIpProbeEvidence>> = {
 };
 const PROBE_ID = "a".repeat(32);
 const EVIDENCE_LINE = evidenceFrame(PROBE_ID);
+const HOST_LOOKUP_PROGRESS = [
+  "#< CLIXML",
+  '<Objs Version="1.1.0.1" xmlns="http://schemas.microsoft.com/powershell/2004/04">'
+    + '<Obj S="progress" RefId="0"><TN RefId="0"><T>System.Management.Automation.PSCustomObject</T><T>System.Object</T></TN>'
+    + '<MS><I64 N="SourceId">1</I64><PR N="Record"><AV>처음 사용하기 위해 모듈을 준비하는 중입니다.</AV>'
+    + '<AI>0</AI><Nil /><PI>-1</PI><PC>-1</PC><T>Completed</T><SR>-1</SR><SD> </SD></PR></MS></Obj>'
+    + '<Obj S="progress" RefId="1"><TNRef RefId="0" />'
+    + '<MS><I64 N="SourceId">2</I64><PR N="Record"><AV>Get-NetRoute -AddressFamily IPv6</AV>'
+    + '<AI>42</AI><Nil /><PI>-1</PI><PC>100</PC><T>Completed</T><SR>0</SR><SD>1/1 완료</SD></PR></MS></Obj></Objs>',
+].join("\r\n");
 
 function evidenceFrame(id: string, evidence = REFUSED): string {
   return `AVE_MXC_RAW_IP ${id} ${JSON.stringify(evidence)}\r\n`;
@@ -47,7 +57,7 @@ describe("Windows raw IP probe classification", () => {
   });
 
   it.each([10051, 10065, 10049, 10047])("reports IPv6 result %s as unmeasured", (t6) => {
-    expect(classifyMxcRawIpProbe({ ...REFUSED, t6 }, true, "absent")).toMatchObject({ rawIp: "unknown", reason: "ipv6-unmeasured" });
+    expect(classifyMxcRawIpProbe({ ...REFUSED, t6, tl: "other" }, true, "absent")).toMatchObject({ rawIp: "unknown", reason: "ipv6-unmeasured" });
   });
 
   it("uses the LAN result to downgrade a verdict when a peer answered", () => {
@@ -79,8 +89,62 @@ describe("Windows raw IP probe classification", () => {
 });
 
 describe("additional raw IP blocking requirements", () => {
+  const proxyEvidence = { ...REFUSED, t6: 10051, capabilitySids: ["S-1-15-3-3"] };
+  const proxyLaunch = { hostIpv6Route: "absent", launchMode: "proxy" } as const;
+
+  it.each([10051, 10065])("accepts structural evidence from the proxy probe for no-route result %s", (t6) => {
+    expect(classifyMxcRawIpProbe({ ...proxyEvidence, t6 }, true, "absent", proxyLaunch)).toEqual({
+      rawIp: "blocked", reason: "blocked", evidenceKind: "structural", reachableTargets: [], udpArrival: "absent",
+    });
+  });
+
+  it.each([
+    [10051, "present"], [10065, "present"], [10051, "unknown"], [10065, "unknown"],
+  ] as const)("keeps T6 %i unmeasured when the host route is %s", (t6, hostIpv6Route) => {
+    expect(classifyMxcRawIpProbe({ ...proxyEvidence, t6 }, true, "absent", { ...proxyLaunch, hostIpv6Route })).toMatchObject({
+      rawIp: "unknown", reason: "ipv6-unmeasured",
+    });
+  });
+
+  it.each([
+    [10051, "plain"], [10065, "plain"], [10051, "unproven"], [10065, "unproven"],
+  ] as const)("keeps T6 %i unmeasured for a %s launch", (t6, launchMode) => {
+    const hostEvidence = launchMode === "plain"
+      ? { hostIpv6Route: "absent", launchMode } as const : { hostIpv6Route: "absent" } as const;
+    expect(classifyMxcRawIpProbe({ ...proxyEvidence, t6 }, true, "absent", hostEvidence)).toMatchObject({
+      rawIp: "unknown", reason: "ipv6-unmeasured",
+    });
+  });
+
+  it.each([
+    { scenario: "container control fails", evidence: { control: false }, controlRefused: true, udpArrival: "absent", reason: "control-failed", reachableTargets: [] },
+    { scenario: "host control fails", evidence: {}, controlRefused: false, udpArrival: "absent", reason: "control-failed", reachableTargets: [] },
+    { scenario: "LAN probe is inconclusive", evidence: { tl: "deadline" }, controlRefused: true, udpArrival: "absent", reason: "ipv6-unmeasured", reachableTargets: [] },
+    { scenario: "LAN probe returns another code", evidence: { tl: 10051 }, controlRefused: true, udpArrival: "absent", reason: "ipv6-unmeasured", reachableTargets: [] },
+    { scenario: "LAN target is missing", evidence: { tl: "other" }, controlRefused: true, udpArrival: "absent", reason: "ipv6-unmeasured", reachableTargets: [] },
+    { scenario: "LAN peer refuses the connection", evidence: { tl: 10061 }, controlRefused: true, udpArrival: "absent", reason: "raw-ip-reachable", reachableTargets: ["tl"] },
+    { scenario: "UDP arrival is unmeasured", evidence: { udp: "unmeasured" }, controlRefused: true, udpArrival: "unmeasured", reason: "udp-unmeasured", reachableTargets: [] },
+    { scenario: "UDP datagram arrives", evidence: { udp: "sent" }, controlRefused: true, udpArrival: "arrived", reason: "raw-ip-reachable", reachableTargets: ["udp"] },
+  ] as const)("keeps proxy coverage unknown when $scenario", ({ evidence, controlRefused, udpArrival, reason, reachableTargets }) => {
+    expect(classifyMxcRawIpProbe({ ...proxyEvidence, ...evidence }, controlRefused, udpArrival, proxyLaunch)).toEqual({
+      rawIp: "unknown", reason, reachableTargets, udpArrival,
+    });
+  });
+
+  it.each([10049, 10047])("keeps IPv6 result %s unmeasured with proxy evidence", (t6) => {
+    expect(classifyMxcRawIpProbe({ ...proxyEvidence, t6 }, true, "absent", proxyLaunch)).toMatchObject({
+      rawIp: "unknown", reason: "ipv6-unmeasured",
+    });
+  });
+
+  it.each(["absent", "present", "unknown"] as const)("reports a local IPv6 refusal as measured when the host route is %s", (hostIpv6Route) => {
+    expect(classifyMxcRawIpProbe({ ...proxyEvidence, t6: 10013 }, true, "absent", { ...proxyLaunch, hostIpv6Route })).toMatchObject({
+      rawIp: "blocked", evidenceKind: "measured",
+    });
+  });
+
   it.each([10051, 10065])("accepts a successful empty capability read for no-route result %s", (t6) => {
-    const evidence = { ...REFUSED, t6, capabilitySids: [] };
+    const evidence = { ...REFUSED, t6, tl: "other", capabilitySids: [] } as const;
     expect(mxcRawIpBlockingRequirement(evidence)).toBe("refused-structural");
     expect(classifyMxcRawIpProbe(evidence, true, "absent")).toMatchObject({ rawIp: "blocked", evidenceKind: "structural" });
   });
@@ -211,6 +275,42 @@ describe("raw IP startup observation", () => {
     }), openInvocationProxyListener);
     expect(result).toMatchObject({ state: "available", rawIpProbe: { rawIp, reason, udpArrival } });
     await expectUdpPortReleased(udpPort);
+  });
+
+  describe.each([10051, 10065, 10013])("startup evidence with T6 %i", (t6) => {
+    it.each([
+      { scenario: "scoped global prefix", prefix: "2001:db8:1::%12/48" },
+      { scenario: "missing frame" },
+      { scenario: "plain text on stderr", prefix: "2001:db8:1::/48", stderr: "Route lookup failed" },
+      { scenario: "progress-shaped stderr", prefix: "2001:db8:1::/48", stderr: HOST_LOOKUP_PROGRESS },
+      { scenario: "serialized error on stderr", prefix: "2001:db8:1::/48", stderr: HOST_LOOKUP_PROGRESS.replace('S="progress" RefId="1"', 'S="Error" RefId="1"') },
+      { scenario: "whitespace on stderr", prefix: "2001:db8:1::/48", stderr: " \r\n" },
+      { scenario: "deeply nested XML on stderr", prefix: "2001:db8:1::/48", stderr: HOST_LOOKUP_PROGRESS.replace("<Nil />", `${"<L>".repeat(128)}<Nil />${"</L>".repeat(128)}`) },
+      { scenario: "unrelated route", prefix: "2001:db8:1::/48", structural: true },
+      { scenario: "default route", prefix: "::/0" },
+      { scenario: "exact T6 route", prefix: "2001:db8::1/128" },
+      { scenario: "out-of-range prefix length", prefix: "2001:db8:1::/129" },
+      { scenario: "malformed prefix length", prefix: "2001:db8:1::/48/64" },
+      { scenario: "IPv4 prefix", prefix: "192.0.2.0/24" },
+    ])("classifies host route evidence with $scenario", async ({ prefix, stderr = "", structural }) => {
+      const result = await probeMxcPowerShellStart(makeDeps(async (_file, args) => {
+        if (args[0] !== "--config-base64") {
+          const hostOutput = prefix === undefined ? "" : `AVE_MXC_IPV6_ROUTES ${JSON.stringify([prefix])}\r\n`;
+          return { code: 0, stdout: `${hostOutput}192.0.2.2:49152`, stderr };
+        }
+        const { id, controlHost, proxyUrl } = probeScriptInputs(args);
+        expect(await requestProxyRefusal(proxyUrl, controlHost)).toBe(403);
+        return { code: 0, stdout: evidenceFrame(id, { ...REFUSED, t6, capabilitySids: ["S-1-15-3-3"] }), stderr: "" };
+      }), openInvocationProxyListener);
+      expect(result.state).toBe("available");
+      const evidenceKind = t6 === 10013 ? "measured" : structural ? "structural" : undefined;
+      expect(result.state === "available" && result.rawIpProbe).toEqual({
+        ...(evidenceKind === undefined
+          ? { rawIp: "unknown", reason: "ipv6-unmeasured" }
+          : { rawIp: "blocked", reason: "blocked", evidenceKind }),
+        reachableTargets: [], udpArrival: "absent",
+      });
+    });
   });
 
   it("requires the exact control destination and a fresh evidence ID for each launch", async () => {
