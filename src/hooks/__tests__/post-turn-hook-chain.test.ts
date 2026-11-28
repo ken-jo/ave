@@ -470,7 +470,7 @@ describe("PostTurnHookChain", () => {
         toolCalls: [],
         route: "llm",
         tokenUsage: { inputTokens: 1, outputTokens: 1 },
-        vendorModel: "sk-" + "a".repeat(48),
+        vendorModel: `sk-${"a".repeat(48)}`,
       });
 
       expect(completion()).toEqual([expect.objectContaining({ route: "llm" })]);
