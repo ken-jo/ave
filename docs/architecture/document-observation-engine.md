@@ -91,7 +91,9 @@ without blocking status reads (`verifying-installation`):
 - macOS requires the [publisher signature](../../src/main/document-engine-signature.ts):
   `codesign --verify --deep --strict`, TDF's Developer ID team `7P5S3ZLCN7` and
   identifier `org.libreoffice.script`, and the Gatekeeper execution assessment.
-  The version comes from the app's `Info.plist`.
+  The seal is verified over the whole bundle, and both executables must resolve
+  directly into the bundle's `Contents/MacOS`, so neither they nor the version
+  in the app's `Info.plist` can come from outside the sealed bundle.
 
 The admission is bound to the app's identity (device, inode, mtime and ctime of
 its root and executables). An update or replacement makes it a different app,

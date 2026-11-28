@@ -1,7 +1,7 @@
 // The document engine is the LibreOffice the user installed (owner decision 2026-11-28): Ave finds and verifies it,
 // and installs, verifies and removes only its own part, the pinned HWP import extension. The cases set the platform to
 // macOS, the only one offered.
-import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -99,7 +99,7 @@ describe("the document engine the user installed", () => {
     const options = fixtures.fetch.mock.calls[0]![1];
     expect(options).toMatchObject({ credentials: "omit" });
     await expect(options.authorizeTarget(new URL("https://download.documentfoundation.org/libreoffice/stable/26.8.1/x.dmg"))).rejects.toMatchObject({ code: "download-failed" });
-    expect(fixtures.verifyPlatform).toHaveBeenCalledWith(app.executable, expect.anything());
+    expect(fixtures.verifyPlatform).toHaveBeenCalledWith(app.root, expect.anything());
     const installation = await installer.getVerifiedDocumentEngineInstallation(new AbortController().signal);
     expect(installation).toMatchObject({ executable: app.executable, unopkg: app.unopkg, version: "26.8.3.1" });
     expect(await readFile(installation!.extensionPath)).toEqual(Buffer.from(fixtures.extension));
@@ -114,6 +114,19 @@ describe("the document engine the user installed", () => {
     expect(await readdir(join(home, "document-engine"))).toEqual([]);
     expect(await installer.getDocumentEngineInstallationState()).toMatchObject({ phase: "error", error: "signature-failed" });
     expect(await installer.getVerifiedDocumentEngineInstallation(new AbortController().signal)).toBeNull();
+  });
+
+  // Host-skipped on Windows: creating a file symlink there needs elevated rights or developer mode.
+  it.skipIf(HOST_PLATFORM === "win32")("refuses an engine whose executable resolves outside the signed bundle, before any signature check", async () => {
+    const app = await installApp();
+    // A genuine-looking bundle whose package tool is a link to a binary elsewhere: the seal does not cover that binary.
+    const elsewhere = join(apps, "elsewhere-unopkg");
+    await writeFile(elsewhere, "other tool");
+    await chmod(elsewhere, 0o755);
+    await rm(app.unopkg);
+    await symlink(elsewhere, app.unopkg);
+    await expect(installer.installDocumentEngine(() => {}, new AbortController().signal)).rejects.toMatchObject({ code: "signature-failed" });
+    expect(fixtures.verifyPlatform).not.toHaveBeenCalled();
   });
 
   it("refuses an extension that does not match its pin", async () => {

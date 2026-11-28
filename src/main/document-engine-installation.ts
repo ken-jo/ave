@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { constants, lstatSync, promises as fs, readlinkSync, type BigIntStats } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { DocumentEngineInstallationError, DocumentEngineInstallationState } from "../shared/document-engine.js";
 import { fetchPublicHttpResponse } from "../core/network-guard.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
@@ -136,14 +136,19 @@ async function readAppVersion(app: InstalledApp, signal: AbortSignal): Promise<s
 }
 
 /**
- * Admission of the app the user installed, once per app identity: the publisher's signature (TDF Developer ID and
- * Gatekeeper).
+ * Admission of the app the user installed, once per app identity: both executables must be the bundle's own (their real
+ * paths directly in the canonical root's Contents/MacOS), and the publisher's seal (TDF Developer ID and Gatekeeper) is
+ * verified over that whole bundle, so neither executable nor the version it reports comes from outside it.
  */
 async function admitInstalledApp(app: InstalledApp, signal: AbortSignal): Promise<string> {
-  try { await verifyDocumentEngineAppSignature(app.executable, signal); }
+  const macos = join(app.root, "Contents", "MacOS");
+  if (dirname(app.executable) !== macos || dirname(app.unopkg) !== macos) {
+    throw new DocumentEngineInstallError("signature-failed", "Document engine executables are outside the signed app bundle");
+  }
+  try { await verifyDocumentEngineAppSignature(app.root, signal); }
   catch (error) {
     signal.throwIfAborted();
-    throw new DocumentEngineInstallError("signature-failed", "Document engine executable signer is invalid", { cause: error });
+    throw new DocumentEngineInstallError("signature-failed", "Document engine app signer is invalid", { cause: error });
   }
   return readAppVersion(app, signal);
 }
