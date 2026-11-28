@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, rmdirSync } from "node:fs";
 import { posix } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
+import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { z } from "zod";
 import { isMissingPathError, writeUtf8FileAtomicSync } from "../lib/atomic-file.js";
 import { renameFileOnceSync } from "../lib/transient-fs-lock-retry.js";
@@ -177,20 +179,30 @@ const PROC_ORPHAN_HOLDER_OPS: MxcLinuxOrphanHolderOps = {
  * same process (same start time) running the recorded executable, is stopped. A pid failing either check is a
  * different process now and is left alone; its marker is dropped. Either way the run is retired by the dead-run sweep.
  */
-function stopOrphanHolders(registry: PlaceholderRegistry, host: MxcRuntimeHost, ops: MxcLinuxOrphanHolderOps): boolean {
+async function stopOrphanHolders(registry: PlaceholderRegistry, host: MxcRuntimeHost, ops: MxcLinuxOrphanHolderOps): Promise<boolean> {
   let changed = false;
   for (const run of registry.runs) {
     const holder = run.holder;
     if (holder === undefined || isLive(run.owner, host)) continue;
-    if (host.processExists(holder.pid) && host.processStart(holder.pid) === holder.start && ops.executable(holder.pid) === holder.executable) {
+    const same = (): boolean => host.processExists(holder.pid) && host.processStart(holder.pid) === holder.start;
+    if (same() && ops.executable(holder.pid) === holder.executable) {
       log.warn("Stopping Linux holder bwrap %d left running by an Ave that exited", holder.pid);
       ops.kill(holder.pid);
+      // Gone before the first listener opens; one that outlives the KILL keeps its run for the next start.
+      const deadline = Date.now() + TOOL_TIMEOUT_POLICY.processTreeKillMs;
+      while (same() && Date.now() < deadline) await sleep(ORPHAN_POLL_MS);
+      if (same()) {
+        log.warn("Linux holder bwrap %d did not end after KILL; its run is kept", holder.pid);
+        continue;
+      }
     }
     delete run.holder;
     changed = true;
   }
   return changed;
 }
+
+const ORPHAN_POLL_MS = 20;
 
 export interface MxcLinuxPlaceholderSweepOptions {
   /**
@@ -221,7 +233,7 @@ export async function sweepMxcLinuxPlaceholders(
       return;
     }
     const orphans = options.stopOrphanHolders;
-    const stopped = orphans !== undefined && stopOrphanHolders(registry, host, orphans === true ? PROC_ORPHAN_HOLDER_OPS : orphans);
+    const stopped = orphans !== undefined && await stopOrphanHolders(registry, host, orphans === true ? PROC_ORPHAN_HOLDER_OPS : orphans);
     if (sweepDeadRuns(registry, host) || stopped) saveRegistry(journal, registry);
   }, { createTarget: false });
 }

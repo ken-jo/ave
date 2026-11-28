@@ -1,6 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { t } from "../../i18n/index.js";
 import { launcherPathFor } from "../mxc-launcher.js";
@@ -303,8 +304,10 @@ describe.runIf(process.platform === "linux")("Linux placeholder ownership", () =
       floors: [], launchGrants: [policyGrantRow(work, "rw", "launch-grant", true)], userGrants: [], extensionManifests: [],
     }), "bubblewrap", policyLookups);
     // Ave (pid 81) is gone; the holder marker is pid 82, alive with start "s82" and executable /usr/bin/bwrap.
+    // `killed` ends pid 82 for the fake host, as a KILL would.
+    let killed = false;
     const aveGone = (over: { start?: string } = {}) => ({
-      processExists: (pid: number) => pid === 82 || pid === host.pid,
+      processExists: (pid: number) => (pid === 82 && !killed) || pid === host.pid,
       processStart: (pid: number) => pid === 82 ? over.start ?? "s82" : pid === host.pid ? currentMxcRuntimeHost().processStart(pid) : null,
     });
     function leaveHolderRun() {
@@ -330,11 +333,21 @@ describe.runIf(process.platform === "linux")("Linux placeholder ownership", () =
         ["executable changed", {}, "/usr/bin/sleep", false],
       ] as const) {
         leaveHolderRun();
-        const kill = vi.fn();
+        killed = false;
+        const kill = vi.fn(() => { killed = true; });
         await sweepMxcLinuxPlaceholders({ ...host, ...aveGone(over) }, { stopOrphanHolders: { executable: () => executable, kill } });
         expect(kill.mock.calls, name).toEqual(stopped ? [[82]] : []);
         expect((JSON.parse(readFileSync(journalPath(), "utf8")) as { runs: unknown[] }).runs, name).toEqual([]);
       }
+    });
+
+    it("waits for the stopped bwrap to end, and keeps the run of one that outlives the KILL", async () => {
+      leaveHolderRun();
+      killed = false;
+      const started = Date.now();
+      await sweepMxcLinuxPlaceholders({ ...host, ...aveGone() }, { stopOrphanHolders: { executable: () => "/usr/bin/bwrap", kill: vi.fn() } });
+      expect(Date.now() - started).toBeGreaterThanOrEqual(TOOL_TIMEOUT_POLICY.processTreeKillMs - 50);
+      expect((JSON.parse(readFileSync(journalPath(), "utf8")) as { runs: unknown[] }).runs).toHaveLength(1);
     });
 
     it("leaves a live holder alone at an ordinary sweep, which keeps its run", async () => {
@@ -354,10 +367,12 @@ describe.runIf(process.platform === "linux")("Linux placeholder ownership", () =
           holder: { pid, start: currentMxcRuntimeHost().processStart(pid), executable: readlinkSync(`/proc/${pid}/exe`) } }],
         directories: [],
       }));
-      const exited = new Promise(done => orphan.once("exit", (_code, signal) => done(signal)));
-      await sweepMxcLinuxPlaceholders({ ...host, processExists: (candidate: number) => candidate !== 81 && currentMxcRuntimeHost().processExists(candidate) },
+      let signal: NodeJS.Signals | null = null;
+      orphan.once("exit", (_code, ended) => { signal = ended; });
+      // Waited for: the pid is gone (reaped by this test's own exit handler) when the sweep returns.
+      await sweepMxcLinuxPlaceholders({ ...host, processExists: (candidate: number) => candidate !== 81 && signal === null && currentMxcRuntimeHost().processExists(candidate) },
         { stopOrphanHolders: true });
-      expect(await exited).toBe("SIGKILL");
+      expect(signal).toBe("SIGKILL");
     });
   });
 
