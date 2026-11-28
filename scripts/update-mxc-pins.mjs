@@ -1,4 +1,7 @@
 // Regenerate payload observations while preserving separately reviewed archive trust anchors.
+// Checklist for a launcher pin change: on Linux, holders run the bwrap call the pinned lxc-exec records, so the
+// golden option sequence in mxc-linux-holder-boundary.native.test.ts must still pass in the native CI step. If it
+// changes, read the new shape and update the allowlist in mxc-linux-holder-launch.ts in the same change.
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";

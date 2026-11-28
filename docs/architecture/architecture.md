@@ -3338,7 +3338,7 @@ The [decision tree](permission-decision-tree.md) states the policy: what is priv
 
 **Windows ACL route for a home directly under the OS profile.** On the ACL route, an Ave home directly under the OS profile (the default `%USERPROFILE%\.ave`) gets no root deny, because a stamp also denies `FILE_DELETE_CHILD` inheritably on the target's parent, and on the profile root that propagates through the whole profile and exceeds the init timeout. Instead each existing top-level child directory that is not wholly re-allowed is denied as its own directory row, so the parent stamp lands on the Ave home. File rows inside those children are dropped; `sessions` and `certs` keep their floor rows; granted grandchildren (a plugin or MCP server directory) are re-opened by their explicit allow exactly as under the relocated root. Each composition (one shell command, one extension or worker child spawn) takes one boundary snapshot: it reads the home's top-level entries once (one readdir, no recursion) and pins the home and each entry that is not wholly re-allowed through the shared non-following path facts, and the floor, session policy, masks, evidence, read/write projections and deny targets of that composition all use it. Nothing is cached across commands or spawns; the next invocation takes a fresh snapshot, and a refusal holds for the rest of its composition. Only a home the native walk reports absent projects no child: a home that is, or lies beneath, a link or any other reparse point (dangling or not), a home that cannot be listed or pinned, and an entry that is a link or any other reparse point or vanishes between listing and pinning all refuse confinement instead of launching with fewer denies. The readdir may list a linked home's target before the refusal, but no linked projection is ever accepted or stamped. Residual set: top-level files of the Ave home stay file rows (see the file-row limit below), and a top-level child created after enumeration is not covered by that projection; the next projection denies it. Entry names are case-folded, so case-distinct siblings in a case-sensitive directory are not supported and no coverage is claimed for them. A relocated Ave home gets the root deny. The [Windows container route](#windows-agent-shells-in-microsoft-execution-containers) declares the full Ave home read boundary at its roots.
 
-Limit of file rows (home dotfiles such as `.gitconfig` and `.npmrc`, and the top-level files of a Windows profile-child Ave home on the ACL route): Linux bind masks and Windows ACL stamps are bound to the file object present at spawn, so a long-lived confined child can read a file the host replaces by rename-over. A file absent at spawn has no object to bind; it is held only by that backend's absent-path handling, which this boundary does not change. macOS seatbelt rules are path-based, so neither case reopens a denied path there. Per-exec shells re-apply masks and stamps on every spawn.
+Limit of file rows (home dotfiles such as `.gitconfig` and `.npmrc`, and the top-level files of a Windows profile-child Ave home on the ACL route): Linux bind masks and the Windows ACL route's stamps are bound to the file object present at spawn, so a long-lived confined child can read a file the host replaces by rename-over, and on Linux can also write a write-protected one (measured: the mask is a mount on the old file, and the rename detaches it). A file absent at spawn has no object to bind; it is held only by that backend's absent-path handling, which this boundary does not change. macOS seatbelt rules follow the path (measured: a read-denied and a write-protected file both stay denied after the replace). The Windows container's write rule follows the path (measured: still not writable); its read-deny case is stated here only once measured. Per-exec shells re-apply masks and stamps on every spawn.
 
 Absent protected names on Windows (owner decision 2026-11-24): an ACL can
 only deny an existing object, and Ave never creates a placeholder in the
@@ -3612,6 +3612,65 @@ under the runtime root, out of the container's reach. The request staging and
 placeholder holds are released after exit. The extra
 network setup adds roughly 0.1–0.2 seconds to a typical command on the measured
 arm64 host.
+
+### Linux extensions and hooks in containers
+
+Once the Linux holder route is on, extension processes (plugin children, MCP
+stdio servers, the worker parent and workers) and hooks run as holders: each its
+own bwrap sandbox, started by Ave, with a network namespace that holds only
+`lo`. Holders need `bwrap` alone; the shells' `slirp4netns`, `iptables`, `ip`,
+`nsenter` and `unshare` are not used, so a host without them contains its
+extensions and hooks while its shells take the no-confinement floor. Settings
+shows the two lines separately, each with its own missing-package list.
+
+**Translation.** Ave writes the holder's bubblewrap request, as for a shell, and
+runs the pinned `lxc-exec` once with a private capture folder first on its
+`PATH`. That folder holds one file named `bwrap`, a byte copy of the pinned
+seccomp helper, which records the launcher's call (each argument and the bytes
+of its `--file` and `--seccomp` descriptors) instead of running it. Before
+anything runs, the record must pass the structure checks: one record, the
+required isolation words, every option on the measured allowlist, `--file` and
+`--seccomp` as the only descriptor options, the exact program after `--`, and
+every bind destination outside the launcher's baseline taken from the request
+(a file deny is the launcher's `--ro-bind /dev/null`). A failure is
+`request-rejected`, with no fallback. Ave then runs the recorded call itself,
+with the system `bwrap` whose identity boot recorded, through the managed-child
+gate, and admits it by a digest of the request, the call and the program.
+**When the launcher pin changes,** a golden test of the option sequence for one
+fixed request fails in the native CI step, so a person reads the new shape
+before any user's machine runs it.
+
+**The bridge.** Inside the namespace the helper listens on
+`127.0.0.1:3128` and forwards each connection to the holder's own invocation
+proxy socket, a Unix socket file Ave main holds. The proxy variables name that
+port. The helper makes itself non-dumpable before it forwards, so a holder
+cannot reach the unfiltered bridge even at `ptrace_scope` 0, and the holder's
+own process gets the Unix-socket filter.
+
+**Verified.** The ready byte arrives after the filters are in place; the
+resident set (outer bwrap, inner bwrap, bridge) is read then. A stop sends TERM
+to the holder's own process, waits, then TERM to bwrap and KILL to its group,
+and is verified only when all three residents are gone. Otherwise the stop is
+"cleanup unverified" and the existing quarantine applies. A per-holder marker
+under the runtime root lets the next boot stop a holder an exited Ave left
+running, matched by start time and executable, before the first listener opens.
+
+**Boot.** A holder canary, separate from the shells', proves the route: the
+pinned programs, the runtime root, a trusted `bwrap` and its namespaces, the
+capture folder, then one real holder with a filesystem deny beside a control,
+the bridge, the Unix-socket filter and no nested user namespace. The first
+failure is the reason Settings shows. While it runs, starts wait; unproven,
+each start asks once (headless leaves it unstarted) and a hook has no
+substrate. The holder's raw IP is measured in its own namespace: `blocked`
+needs the control through the bridge, `ENETUNREACH` for IPv4 (and IPv6 or
+structural absence), no TCP or UDP arrival at the host's address with the
+arrival control passed, and only `lo`; anything less is `unknown`.
+
+**Limits.** A file deny binds the file present at spawn (above). A revocation
+between the gate and the ready byte is caught by the post-start recheck, which
+stops the holder. The offline host children (local inference, the document
+engine) stay on the existing sandbox on Linux, because the document engine needs
+a Unix socket the holder's filter refuses.
 
 ### Windows agent shells in Microsoft Execution Containers
 
