@@ -1,9 +1,9 @@
 // The one place policy rows become the sandbox runtime package's shape.
 //
-// Package types are still imported, on purpose, by the modules that build or feed a package config: asrt-sandbox.ts,
-// sandbox-write-policy.ts, windows-stamp-targets.ts, offline-process-sandbox.ts, and egress-ask.ts with egress-runtime.ts (their
-// callback is handed to the package's proxy). No container adapter imports them. All of these imports, and this file, go when the
-// package dependency goes.
+// The package is still imported, on purpose, by the modules that build or feed a package config: asrt-sandbox.ts,
+// asrt-windows-support.ts, sandbox-write-policy.ts, windows-grant-targets.ts, windows-stamp-targets.ts, and egress-ask.ts with
+// egress-runtime.ts (their callback is handed to the package's proxy). One container adapter borrows package code: mxc-linux.ts
+// uses its Linux read-deny glob walker. All of these imports, and this file, go when the package dependency goes.
 import type { FilesystemPathEntry } from "@anthropic-ai/sandbox-runtime";
 import { isPolicyFloorRow, policyFloorRow, type PolicyFloorRow, type PolicyModel } from "./policy-model.js";
 
