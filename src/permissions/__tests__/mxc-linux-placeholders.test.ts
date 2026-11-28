@@ -380,6 +380,17 @@ describe.runIf(process.platform === "linux")("Linux placeholder ownership", () =
       }
     });
 
+    // Review #758 P3-3: start ticks count from boot, so the recorded start carries this boot's id and a marker from
+    // another boot can never match a live process (the "start time changed" case above).
+    it.runIf(process.platform === "linux")("records the holder's start with this boot's id", async () => {
+      const hold = await holdMxcLinuxPlaceholders(lookups, noPlaceholders, host);
+      hold.recordHolder(process.pid, "/usr/bin/bwrap");
+      const [name] = markerFiles();
+      const boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+      expect(JSON.parse(readFileSync(join(markers(), name as string), "utf8")).holder.start).toMatch(new RegExp(`^${boot}:\\d+$`, "u"));
+      await hold.release();
+    });
+
     it("waits for the stopped bwrap to end, and keeps the marker of one that outlives the KILL", async () => {
       leaveMarker();
       killed = false;

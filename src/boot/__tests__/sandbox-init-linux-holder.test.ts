@@ -24,6 +24,8 @@ const h = vi.hoisted(() => ({
   detectMacShell: vi.fn<() => Promise<SandboxContainerShellSupport>>(),
   detectLinuxShell: vi.fn<() => Promise<SandboxContainerShellSupport>>(),
   detectLinuxHolder: vi.fn<() => Promise<LinuxHolderCanaryResult>>(),
+  sweep: vi.fn(async () => {}),
+  establishRoot: vi.fn(() => "/run/ave-test-root"),
   holderRoute: true,
   logger: {
     debug: vi.fn(),
@@ -48,6 +50,14 @@ vi.mock("../../permissions/mxc-macos.js", () => ({
 vi.mock("../../permissions/mxc-linux.js", () => ({
   detectHostMxcLinuxShellSupport: h.detectLinuxShell,
   detectHostMxcLinuxHolderSupport: h.detectLinuxHolder,
+}));
+
+vi.mock("../../permissions/mxc-runtime-root.js", async (actual) => ({
+  ...await actual<typeof import("../../permissions/mxc-runtime-root.js")>(), establishMxcRuntimeRoot: h.establishRoot,
+}));
+
+vi.mock("../../permissions/mxc-linux-placeholders.js", async (actual) => ({
+  ...await actual<typeof import("../../permissions/mxc-linux-placeholders.js")>(), sweepMxcLinuxPlaceholders: h.sweep,
 }));
 
 vi.mock("../../shared/container-platform.js", async (actual) => {
@@ -143,6 +153,25 @@ describe("Linux boot with the holder route on", () => {
     await initSandboxGate(harness.context(true, true));
     expect(provenLinuxHolderRoute()).toBeUndefined();
     expect(getContainerHolderInfo()).toEqual({ state: "unavailable", reason: "namespaces-unavailable" });
+  });
+
+  // Review #758 P3-3: the boot sweep's own failure is logged as what it is, and the canary still runs.
+  it("names a failed placeholder sweep or orphan stop as itself, not as a missing runtime root", async () => {
+    h.sweep.mockRejectedValueOnce(new Error("Linux holder bwrap 4242 did not end after KILL"));
+    h.detectLinuxHolder.mockResolvedValue({ support: { state: "available" }, route: ROUTE });
+    await initSandboxGate(harness.context(true, true));
+    const warnings = h.logger.warn.mock.calls.map(call => String(call[0]));
+    expect(warnings).toContain("boot: Linux placeholder sweep and orphan holder stop failed: %s");
+    expect(warnings).not.toContain("boot: container runtime root unavailable: %s");
+    expect(h.detectLinuxHolder).toHaveBeenCalledTimes(1);
+  });
+
+  it("names a runtime root that could not be established, and sweeps nothing without one", async () => {
+    h.establishRoot.mockImplementationOnce(() => { throw new Error("root not private"); });
+    h.detectLinuxHolder.mockResolvedValue({ support: { state: "unavailable", reason: "runtime-root-unproved" } });
+    await initSandboxGate(harness.context(true, true));
+    expect(h.logger.warn.mock.calls.map(call => String(call[0]))).toContain("boot: container runtime root unavailable: %s");
+    expect(h.sweep).not.toHaveBeenCalled();
   });
 
   it("runs no holder canary while the route is off", async () => {
