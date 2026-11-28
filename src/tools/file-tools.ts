@@ -33,7 +33,7 @@ import { t } from "../i18n/index.js";
 import type { PathEffect } from "../permissions/allowed-directories.js";
 import { isPathAllowed } from "../permissions/allowed-directories.js";
 import { canonicalizePathForMatch, caseFoldForMatch, judgedPathNamesOpenedFile } from "../permissions/sensitive-paths.js";
-import { fileTargetSealFailureKey, TargetIdentityChangedError, type TargetSeal } from "../permissions/target-seal.js";
+import { fileTargetSealFailureKey, openSealedReadTarget, TargetIdentityChangedError, type TargetSeal } from "../permissions/target-seal.js";
 import { resolvePhysicalFilesystemPath } from "../shared/shell-filesystem-path.js";
 import type { ApprovalMemoryScope } from "../shared/permissions-events.js";
 import { consumeExecutionGrantForBuiltinToolInvocation } from "../permissions/execution-router.js";
@@ -79,6 +79,7 @@ import { errorMessage } from "../shared/error-message.js";
 import { CODE_CHECKPOINT_POLICY } from "../shared/code-rewind.js";
 import { ReadDocumentInputSchema, OpenDocumentInputSchema, type ReadDocumentInput } from "./document-tool-input.js";
 import { requestDocumentPanel } from "./document-panel-access.js";
+import { readImageInput } from "./image-preparation-input.js";
 import { documentToolFailure, formatDocumentToolOutput } from "./document-tool-output.js";
 import { PREVIEW_DOCUMENT_LIMITS, previewDocumentFormatOf } from "../shared/preview-document.js";
 import { previewPageFormatOf } from "../shared/preview-page-document.js";
@@ -337,7 +338,7 @@ abstract class FileTool<TSchema extends z.ZodTypeAny> extends ZodTool<TSchema> {
     if (!seal) return realpath(path);
     return withLocalityDecision(() => {
       seal.verify();
-      if (process.platform === "win32" && seal.pathFor !== undefined) {
+      if (seal.pathFor !== undefined) {
         const judged = seal.pathFor(path);
         if (judged === undefined) throw new TargetIdentityChangedError();
         return judged;
@@ -365,7 +366,7 @@ abstract class FileTool<TSchema extends z.ZodTypeAny> extends ZodTool<TSchema> {
     } catch (error) {
       return {
         ok: false,
-        error: process.platform === "win32" && transport.kind === "local" && ctx.fileTargetSeal !== undefined
+        error: transport.kind === "local" && ctx.fileTargetSeal !== undefined
           ? { output: t(fileTargetSealFailureKey(error)), isError: true }
           : brokerFailureResult(errorMessage(error)),
       };
@@ -468,7 +469,7 @@ export class ReadFileTool extends FileTool<typeof ReadFileInputSchema> {
         return this.ensureAllowed(judged, ctx, "read");
       });
       if (judgedBlocked) return judgedBlocked;
-      handle = await open(judged, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+      handle = await openSealedReadTarget(judged, ctx.fileTargetSeal);
     } catch (error) {
       return toolError(`read_file could not open ${target}: ${errorMessage(error)}`);
     }
@@ -499,7 +500,7 @@ export class ReadFileTool extends FileTool<typeof ReadFileInputSchema> {
     const shown = fitReadWindow(target, input.offset, window.lines, whole.lineCount);
     const sessionId = sessionIdOf(ctx);
     if (sessionId !== undefined) {
-      const key = process.platform === "win32" && ctx.fileTargetSeal?.pathFor !== undefined ? judged : await fileReadKey(target);
+      const key = ctx.fileTargetSeal?.pathFor !== undefined ? judged : await fileReadKey(target);
       ctx.fileTargetSeal?.verify();
       recordFileRead(sessionId, key, {
         mtimeMs: fileStat.value.mtimeMs,
@@ -790,10 +791,20 @@ export class ViewImageTool extends FileTool<typeof ViewImageInputSchema> {
         blockReadsOutsideWorkingDirectories: ctx.blockReadsOutsideWorkingDirectories === true,
       };
       const options = { maxBytes: input.maxBytes, maxDimension: input.maxDimension };
-      const prepared = process.platform === "win32"
-        ? await prepareImageFile(target, scope, options, ctx.abortSignal, ctx.fileTargetSeal)
-        : await prepareImageFile(target, scope, options, ctx.abortSignal);
-      if (process.platform === "win32") ctx.fileTargetSeal?.verify();
+      const seal = ctx.fileTargetSeal;
+      let prepared: Awaited<ReturnType<typeof prepareImageFile>>;
+      if (seal?.assertOpenedRead) {
+        const judged = await this.resolveOpenedPath(target, ctx);
+        const denied = this.ensureAllowed(judged, ctx, "read");
+        if (denied) return denied;
+        const bytes = await readImageInput(judged, ctx.abortSignal ?? new AbortController().signal, seal);
+        prepared = await prepareImageBytes(bytes, options, ctx.abortSignal);
+      } else {
+        prepared = process.platform === "win32"
+          ? await prepareImageFile(target, scope, options, ctx.abortSignal, seal)
+          : await prepareImageFile(target, scope, options, ctx.abortSignal);
+      }
+      seal?.verify();
       const { data, ...details } = prepared;
       return {
         output: JSON.stringify({ path: target, ...details, loaded: true }),
@@ -885,7 +896,7 @@ export class ReadDocumentTool extends FileTool<typeof ReadDocumentInputSchema> {
         } else {
           // The document reaches the model: its bytes count only if `target`, judged above, still names the file read.
           ctx.fileTargetSeal?.verify();
-          bytes = await readJudgedDocumentInput(target, slot.signal);
+          bytes = await readJudgedDocumentInput(target, slot.signal, undefined, ctx.fileTargetSeal);
         }
         ctx.fileTargetSeal?.verify();
         slot.signal.throwIfAborted();

@@ -1,12 +1,13 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const hooks = vi.hoisted(() => ({
   onAuthorized: undefined as (() => void) | undefined,
   onExecutionRefresh: undefined as (() => void) | undefined,
   beforeRename: undefined as ((source: string, target: string) => void) | undefined,
+  duringOpen: undefined as ((path: string) => (() => void) | undefined) | undefined,
   unlinks: [] as string[],
   opens: [] as string[],
 }));
@@ -14,9 +15,11 @@ vi.mock("node:fs/promises", async (original) => {
   const actual = await original<typeof import("node:fs/promises")>();
   return {
     ...actual,
-    open: (...args: Parameters<typeof actual.open>) => {
+    open: async (...args: Parameters<typeof actual.open>) => {
       hooks.opens.push(String(args[0]));
-      return actual.open(...args);
+      const restore = hooks.duringOpen?.(String(args[0]));
+      try { return await actual.open(...args); }
+      finally { restore?.(); }
     },
     rename: async (source: string, target: string) => {
       hooks.beforeRename?.(source, target);
@@ -50,6 +53,9 @@ import { t } from "../../i18n/index.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import { windowsPathKindHelperUnavailable } from "../../main/windows-path-kind-launcher.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
+import { endUnattendedStage, registerUnattendedStage } from "../../permissions/unattended-lane-registry.js";
+import { emptyStageEnvelope } from "../../work-board/workflow/__tests__/stage-fixtures.js";
+import { createToolEffectResolver } from "../../permissions/tool-effect-evidence.js";
 import { sealTargets } from "../../permissions/target-seal.js";
 import { localFs } from "../../shared/local-path-io.js";
 import { resolvePhysicalFilesystemPath } from "../../shared/shell-filesystem-path.js";
@@ -369,4 +375,65 @@ describe.runIf(process.platform === "win32")("sealed file targets at handler adm
     expect(result?.is_error).toBe(true);
     expect(execute).not.toHaveBeenCalled();
   });
+});
+
+it.skipIf(process.platform === "win32")("keeps a scheduled text read bound to its admitted file", async () => {
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "ave-scheduled-read-")));
+  const workspaceRoot = join(root, "workspace");
+  const alias = join(workspaceRoot, "alias.txt");
+  const admitted = join(workspaceRoot, "admitted.txt");
+  const other = join(root, "outside.txt");
+  const sessionId = "scheduled-sealed-read";
+  mkdirSync(workspaceRoot);
+  writeFileSync(admitted, "admitted fixture");
+  writeFileSync(other, "outside fixture");
+  symlinkSync(admitted, alias);
+  const registry = new ToolRegistry();
+  registry.register(new ReadFileTool());
+  const manager = new PermissionManager(join(root, "permissions.json"));
+  manager.setMode("allow");
+  manager.setUnattendedToolEffectResolver(createToolEffectResolver(registry));
+  const executor = new ToolExecutor(registry, undefined, manager, undefined, undefined, undefined);
+  registerUnattendedStage(sessionId, {
+    runKey: "run", stageId: "stage", workspaceRoot, isolation: { proven: false }, readOnly: true,
+    envelope: { ...emptyStageEnvelope(), tools: ["read_file"] },
+  });
+  const read = async () => (await executor.executeAll([{ id: "read", name: "read_file", input: { path: alias } }], {
+    executionCwd: workspaceRoot, sessionId, permissionContext: { headless: true, trustOrigin: "llm-tool-arg" },
+  }))[0];
+  try {
+    expect(await read()).toMatchObject({ content: expect.stringContaining("admitted fixture") });
+    hooks.onAuthorized = () => {
+      hooks.onAuthorized = undefined;
+      unlinkSync(alias);
+      symlinkSync(other, alias);
+    };
+    const result = await read();
+    expect(hooks.onAuthorized).toBeUndefined();
+    expect(result).toMatchObject({ is_error: true });
+    expect(result?.content).not.toContain("outside fixture");
+
+    unlinkSync(alias);
+    symlinkSync(admitted, alias);
+    const held = join(workspaceRoot, "held.txt");
+    hooks.duringOpen = (path) => {
+      if (basename(path) !== basename(admitted)) return undefined;
+      hooks.duringOpen = undefined;
+      renameSync(admitted, held);
+      renameSync(other, admitted);
+      return () => {
+        renameSync(admitted, other);
+        renameSync(held, admitted);
+      };
+    };
+    const replacedDuringOpen = await read();
+    expect(hooks.duringOpen).toBeUndefined();
+    expect(replacedDuringOpen).toMatchObject({ is_error: true });
+    expect(replacedDuringOpen?.content).not.toContain("outside fixture");
+  } finally {
+    hooks.onAuthorized = undefined;
+    hooks.duringOpen = undefined;
+    endUnattendedStage(sessionId);
+    rmSync(root, { recursive: true, force: true });
+  }
 });

@@ -260,7 +260,7 @@ async function runRipgrep(
   const wanted = input.offset + input.limit + 1;
   // Every file read lies under the real root: the tree search does not follow links, so only a path changed after it listed
   // the file can lead out. An explicitly searched secret root admits what lies beneath it, judged on real paths too.
-  const realRoot = windowsRealRoot ?? await realpath(resolve(cwd, root));
+  const realRoot = windowsRealRoot ?? seal?.pathFor?.(root) ?? await realpath(resolve(cwd, root));
   const explicitRealRoot = explicitSecretRoot === undefined ? undefined : realRoot;
   const policy = createFilePathPolicy("read");
   const skip = createStageWorkspacesSkip(windowsRealRoot === undefined ? realRoot : root);
@@ -784,11 +784,10 @@ export async function searchWithRipgrep(
 
   let run: RipgrepRun;
   try {
-    const windowsSeal = isWindows ? seal : undefined;
-    windowsSeal?.verify();
+    seal?.verify();
     const explicitSecretRoot = !isWindows && sensitiveFilePattern(root) !== null ? root : undefined;
-    run = await runRipgrep(executable, root, cwd, windowsRealRoot, input, signal, windowsSeal, explicitSecretRoot);
-    windowsSeal?.verify();
+    run = await runRipgrep(executable, root, cwd, windowsRealRoot, input, signal, seal, explicitSecretRoot);
+    seal?.verify();
   } catch (error) {
     return grepError(errorMessage(error));
   }

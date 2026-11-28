@@ -13,7 +13,7 @@ import { isConfinedHostShellExecution, isWindowsContainerShell } from "../permis
 import { dispatchReviewerForHeadless, dispatchReviewerForInteractiveAuto } from "./pipeline/reviewer-dispatch.js";
 import { criticalDeleteTargetFor } from "../permissions/sensitive-paths.js";
 import { windowsObligationsApply } from "../permissions/admitted-obligation.js";
-import { assertWindowsTarget, fileTargetSealFailureKey, observeWindowsTarget, sealsHold, TargetIdentityChangedError, type TargetSeal } from "../permissions/target-seal.js";
+import { assertWindowsTarget, fileTargetSealFailureKey, observeWindowsTarget, sealPosixReadTargets, sealsHold, TargetIdentityChangedError, type TargetSeal } from "../permissions/target-seal.js";
 import { hookChainFromDispatch } from "./pipeline/audit-entries.js";
 import { runScriptHook, scriptHookRefusal } from "./invocation-services.js";
 import { HookInputMutationRequest, attachHookControlContext, hookInfluenceContext } from "../hooks/hook-influence.js";
@@ -2650,6 +2650,11 @@ async function runToolInvocationAttempt(
       }
     } else {
       unsealedRuleSubject = scopedRuleSubjectFor(tool, finalInput, executionCwd);
+      if (canonicalFileTool !== undefined && pathEffect === "read" && targetFilePaths.length > 0 &&
+          registeredUnattendedStageOf(sessionId) !== undefined) {
+        try { fileTargetSeal = sealPosixReadTargets(targetFilePaths); }
+        catch { return await denyUnresolvedFileTargets("Cannot resolve file target"); }
+      }
       for (const filePath of targetFilePaths) {
         let runtimePath: string;
         try {
@@ -2660,7 +2665,7 @@ async function runToolInvocationAttempt(
             if (resolved.includes("\\")) throw new Error("Ambiguous write path");
             runtimePath = resolved;
           } else {
-            runtimePath = resolvePathForPolicy(filePath);
+            runtimePath = fileTargetSeal?.pathFor?.(filePath) ?? resolvePathForPolicy(filePath);
           }
         } catch {
           return await denyUnresolvedFileTargets("Cannot resolve write target");
@@ -2795,7 +2800,7 @@ async function runToolInvocationAttempt(
           return editDecision.decision === "allow" && manager.checkScopedRules(editSubject, executionCwd).decision === "allow";
         });
       } catch (error) {
-        if (!isWindows) throw error;
+        if (!isWindows && fileTargetSeal === undefined) throw error;
         return await denyFileTargets(changedTargetReason);
       }
       if (savedEditAllowed) {
@@ -2831,7 +2836,7 @@ async function runToolInvocationAttempt(
       let currentFileScope: ReturnType<typeof checkCurrentFileScope>;
       try { currentFileScope = checkCurrentFileScope(); }
       catch (error) {
-        if (!isWindows) throw error;
+        if (!isWindows && fileTargetSeal === undefined) throw error;
         return await denyFileTargets(changedTargetReason);
       }
       const { scopeTargets, pathScope } = currentFileScope;
@@ -2962,7 +2967,7 @@ async function runToolInvocationAttempt(
       targetFilePath,
       linkedTargets,
       canonicalTargets,
-      ...(isWindows && canonicalTargets.length > 0 ? { assertFileTargetsUnchanged } : {}),
+      ...((isWindows && canonicalTargets.length > 0 || fileTargetSeal !== undefined) ? { assertFileTargetsUnchanged } : {}),
       approvalCacheKey,
       executionCwd,
       auditCurrentToolCall,
@@ -2981,7 +2986,7 @@ async function runToolInvocationAttempt(
     if ("tool_use_id" in authorization || authorization.outcome === "rationale-required") {
       return authorization;
     }
-    if (isWindows && canonicalTargets.length > 0) {
+    if (fileTargetSeal !== undefined) {
       try { withLocalityDecision(() => assertFileTargetsUnchanged()); }
       catch (error) { return await denyFileTargets(t(fileTargetSealFailureKey(error))); }
     }
