@@ -36,6 +36,7 @@ import { getBuiltinShellReadPolicy, getProtectedReadDenyFloor } from "../asrt-sa
 import { createAveHomeBoundarySnapshot } from "../ave-home-boundary-snapshot.js";
 import { endUnattendedStage, registerUnattendedStage } from "../unattended-lane-registry.js";
 import { deriveSandboxWritePaths } from "../sandbox-write-jail.js";
+import { emptyStageEnvelope } from "../../work-board/workflow/__tests__/stage-fixtures.js";
 import { shellPolicyModel } from "../../tools/mxc-shell-launch.js";
 
 const NATIVE = process.platform === "darwin" && process.arch === "arm64";
@@ -505,6 +506,36 @@ describe.runIf(NATIVE)("native product shell launch", () => {
   function run(launch: Awaited<ReturnType<typeof prepare>>) {
     return collectShell(launch.start("test:native-posix-shell", hostShellGrantAuthorizer(undefined)));
   }
+
+  it("suppresses system Git config outside the standard install paths only for scheduled shells", async () => {
+    startEgressRelayService({ ask: async () => false });
+    const systemConfig = join(root, "custom-prefix", "etc", "gitconfig");
+    mkdirSync(dirname(systemConfig), { recursive: true });
+    writeFileSync(systemConfig, '[credential]\n  helper = "!f() { echo username=fixture; echo password=fixture; }; f"\n');
+    const env = { GIT_CONFIG_SYSTEM: systemConfig, GIT_CONFIG_NOSYSTEM: "0", GIT_TERMINAL_PROMPT: "0", PATH: "/usr/bin:/bin" };
+    const command = [
+      "if /usr/bin/git config --system --get credential.helper >/dev/null 2>&1; then echo system-config-loaded; fi",
+      "printf 'protocol=https\\nhost=fixture.invalid\\n\\n' | /usr/bin/git credential fill 2>/dev/null || true",
+    ].join("\n");
+    const options = { allowRead: [dirname(systemConfig)], env, timeoutMs: LAUNCHER_START_TIMEOUT_MS };
+    const attended = await run(await prepare(command, options));
+    expect(attended).toMatchObject({ code: 0, rejected: false });
+    expect(attended.stdout).toContain("system-config-loaded");
+    expect(attended.stdout).toContain("username=fixture");
+
+    const sessionId = "scheduled-git";
+    registerUnattendedStage(sessionId, {
+      runKey: "run", stageId: "stage", workspaceRoot: project, envelope: emptyStageEnvelope(),
+      isolation: { proven: true, profile: { readDenyRoots: [home], readRoots: [project], writeRoots: [project] } },
+    });
+    try {
+      const boundary = createAveHomeBoundarySnapshot(sessionId);
+      const unattended = await run(await boundary.run(() => prepare(command, options)));
+      expect(unattended).toMatchObject({ code: 0, rejected: false, stdout: "" });
+    } finally {
+      endUnattendedStage(sessionId);
+    }
+  }, LAUNCHER_START_TIMEOUT_MS);
 
   function latestLease() {
     const lease = leases.at(-1);

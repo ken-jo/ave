@@ -22,7 +22,7 @@ import { startMxcLinuxShell } from "../sandbox/linux-container-shell.js";
 import { holdSandboxGitWrites } from "../shared/host-git.js";
 import { getPolicyHome } from "../shared/policy-home.js";
 import type { ContainedShellLifecycle } from "./contained-shell-lifecycle.js";
-import { shellPolicyModel, type PrepareMxcShellLaunchInput } from "./mxc-shell-launch.js";
+import { containerShellEnvironment, shellPolicyModel, type PrepareMxcShellLaunchInput } from "./mxc-shell-launch.js";
 import { openShellEgressAdmission } from "./shell-egress-admission.js";
 
 interface PreparePosixShellInput extends Pick<PrepareMxcShellLaunchInput, "egressToken" | "commandLine" | "cwd" | "env" | "timeoutMs"> {
@@ -94,14 +94,15 @@ export async function prepareMxcPosixShellLaunch(input: PreparePosixShellInput, 
   const listener = await egress.openProxy();
 
   assertAdmission();
+  const env = containerShellEnvironment(input.env);
   const held = programs === undefined ? undefined : await holdMxcLinuxPlaceholders(lookups,
     (current) => rankPosixContainerRows(model, "bubblewrap", current));
   if (held !== undefined) lifecycle.defer(() => held.release());
   const { request, grants, environment } = programs !== undefined && held !== undefined
     ? { grants: held.grants, ...buildBubblewrapShellRequest({
-      ...input, grants: held.grants, lookups, helper: programs.helper, proxyUrl: listener.url,
+      ...input, env, grants: held.grants, lookups, helper: programs.helper, proxyUrl: listener.url,
     }) }
-    : { ...buildSeatbeltShellRequest({ ...input, model, lookups: { ...lookups, foldsCase }, proxyUrl: listener.url }), environment: undefined };
+    : { ...buildSeatbeltShellRequest({ ...input, env, model, lookups: { ...lookups, foldsCase }, proxyUrl: listener.url }), environment: undefined };
   const staging = await mkdtemp(join(runtimeRoot, "shell-"));
   lifecycle.defer(() => rm(staging, { recursive: true }));
   // macOS stages the cwd identity its supervisor and workload compare again; Linux stages the request alone, as before.

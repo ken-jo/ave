@@ -1900,7 +1900,7 @@ function composeBuiltinShellReadPolicy(readPaths: readonly string[], sandboxHome
   const privateRootCovering = readDenyCovering(privateRoots);
   const boundaryCovering = aveHomeReadBoundaryMatcher();
   const homeDenies = profile?.readDenyRoots ?? [];
-  // System Git configuration is host-controlled. A stage may not inherit its credential helper.
+  // Keep filesystem denies for known host configs alongside the container environment's system-config suppression.
   const systemGitConfig = process.env.GIT_CONFIG_SYSTEM;
   const gitDenies = profile ? [...defaultSystemGitConfigPaths(),
     ...(systemGitConfig && isAbsolute(systemGitConfig) ? [systemGitConfig] : [])] : [];

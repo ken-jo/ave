@@ -30,6 +30,8 @@ import { assertIssuedContainerHomeInPlace, heldIssuedContainerHome, isIssuedCont
 import { claimMxcWatchedRows, hasWatchedWork, sweepWatchedRows, WatchedQuarantineError } from "../permissions/windows-watched-rows.js";
 import type { ContainedShellLifecycle } from "./contained-shell-lifecycle.js";
 import { openShellEgressAdmission } from "./shell-egress-admission.js";
+import { currentAveHomeBoundarySnapshot } from "../permissions/ave-home-boundary-snapshot.js";
+import { unattendedShellProfileOf } from "../permissions/unattended-lane-registry.js";
 
 export interface MxcShellLaunch extends Pick<MxcRequestTransport, "bindChild" | "bindHeldPolicy"> {
   /** `wxc-exec.exe` followed by its arguments; spawn with `shell: false`. */
@@ -38,6 +40,14 @@ export interface MxcShellLaunch extends Pick<MxcRequestTransport, "bindChild" | 
   readonly watchedNotice?: string | undefined;
   /** Admit connections after the final shell admission checks, immediately before spawn. */
   activate(assertSpawnDirectory?: () => void): WindowsBackendObservation;
+}
+
+/** Skip the executable's system config and redirect explicit system-config reads to the null device. */
+export function containerShellEnvironment(env: Readonly<Record<string, string>>): Record<string, string> {
+  if (!unattendedShellProfileOf(currentAveHomeBoundarySnapshot()?.sessionId)) return { ...env };
+  const clean = Object.fromEntries(Object.entries(env).filter(([key]) =>
+    key.toUpperCase() !== "GIT_CONFIG_SYSTEM" && key.toUpperCase() !== "GIT_CONFIG_NOSYSTEM"));
+  return { ...clean, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_SYSTEM: process.platform === "win32" ? "NUL" : "/dev/null" };
 }
 
 /** A shell command's policy as the lists the shell composes. */
@@ -233,7 +243,7 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
   assertDispatch();
   input.markParserTiming?.("seal-verified");
   const systemRoot = windowsSystemRoot();
-  const env: Record<string, string> = { ...input.env };
+  const env = containerShellEnvironment(input.env);
   if (!Object.keys(env).some((key) => key.toUpperCase() === "SYSTEMROOT")) env["SYSTEMROOT"] = systemRoot;
   const request = buildMxcShellRequest({
     commandLine: input.commandLine,

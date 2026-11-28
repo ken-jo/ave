@@ -2687,7 +2687,7 @@ An all-read-only version runs on every OS with the fixed-category local readers 
 
 Scheduled tool schemas contain only tools with safe envelope evidence. Stage delegation and requested-output intake are available in attended runs through their existing host-issued stage scopes. A scheduled stage can still reach its human gate.
 
-A contained scheduled shell writes in its stage workspace and its invocation's private home. Inside the host home, reads can reopen the workspace, the declared read roots and exact local directories found on the host's PATH. The PATH directories are read-only and cannot pierce the protected floor or user denies. The run evidence and audit record the admitted PATH directories. Saved-session history and system Git configuration stay denied.
+A contained scheduled shell writes in its stage workspace and its invocation's private home. Inside the host home, reads can reopen the workspace, the declared read roots and exact local directories found on the host's PATH. The PATH directories are read-only and cannot pierce the protected floor or user denies. The run evidence and audit record the admitted PATH directories. Saved-session history stays denied. The launch environment disables the executable's system Git config and directs explicit system-config lookups to the null device. Filesystem denies also cover known system config paths and an absolute host override.
 
 On Windows, sandbox write denies beneath machine roots (`ProgramData`, the
 program-files roots and the system directory) are omitted unless a grant
