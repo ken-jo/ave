@@ -98,6 +98,14 @@ describe("runtime root paths with a simulated platform", () => {
   });
 });
 
+it.each([undefined, "", "relative", "C:relative", "relative/cache"] as const)(
+  "refuses a missing or invalid test sandbox base (%s)",
+  (value) => {
+    vi.stubEnv("AVE_TEST_SANDBOX_BASE", value);
+    expect(() => mxcRuntimeRootFloorPath()).toThrow(/absolute AVE_TEST_SANDBOX_BASE/u);
+  },
+);
+
 it.runIf(posix)("keeps the startup root when a test switches to packaged resources", () => {
   vi.stubEnv("AVE_TEST_SANDBOX_BASE", scratch);
   const resources = vi.spyOn(hostResources, "getConfiguredHostResources")
@@ -155,11 +163,6 @@ describe.runIf(darwin)("macOS test runtime root isolation", () => {
     const root = mxcRuntimeRootFloorPath();
     expect(root).toBe(join(scratch, "mxc-cache", AVE_APP_ID, "mxc-runtime"));
     expect(root).not.toContain(accountCache());
-  });
-
-  it.each([undefined, "", "relative"] as const)("refuses a missing or invalid test sandbox base (%s)", (value) => {
-    vi.stubEnv("AVE_TEST_SANDBOX_BASE", value);
-    expect(() => mxcRuntimeRootFloorPath()).toThrow(/absolute AVE_TEST_SANDBOX_BASE/u);
   });
 
   it("refuses the real account cache, including a link to it", () => {
