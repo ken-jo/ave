@@ -2016,9 +2016,30 @@ jobs:
         run: |
           bun run test:vitest -- run --reporter=default --reporter=json --outputFile="$RUNNER_TEMP/linux-shell-boundary.json" \
             src/permissions/__tests__/mxc-linux-boundary.native.test.ts \
+            src/permissions/__tests__/mxc-linux-filter-helper.native.test.ts \
+            src/permissions/__tests__/mxc-linux-holder-boundary.native.test.ts \
+            src/permissions/__tests__/mxc-linux-holder-watch.test.ts \
             src/permissions/__tests__/mxc-linux-placeholders.test.ts
           jq -e '.numPassedTests > 0 and .numPendingTests == 0 and .numTodoTests == 0 and .numFailedTests == 0' \
             "$RUNNER_TEMP/linux-shell-boundary.json"
+      # N19 at ptrace_scope 0: a holder must not reach its unfiltered bridge even where Yama allows ptrace of a parent.
+      # The bridge's non-dumpable step is the mechanism; the dumpable control is built here with the pinned toolchain.
+      - &linux-bridge-ptrace-scope-zero
+        name: Prove the holder bridge at ptrace_scope 0
+        if: steps.docs-impact.outputs.docs_only != 'true' && needs.build.outputs.docs_only != 'true'
+        working-directory: ave
+        env:
+          AVE_RUN_MXC_LINUX_BOUNDARY: "1"
+          AVE_VITEST_MAX_WORKERS: "2"
+        run: |
+          previous=$(cat /proc/sys/kernel/yama/ptrace_scope)
+          trap 'sudo sysctl -w kernel.yama.ptrace_scope="$previous"' EXIT
+          sudo sysctl -w kernel.yama.ptrace_scope=0
+          command -v cargo
+          bun run test:vitest -- run --reporter=default --reporter=json --outputFile="$RUNNER_TEMP/linux-bridge-scope-zero.json" \
+            src/permissions/__tests__/mxc-linux-filter-helper.native.test.ts -t "native Linux proxy bridge"
+          jq -e '[.testResults[].assertionResults[] | select(.title | test("every route into its bridge|non-dumpable step")) | .status]
+            | length == 2 and all(. == "passed")' "$RUNNER_TEMP/linux-bridge-scope-zero.json"
 
   linux-confinement-x64:
     name: Linux shell container boundary (x64)
@@ -2060,3 +2081,4 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
       - *linux-container-prove
       - *linux-shell-boundary
+      - *linux-bridge-ptrace-scope-zero
