@@ -319,7 +319,10 @@ it("requires a fresh local owner gesture for confirmation and accepts a pointer"
   expect(await confirmTemplateWithGesture(event, "t", request)).toEqual({
     ok: true, value: { version: { templateId: "t", version: 1 }, unattended: { ok: true } },
   });
-  expect(store.confirmDraft).toHaveBeenCalledWith("t", request, { who: "user", origin: "local-desktop" }, { effectOf: expect.any(Function) });
+  expect(store.confirmDraft).toHaveBeenCalledExactlyOnceWith("t", request, { who: "user", origin: "local-desktop" }, {
+    effectOf: expect.any(Function),
+    isFixedLocalRead: expect.any(Function),
+  });
 });
 it("broadcasts changed for successful draft, confirmation and archive writes", async () => {
   const { event } = setup();
