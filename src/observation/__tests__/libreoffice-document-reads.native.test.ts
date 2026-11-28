@@ -40,6 +40,10 @@ import { buildPreviewDocumentRuntime } from "../../__tests__/support/preview-doc
 
 const APP = "/Applications/LibreOffice.app";
 const INSTALLED = process.platform === "darwin" && existsSync(join(APP, "Contents", "MacOS", "soffice"));
+// The macOS permission job installs LibreOffice and requires these cases: without the app there, this fails, never skips.
+if (process.platform === "darwin" && !INSTALLED && process.env.AVE_REQUIRE_SANDBOX_CASES === "1") {
+  throw new Error(`AVE_REQUIRE_SANDBOX_CASES=1 but LibreOffice is not installed at ${APP}`);
+}
 const FILE_CANARY = "FILECANARY7f3a";
 const WEB_CANARY = "WEBCANARY91c2";
 

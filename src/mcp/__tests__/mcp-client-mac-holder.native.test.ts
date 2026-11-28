@@ -37,6 +37,11 @@ while (my $line = <STDIN>) {
 }
 `;
 
+// The macOS permission job requires its cases: a macOS runner without the holder route fails here instead of skipping.
+if (process.platform === "darwin" && !MAC_HOLDER_ROUTE && process.env.AVE_REQUIRE_SANDBOX_CASES === "1") {
+  throw new Error("AVE_REQUIRE_SANDBOX_CASES=1 but the macOS holder route is off on this host");
+}
+
 describe.runIf(MAC_HOLDER_ROUTE)("an MCP stdio server on macOS's holder route (native)", () => {
   let root: string;
   let route: ProvenMacHolderRoute;

@@ -1747,6 +1747,14 @@ jobs:
       - name: Show the git the regressions run against
         if: steps.docs-impact.outputs.docs_only != 'true'
         run: git --version
+      # The document engine is the LibreOffice the user installs like any app (owner decision 2026-11-28), so the runner
+      # installs it the same way. The cask carries only the current release, so the version is not pinned: the step
+      # prints it, and Ave's own admission (TDF signature and Gatekeeper) checks the app the tests use.
+      - name: Install LibreOffice as a user would
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        run: |
+          brew install --cask libreoffice
+          /usr/bin/plutil -extract CFBundleShortVersionString raw /Applications/LibreOffice.app/Contents/Info.plist
       - name: Run macOS permission regressions
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
@@ -1811,6 +1819,10 @@ jobs:
           src/permissions/__tests__/seatbelt-holder-start.test.ts
           src/permissions/__tests__/seatbelt-holder-boot.test.ts
           src/permissions/__tests__/seatbelt-holder-boundary.native.test.ts
+          src/permissions/__tests__/seatbelt-holder-revoke.native.test.ts
+          src/mcp/__tests__/mcp-client-mac-holder.native.test.ts
+          src/observation/__tests__/libreoffice-installed.native.test.ts
+          src/observation/__tests__/libreoffice-document-reads.native.test.ts
           src/permissions/__tests__/mac-holder-route-unproven.test.ts
           test/scripts/macho-image-digest.test.ts
 
