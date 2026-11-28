@@ -10,9 +10,9 @@ import {
   writeFileSync,
 } from "node:fs";
 import { createServer } from "node:net";
-import { homedir, tmpdir } from "node:os";
+import { homedir, tmpdir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, onTestFinished } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 
 import { MxcProcessContractError } from "../mxc-extension-errors.js";
 import {
@@ -72,7 +72,43 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   rmSync(scratch, { recursive: true, force: true });
+});
+
+describe.runIf(darwin)("macOS test runtime root isolation", () => {
+  const accountCache = () => mxcCacheHome("darwin", {}, userInfo().homedir);
+
+  it("starts the worker with an isolated HOME for fixtures that use the OS directly", () => {
+    const real = realpathSync.native(userInfo().homedir).toLowerCase();
+    const workerHome = realpathSync.native(homedir()).toLowerCase();
+    expect(workerHome).not.toBe(real);
+    expect(workerHome.startsWith(`${real}/`)).toBe(false);
+  });
+
+  it("uses an isolated runtime root even when HOME names the real account", () => {
+    vi.stubEnv("HOME", userInfo().homedir);
+    vi.stubEnv("AVE_TEST_SANDBOX_BASE", scratch);
+    const root = mxcRuntimeRootFloorPath();
+    expect(root).toBe(join(scratch, "mxc-cache", AVE_APP_ID, "mxc-runtime"));
+    expect(root).not.toContain(accountCache());
+  });
+
+  it.each([undefined, "", "relative"] as const)("refuses a missing or invalid test sandbox base (%s)", (value) => {
+    vi.stubEnv("AVE_TEST_SANDBOX_BASE", value);
+    expect(() => mxcRuntimeRootFloorPath()).toThrow(/absolute AVE_TEST_SANDBOX_BASE/u);
+  });
+
+  it("refuses the real account cache, including a link to it", () => {
+    const alias = join(scratch, "cache-alias");
+    symlinkSync(accountCache(), alias);
+    for (const cache of [accountCache(), alias]) {
+      expect(() => mxcRuntimeRootFloorPath(cache)).toThrow(/real account cache/u);
+      vi.stubEnv("AVE_TEST_SANDBOX_BASE", cache);
+      expect(() => mxcRuntimeRootFloorPath()).toThrow(/real account cache/u);
+      expect(() => currentMxcRuntimeHost()).toThrow(/real account cache/u);
+    }
+  });
 });
 
 describe.runIf(posix)("container start runtime root", () => {
@@ -405,8 +441,9 @@ describe.runIf(posix)("run staging layout", () => {
     removeMxcRunStaging(run);
   });
 
-  it("leaves a socket name room under this account's real cache directory", () => {
-    const prefix = join(mxcCacheHome(process.platform, process.env, homedir()), AVE_APP_ID, "mxc-runtime", "s", "01234567");
+  it("leaves a socket name room under a typical account cache directory", () => {
+    const account = process.platform === "darwin" ? "/Users/example" : "/home/example";
+    const prefix = join(mxcCacheHome(process.platform, {}, account), AVE_APP_ID, "mxc-runtime", "s", "01234567");
     const limit = process.platform === "darwin" ? 103 : 107;
     // What is left for the file name after the directory and its separator.
     expect(limit - Buffer.byteLength(prefix) - 1).toBeGreaterThanOrEqual("control.sock".length);

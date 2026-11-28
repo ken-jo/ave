@@ -15,7 +15,7 @@ test("device sign-in shows both verification paths, copies fixed values and canc
     bundle: true, format: "esm", platform: "node", target: "node22", external: ["electron"], logLevel: "silent" });
   const userData = join(directory, "user-data");
   await mkdir(userData);
-  const app = await launchElectron({ args: [entry], env: buildIsolatedElectronEnv({ AVE_DEVICE_DIALOG_USER_DATA: userData }) });
+  const app = await launchElectron({ args: [entry], env: buildIsolatedElectronEnv({ HOME: directory, USERPROFILE: directory, AVE_DEVICE_DIALOG_USER_DATA: userData }) });
   try {
     const state = () => app.evaluate(() => (globalThis as unknown as { deviceCodeDialogFixture: DialogFixture }).deviceCodeDialogFixture.state);
     await expect.poll(async () => {

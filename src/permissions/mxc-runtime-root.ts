@@ -4,8 +4,9 @@ import {
   chmodSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmdirSync, unlinkSync, writeFileSync,
   type BigIntStats, type Stats,
 } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { homedir, userInfo } from "node:os";
 import { posix as posixPath, win32 as winPath } from "node:path";
+import { isE2eTestRuntime } from "../boot/dev-flags.js";
 import { createLogger } from "../lib/logger.js";
 import { renameDirectorySyncOnce } from "../lib/transient-fs-lock-retry.js";
 import { aveHome } from "../shared/ave-home.js";
@@ -97,14 +98,19 @@ export function mxcCacheHome(platform: NodeJS.Platform, env: Readonly<Record<str
 
 /** Under the test runner the root lives in the run's own directory, never in the account's cache. */
 function currentCacheHome(): string {
-  if (process.platform === "win32") {
-    return AVE_HOME_ISOLATION_GUARD_ACTIVE
-      ? winPath.join(process.env.AVE_TEST_SANDBOX_BASE ?? tmpdir(), "mxc-cache")
-      : windowsLocalAppData(process.env, homedir());
+  const platform = process.platform;
+  if (AVE_HOME_ISOLATION_GUARD_ACTIVE) {
+    const flavor = platform === "win32" ? winPath : posixPath;
+    const base = process.env.AVE_TEST_SANDBOX_BASE;
+    if (!base || !flavor.isAbsolute(base)) refuse("Container runtime tests require an absolute AVE_TEST_SANDBOX_BASE");
+    const cache = flavor.join(base, "mxc-cache");
+    assertIsolatedMacCache(cache, platform);
+    return cache;
   }
-  return AVE_HOME_ISOLATION_GUARD_ACTIVE
-    ? posixPath.join(process.env.AVE_TEST_SANDBOX_BASE ?? tmpdir(), "mxc-cache")
-    : mxcCacheHome(process.platform, process.env, homedir());
+  if (platform === "win32") return windowsLocalAppData(process.env, homedir());
+  const cache = mxcCacheHome(platform, process.env, homedir());
+  assertIsolatedMacCache(cache, platform);
+  return cache;
 }
 
 export function currentMxcRuntimeHost(): MxcRuntimeHost {
@@ -138,11 +144,11 @@ const privateTo = (entry: Stats, uid: number): boolean =>
 
 /** Create `path` 0700 if it is absent, then require a real directory of this account closed to every other account.
  * An existing directory that fails is refused as it is: it is never re-moded, replaced or bypassed. */
-function ensurePrivateDirectory(path: string, uid: number, what: string): string {
+export function ensurePrivateDirectory(path: string, uid: number, what: string, { exclusive = false } = {}): string {
   try {
     mkdirSync(path, { mode: 0o700 });
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "EEXIST") refuse(`${what} could not be created`, error);
+    if (exclusive || (error as NodeJS.ErrnoException).code !== "EEXIST") refuse(`${what} could not be created`, error);
   }
   let entry: Stats;
   try {
@@ -171,18 +177,37 @@ export function canonicalWhereItExists(path: string, flavor: typeof posixPath = 
   }
 }
 
+function assertIsolatedMacCache(cacheHome: string, platform: NodeJS.Platform): void {
+  if (platform !== "darwin" || !(AVE_HOME_ISOLATION_GUARD_ACTIVE || process.env.VITEST === "true" || isE2eTestRuntime())) return;
+  const accountCache = mxcCacheHome("darwin", {}, userInfo().homedir);
+  const spellings = (path: string): string[] => {
+    const named = posixPath.resolve(path).toLowerCase();
+    try {
+      return [named, canonicalWhereItExists(path).toLowerCase()];
+    } catch {
+      // Keep the spelling for malformed paths. Root establishment rejects them separately.
+      return [named];
+    }
+  };
+  const protectedPaths = spellings(accountCache);
+  if (spellings(cacheHome).some((path) => protectedPaths.some((parent) => atOrUnder(path, parent)))) {
+    refuse("Container runtime tests cannot use the real account cache; use an isolated test home or sandbox base");
+  }
+}
+
 const rootUnder = (cacheHome: string, flavor: typeof posixPath = posixPath): string => flavor.join(cacheHome, AVE_APP_ID, "mxc-runtime");
 
 /**
  * The path the sandbox read floor denies (`appOwnedSandboxPrivateRoots`): the runtime root, `<cache home>/<app id>/
  * mxc-runtime` (on Windows `<local application data>\<app id>\mxc-runtime`), whether or not it exists. The run directories are Ave-private data, as they were under the Ave home,
- * so every confined process that is not granted its own run directory is denied the whole root. It never throws: the
- * floor of every sandboxed process is composed from it, and a cache directory that cannot be resolved must refuse
- * container starts only. With the cache directory resolved the path is canonical, as the macOS sandbox matches real
+ * so every confined process that is not granted its own run directory is denied the whole root. A cache directory
+ * that cannot be resolved refuses container starts only. Tests additionally refuse the real macOS account cache.
+ * With the cache directory resolved the path is canonical, as the macOS sandbox matches real
  * paths; otherwise it is the path as spelled, and a deny on a path nothing can be created under costs nothing.
  */
 export function mxcRuntimeRootFloorPath(cacheHome: string = currentCacheHome(), platform: NodeJS.Platform = process.platform): string {
   const flavor = platform === "win32" ? winPath : posixPath;
+  assertIsolatedMacCache(cacheHome, platform);
   try {
     return rootUnder(canonicalWhereItExists(cacheHome, flavor), flavor);
   } catch {
@@ -201,6 +226,7 @@ export function mxcConfinementStatePaths(): string[] {
 function plannedRuntimeRoot(host: MxcRuntimeHost): string {
   posixUid(host);
   if (!posixPath.isAbsolute(host.cacheHome)) refuse("The account's cache directory is not an absolute path");
+  assertIsolatedMacCache(host.cacheHome, host.platform);
   try {
     return rootUnder(canonicalWhereItExists(host.cacheHome));
   } catch (error) {
@@ -686,7 +712,7 @@ export function createMxcRunStaging(host: MxcRuntimeHost = currentMxcRuntimeHost
   liveRuns.add(root);
   try {
     // Exclusive: an existing entry under a fresh random name is not this run's.
-    for (const directory of [root, home, temp]) mkdirSync(directory, { mode: 0o700 });
+    for (const directory of [root, home, temp]) ensurePrivateDirectory(directory, uid, "Container run staging directory", { exclusive: true });
   } catch (error) {
     liveRuns.delete(root);
     try { removeRunTree(root); } catch { /* the marked remainder is left for a sweep */ }
@@ -700,12 +726,8 @@ export function createMxcRunStaging(host: MxcRuntimeHost = currentMxcRuntimeHost
       if (!liveRuns.has(root)) throw new MxcProcessContractError("Container run staging was already removed");
       const directory = socketDirectoryOf(root);
       ensurePrivateDirectory(posixPath.dirname(directory), uid, "Container socket parent");
-      try {
-        // Exclusive: an existing entry is another run's with the same leading digits, and that run alone removes it.
-        mkdirSync(directory, { mode: 0o700 });
-      } catch (error) {
-        return refuse("Container socket directory could not be created", error);
-      }
+      // Exclusive: an existing entry is another run's with the same leading digits, and that run alone removes it.
+      ensurePrivateDirectory(directory, uid, "Container socket directory", { exclusive: true });
       try {
         // The marker names the run the directory belongs to; only a directory so marked is ever removed with a run.
         writeFileSync(`${directory}${OWNER_SUFFIX}`, posixPath.basename(root), { flag: "wx", mode: 0o600 });

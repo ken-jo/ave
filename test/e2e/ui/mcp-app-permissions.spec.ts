@@ -5,7 +5,7 @@ import { build } from "esbuild";
 import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
-import { launchElectron } from "./seeded-electron.js";
+import { buildIsolatedElectronEnv, launchElectron } from "./seeded-electron.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, "../../..");
@@ -51,7 +51,13 @@ test.beforeAll(async () => {
 test.setTimeout(180_000);
 
 test("MCP-App permissions: what the host can actually deliver, measured in a real <webview>", async ({}, testInfo) => {
-  const app = await launchElectron({ args: [MAIN_OUT, "--no-sandbox", "--use-fake-device-for-media-stream", `--probe-output=${testInfo.outputPath("permissions")}`], timeout: 30_000 });
+  const home = testInfo.outputPath("home");
+  fs.mkdirSync(home, { recursive: true });
+  const app = await launchElectron({
+    args: [MAIN_OUT, "--no-sandbox", "--use-fake-device-for-media-stream", `--probe-output=${testInfo.outputPath("permissions")}`],
+    env: buildIsolatedElectronEnv({ HOME: home, USERPROFILE: home }),
+    timeout: 30_000,
+  });
 
   const lines: string[] = [];
   app.process().stdout?.on("data", (d: Buffer) => {

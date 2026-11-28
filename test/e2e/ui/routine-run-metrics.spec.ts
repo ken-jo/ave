@@ -28,7 +28,7 @@ test("recorded run metrics appear on schedule chips, details and completed board
   }] }));
   const launch = () => launchElectron({
     args: [MAIN_ENTRY, `--user-data-dir=${userData}`, "--no-sandbox"],
-    env: buildIsolatedElectronEnv({ AVE_HOME: aveHome, AVE_DEV: "1", AVE_E2E: "1", AVE_MAIN_ENTRY: MAIN_ENTRY, NODE_ENV: "test" }),
+    env: buildIsolatedElectronEnv({ HOME: root, USERPROFILE: root, AVE_HOME: aveHome, AVE_DEV: "1", AVE_E2E: "1", AVE_MAIN_ENTRY: MAIN_ENTRY, NODE_ENV: "test" }),
   });
   let app: ElectronApplication | undefined;
   try {

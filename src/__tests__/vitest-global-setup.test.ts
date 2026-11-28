@@ -637,7 +637,8 @@ describe("runTmpRoot", () => {
     ensureRunTmpRoot(root);
     const sharedTmp = realpathSync(POSIX_SHARED_TMP);
     expect(isGrantPathWithin(sharedTmp, realpathSync(root))).toBe(true);
-    expect(isGrantPathWithin(sharedTmp, join(homedir(), ".ave", "test-tmp", "t-AbC123"))).toBe(false);
+    const account = process.platform === "darwin" ? "/Users/example" : "/home/example";
+    expect(isGrantPathWithin(sharedTmp, join(account, ".ave", "test-tmp", "t-AbC123"))).toBe(false);
   });
 
   // Testing foreign ownership requires another uid's directory and is not covered here.

@@ -1,7 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
-import { tmpdir } from "node:os";
+import { tmpdir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
 import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -262,13 +262,26 @@ function isMainModule() {
 if (isMainModule()) {
   try {
     ensureGeneratedAssets();
-    const scratch = mkdtempSync(join(tmpdir(), "ave-vitest-skill-scripts-"));
+    const temp = tmpdir();
+    if (process.platform === "darwin") {
+      const realHome = realpathSync.native(userInfo().homedir).toLowerCase();
+      const canonicalTemp = realpathSync.native(temp).toLowerCase();
+      if (canonicalTemp === realHome || canonicalTemp.startsWith(`${realHome}/`)) {
+        throw new Error("[electron-vitest-home] TMPDIR must be outside the real macOS account home");
+      }
+    }
+    const scratch = mkdtempSync(join(temp, "ave-vitest-"));
     const directory = join(scratch, "dist", "skill-scripts");
     let result;
     try {
       await (await import("./build-skill-scripts.mjs")).buildSkillScripts({ directory });
       result = await runVitestUnderElectron(process.argv.slice(2), {
-        env: { ...process.env, AVE_TEST_SKILL_SCRIPTS_DIR: directory },
+        env: {
+          ...process.env,
+          // Raw filesystem fixtures and their subprocesses also resolve the macOS cache from HOME.
+          ...(process.platform === "darwin" ? { HOME: scratch } : {}),
+          AVE_TEST_SKILL_SCRIPTS_DIR: directory,
+        },
       });
     } finally {
       rmSync(scratch, { recursive: true, force: true });
