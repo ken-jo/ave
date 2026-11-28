@@ -2410,8 +2410,9 @@ Key boundaries:
 
 ### Process plugin lifecycle
 
-On Linux and macOS, the host starts a trusted launch wrapper as the leader of a
-detached process group. The wrapper waits on a dedicated release pipe. The host
+On Linux, the host starts a trusted launch wrapper as the leader of a
+detached process group. (macOS, like Windows, refuses a process plugin on its
+holder route; see [macOS extension holders](#macos-extension-holders).) The wrapper waits on a dedicated release pipe. The host
 registers the PGID with the reaper and waits for both the queued write to flush
 and a matching framed acknowledgment from that reaper. Only then does the host
 send the release byte. The wrapper closes its release descriptor and executes
@@ -3007,7 +3008,9 @@ code: it owns the host pipe, decodes host input and ends the child 2 s after it
 observes host loss, even while plugin code blocks or misleads the main thread.
 A native-executable child has no such worker.
 
-Isolation between plugins is a macOS and Linux property. There every wrap of
+Isolation between plugins is a macOS and Linux property. On macOS each holder
+of plugin-owned code reads `/` minus the read floor, which denies the Ave home
+and re-allows only the plugin's own directories. On Linux every wrap of
 plugin-owned code — plugin child, delegated worker, bundled hook, bundled MCP
 stdio server — refuses the plugin roots (`<AVE_HOME>/plugins`,
 `<AVE_HOME>/agent-plugin-data`, `<AVE_HOME>/packages/agent-plugin`) and
@@ -3102,7 +3105,8 @@ refusals from that audit channel.
 
 The token is a label; what identifies an invocation to the policy is the
 channel its connections arrive on (`src/permissions/egress-identity.ts`). On
-macOS and Linux every wrap first opens its own proxy front end
+macOS and Linux every wrap first opens its own proxy front end (a macOS holder
+instead egresses only through its own relay lease)
 (`SandboxManager.openInvocationListener`, part 3 of the carried 0.0.80 bun
 patch): a loopback port that the wrap's Seatbelt profile alone may reach, or a
 socket path bound into that wrap's bwrap in place of the shared bridge socket.
@@ -3376,13 +3380,14 @@ The container route table selects shell tools and holders independently.
 
 | Platform | Shell tools | Holders |
 | --- | --- | --- |
-| macOS | On | Off |
+| macOS | On | On |
 | Windows | On | On |
 | Linux | On | Off |
 
 On macOS, Bash and PowerShell run through the pinned SDK's streaming handle
-with pipes and one invocation-specific profile. Hooks, extensions and the
-workspace terminal continue to use the existing wrap. Each command has its own
+with pipes and one invocation-specific profile. Hooks, extensions and offline
+host children run as holders ([macOS extension holders](#macos-extension-holders));
+the workspace terminal keeps the existing wrap. Each command has its own
 shell supervisor: the Electron binary run as Node with a safe host environment
 and no loader overrides. It verifies the SDK and `libmxc_ffi.dylib` against
 their pins, runs koffi's asynchronous native calls on an 8 MiB stack (the
@@ -3467,6 +3472,48 @@ other sessions; the request timeout is the SDK's own deadline with the same
 kill. A stop the backend did not confirm, or a supervisor that exits without
 a terminal receipt, is reported as an error that the command was stopped
 but its processes could not be confirmed gone, never as cancelled.
+
+### macOS extension holders
+
+MCP stdio servers, plugin children, workers, hooks and offline host children
+(local inference, indexing) each run as a holder. The document engine does
+not: LibreOffice runs as the app the user installed (owner decision
+2026-11-28). A holder is
+started through `/usr/bin/sandbox-exec` with a profile Ave writes for that
+start, after the launch gate admits it; there is no resident supervisor per
+holder and no fallback to the wrap. The holder route is on only after the
+app run's holder check proves it: an allow profile runs, a bad profile is
+refused, a deny is enforced, and the label helper proves its kernel calls.
+Until then the route is unproven and an extension start is the tree's
+질문† ask. Each holder reads `/` minus the read floor and writes only its
+own roots and its private staging HOME and temp. A root of another live
+holder and an executable inside any writable root or authorized workspace
+are refused before anything starts. Offline holders get no network. A
+networked holder reaches the network only through its own relay lease: a
+direct connect, another holder's proxy port and a reserved Tailnet port are
+refused. Holders cannot start programs through launchd or Launch Services,
+exec setuid programs, or signal another holder.
+
+A holder's executable runtime is read as a grant, never left to the read
+carve: for an app bundle that is its whole `Contents` (frameworks and the
+packaged archive), and an unpacked development entry also gets the nearest
+`node_modules` above it and the `package.json` beside it. A user's read deny
+over them still wins. A process-kind plugin (a native command rather than an
+`entry` module) is refused on macOS as on Windows, by the start gate, before
+its command or roots are checked.
+
+Every holder's profile ends in a per-run label (see
+`native/macos-holder-sweep/README.md`). A stop is verified when the holder's
+process group is empty and no process answers to its label, so a child that
+left the group with `setsid`, `setpgid` or a double fork is still ended. A
+stop that cannot be verified quarantines the holder. One resident watcher,
+the label helper in watch mode, holds a pipe from Ave and sweeps the run's
+label when Ave exits in any way; it is respawned if it dies, and after three
+failed respawns new holder starts are unproven while live holders keep
+running. At boot, with the host instance lock held, the helper sweeps what
+an earlier run of the same Ave home left; another home's holders are never
+touched. Already running macOS extensions do not see a name created inside
+a carved folder until they restart (the tree's disclosed limit).
 
 ### Linux agent shells in containers
 
