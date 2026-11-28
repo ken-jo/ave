@@ -77,7 +77,7 @@ class LaneAdmissionError extends Error {
 
 interface LaneHooks {
   admit(a: { runKey: string; stageId: string; envelope: StageEnvelope | undefined; workspaceRoot: string }): Promise<
-    { ok: true; activate?: () => () => void } | ({ ok: false } & LaneBlock)
+    { ok: true; activate?: () => () => void; toolchainReadRoots?: readonly string[] } | ({ ok: false } & LaneBlock)
   >;
   sessionLinked(a: { runKey: string; stageId: string; sessionId: string; envelope: StageEnvelope; workspaceRoot: string }): void;
   sessionEnded(sessionId: string): void;
@@ -1433,6 +1433,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       const stageRoot = prepared.workspace.root;
 
       const runKey = state.ref.runKey;
+      let toolchainReadRoots: string[] | undefined;
       if (lane === "unattended") {
         const laneHooks = deps.lane;
         const admitted = laneHooks
@@ -1443,10 +1444,14 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
           throw new LaneAdmissionError(blocked);
         }
         releaseAdmission = admitted.activate?.();
+        if (admitted.toolchainReadRoots?.length) toolchainReadRoots = admitted.toolchainReadRoots.map(maskWorkflowText);
       }
 
       const runner = deps.getRunner();
       if (!runner) throw new Error("sub-agent runner not available");
+      if (toolchainReadRoots) logPermissionEvent("unattended_stage_toolchain_reads", {
+        runId: permissionLogId(state.runId), stageId, roots: JSON.stringify(toolchainReadRoots),
+      });
       const agentName = stage.agentName;
       const profile = agentName ? await beforeDeadline(() => deps.getAgentProfile?.(agentName) ?? Promise.resolve(null)) : null;
       if (stage.agentName && !profile) throw new Error(`agent profile not found: ${stage.agentName}`);
@@ -1465,7 +1470,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       const stored = await beforeDeadline(() => serializeWrite(state, () => writeRun(state, current => {
         const active = current.stageRuns.find(candidate => candidate.stageId === stageId);
         if (!isCurrent() || current.settled !== undefined || active?.attempt !== attempt || active.status !== "running") return null;
-        return { ...current, stageRuns: current.stageRuns.map(candidate => candidate === active ? { ...candidate, workspace: { ...prepared.workspace } } : candidate) };
+        return { ...current, stageRuns: current.stageRuns.map(candidate => candidate === active ? { ...candidate, workspace: { ...prepared.workspace }, ...(toolchainReadRoots && { toolchainReadRoots }) } : candidate) };
       })));
       if (stored.run === null) {
         if (halted(state, stageId)) throw new WorkflowInvariantError("run-stopped");

@@ -421,6 +421,19 @@ it.each(["en", "ko"] as const)("renders the saved stage refusal reason in %s", a
   expect(screen.getByText(t(STAGE_TOOL_CALLS_REFUSED))).toBeVisible();
 });
 
+it.each(["en", "ko"] as const)("renders the isolation refusal and PATH folders in %s", async locale => {
+  await loadLocaleMessages(locale);
+  setLocale(locale);
+  render(<WorkflowStageEvidence stageName={id => id} stage={{
+    stageId: "summarize", attempt: 1, status: "failed",
+    blocked: { code: "isolation-unproven", reason: "boundary-unverified", at: "2026-11-28T00:00:00.000Z" },
+    toolchainReadRoots: ["~/tools/bin"],
+  }} />);
+  expect(screen.getByText(t("workflowTemplates.stageBlock.boundary-unverified"))).toBeVisible();
+  expect(screen.getByText(t("workflowTemplates.toolchainReadRoots"))).toBeVisible();
+  expect(screen.getByText("~/tools/bin")).toBeVisible();
+});
+
 it("the authentication failure shows the https accounts help text", () => {
   const detail = JSON.stringify({ exit: { code: "push-authentication", message: "Authentication failed" } });
   const view = render(<WorkflowStageEvidence stageName={id => id}

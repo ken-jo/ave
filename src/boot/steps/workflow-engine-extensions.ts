@@ -1,4 +1,3 @@
-import { homedir } from "node:os";
 import { getDefaultWorkspaceRoot } from "../../main/default-workspace-root.js";
 import { createLogger } from "../../lib/logger.js";
 import { isAllReadOnlyVersion, qualifyUnattended } from "../../work-board/template-graph.js";
@@ -17,8 +16,10 @@ import { bindStageWorkspace, unbindStageWorkspace } from "../../permissions/stag
 import type { PermissionManager } from "../../permissions/permission-manager.js";
 import { createRunScopeHooks } from "../../permissions/run-scope.js";
 import { getHostShellExecutionPlan, onSandboxStatusChanged } from "../../permissions/sandbox-capability.js";
-import { protectedReadDenyMatcher } from "../../permissions/asrt-sandbox.js";
+import { getUnattendedPathReadRoots, protectedReadDenyMatcher } from "../../permissions/asrt-sandbox.js";
 import { proveUnattendedIsolation } from "../../permissions/unattended-isolation.js";
+import { policyHomeAnchors } from "../../shared/policy-home.js";
+import { MAX_STAGE_TOOLCHAIN_ROOTS } from "../../shared/workflow-template-types.js";
 import { activateUnattendedAdmission, reproveUnattendedStages, unattendedLaneHooks } from "../../permissions/unattended-lane-registry.js";
 import type { ToolEffectResolver } from "../../permissions/tool-effect-evidence.js";
 import type { StageRunEngineDeps } from "../../work-board/workflow/stage-run-engine.js";
@@ -133,14 +134,25 @@ export function workflowEngineExtensions(store: WorkBoardStore, templates: Pick<
           assertPinnedVersion(version, run.pin);
           if (isAllReadOnlyVersion(version)) return { ok: true };
           if (!envelope) return { ok: false, code: "envelope-missing" };
+          let toolchainRoots: readonly string[] | undefined;
           const prove = () => {
             const plan = getHostShellExecutionPlan("default", "shell");
             try {
+              const homes = policyHomeAnchors();
               const covered = protectedReadDenyMatcher();
-              return proveUnattendedIsolation({
-                plan, envelope, workspaceRoot, home: homedir(), toolchainRoots: [],
+              const proof = proveUnattendedIsolation({
+                plan, envelope, workspaceRoot, home: homes[0], toolchainRoots: toolchainRoots ?? [],
                 floorCovers: path => covered(path) !== undefined,
               });
+              if (!proof.proven) return proof;
+              toolchainRoots ??= getUnattendedPathReadRoots(homes, process.env.PATH ?? "");
+              if (toolchainRoots.length > MAX_STAGE_TOOLCHAIN_ROOTS || toolchainRoots.some(root => root.length > 4096)) {
+                return { proven: false, reason: "read-narrowing-unavailable" } as const;
+              }
+              return { proven: true, profile: {
+                ...proof.profile, readDenyRoots: homes, readRoots: [workspaceRoot, ...envelope.readRoots, ...toolchainRoots],
+                toolchainReadRoots: toolchainRoots,
+              } } as const;
             } catch {
               return { proven: false, reason: "read-narrowing-unavailable" } as const;
             }
@@ -149,6 +161,7 @@ export function workflowEngineExtensions(store: WorkBoardStore, templates: Pick<
           if (!proof.proven) return { ok: false, code: "isolation-unproven", reason: proof.reason };
           return {
             ok: true,
+            toolchainReadRoots: proof.profile.toolchainReadRoots,
             activate: () => activateUnattendedAdmission(runKey, stageId, {
               envelope, workspaceRoot, profile: proof.profile, prove,
             }),

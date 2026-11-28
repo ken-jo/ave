@@ -1,6 +1,6 @@
 /** The stage scheduler on the parts boot chooses (`workflowEngineExtensions`): run state is the board store's run file. */
-import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { delimiter, dirname, join } from "node:path";
 import { expect, it, type MockInstance, vi } from "vitest";
 import { aveHome } from "../../shared/ave-home.js";
 import { workflowEngineExtensions } from "../../boot/steps/workflow-engine-extensions.js";
@@ -16,6 +16,7 @@ import * as sandboxCapability from "../../permissions/sandbox-capability.js";
 import * as shellPolicy from "../../permissions/asrt-sandbox.js";
 import { buildHostShellExecutionPlan } from "../../permissions/host-shell-execution-plan.js";
 import { projectWorkflowRun } from "../../work-board/workflow/run-read-projection.js";
+import { collectPermissionEvents } from "../../__tests__/support/permission-events.js";
 import { RUN_FILE } from "../../work-board/workflow/workspace-layout.js";
 
 /** The project root a discard was given for each run. */
@@ -533,5 +534,35 @@ it.each([false, true])("registers a linked stage and permanently denies reads af
     });
   } finally {
     plan.mockRestore();
+  }
+});
+
+it("records the exact admitted PATH folder in audit and run evidence", async () => {
+  const plan = vi.spyOn(sandboxCapability, "getHostShellExecutionPlan").mockReturnValue(isolationPlan("blocked"));
+  const { h } = await isolationHarness();
+  const capture = collectPermissionEvents();
+  const home = join(realpathSync.native(h.dir), "profile");
+  const bin = join(home, "toolchain", "bin");
+  mkdirSync(bin, { recursive: true });
+  vi.stubEnv("HOME", home);
+  vi.stubEnv("PATH", [home, bin].join(delimiter));
+  try {
+    await h.runThenEnd(async () => {
+      const { itemId, source, version } = await pinIsolationSchedule(h, { ...auto("a"), toolScope: "all", envelope: readEnvelope });
+      const run = h.start(itemId, source);
+      const [child] = await h.untilLive(1);
+      const { record } = await h.item(itemId);
+      if (!record) throw new Error("Missing stored run");
+      expect(projectWorkflowRun(record, version).stages[0]?.toolchainReadRoots).toEqual([expect.stringContaining("toolchain")]);
+      expect(capture.events).toContainEqual(expect.objectContaining({
+        event: "unattended_stage_toolchain_reads", roots: JSON.stringify(record.stageRuns[0]?.toolchainReadRoots),
+      }));
+      child.finish();
+      await run;
+    });
+  } finally {
+    capture.restore();
+    plan.mockRestore();
+    vi.unstubAllEnvs();
   }
 });

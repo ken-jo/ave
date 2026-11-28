@@ -8,6 +8,7 @@ export interface UnattendedIsolationProfile {
   readRoots: readonly string[];
   writeRoots: readonly string[];
   readDenyRoots: readonly string[];
+  toolchainReadRoots?: readonly string[];
 }
 
 export type UnattendedIsolationProof = { proven: true; profile: UnattendedIsolationProfile } | { proven: false; reason: IsolationUnproven };
@@ -29,6 +30,9 @@ export function proveUnattendedIsolation({ plan, envelope, workspaceRoot, home, 
   }
   return {
     proven: true,
-    profile: { readRoots: [...readRoots, ...toolchainRoots], writeRoots: [workspaceRoot], readDenyRoots: [home] },
+    profile: {
+      readRoots: [...readRoots, ...toolchainRoots], writeRoots: [workspaceRoot], readDenyRoots: [home],
+      ...(toolchainRoots.length > 0 && { toolchainReadRoots: toolchainRoots }),
+    },
   };
 }

@@ -120,6 +120,7 @@ export type WorkflowTemplateErrorCode =
 export type WorkflowTemplateIpcResult<T> = { ok: true; value: T } | { ok: false; refusals?: EnvelopeRefusal[]; error: WorkflowTemplateErrorCode | "unauthorized-frame" | "no-store" | "user-gesture-required" | "user-keyboard-required" | "storage-error" };
 
 export const STAGE_TOOL_CALLS_REFUSED = "be_workBoard.stageToolCallsRefused";
+export const MAX_STAGE_TOOLCHAIN_ROOTS = 256;
 
 export interface WorkItemStageRun {
   stageId: string;
@@ -130,6 +131,7 @@ export interface WorkItemStageRun {
   taint?: "file-content" | "agent-message";
   workspace?: { root: string; kind: "git" | "folder"; baseCommit?: string; sealCommit?: string; manifest?: OutputFile[] };
   blocked?: { code: LaneBlockCode; at: string; reason?: IsolationUnproven };
+  toolchainReadRoots?: string[];
   requestedOutputs?: RequestedOutput[];
   outputExecutions?: OutputExecution[];
   usage?: { rounds: number; startedAt: string; denials: number; costUsd?: number };

@@ -1,6 +1,6 @@
 import { isRecord } from "../shared/is-record.js";
 import { canonicalWorkflowJson } from "../shared/workflow-template-output.js";
-import { ISOLATION_UNPROVEN_REASONS, STAGE_TOOL_CALLS_REFUSED, type IsolationUnproven, type WorkflowRunRecord } from "../shared/workflow-template-types.js";
+import { ISOLATION_UNPROVEN_REASONS, MAX_STAGE_TOOLCHAIN_ROOTS, STAGE_TOOL_CALLS_REFUSED, type IsolationUnproven, type WorkflowRunRecord } from "../shared/workflow-template-types.js";
 import { hasTemplateKeys, parseRequestedOutputDecl, isGraphHash, isStageId, isTemplateId, isTemplateVersion, isWorkspaceGlob, requireTemplate, WorkflowTemplateError } from "./template-graph.js";
 import { MAX_LANE_DENIALS_PER_STAGE } from "./workflow/run-budget.js";
 const STAGE_STATUSES = ["waiting", "running", "awaiting_gate", "passed", "failed", "cancelled", "rejected"];
@@ -52,6 +52,7 @@ function validStage(value: unknown): boolean {
     || !optional(value, "taint", v => v === "file-content" || v === "agent-message") || !optional(value, "workspace", v => workspace(v, false))
     || !optional(value, "blocked", v => isRecord(v) && ["envelope-missing", "isolation-unproven", "lane-unavailable"].includes(v.code as string) && timestamp(v.at)
       && optional(v, "reason", reason => v.code === "isolation-unproven" && ISOLATION_UNPROVEN_REASONS.includes(reason as IsolationUnproven)))
+    || !optional(value, "toolchainReadRoots", v => list(v, MAX_STAGE_TOOLCHAIN_ROOTS, path => text(path, 4096)))
     || !optional(value, "requestedOutputs", v => uniqueEntries(v, 10, requestedOutput))
     || !optional(value, "outputExecutions", v => uniqueEntries(v, 10, e => isRecord(e) && isTemplateId(e.id) && ["pending", "done", "failed", "denied"].includes(e.status as string) && optional(e, "at", timestamp) && optional(e, "detail", d => typeof d === "string" && d.length <= 8192)))
     || !optional(value, "deniedCalls", v => list(v, MAX_LANE_DENIALS_PER_STAGE, call =>

@@ -84,6 +84,15 @@ export function unattendedStageOf(sessionId: string | undefined): UnattendedStag
   return registration && stages.get(registration.stageSessionId) === registration ? registration.entry : undefined;
 }
 
+export function unattendedShellProfileOf(sessionId: string | undefined): UnattendedIsolationProfile | undefined {
+  const entry = registeredUnattendedStageOf(sessionId);
+  if (!entry) return undefined;
+  if (unattendedStageOf(sessionId) !== entry || !entry.isolation.proven || !entry.isolation.profile) {
+    throw new Error("Unattended shell isolation is unproven");
+  }
+  return entry.isolation.profile;
+}
+
 export function endUnattendedStage(sessionId: string): void {
   stages.delete(sessionId);
 }

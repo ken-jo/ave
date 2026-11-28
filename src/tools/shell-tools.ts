@@ -2051,6 +2051,7 @@ export class BashTool extends ZodTool<typeof BashToolInputSchema> {
     }
     if (hostShellPlan.mode === "asrt") {
       const spawnCwd = hostSpawnAuthorization?.cwdIdentity.realpath ?? resolvedCwd;
+      const sessionId = boundarySessionOf(ctx);
       // The executor binds before approval. Direct tool callers bind after the
       // same path check; an existing binding never consults ambient state again.
       bindPreparedShellExecutableReadPaths(prepared);
@@ -2063,13 +2064,13 @@ export class BashTool extends ZodTool<typeof BashToolInputSchema> {
           ? { ownerPluginSandboxRoot: ctx.ownerPluginSandboxRoot }
           : {}),
         allowedDirectories: [spawnCwd, ...ctx.extraAllowedDirectories],
-      });
+      }, sessionId);
       const checked = await checkedShellResult(() => spawnWithSandbox(
         input.command,
         spawnCwd,
         writePaths,
         input.timeoutSeconds, prepared, ctx.abortSignal, outputCapture,
-        outputProgress, holdsOutput, boundarySessionOf(ctx), hostSpawnAuthorization, hostShellPlan,
+        outputProgress, holdsOutput, sessionId, hostSpawnAuthorization, hostShellPlan,
       ), ctx.verifiedShellCommand, verifiedIdentity, ctx.abortSignal);
       if (checked.refused) return checked.result;
       return withBackgroundUnavailable(
@@ -3992,6 +3993,7 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
       workbookIdentity = access.identity;
     }
     if (hostShellPlan.mode === "asrt") {
+      const sessionId = boundarySessionOf(ctx);
       // Namespace-scoped write-jail (owner plugin sandbox root ∪ allowed
       // directories), not the bare cwd. cwd stays readable. A container shell's
       // roots leave out the host temp directory.
@@ -4002,7 +4004,7 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
         allowedDirectories: hostShellPlan.substrate === "mxc"
           ? containerShellAllowedDirectories(spawnCwd, ctx.extraAllowedDirectories)
           : [spawnCwd, ...ctx.extraAllowedDirectories],
-      });
+      }, sessionId);
       const command = runtimeReads.length > 0 ? awaitedHostScriptCommand(input.command, commandAst.commands[0]!) : input.command;
       if (command === null) return { output: "PowerShell command blocked: host script runtime has no parser extent", isError: true };
       if (isWindowsContainerShell(hostShellPlan)) {
@@ -4015,7 +4017,7 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
           input.timeoutSeconds, ctx.abortSignal, outputCapture,
           outputProgress,
           typeof ctx.metadata.toolUseId === "string" ? ctx.metadata.toolUseId : undefined,
-          undefined, runtimeReads, verified, boundarySessionOf(ctx), hostSpawnAuthorization, commandReadPaths, markMxcTiming, workbookIdentity,
+          undefined, runtimeReads, verified, sessionId, hostSpawnAuthorization, commandReadPaths, markMxcTiming, workbookIdentity,
         ), ctx.verifiedShellCommand, verifiedIdentity, ctx.abortSignal);
         const block = sandboxBlockForResult(checked.result);
         if (block !== undefined && block.command !== input.command) attachSandboxBlock(checked.result, issueFilesystemSandboxBlock(input.command, resolvedCwd));
@@ -4028,7 +4030,7 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
         input.timeoutSeconds, ctx.abortSignal, outputCapture,
         outputProgress,
         typeof ctx.metadata.toolUseId === "string" ? ctx.metadata.toolUseId : undefined,
-        runtimeReads, verified, boundarySessionOf(ctx), hostSpawnAuthorization, commandReadPaths, hostShellPlan, workbookIdentity,
+        runtimeReads, verified, sessionId, hostSpawnAuthorization, commandReadPaths, hostShellPlan, workbookIdentity,
       ), ctx.verifiedShellCommand, verifiedIdentity, ctx.abortSignal);
       const block = sandboxBlockForResult(checked.result);
       if (block !== undefined && block.command !== input.command) attachSandboxBlock(checked.result, issueFilesystemSandboxBlock(input.command, resolvedCwd));
@@ -4321,17 +4323,18 @@ function startMxcPowerShellTiming(): MxcPowerShellTiming | undefined {
 }
 
 async function parsePowerShellAstInMxc(command: string, cwd: string, identity: ShellWorkingDirectoryIdentity, ctx: ToolExecutionContext, timeoutSeconds: number, markTiming?: MxcPowerShellTiming): Promise<PowerShellAstSummary | { failure: ToolExecutionResult }> {
+  const sessionId = boundarySessionOf(ctx);
   // Only AST input is embedded; decoding never executes the supplied source.
   const input = Buffer.from(command, "utf8").toString("base64");
   const parserScript = POWER_SHELL_AST_PARSER.replace("[Console]::In.ReadToEnd()", `[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${input}'))`);
   const writePaths = withLocalityDecision(() => deriveSandboxWritePaths({
     ...(ctx.ownerPluginSandboxRoot !== undefined ? { ownerPluginSandboxRoot: ctx.ownerPluginSandboxRoot } : {}),
     allowedDirectories: containerShellAllowedDirectories(identity.realpath, ctx.extraAllowedDirectories),
-  }));
+  }, sessionId));
   markTiming?.("parser-write-roots-ready");
   const response = createPowerShellParserResponse();
   const result = await spawnPowerShellInMxc(parserScript, cwd, identity, writePaths, timeoutSeconds, ctx.abortSignal, undefined, undefined,
-    typeof ctx.metadata.toolUseId === "string" ? ctx.metadata.toolUseId : undefined, response, [], undefined, boundarySessionOf(ctx),
+    typeof ctx.metadata.toolUseId === "string" ? ctx.metadata.toolUseId : undefined, response, [], undefined, sessionId,
     undefined, [], markTiming);
   if (result.isError) return { failure: result };
   const text = response.read();

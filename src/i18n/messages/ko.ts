@@ -7139,6 +7139,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "workflowTemplates.budgetRoundsAndMinutes": "{rounds}라운드 · {minutes}분",
   "workflowTemplates.budgetCostNotEnforced": "선언된 비용 한도: USD {costUsd} (미적용)",
   "workflowTemplates.deniedCalls": "거부된 도구 호출",
+  "workflowTemplates.toolchainReadRoots": "읽기 전용 도구 폴더",
   "workflowTemplates.stageBlock.envelope-missing": "이 단계에 실행 권한 범위가 없습니다. 새 템플릿 버전을 확정하세요.",
   "workflowTemplates.stageBlock.isolation-unproven": "이 단계의 격리를 확인하지 못했습니다.",
   "workflowTemplates.stageBlock.lane-unavailable": "예약 단계의 실행 정보와 템플릿 버전을 확인하지 못했습니다.",

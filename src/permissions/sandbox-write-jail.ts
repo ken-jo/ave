@@ -3,6 +3,7 @@ import { withLocalityDecision } from "../shared/local-path-io.js";
 import { aveHome } from "../shared/ave-home.js";
 import { baseAllowedDirectories } from "./base-allowed-directories.js";
 import { canonicalizePathForMatch, caseFoldForMatch } from "./sensitive-paths.js";
+import { unattendedShellProfileOf } from "./unattended-lane-registry.js";
 
 // Inputs for deriveSandboxWritePaths. Pure data — no I/O of its own.
 export interface SandboxWriteJailInput {
@@ -13,7 +14,9 @@ export interface SandboxWriteJailInput {
 }
 
 // Compute the canonicalized, de-duplicated set of filesystem paths the sandbox may grant write access to for this invocation. Canonicalization uses canonicalizePathForMatch (the same normalization the reviewer's sensitive-path layer uses) so the OS jail and the reviewer judgement see bit-identical path strings. Path resolution uses one locality decision for the whole write scope. Builtins / no-plugin shell: `ownerPluginSandboxRoot` is undefined, so the jail is exactly the allowed directories. A plugin-owned tool additionally gains its own writable data root.
-export function deriveSandboxWritePaths(input: SandboxWriteJailInput): string[] {
+export function deriveSandboxWritePaths(input: SandboxWriteJailInput, sessionId?: string): string[] {
+  const profile = unattendedShellProfileOf(sessionId);
+  if (profile) return [...profile.writeRoots];
   const raw: string[] = [];
   if (input.ownerPluginSandboxRoot !== undefined && input.ownerPluginSandboxRoot !== "") {
     raw.push(input.ownerPluginSandboxRoot);

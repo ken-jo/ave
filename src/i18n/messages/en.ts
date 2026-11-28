@@ -7137,6 +7137,7 @@ export const en = {
   "workflowTemplates.budgetRoundsAndMinutes": "{rounds} rounds · {minutes} minutes",
   "workflowTemplates.budgetCostNotEnforced": "Declared cost limit: USD {costUsd} (not enforced)",
   "workflowTemplates.deniedCalls": "Denied tool calls",
+  "workflowTemplates.toolchainReadRoots": "Read-only tool folders",
   "workflowTemplates.stageBlock.envelope-missing": "This stage has no capability envelope. Confirm a new template version.",
   "workflowTemplates.stageBlock.isolation-unproven": "Isolation could not be verified for this stage.",
   "workflowTemplates.stageBlock.lane-unavailable": "This scheduled stage could not verify its run and template version.",

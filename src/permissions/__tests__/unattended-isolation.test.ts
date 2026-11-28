@@ -31,7 +31,7 @@ describe("unattended isolation proof", () => {
     const profile: UnattendedIsolationProfile = {
       readRoots: [workspaceRoot, ...envelope.readRoots, ...toolchainRoots],
       writeRoots: [workspaceRoot],
-      readDenyRoots: [home],
+      readDenyRoots: [home], toolchainReadRoots: toolchainRoots,
     };
     expect(proveUnattendedIsolation({ ...proofInput, plan: { ...measuredPlan, platform } })).toEqual({ proven: true, profile });
   });
@@ -68,7 +68,7 @@ describe("unattended isolation proof", () => {
       const pathRoots = Array.from({ length: 7 - count }, (_, index) => join(home, `tool-${index}`, "bin"));
       expect(proveUnattendedIsolation({ ...proofInput, envelope: { ...envelope, readRoots }, toolchainRoots: pathRoots })).toEqual({
         proven: true,
-        profile: { readRoots: [workspaceRoot, ...readRoots, ...pathRoots], writeRoots: [workspaceRoot], readDenyRoots: [home] },
+        profile: { readRoots: [workspaceRoot, ...readRoots, ...pathRoots], writeRoots: [workspaceRoot], readDenyRoots: [home], ...(pathRoots.length && { toolchainReadRoots: pathRoots }) },
       });
     }
   });
