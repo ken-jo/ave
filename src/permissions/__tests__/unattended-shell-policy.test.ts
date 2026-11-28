@@ -1,11 +1,15 @@
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { delimiter, join, sep } from "node:path";
+import { afterEach, beforeEach, expect, it, onTestFinished, vi } from "vitest";
+import { withSourceHostResources } from "../../__tests__/support/source-host-resources.js";
 import { createAveHomeBoundarySnapshot } from "../ave-home-boundary-snapshot.js";
 import * as shellReadPolicy from "../asrt-sandbox.js";
+import { liveSandboxProcessHomes } from "../sandbox-home-registry.js";
 import * as shellWritePolicy from "../sandbox-write-jail.js";
 import { endUnattendedStage, registerUnattendedStage } from "../unattended-lane-registry.js";
+
+withSourceHostResources();
 
 let root: string;
 let home: string;
@@ -20,10 +24,11 @@ beforeEach(() => {
   workspace = join(home, "workspace");
   references = join(home, "references");
   tools = join(home, "toolchain", "bin");
-  for (const folder of [workspace, references, tools, join(home, ".ssh"), join(root, "outside")]) {
+  for (const folder of [workspace, references, tools, join(home, ".ssh"), join(home, ".ave", "config"), join(root, "outside")]) {
     mkdirSync(folder, { recursive: true });
   }
   vi.stubEnv("HOME", home);
+  vi.stubEnv("USERPROFILE", home);
   vi.stubEnv("AVE_HOME", join(home, ".ave"));
 });
 
@@ -49,10 +54,22 @@ it("only brings exact local PATH directories within home into the profile", () =
 
 it("denies home, omits saved history and reopens only the profile and the invocation HOME", () => {
   const other = join(home, "other");
-  const ownHome = join(root, "sandbox-home");
+  vi.stubEnv("AVE_TEST_SANDBOX_BASE", join(root, "sandbox"));
+  const [privateRoot] = shellReadPolicy.appOwnedSandboxPrivateRoots();
+  if (privateRoot === undefined) throw new Error("Missing sandbox private root");
+  const ownHome = join(privateRoot, "invocation-home");
+  const siblingHome = join(privateRoot, "sibling-home");
+  mkdirSync(ownHome, { recursive: true });
+  mkdirSync(siblingHome);
+  liveSandboxProcessHomes.add(ownHome);
+  liveSandboxProcessHomes.add(siblingHome);
+  onTestFinished(() => {
+    liveSandboxProcessHomes.delete(ownHome);
+    liveSandboxProcessHomes.delete(siblingHome);
+  });
   const snapshot = createAveHomeBoundarySnapshot(SESSION);
   const read = (session?: typeof snapshot) =>
-    shellReadPolicy.getBuiltinShellReadPolicy([other, home, workspace, ownHome], home, ownHome, session, "mxc");
+    shellReadPolicy.getBuiltinShellReadPolicy([other, home, workspace, ownHome, siblingHome], home, ownHome, session, "mxc");
   const ordinary = read();
   expect(read(snapshot)).toEqual(ordinary);
   registerUnattendedStage(SESSION, {
@@ -67,6 +84,9 @@ it("denies home, omits saved history and reopens only the profile and the invoca
   });
   const policy = read(snapshot);
   expect(policy.denyRead).toContain(home);
+  if (process.platform === "win32") {
+    expect(policy.denyRead).toContain(join(home, ".ave", "config") + sep);
+  }
   expect(new Set(policy.allowRead)).toEqual(new Set([workspace, references, tools, ownHome]));
   expect(policy.floorPierces).toEqual([]);
   expect(policy.withheldSessionReadRoot).toBeDefined();
