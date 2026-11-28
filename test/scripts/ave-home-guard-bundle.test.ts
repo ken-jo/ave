@@ -1,8 +1,8 @@
 // Test-only home guards must not reach production bundles, even with test variables set.
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir, userInfo } from "node:os";
-import { join } from "node:path";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { build } from "esbuild";
 import { afterAll, describe, expect, it } from "vitest";
@@ -84,21 +84,26 @@ describe("the Ave home guard in a production bundle", () => {
     expect(seam.AVE_HOME_ISOLATION_GUARD_ACTIVE).toBe(true);
   });
 
-  it.runIf(process.platform === "darwin")("reads the account runtime cache with inherited runner flags", async () => {
+  it.runIf(process.platform === "darwin")("reads a symlinked account runtime cache with inherited runner flags", async () => {
     const file = join(scratch, "runtime-root.mjs");
     symlinkSync(join(repo, "node_modules"), join(scratch, "node_modules"));
     writeFileSync(file, await bundle([
       'import { mxcRuntimeRootFloorPath } from "./src/permissions/mxc-runtime-root.ts";',
       "console.log(mxcRuntimeRootFloorPath());",
     ].join("\n")));
-    const home = userInfo().homedir;
+    const home = join(scratch, "account");
+    const cache = join(home, "Library", "Caches");
+    const cacheTarget = join(scratch, "account-cache");
+    mkdirSync(dirname(cache), { recursive: true });
+    mkdirSync(cacheTarget);
+    symlinkSync(cacheTarget, cache);
     for (const flags of [{ VITEST: "true" }, { AVE_E2E: "1", NODE_ENV: "test" }]) {
       const result = spawnSync(node, [file], {
         encoding: "utf8",
         env: { HOME: home, ELECTRON_RUN_AS_NODE: "1", ...flags },
       });
       expect(result.status, result.stderr).toBe(0);
-      expect(result.stdout.trim()).toBe(join(home, "Library", "Caches", "ai.agent-connector.ave", "mxc-runtime"));
+      expect(result.stdout.trim()).toBe(join(realpathSync.native(cache), "ai.agent-connector.ave", "mxc-runtime"));
     }
   });
 

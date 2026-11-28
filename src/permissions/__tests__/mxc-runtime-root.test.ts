@@ -80,18 +80,26 @@ afterEach(() => {
 describe.runIf(darwin)("macOS test runtime root isolation", () => {
   const accountCache = () => mxcCacheHome("darwin", {}, userInfo().homedir);
 
-  it("resolves the account cache in a packaged launch with inherited test flags", () => {
+  it.each(["directory", "symlink"] as const)("resolves the account cache (%s) in a packaged launch with inherited test flags", (layout) => {
+    const accountHome = join(scratch, "account");
+    const cache = join(accountHome, "Library", "Caches");
+    mkdirSync(dirname(cache), { recursive: true });
+    if (layout === "symlink") {
+      symlinkSync(base, cache);
+    } else {
+      mkdirSync(cache);
+    }
     const resources = vi.spyOn(hostResources, "getConfiguredHostResources")
       .mockReturnValue({ resourcePath: scratch, isPackaged: true });
     try {
-      vi.stubEnv("HOME", userInfo().homedir);
+      vi.stubEnv("HOME", accountHome);
       vi.stubEnv("VITEST", "true");
       vi.stubEnv("AVE_E2E", "1");
       vi.stubEnv("NODE_ENV", "production");
       vi.stubEnv("AVE_HOME_ISOLATION_GUARD_ACTIVE", "1");
       vi.stubEnv("AVE_TEST_SANDBOX_BASE", undefined);
-      expect(mxcRuntimeRootFloorPath()).toBe(join(realpathSync.native(userInfo().homedir), "Library", "Caches", AVE_APP_ID, "mxc-runtime"));
-      expect(currentMxcRuntimeHost().cacheHome).toBe(accountCache());
+      expect(mxcRuntimeRootFloorPath()).toBe(join(realpathSync.native(cache), AVE_APP_ID, "mxc-runtime"));
+      expect(currentMxcRuntimeHost().cacheHome).toBe(cache);
     } finally {
       resources.mockRestore();
     }
