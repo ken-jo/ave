@@ -57,7 +57,7 @@ describe("e2e Electron launches", () => {
   it("gives every launch the explicit E2E runtime env, over the spec's own env", () => {
     const harness = readFileSync(resolve(ROOT, HARNESS), "utf8");
     expect(harness).toContain(
-      'export const E2E_RUNTIME_ENV = Object.freeze({ AVE_E2E: "1", NODE_ENV: "test" });',
+      'export const E2E_RUNTIME_ENV = Object.freeze({ AVE_E2E: "1", NODE_ENV: "test", AVE_HOME_ISOLATION_GUARD_ACTIVE: "1" });',
     );
     expect(harness).toContain("env: { ...baseEnv, ...E2E_RUNTIME_ENV },");
   });

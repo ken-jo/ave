@@ -65,7 +65,7 @@ export const E2E_CHROMIUM_SWITCHES: readonly string[] = process.platform === "da
 
 /** The E2E runtime signal every e2e launch carries (`isE2eTestRuntime` in src/boot/dev-flags.ts). Among other things it keeps the app from claiming the OS
  * `ave://` handler (src/main/ave-protocol-registration.ts), so a spec never depends on the launch being unpackaged to leave the installed app's deep links alone. */
-export const E2E_RUNTIME_ENV = Object.freeze({ AVE_E2E: "1", NODE_ENV: "test" });
+export const E2E_RUNTIME_ENV = Object.freeze({ AVE_E2E: "1", NODE_ENV: "test", AVE_HOME_ISOLATION_GUARD_ACTIVE: "1" });
 
 /** The only way an e2e spec launches Electron (test/scripts/e2e-electron-launch.test.ts keeps it that way): Playwright's launch with {@link
  * E2E_CHROMIUM_SWITCHES} in front and {@link E2E_RUNTIME_ENV} over the spec's env, through {@link launchBaseEnv}. */
@@ -74,10 +74,12 @@ export async function launchElectron(options: Parameters<typeof electron.launch>
   if (process.platform === "darwin") {
     const home = baseEnv.HOME;
     const realHome = userInfo().homedir;
-    const realCache = canonicalPath(resolve(realHome, "Library", "Caches")).toLowerCase();
     if (!options?.env || !home || !isAbsolute(home)) throw new Error("macOS E2E launches require an explicit, isolated HOME");
+    const realCache = canonicalPath(resolve(realHome, "Library", "Caches")).toLowerCase();
     const candidate = canonicalPath(home).toLowerCase();
-    if (candidate === canonicalPath(realHome).toLowerCase() || candidate === realCache || candidate.startsWith(`${realCache}/`)) {
+    const candidateCache = canonicalPath(resolve(home, "Library", "Caches")).toLowerCase();
+    const inCache = (path: string) => path === realCache || path.startsWith(`${realCache}/`);
+    if (candidate === canonicalPath(realHome).toLowerCase() || inCache(candidate) || inCache(candidateCache)) {
       throw new Error("macOS E2E launches cannot use the real account home or cache");
     }
   }

@@ -6,9 +6,10 @@ import {
 } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { posix as posixPath, win32 as winPath } from "node:path";
-import { isE2eTestRuntime } from "../boot/dev-flags.js";
+import { isPackagedElectronProcess } from "../boot/dev-flags.js";
 import { createLogger } from "../lib/logger.js";
 import { renameDirectorySyncOnce } from "../lib/transient-fs-lock-retry.js";
+import { getConfiguredHostResources } from "../main/host-resources.js";
 import { aveHome } from "../shared/ave-home.js";
 import { AVE_HOME_ISOLATION_GUARD_ACTIVE } from "../shared/ave-home-test-guard.js";
 import { MxcProcessContractError } from "./mxc-extension-errors.js";
@@ -96,21 +97,21 @@ export function mxcCacheHome(platform: NodeJS.Platform, env: Readonly<Record<str
   return xdg !== undefined && posixPath.isAbsolute(xdg) ? xdg : posixPath.join(home, ".cache");
 }
 
+function isPackagedHost(): boolean {
+  return getConfiguredHostResources()?.isPackaged ?? isPackagedElectronProcess();
+}
+
 /** Under the test runner the root lives in the run's own directory, never in the account's cache. */
 function currentCacheHome(): string {
   const platform = process.platform;
-  if (AVE_HOME_ISOLATION_GUARD_ACTIVE) {
+  if (AVE_HOME_ISOLATION_GUARD_ACTIVE && !isPackagedHost()) {
     const flavor = platform === "win32" ? winPath : posixPath;
     const base = process.env.AVE_TEST_SANDBOX_BASE;
     if (!base || !flavor.isAbsolute(base)) refuse("Container runtime tests require an absolute AVE_TEST_SANDBOX_BASE");
-    const cache = flavor.join(base, "mxc-cache");
-    assertIsolatedMacCache(cache, platform);
-    return cache;
+    return flavor.join(base, "mxc-cache");
   }
   if (platform === "win32") return windowsLocalAppData(process.env, homedir());
-  const cache = mxcCacheHome(platform, process.env, homedir());
-  assertIsolatedMacCache(cache, platform);
-  return cache;
+  return mxcCacheHome(platform, process.env, homedir());
 }
 
 export function currentMxcRuntimeHost(): MxcRuntimeHost {
@@ -178,7 +179,7 @@ export function canonicalWhereItExists(path: string, flavor: typeof posixPath = 
 }
 
 function assertIsolatedMacCache(cacheHome: string, platform: NodeJS.Platform): void {
-  if (platform !== "darwin" || !(AVE_HOME_ISOLATION_GUARD_ACTIVE || process.env.VITEST === "true" || isE2eTestRuntime())) return;
+  if (platform !== "darwin" || !(AVE_HOME_ISOLATION_GUARD_ACTIVE || process.env.AVE_HOME_ISOLATION_GUARD_ACTIVE === "1") || isPackagedHost()) return;
   const accountCache = mxcCacheHome("darwin", {}, userInfo().homedir);
   const spellings = (path: string): string[] => {
     const named = posixPath.resolve(path).toLowerCase();
@@ -201,13 +202,11 @@ const rootUnder = (cacheHome: string, flavor: typeof posixPath = posixPath): str
  * The path the sandbox read floor denies (`appOwnedSandboxPrivateRoots`): the runtime root, `<cache home>/<app id>/
  * mxc-runtime` (on Windows `<local application data>\<app id>\mxc-runtime`), whether or not it exists. The run directories are Ave-private data, as they were under the Ave home,
  * so every confined process that is not granted its own run directory is denied the whole root. A cache directory
- * that cannot be resolved refuses container starts only. Tests additionally refuse the real macOS account cache.
- * With the cache directory resolved the path is canonical, as the macOS sandbox matches real
+ * that cannot be resolved refuses container starts only. With the cache directory resolved the path is canonical, as the macOS sandbox matches real
  * paths; otherwise it is the path as spelled, and a deny on a path nothing can be created under costs nothing.
  */
 export function mxcRuntimeRootFloorPath(cacheHome: string = currentCacheHome(), platform: NodeJS.Platform = process.platform): string {
   const flavor = platform === "win32" ? winPath : posixPath;
-  assertIsolatedMacCache(cacheHome, platform);
   try {
     return rootUnder(canonicalWhereItExists(cacheHome, flavor), flavor);
   } catch {

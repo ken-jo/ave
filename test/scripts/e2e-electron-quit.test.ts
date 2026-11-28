@@ -1,5 +1,5 @@
-import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync } from "node:fs";
+import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import type { Page } from "playwright";
 import { EventEmitter, once } from "node:events";
@@ -21,10 +21,30 @@ async function application(exitCode: number | null = null, closed = exitCode !==
   const process = vi.fn(() => child);
   const app = { process, evaluate, close } as unknown as ElectronApplication;
   launcher.mockResolvedValueOnce(app);
-  await launchElectron({ env: {} });
+  await launchElectron({ env: { HOME: tmpdir(), AVE_HOME_ISOLATION_GUARD_ACTIVE: "0" } });
   if (closed) child.emit("close", exitCode, null);
   return { app, child, nativeApp, quit, evaluate, close, process };
 }
+
+describe("native test application launch", () => {
+  it("stamps the explicit isolation marker over the supplied environment", async () => {
+    await application(0);
+    expect(launcher).toHaveBeenLastCalledWith(expect.objectContaining({
+      env: expect.objectContaining({ HOME: tmpdir(), AVE_HOME_ISOLATION_GUARD_ACTIVE: "1" }),
+    }));
+  });
+
+  it.runIf(process.platform === "darwin")("refuses a HOME whose cache resolves into the account cache", async () => {
+    const home = mkdtempSync(join(tmpdir(), "linked-test-home-"));
+    try {
+      mkdirSync(join(home, "Library"));
+      symlinkSync(join(userInfo().homedir, "Library", "Caches"), join(home, "Library", "Caches"));
+      await expect(launchElectron({ env: { HOME: home } })).rejects.toThrow(/real account home or cache/u);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("native test application quit", () => {
   afterEach(() => vi.restoreAllMocks());
@@ -329,16 +349,20 @@ describe("seeded launch with a cleanup owner", () => {
   });
 
   it("registers the profile before the home exists, and rolls it back without an owner", async () => {
-    const missing = join(mkdtempSync(join(tmpdir(), "seed-parent-")), "missing", "home-");
-    const { owner, steps, paths } = recordingOwner();
-    await expect(launchSeededElectron({ historyRows: [], owner, homePrefix: missing })).rejects.toThrow();
-    expect(steps).toEqual(["seeded"]);
-    expect(existsSync(paths[0] as string)).toBe(true);
-    rmSync(paths[0] as string, { recursive: true, force: true });
-
-    const profiles = mkdtempSync(join(tmpdir(), "seed-profiles-"));
-    await expect(launchSeededElectron({ historyRows: [], homePrefix: missing, userDataPrefix: join(profiles, "profile-") })).rejects.toThrow();
-    expect(readdirSync(profiles)).toEqual([]);
+    const parent = mkdtempSync(join(tmpdir(), "seed-parent-"));
+    const missing = join(parent, "missing", "home-");
+    const profiles = mkdtempSync(join(parent, "profiles-"));
+    const { owner, steps, paths, removeAll } = recordingOwner();
+    try {
+      await expect(launchSeededElectron({ historyRows: [], owner, homePrefix: missing })).rejects.toThrow();
+      expect(steps).toEqual(["seeded"]);
+      expect(existsSync(paths[0] as string)).toBe(true);
+      await expect(launchSeededElectron({ historyRows: [], homePrefix: missing, userDataPrefix: join(profiles, "profile-") })).rejects.toThrow();
+      expect(readdirSync(profiles)).toEqual([]);
+    } finally {
+      await removeAll();
+      rmSync(parent, { recursive: true, force: true });
+    }
   });
 
   it("arms the close receipt when the launcher first holds the process", async () => {

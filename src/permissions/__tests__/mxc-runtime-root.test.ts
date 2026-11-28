@@ -14,6 +14,7 @@ import { homedir, tmpdir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 
+import * as hostResources from "../../main/host-resources.js";
 import { MxcProcessContractError } from "../mxc-extension-errors.js";
 import {
   AVE_APP_ID, createMxcRunStaging, currentMxcRuntimeHost, establishMxcRuntimeRoot, mxcCacheHome, MxcRuntimeRootError,
@@ -79,6 +80,23 @@ afterEach(() => {
 describe.runIf(darwin)("macOS test runtime root isolation", () => {
   const accountCache = () => mxcCacheHome("darwin", {}, userInfo().homedir);
 
+  it("resolves the account cache in a packaged launch with inherited test flags", () => {
+    const resources = vi.spyOn(hostResources, "getConfiguredHostResources")
+      .mockReturnValue({ resourcePath: scratch, isPackaged: true });
+    try {
+      vi.stubEnv("HOME", userInfo().homedir);
+      vi.stubEnv("VITEST", "true");
+      vi.stubEnv("AVE_E2E", "1");
+      vi.stubEnv("NODE_ENV", "production");
+      vi.stubEnv("AVE_HOME_ISOLATION_GUARD_ACTIVE", "1");
+      vi.stubEnv("AVE_TEST_SANDBOX_BASE", undefined);
+      expect(mxcRuntimeRootFloorPath()).toBe(join(realpathSync.native(userInfo().homedir), "Library", "Caches", AVE_APP_ID, "mxc-runtime"));
+      expect(currentMxcRuntimeHost().cacheHome).toBe(accountCache());
+    } finally {
+      resources.mockRestore();
+    }
+  });
+
   it("starts the worker with an isolated HOME for fixtures that use the OS directly", () => {
     const real = realpathSync.native(userInfo().homedir).toLowerCase();
     const workerHome = realpathSync.native(homedir()).toLowerCase();
@@ -103,10 +121,12 @@ describe.runIf(darwin)("macOS test runtime root isolation", () => {
     const alias = join(scratch, "cache-alias");
     symlinkSync(accountCache(), alias);
     for (const cache of [accountCache(), alias]) {
-      expect(() => mxcRuntimeRootFloorPath(cache)).toThrow(/real account cache/u);
+      expect(mxcRuntimeRootFloorPath(cache)).toBe(mxcRuntimeRootFloorPath(accountCache()));
+      expect(() => establishMxcRuntimeRoot(hostOf({ cacheHome: cache }))).toThrow(/real account cache/u);
+      _forgetMxcRuntimeRootForTest(cache);
       vi.stubEnv("AVE_TEST_SANDBOX_BASE", cache);
-      expect(() => mxcRuntimeRootFloorPath()).toThrow(/real account cache/u);
-      expect(() => currentMxcRuntimeHost()).toThrow(/real account cache/u);
+      expect(() => establishMxcRuntimeRoot()).toThrow(/real account cache/u);
+      _forgetMxcRuntimeRootForTest(join(cache, "mxc-cache"));
     }
   });
 });

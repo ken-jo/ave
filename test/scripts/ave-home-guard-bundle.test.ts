@@ -1,11 +1,12 @@
 // Test-only home guards must not reach production bundles, even with test variables set.
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { build } from "esbuild";
 import { afterAll, describe, expect, it } from "vitest";
+import { MAIN_BUNDLE_EXTERNALS } from "../../scripts/lib/main-bundle-externals.mjs";
 
 const repo = process.cwd();
 const node = process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath;
@@ -13,19 +14,20 @@ const scratch = mkdtempSync(join(tmpdir(), "ave-home-bundle-"));
 
 afterAll(() => rmSync(scratch, { recursive: true, force: true }));
 
-async function bundle(): Promise<string> {
+async function bundle(contents = [
+  'export { aveHome } from "./src/shared/ave-home.ts";',
+  'export { AVE_HOME_ISOLATION_GUARD_ACTIVE, checkAdminPolicyPath, checkSandboxStampTargets } from "./src/shared/ave-home-test-guard.ts";',
+].join("\n")): Promise<string> {
   const result = await build({
     absWorkingDir: repo,
     stdin: {
-      contents: [
-        'export { aveHome } from "./src/shared/ave-home.ts";',
-        'export { AVE_HOME_ISOLATION_GUARD_ACTIVE, checkAdminPolicyPath, checkSandboxStampTargets } from "./src/shared/ave-home-test-guard.ts";',
-      ].join("\n"),
+      contents,
       resolveDir: repo,
       loader: "ts",
     },
     bundle: true,
     format: "esm",
+    external: [...MAIN_BUNDLE_EXTERNALS],
     platform: "node",
     target: ["node22"],
     minifySyntax: true,
@@ -82,8 +84,25 @@ describe("the Ave home guard in a production bundle", () => {
     expect(seam.AVE_HOME_ISOLATION_GUARD_ACTIVE).toBe(true);
   });
 
+  it.runIf(process.platform === "darwin")("reads the account runtime cache with inherited runner flags", async () => {
+    const file = join(scratch, "runtime-root.mjs");
+    symlinkSync(join(repo, "node_modules"), join(scratch, "node_modules"));
+    writeFileSync(file, await bundle([
+      'import { mxcRuntimeRootFloorPath } from "./src/permissions/mxc-runtime-root.ts";',
+      "console.log(mxcRuntimeRootFloorPath());",
+    ].join("\n")));
+    const home = userInfo().homedir;
+    for (const flags of [{ VITEST: "true" }, { AVE_E2E: "1", NODE_ENV: "test" }]) {
+      const result = spawnSync(node, [file], {
+        encoding: "utf8",
+        env: { HOME: home, ELECTRON_RUN_AS_NODE: "1", ...flags },
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout.trim()).toBe(join(home, "Library", "Caches", "ai.agent-connector.ave", "mxc-runtime"));
+    }
+  });
+
   it("keeps native stamping out of the plugin child module graph", async () => {
-    const { MAIN_BUNDLE_EXTERNALS } = await import("../../scripts/lib/main-bundle-externals.mjs");
     const result = await build({
       absWorkingDir: repo,
       entryPoints: ["src/plugins/isolation/plugin-child-main.ts"],
