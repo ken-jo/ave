@@ -47,7 +47,7 @@ describe("Windows raw IP probe classification", () => {
   });
 
   it.each([10051, 10065, 10049, 10047])("reports IPv6 result %s as unmeasured", (t6) => {
-    expect(classifyMxcRawIpProbe({ ...REFUSED, t6 }, true, "absent")).toMatchObject({ rawIp: "unknown", reason: "ipv6-unmeasured" });
+    expect(classifyMxcRawIpProbe({ ...REFUSED, t6, tl: "other" }, true, "absent")).toMatchObject({ rawIp: "unknown", reason: "ipv6-unmeasured" });
   });
 
   it("uses the LAN result to downgrade a verdict when a peer answered", () => {
@@ -79,8 +79,43 @@ describe("Windows raw IP probe classification", () => {
 });
 
 describe("additional raw IP blocking requirements", () => {
+  const proxyEvidence = { ...REFUSED, t6: 10051, capabilitySids: ["S-1-15-3-3"] };
+
+  it.each([10051, 10065])("accepts structural evidence from the proxy probe for no-route result %s", (t6) => {
+    expect(classifyMxcRawIpProbe({ ...proxyEvidence, t6 }, true, "absent")).toEqual({
+      rawIp: "blocked", reason: "blocked", evidenceKind: "structural", reachableTargets: [], udpArrival: "absent",
+    });
+  });
+
+  it.each([
+    { scenario: "container control fails", evidence: { control: false }, controlRefused: true, udpArrival: "absent", reason: "control-failed", reachableTargets: [] },
+    { scenario: "host control fails", evidence: {}, controlRefused: false, udpArrival: "absent", reason: "control-failed", reachableTargets: [] },
+    { scenario: "LAN probe is inconclusive", evidence: { tl: "deadline" }, controlRefused: true, udpArrival: "absent", reason: "ipv6-unmeasured", reachableTargets: [] },
+    { scenario: "LAN probe returns another code", evidence: { tl: 10051 }, controlRefused: true, udpArrival: "absent", reason: "ipv6-unmeasured", reachableTargets: [] },
+    { scenario: "LAN target is missing", evidence: { tl: "other" }, controlRefused: true, udpArrival: "absent", reason: "ipv6-unmeasured", reachableTargets: [] },
+    { scenario: "LAN peer refuses the connection", evidence: { tl: 10061 }, controlRefused: true, udpArrival: "absent", reason: "raw-ip-reachable", reachableTargets: ["tl"] },
+    { scenario: "UDP arrival is unmeasured", evidence: { udp: "unmeasured" }, controlRefused: true, udpArrival: "unmeasured", reason: "udp-unmeasured", reachableTargets: [] },
+    { scenario: "UDP datagram arrives", evidence: { udp: "sent" }, controlRefused: true, udpArrival: "arrived", reason: "raw-ip-reachable", reachableTargets: ["udp"] },
+  ] as const)("keeps proxy coverage unknown when $scenario", ({ evidence, controlRefused, udpArrival, reason, reachableTargets }) => {
+    expect(classifyMxcRawIpProbe({ ...proxyEvidence, ...evidence }, controlRefused, udpArrival)).toEqual({
+      rawIp: "unknown", reason, reachableTargets, udpArrival,
+    });
+  });
+
+  it.each([10049, 10047])("keeps IPv6 result %s unmeasured with proxy evidence", (t6) => {
+    expect(classifyMxcRawIpProbe({ ...proxyEvidence, t6 }, true, "absent")).toMatchObject({
+      rawIp: "unknown", reason: "ipv6-unmeasured",
+    });
+  });
+
+  it("reports a local IPv6 refusal as measured evidence", () => {
+    expect(classifyMxcRawIpProbe({ ...proxyEvidence, t6: 10013 }, true, "absent")).toMatchObject({
+      rawIp: "blocked", evidenceKind: "measured",
+    });
+  });
+
   it.each([10051, 10065])("accepts a successful empty capability read for no-route result %s", (t6) => {
-    const evidence = { ...REFUSED, t6, capabilitySids: [] };
+    const evidence = { ...REFUSED, t6, tl: "other", capabilitySids: [] } as const;
     expect(mxcRawIpBlockingRequirement(evidence)).toBe("refused-structural");
     expect(classifyMxcRawIpProbe(evidence, true, "absent")).toMatchObject({ rawIp: "blocked", evidenceKind: "structural" });
   });

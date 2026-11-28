@@ -239,12 +239,16 @@ function rawIpInconclusiveReason(result: MxcRawIpTargetResult): "timeout" | "unc
   return result === 10060 || result === "deadline" ? "timeout" : "unclassified";
 }
 
-export function mxcRawIpBlockingRequirement({ t6, capabilitySids }: Pick<MxcRawIpProbeEvidence, "t6" | "capabilitySids">):
-  "refused-local" | "refused-structural" | "ipv6-unmeasured" | "timeout" | "unclassified" {
+export function mxcRawIpBlockingRequirement(
+  { t6, tl, capabilitySids }: Pick<MxcRawIpProbeEvidence, "t6" | "capabilitySids"> & Partial<Pick<MxcRawIpProbeEvidence, "tl">>,
+  udpArrival?: MxcRawIpUdpArrival,
+): "refused-local" | "refused-structural" | "ipv6-unmeasured" | "udp-unmeasured" | "timeout" | "unclassified" {
   if (t6 === 10013) return "refused-local";
   if (t6 === 10051 || t6 === 10065) {
-    return capabilitySids !== null && !capabilitySids.some(sid => MXC_NETWORK_CAPABILITY_SIDS.has(sid))
-      ? "refused-structural" : "ipv6-unmeasured";
+    if (capabilitySids !== null && !capabilitySids.some(sid => MXC_NETWORK_CAPABILITY_SIDS.has(sid))) return "refused-structural";
+    if (tl === 10013 && udpArrival === "absent") return "refused-structural";
+    if (tl === 10013 && udpArrival === "unmeasured") return "udp-unmeasured";
+    return "ipv6-unmeasured";
   }
   if (t6 === 10049 || t6 === 10047) return "ipv6-unmeasured";
   return rawIpInconclusiveReason(t6);
@@ -265,7 +269,7 @@ export function classifyMxcRawIpProbe(
   if (reachableTargets.length > 0) return unknown("raw-ip-reachable");
   if (evidence.t4 === 10051 || evidence.t4 === 10065) return unknown("no-route");
   if (evidence.t4 !== 10013) return unknown(rawIpInconclusiveReason(evidence.t4));
-  const t6 = mxcRawIpBlockingRequirement(evidence);
+  const t6 = mxcRawIpBlockingRequirement(evidence, udpArrival);
   if (t6 !== "refused-local" && t6 !== "refused-structural") return unknown(t6);
   if (udpArrival === "unmeasured") return unknown("udp-unmeasured");
   return { rawIp: "blocked", reason: "blocked", evidenceKind: t6 === "refused-local" ? "measured" : "structural", reachableTargets, udpArrival };
