@@ -120,7 +120,8 @@ describe.runIf(INSTALLED)("the office profile against a document's own reference
     _setDocumentEngineProfileSettingsForTest((settings) => barriers.reduce((current, barrier) => weaken[barrier](current), settings));
     const installation = await getVerifiedDocumentEngineInstallation(new AbortController().signal);
     if (!installation) throw new Error("The installed document engine was not admitted");
-    const sessionId = `reads-${session += 1}`;
+    session += 1;
+    const sessionId = `reads-${session}`;
     const before = requests.length;
     try {
       const { pdf } = await pool.convert(installation, sessionId, document, "odt", new AbortController().signal);
