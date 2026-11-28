@@ -1,6 +1,6 @@
 import { spawn, execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createServer as createUnixServer } from "node:net";
 import { join, resolve } from "node:path";
 import type { Readable, Writable } from "node:stream";
@@ -204,6 +204,16 @@ describe.runIf(NATIVE)("native Linux holder start and stop", () => {
     expect(output.join("")).toContain("term");
     expect(events).toEqual(["before-release", "recheck", "after-verified-stop"]);
     expect(await holder.process.completion).toMatchObject({ code: expect.any(Number) });
+  });
+
+  // Design 10.4 N14: an offline holder has no network but its loopback and no bridge listener on it.
+  it("N14: an offline holder sees only lo and no listener on the bridge port", async () => {
+    const { holder } = await start("while IFS=: read -r name rest; do case $name in *Inter*|*face*) ;; *) printf '%s ' $name ;; esac; done < /proc/net/dev; echo; if (exec 3<>/dev/tcp/127.0.0.1/3128) 2>/dev/null; then echo bridge; else echo no-bridge; fi");
+    const out: string[] = [];
+    holder.process.stdout.on("data", (chunk: Buffer) => out.push(chunk.toString()));
+    await holder.process.completion;
+    expect(out.join("").trim().split("\n").map(row => row.trim())).toEqual(["lo", "no-bridge"]);
+    await holder.dispose();
   });
 
   it("releases a holder that exits 1.5 s after its TERM, within its grace", async () => {
@@ -444,9 +454,15 @@ describe.runIf(NATIVE)("native Linux holder row-2 admission", () => {
       mkdirSync(ssh, { recursive: true });
       writeFileSync(join(ssh, "id_fixture"), "fixture key");
       vi.stubEnv("HOME", policyHome);
+      // The Ave home too is a fixture with content, so its denial is not an empty folder read as one.
+      const fixtureHome = join(root, "ave-home");
+      mkdirSync(fixtureHome);
+      writeFileSync(join(fixtureHome, "settings.json"), "{}");
+      vi.stubEnv("AVE_HOME", fixtureHome);
+      expect(aveHome()).toBe(fixtureHome);
       // Control: the host sees both. A denied folder is masked: inside it is absent or empty.
       expect(readdirSync(ssh)).toEqual(["id_fixture"]);
-      readdirSync(aveHome());
+      expect(readdirSync(aveHome())).toEqual(["settings.json"]);
       const probe = `r() { if "$@" >/dev/null 2>&1; then printf ok; else printf no; fi; printf '|'; }
         seen() { [ -n "$(ls -A "$1" 2>/dev/null)" ]; }
         r seen "$1"; r seen "$2"; r sh -c 'echo x > "$0/x"' "$3"; r sh -c 'echo own > "$0/own"' "$4"; r mv "$4" "$4-moved"; echo`;
@@ -702,6 +718,72 @@ except OSError as error:
       const holder = await bundledHolder("head -c 1048576 /dev/zero >&2; echo done");
       expect(await line(holder.process.stdout)).toBe("done");
       expect(await holder.process.completion).toMatchObject({ exitCode: 0 });
+    });
+
+    it("N1: 1,000 JSON-RPC round trips through a holder arrive byte-exact and in order", async () => {
+      const holder = await bundledHolder("exec /bin/cat");
+      let buffered = "";
+      const waiting: ((row: string) => void)[] = [];
+      holder.process.stdout.on("data", (chunk: Buffer) => {
+        buffered += chunk.toString();
+        let at: number;
+        while ((at = buffered.indexOf("\n")) >= 0) {
+          const row = buffered.slice(0, at);
+          buffered = buffered.slice(at + 1);
+          waiting.shift()?.(row);
+        }
+      });
+      for (let id = 1; id <= 1_000; id++) {
+        const request = JSON.stringify({ jsonrpc: "2.0", id, method: "tools/call", params: { text: `ü ${id} \u0000 "q"` } });
+        const echoed = new Promise<string>(done => waiting.push(done));
+        holder.process.stdin.write(`${request}\n`);
+        expect(await echoed).toBe(request);
+      }
+    }, 60_000);
+
+    // Design 10.4 N15: a holder's environment never travels as words. Read from the host: the command lines of every
+    // process in its tree (both bwraps, the launcher shell, the bridge, the holder). Control: the same value as an argument.
+    it("N15: a secret in a holder's environment is in no command line of its tree; the holder sees it; as an argument it shows", async () => {
+      const secret = `n15-${randomBytes(12).toString("hex")}`;
+      const tree = (pid: number): number[] => {
+        let outer = pid;
+        const parentOf = (of: number): number => Number(readFileSync(`/proc/${of}/stat`, "utf8").replace(/^.*\) /su, "").split(" ")[1]);
+        while (parentOf(outer) !== process.pid) outer = parentOf(outer);
+        const below = (of: number): number[] => readFileSync(`/proc/${of}/task/${of}/children`, "utf8").trim().split(/\s+/u).filter(Boolean)
+          .map(Number).flatMap(child => [child, ...below(child)]);
+        return [outer, ...below(outer)];
+      };
+      const words = (pids: number[]): string => pids.map(pid => readFileSync(`/proc/${pid}/cmdline`, "utf8")).join("\n");
+      const holder = await bundledHolder("echo \"$N15_SECRET\"; exec /bin/cat", { holderEnv: { N15_SECRET: secret } });
+      expect(await line(holder.process.stdout)).toBe(secret);
+      const members = tree(holder.process.id);
+      expect(members.length).toBeGreaterThanOrEqual(4);
+      expect(words(members)).not.toContain(secret);
+      await holder.release();
+      const control = await bundledHolder("", { args: ["-c", "echo up; exec /bin/cat", "sh", secret] });
+      expect(await line(control.process.stdout)).toBe("up");
+      expect(words(tree(control.process.id))).toContain(secret);
+    });
+
+    // Design 10.4 N7, the tree's :206 limit, pinned: a file deny binds the file present at spawn, so a file the host
+    // renames over a read-denied one under a live holder is readable to it afterwards.
+    it("N7: a file the host renames over a read-denied file under a live holder is readable to it (the :206 limit)", async () => {
+      const denied = join(data, "denied.env");
+      writeFileSync(denied, "first");
+      try {
+        await initializeAsrtSandbox({ allowedDomains: [], denyRead: [denied] });
+        const holder = await bundledHolder("", { args: ["-c",
+          "probe() { if c=$(cat \"$1\" 2>/dev/null) && [ -n \"$c\" ]; then echo \"read:$c\"; else echo denied; fi; }; probe \"$1\"; read go; probe \"$1\"", "sh", denied] });
+        expect(await line(holder.process.stdout)).toBe("denied");
+        writeFileSync(join(data, "replacement"), "second");
+        renameSync(join(data, "replacement"), denied);
+        const after = line(holder.process.stdout);
+        holder.process.stdin.write("go\n");
+        expect(await after).toBe("read:second");
+      } finally {
+        await resetAsrtSandbox();
+        startEgressRelayService({ ask: async () => false });
+      }
     });
 
     it("N18: a worker under a plugin child is released with it when the parent goes first, and a new one under it is refused", async () => {
