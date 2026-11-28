@@ -45,7 +45,7 @@ export function createToolEffectResolver(registry: Pick<ToolRegistry, "findByNam
 }
 
 export function unattendedEnvelopeTool(tool: Tool, envelope: StageEnvelope, effects: ToolEffectResolver): boolean {
-  if (!isModelExposedTool(tool) || tool.requiresAttendedStage || tool.arbitraryEgress || tool.requiresMcpScope || tool.appInvokable) return false;
+  if (!isModelExposedTool(tool) || tool.requiresAttendedStage || tool.arbitraryEgress || tool.requiresMcpScope) return false;
   const { name, source } = tool;
   if (source === "builtin") return envelope.tools.includes(name) && effects.effectOf({ collection: "tools", name }) === "safe";
   if (source === "plugin") {
