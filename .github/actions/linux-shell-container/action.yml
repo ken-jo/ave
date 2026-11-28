@@ -20,9 +20,19 @@ runs:
         # Printed before the checks, so a pin update can take the digest a native build of this architecture made.
         built=$(sha256sum "$CARGO_TARGET_DIR/$target/release/apply-seccomp" | cut -d' ' -f1)
         echo "::notice title=apply-seccomp $arch::built sha256 $built"
+        # Kept for a pin update: the canonical binary for each architecture is this native build, never a cross-build.
+        mkdir -p "$RUNNER_TEMP/apply-seccomp-built/$arch"
+        cp "$CARGO_TARGET_DIR/$target/release/apply-seccomp" "$RUNNER_TEMP/apply-seccomp-built/$arch/apply-seccomp"
         expected=$(node -p 'require("./src/permissions/mxc-linux-seccomp-pins.json")[process.argv[1]]' "$arch")
         printf '%s  %s\n' "$expected" "$CARGO_TARGET_DIR/$target/release/apply-seccomp" | sha256sum --check
         printf '%s  %s\n' "$expected" "resources/linux-shell-seccomp/$arch/apply-seccomp" | sha256sum --check
+    - name: Keep the built helper when it does not match the pin
+      if: failure()
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: apply-seccomp-built-${{ runner.arch }}
+        path: ${{ runner.temp }}/apply-seccomp-built
+        retention-days: 3
     - name: Execute the shipped helper on this architecture
       working-directory: ave
       shell: bash
