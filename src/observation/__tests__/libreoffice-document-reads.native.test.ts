@@ -159,4 +159,12 @@ describe.runIf(INSTALLED)("the office profile against a document's own reference
     expect(kept.text).not.toContain(WEB_CANARY);
     expect(kept.requests).toEqual([]);
   }, 180_000);
+
+  // Fable P3-N1: Calc's link value (1, never) has no leaking control, so it cannot be shown to block alone. Measured with
+  // 26.8.3.1 on macOS against a flat ODF spreadsheet under a fully permissive profile (active content on, every location
+  // trusted, Calc links 0, 1 or 2, recalculation always or never; CSV and ODS output). A linked sheet
+  // (table:table-source), a linked range (table:cell-range-source), an external reference ('file:///...'#$Sheet1.A1) and a
+  // DDE link all kept their cached values. The same held for WEBSERVICE earlier. Skipped until a Calc construct leaks
+  // under the control.
+  it.skip("Calc: link updates never alone blocks a spreadsheet's linked sheet, range, external reference and DDE link (unproven: none leaks under the permissive control)", () => {});
 });

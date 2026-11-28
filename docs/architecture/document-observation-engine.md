@@ -189,7 +189,11 @@ With the app unconfined these settings are the barrier against a document's
 own references. Measured with 26.8.3.1 on macOS, a linked local-file section
 and a linked HTTP section are blocked by each barrier alone: active content
 off, no trusted location, and link updates never. A profile without all three
-reads both; the native document-reads test pins each case.
+reads both; the native document-reads test pins each case. Calc's link barrier
+is unproven: under a fully permissive profile no spreadsheet construct leaked
+(linked sheet, linked range, external reference, DDE link, WEBSERVICE; every
+Calc link value), so no control exists. The test names that case and skips it
+with this reason.
 Headless mode alone is not the macro or network boundary. A conversion may read
 an untrusted parser input; signature verification establishes executable
 provenance, not the safety of that document.
