@@ -15,7 +15,11 @@ import {
 import { atOrUnder, type PosixFilesystemGrants, type PosixPolicyLookups } from "./mxc-posix.js";
 import { setWatchedPlaceholderOccupant } from "./windows-watched-rows.js";
 
-const DirectoryIdentity = z.object({ device: z.string().regex(/^\d+$/u), inode: z.string().regex(/^\d+$/u) });
+// `birth`: the birth time in ns where the filesystem reports one. A folder removed and made again can take the same
+// inode number at once; its birth time differs. Without one the identity is device and inode only (stated limit).
+const DirectoryIdentity = z.object({
+  device: z.string().regex(/^\d+$/u), inode: z.string().regex(/^\d+$/u), birth: z.string().regex(/^\d+$/u).optional(),
+});
 const AbsolutePath = z.string().refine((path) => path !== "/" && posix.isAbsolute(path) && posix.normalize(path) === path);
 const PidMarker = z.object({ pid: z.number().int().positive(), start: z.string().min(1).nullable() });
 const PlaceholderRegistry = z.object({
@@ -34,14 +38,18 @@ type PidMarker = z.infer<typeof PidMarker>;
 
 function directoryIdentity(path: string): DirectoryIdentity | undefined {
   const entry = lstatSync(path, { bigint: true, throwIfNoEntry: false });
-  return entry?.isDirectory() && realpathSync.native(path) === path
-    ? { device: String(entry.dev), inode: String(entry.ino) }
-    : undefined;
+  if (!entry?.isDirectory() || realpathSync.native(path) !== path) return undefined;
+  return { device: String(entry.dev), inode: String(entry.ino), ...(entry.birthtimeNs > 0n ? { birth: String(entry.birthtimeNs) } : {}) };
 }
 
+/**
+ * Same device and inode, and the same birth time whenever one was recorded (a recorded one now missing differs). An
+ * entry recorded without one (a filesystem with no birth time, or a journal from before) is matched by device and inode.
+ */
 function isSameDirectory(path: string, expected: DirectoryIdentity): boolean {
   const identity = directoryIdentity(path);
-  return identity?.device === expected.device && identity.inode === expected.inode;
+  return identity?.device === expected.device && identity.inode === expected.inode
+    && (expected.birth === undefined || identity.birth === expected.birth);
 }
 
 function isLive(marker: PidMarker, host: MxcRuntimeHost): boolean {
@@ -367,7 +375,8 @@ export async function holdMxcLinuxPlaceholders<Grants extends PosixFilesystemGra
 
     try {
       for (const placeholder of grants.placeholders ?? []) {
-        const expected = { device: String(placeholder.device), inode: String(placeholder.inode) };
+        const expected = { device: String(placeholder.device), inode: String(placeholder.inode),
+          ...(placeholder.birth === undefined ? {} : { birth: String(placeholder.birth) }) };
         if (!isSameDirectory(placeholder.ancestor, expected)) {
           throw new Error(`Container placeholder ancestor changed: ${placeholder.ancestor}`);
         }

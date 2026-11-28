@@ -23,7 +23,11 @@ export interface PosixPolicyLookups {
   /** Whether the host account can read the path and search it if it is a directory. */
   readable(path: string): boolean;
   /** Directory identity, without following a final link. */
-  directoryIdentity(path: string): { readonly device: bigint; readonly inode: bigint } | undefined;
+  /**
+   * Directory identity, without following a final link. `birth` is the birth time in ns where the filesystem reports
+   * one (statx btime): a removed folder's inode number can be reused at once, its birth time is not.
+   */
+  directoryIdentity(path: string): { readonly device: bigint; readonly inode: bigint; readonly birth?: bigint } | undefined;
   readonly home: string;
   readonly foldsCase: boolean;
   /**
@@ -42,6 +46,7 @@ interface BubblewrapPlaceholder {
   readonly ancestor: string;
   readonly device: bigint;
   readonly inode: bigint;
+  readonly birth?: bigint;
   readonly parents: readonly string[];
 }
 
@@ -106,7 +111,8 @@ export function posixPolicyLookups(home: string, foldsCase: boolean): PosixPolic
     directoryIdentity(path) {
       try {
         const stat = lstatSync(path, { bigint: true });
-        return stat.isDirectory() ? { device: stat.dev, inode: stat.ino } : undefined;
+        if (!stat.isDirectory()) return undefined;
+        return stat.birthtimeNs > 0n ? { device: stat.dev, inode: stat.ino, birth: stat.birthtimeNs } : { device: stat.dev, inode: stat.ino };
       } catch (error) {
         if (isAbsent(error)) return undefined;
         throw error;
@@ -444,7 +450,8 @@ function applyBubblewrapRows(result: PosixFilesystemGrants, lookups: PosixPolicy
     }
     if (lookups.watchedRoots?.some((root) => atOrUnder(enclosing, root, lookups.foldsCase)) === true) {
       // Neither emitted nor created: the nearest existing folder's identity, checked again at the start and the release.
-      watched.push({ path, anchor: ancestor, volumeSerial: String(identity.device), fileId: String(identity.inode) });
+      watched.push({ path, anchor: ancestor, volumeSerial: String(identity.device), fileId: String(identity.inode),
+        ...(identity.birth === undefined ? {} : { birth: String(identity.birth) }) });
       for (const folder of parents) pins.delete(folder);
       continue;
     }

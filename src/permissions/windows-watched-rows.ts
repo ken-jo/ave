@@ -23,6 +23,18 @@ const MANIFEST = "watched-manifest.json";
 interface FileIdentity {
   readonly dev: bigint;
   readonly ino: bigint;
+  /** Linux: the birth time in ns where the filesystem reports one; a reused inode number does not carry it over. */
+  readonly birth?: bigint;
+}
+
+/** A Linux folder's identity: device, inode and, where reported, birth time. Elsewhere device and file index only. */
+function linuxIdentity(entry: BigIntStats): FileIdentity {
+  return process.platform === "linux" && entry.birthtimeNs > 0n
+    ? { dev: entry.dev, ino: entry.ino, birth: entry.birthtimeNs } : { dev: entry.dev, ino: entry.ino };
+}
+
+function sameBirth(expected: FileIdentity, entry: BigIntStats): boolean {
+  return expected.birth === undefined || entry.birthtimeNs === expected.birth;
 }
 
 interface AnchorPin {
@@ -171,7 +183,7 @@ export function prepareAbsentProtectedWatch(path: string, roots: readonly string
   for (;;) {
     const entry = entryAt(anchor, true);
     if (entry?.isDirectory()) {
-      const pin = { anchor, anchorIdentity: { dev: entry.dev, ino: entry.ino } };
+      const pin = { anchor, anchorIdentity: linuxIdentity(entry) };
       return () => {
         const published = watched.get(id);
         if (published !== undefined) {
@@ -255,14 +267,18 @@ export function claimMxcWatchedRows(rows: readonly MxcWatchedRow[], context: Wat
             // Windows names the folder by volume serial and file id; the Linux ranker records its device and inode there.
             const facts = process.platform !== "linux" ? pinWindowsPaths([anchor])[0]
               : before === undefined ? undefined : { volumeSerial: String(before.dev), fileId: String(before.ino) };
+            // Linux: the ranker's birth time too, where it recorded one, so a folder made again at a reused inode is refused.
+            const bornAsRanked = process.platform !== "linux" || row.birth === undefined
+              || (before !== undefined && String(before.birthtimeNs) === row.birth);
             const known = watched.get(key(target));
             if (before?.isDirectory() === true && !before.isSymbolicLink() && sameIdentity(anchor, before)
-              && facts?.volumeSerial === row.volumeSerial && facts.fileId === row.fileId
+              && facts?.volumeSerial === row.volumeSerial && facts.fileId === row.fileId && bornAsRanked
               && within(anchor, target) && key(anchor) !== key(target)
               // Still as ranked: once the first missing folder exists the name can carry an exact deny, so a stale ranking is refused.
               && vacant(join(anchor, relative(anchor, target).split(/[\\/]/)[0] ?? ""))
-              && (known === undefined || (known.anchorIdentity.dev === before.dev && known.anchorIdentity.ino === before.ino))) {
-              identity = { dev: before.dev, ino: before.ino };
+              && (known === undefined || (known.anchorIdentity.dev === before.dev && known.anchorIdentity.ino === before.ino
+                && sameBirth(known.anchorIdentity, before)))) {
+              identity = linuxIdentity(before);
             }
           } catch (error) {
             throw refusal(row.path, error);
@@ -412,7 +428,8 @@ function matchesStoredFileIdentity(identity: FileIdentity, expected: StoredFileI
 
 function sameIdentity(path: string, identity: FileIdentity): boolean {
   const current = entryAt(path, true);
-  return current?.isDirectory() === true && !current.isSymbolicLink() && current.dev === identity.dev && current.ino === identity.ino;
+  return current?.isDirectory() === true && !current.isSymbolicLink() && current.dev === identity.dev && current.ino === identity.ino
+    && sameBirth(identity, current);
 }
 
 function changedAnchor(row: WatchedRow): string | undefined {

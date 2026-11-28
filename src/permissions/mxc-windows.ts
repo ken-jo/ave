@@ -722,6 +722,8 @@ export interface MxcWatchedRow {
   readonly anchor: string;
   readonly volumeSerial: string;
   readonly fileId: string;
+  /** Linux: the anchor's birth time in ns where its filesystem reports one, so a reused inode number is not taken for it. */
+  readonly birth?: string;
 }
 
 /** The spelling ranker's result: it admits nothing, so its watched rows carry no identity and no launch accepts them. */

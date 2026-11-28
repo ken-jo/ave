@@ -1,9 +1,24 @@
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const roots = vi.hoisted(() => ({ base: "" }));
+// A host where a folder made again takes back the removed one's inode number (ext4 does this at once): lstat of
+// `path` reports `reused`'s device and inode with the new folder's own, later, birth time.
+const inodeReuse = vi.hoisted(() => ({ path: undefined as string | undefined, reused: undefined as { dev: bigint; ino: bigint } | undefined }));
+vi.mock("node:fs", async (importOriginal) => {
+  const fs = await importOriginal<typeof import("node:fs")>();
+  return {
+    ...fs,
+    lstatSync: ((path: string, options?: unknown) => {
+      const entry = fs.lstatSync(path, options as never);
+      const reused = inodeReuse.reused;
+      if (path !== inodeReuse.path || reused === undefined || entry === undefined || typeof entry.ino !== "bigint") return entry;
+      return Object.assign(Object.create(Object.getPrototypeOf(entry)), entry, { dev: reused.dev, ino: reused.ino });
+    }) as typeof fs.lstatSync,
+  };
+});
 vi.mock("../asrt-sandbox.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../asrt-sandbox.js")>(),
   aveHomeReadBoundaryRoots: () => [join(roots.base, "ave-home")],
@@ -75,6 +90,27 @@ describe.runIf(process.platform === "linux")("Linux holder protected names: plac
     renameSync(user, `${user}-former`);
     mkdirSync(user);
     expect(() => claimMxcWatchedRows(watched, { commandId: "test" }).start()).toThrow();
+  });
+
+  it("refuses the start when the anchor folder was made again at a reused inode number, by its birth time", () => {
+    const { watched = [] } = rank([user]);
+    const original = lstatSync(user, { bigint: true });
+    if (original.birthtimeNs === 0n) throw new Error("this filesystem reports no birth time; the reuse case cannot be told apart here");
+    expect(watched.every(row => row.birth === String(original.birthtimeNs))).toBe(true);
+    rmSync(user, { recursive: true });
+    mkdirSync(user);
+    // Forced, not left to the allocator: the new folder reports the removed one's device and inode.
+    inodeReuse.path = user;
+    inodeReuse.reused = { dev: original.dev, ino: original.ino };
+    try {
+      const again = lstatSync(user, { bigint: true });
+      expect([again.dev, again.ino]).toEqual([original.dev, original.ino]);
+      expect(again.birthtimeNs).not.toBe(original.birthtimeNs);
+      expect(() => claimMxcWatchedRows(watched, { commandId: "test" }).start()).toThrow();
+    } finally {
+      inodeReuse.path = undefined;
+      inodeReuse.reused = undefined;
+    }
   });
 
   it("sweeps a name the holder created at release into quarantine and returns its receipt", async () => {

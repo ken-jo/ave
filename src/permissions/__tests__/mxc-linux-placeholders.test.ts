@@ -12,6 +12,9 @@ import { buildPolicyModel, policyFloorRow, policyGrantRow } from "../policy-mode
 
 // A host whose mkdir creates the folder and then fails, as a crash between the two would leave it.
 const mkdirFault = vi.hoisted(() => ({ path: undefined as string | undefined }));
+// A host where a folder made again at a path takes back the inode number of the one removed (ext4 does this at once):
+// lstat of `path` reports `reused`'s device and inode with its own, later, birth time.
+const inodeReuse = vi.hoisted(() => ({ path: undefined as string | undefined, reused: undefined as { dev: bigint; ino: bigint } | undefined }));
 vi.mock("node:fs", async (importOriginal) => {
   const fs = await importOriginal<typeof import("node:fs")>();
   return {
@@ -21,6 +24,12 @@ vi.mock("node:fs", async (importOriginal) => {
       if (path === mkdirFault.path) throw Object.assign(new Error("injected failure after mkdir"), { code: "EIO" });
       return result;
     }) as typeof fs.mkdirSync,
+    lstatSync: ((path: string, options?: unknown) => {
+      const entry = fs.lstatSync(path, options as never);
+      const reused = inodeReuse.reused;
+      if (path !== inodeReuse.path || reused === undefined || entry === undefined || typeof entry.ino !== "bigint") return entry;
+      return Object.assign(Object.create(Object.getPrototypeOf(entry)), entry, { dev: reused.dev, ino: reused.ino });
+    }) as typeof fs.lstatSync,
   };
 });
 
@@ -228,9 +237,35 @@ describe.runIf(process.platform === "linux")("Linux placeholder ownership", () =
     it("names a placeholder replaced on the host after the start when validated again", async () => {
       const hold = await holdMxcLinuxPlaceholders(lookups, rank, host);
       hold.validate();
+      // The original is moved aside first, so its inode is still allocated and the new folder cannot take its number.
+      const aside = join(root, "aside");
+      renameSync(leaf, aside);
+      mkdirSync(leaf);
+      expect(lstatSync(leaf, { bigint: true }).ino).not.toBe(lstatSync(aside, { bigint: true }).ino);
+      expect(() => hold.validate()).toThrow(`Container placeholder changed before start: ${leaf}`);
+      rmSync(leaf, { recursive: true });
+      renameSync(aside, leaf);
+      await hold.release();
+    });
+
+    it("names a placeholder made again at a reused inode number, by its birth time", async () => {
+      const hold = await holdMxcLinuxPlaceholders(lookups, rank, host);
+      const original = lstatSync(leaf, { bigint: true });
+      if (original.birthtimeNs === 0n) throw new Error("this filesystem reports no birth time; the reuse case cannot be told apart here");
       rmSync(leaf, { recursive: true });
       mkdirSync(leaf);
-      expect(() => hold.validate()).toThrow(`Container placeholder changed before start: ${leaf}`);
+      // Forced, not left to the allocator: the new folder reports the removed one's device and inode.
+      inodeReuse.path = leaf;
+      inodeReuse.reused = { dev: original.dev, ino: original.ino };
+      try {
+        const again = lstatSync(leaf, { bigint: true });
+        expect([again.dev, again.ino]).toEqual([original.dev, original.ino]);
+        expect(again.birthtimeNs).not.toBe(original.birthtimeNs);
+        expect(() => hold.validate()).toThrow(`Container placeholder changed before start: ${leaf}`);
+      } finally {
+        inodeReuse.path = undefined;
+        inodeReuse.reused = undefined;
+      }
       await hold.release();
     });
   });
