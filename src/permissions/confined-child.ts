@@ -600,7 +600,8 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
       if (failures.length) throw new MxcProcessCleanupError("Extension tree cleanup is unverified", { cause: new AggregateError(failures) });
       await cwdHold?.release();
       await lease?.close();
-      await linuxStaging?.remove();
+      // Guarded, not optional-chained: elsewhere the release below runs in the same turn as on main.
+      if (linuxStaging) await linuxStaging.remove();
       egress.release();
       admittedNativeHolderIdentities.delete(spec.holder);
       liveHolderFootprints.delete(ownRoots);
