@@ -4065,8 +4065,17 @@ in its directory.
   refusal, IPv6 refusal evidence, no TCP response on the LAN target, and no UDP
   arrival. A local IPv6 `10013` is measured evidence. For IPv6 no-route codes
   `10051` or `10065`, a successful read of the container token with all three
-  network capability SIDs absent is structural evidence. A present network
-  capability or a failed or unparseable read leaves IPv6 unmeasured.
+  network capability SIDs absent is structural evidence. Card E(ii),
+  “proxy-mode evidence accepted” (owner decision 2026-11-28), also accepts
+  these no-route codes as structural evidence even with `S-1-15-3-3` present
+  when the host lookup confirms no IPv6 route to the T6 target. In the same
+  proxy-configured probe, the container must read the proxy's `403`, the host
+  must record the refusal nonce, the host LAN IPv4 connection (TL) must
+  return `10013`, and the UDP probe must run and observe no arrival. A
+  route-capable host requires direct T6 refusal for proxy-mode evidence. An
+  unknown host route leaves the proxy-mode exception unavailable. Without
+  either structural basis, a no-route result leaves IPv6 unmeasured and
+  coverage unknown.
   A successful TCP connection or remote refusal yields `rawIp: "unknown"`
   with a `raw-ip-reachable` warning. A matching datagram yields unknown with
   `raw-ip-reachable (udp)` even if the contained start fails. A UDP timeout or
