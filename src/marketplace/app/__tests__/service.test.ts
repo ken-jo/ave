@@ -8,6 +8,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, 
 import { tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { setProvenLinuxHolderRoute } from "../../../permissions/linux-holder-route.js";
 import { readPayloadFiles } from "../../../plugins/contribution-approval-digest.js";
 import { requiresPackage } from "../../updates/eligibility.js";
 import { descriptorText as descriptor, jsonText as text } from "../../__tests__/fixtures/package-files.js";
@@ -573,6 +574,22 @@ describe("MarketplaceService", () => {
     setAveHomePrivacyAtBoot({ enforcement: "none", home: root, category: "read-back-failed", reason: "fixture" });
     await expect(service.planInstall({ sourceId: "acme-tools", kind: "skill", name: "review" }))
       .resolves.toMatchObject({ hookConfinement: "user-permissions", version: "1.0.0" });
+  });
+
+  it("labels plugin hooks sandboxed where they run as Linux holders, and user-permissions while the route is unproven", async () => {
+    const { url } = market();
+    await addMarket(url);
+    setProcessPlatform("linux");
+    setPluginWorkerConfinementRequestedAtBoot(true);
+    await expect(service.planInstall({ sourceId: "acme-tools", kind: "skill", name: "review" }))
+      .resolves.toMatchObject({ hookConfinement: "user-permissions" });
+    setProvenLinuxHolderRoute({} as Parameters<typeof setProvenLinuxHolderRoute>[0]);
+    try {
+      await expect(service.planInstall({ sourceId: "acme-tools", kind: "skill", name: "review" }))
+        .resolves.toMatchObject({ hookConfinement: "sandboxed" });
+    } finally {
+      setProvenLinuxHolderRoute(undefined);
+    }
   });
 
   it("previews a marketplace, adds it under the suggested id, and lists its packages", async () => {
