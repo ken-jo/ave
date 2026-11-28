@@ -75,14 +75,14 @@ function fixture(t) {
   return { root, git, file, base };
 }
 
-function writePlan(root, event, before) {
+function writePlan(root, event, before, baseRef = "main") {
   const planPath = join(root, "ci-plan.json");
   const output = join(root, "outputs");
   writeFileSync(output, "");
   const result = spawnSync(process.execPath, [planner, "--write-plan", planPath], {
     cwd: root, encoding: "utf8", env: {
       ...process.env, GITHUB_EVENT_NAME: event, GITHUB_REF: "refs/heads/main",
-      GITHUB_BASE_REF: "main", GITHUB_HEAD_REF: "topic", AVE_CI_DIFF_BASE: before,
+      GITHUB_BASE_REF: baseRef, GITHUB_HEAD_REF: "topic", AVE_CI_DIFF_BASE: before,
       GITHUB_OUTPUT: output, GITHUB_STEP_SUMMARY: "",
     },
   });
@@ -126,14 +126,25 @@ it("writes the changed files from the PR's merged tree without unrelated must-ru
   assert.equal(Object.hasOwn(JSON.parse(push), "testOnlyFiles"), false);
 });
 
-it("keeps a failed PR diff on the full run", (t) => {
-  const repo = fixture(t);
-  const [plan, outputs] = writePlan(repo.root, "pull_request", repo.base);
-  assert.deepEqual(JSON.parse(plan), {
-    mode: "full", reason: "HEAD has 0 parent(s), not a pull request merge commit", tests: [],
+for (const base of ["main", "integration/core"]) {
+  it(`keeps an unresolved PR diff into ${base} on the full run with all platforms and tiers`, (t) => {
+    const repo = fixture(t);
+    const [plan, outputs] = writePlan(repo.root, "pull_request", repo.base, base);
+    assert.deepEqual(JSON.parse(plan), {
+      mode: "full", reason: "HEAD has 0 parent(s), not a pull request merge commit", tests: [],
+    });
+    assert.equal(outputs, "shards=[1,2]\nshard_count=2\nplatform_checks=true\n");
+    const tierPlanner = fileURLToPath(new URL("../../scripts/plan-vitest-tiers.mjs", import.meta.url));
+    const tiers = spawnSync(process.execPath, [tierPlanner, "ci-plan.json"], {
+      cwd: repo.root, encoding: "utf8", env: {
+        ...process.env, GITHUB_EVENT_NAME: "pull_request", GITHUB_OUTPUT: "", GITHUB_STEP_SUMMARY: "",
+      },
+    });
+    assert.ifError(tiers.error);
+    assert.equal(tiers.status, 0, tiers.stderr);
+    assert.match(tiers.stdout, /windows_tiers=native,census/u);
   });
-  assert.equal(outputs, "shards=[1,2]\nshard_count=2\nplatform_checks=true\n");
-});
+}
 
 it("keeps native, census and explicit platform inventories separate", async () => {
   const { testOnlyVitestArgs } = await import("../../scripts/lib/ci-test-only-selection.mjs");

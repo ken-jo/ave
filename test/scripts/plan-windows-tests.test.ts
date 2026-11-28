@@ -156,6 +156,7 @@ it.each([
   { event: "pull_request", base: "main", mode: "affected", file: "src/core/route-input.ts", runs: true },
   { event: "pull_request", base: "main", mode: "affected", file: "src/ui/renderer/hooks/use-chat-state.ts", runs: false },
   { event: "pull_request", base: "integration/core", mode: "affected", file: "src/core/route-input.ts", runs: false },
+  { event: "pull_request", base: "integration/core", mode: "full", file: "", runs: true },
   { event: "push", base: "main", mode: "affected", file: "src/core/route-input.ts", runs: true },
   { event: "schedule", base: "main", mode: "full", file: "", runs: true },
   { event: "workflow_dispatch", base: "main", mode: "full", file: "", runs: true },
@@ -165,7 +166,7 @@ it.each([
   expect(workflow.jobs["windows-native-preparation"].if).toBe("needs.build.outputs.platform_checks == 'true' || needs.build.outputs.windows_tier_tests == 'true'");
   expect(job.if).toBe("needs.build.outputs.platform_checks == 'true' && needs.windows-native-preparation.result == 'success'");
   const plan: CiSuitePlan = { mode, reason: "platform gate", tests: [] };
-  const selected = platformChecksRequired(event, plan, file ? [modifiedEntry(file)] : [], base);
+  const selected = platformChecksRequired(event, plan, file ? [modifiedEntry(file)] : undefined, base);
   expect(selected).toBe(runs);
   if (!selected) return;
 
@@ -175,7 +176,8 @@ it.each([
   expect(job.env.AVE_VITEST_MAX_WORKERS).toBe("2");
   const tierShards: number[] = workflow.jobs["windows-tier-tests"].strategy.matrix.shard;
   expect(tierShards).toEqual([...WINDOWS_TIER_TEST_SHARDS]);
-  const windowsPlan = planWindowsTests(collected, windowsTestDurations(times), ["native"]);
+  const windowsPlan = planWindowsTests(collected, windowsTestDurations(times), ["native", "census"]);
   const scheduled = [...shards.flatMap(shard => windowsShardFiles(windowsPlan, shard, root)), ...tierShards.flatMap(shard => windowsShardFiles(windowsPlan, shard, root, "tiers"))];
-  expect(scheduled.sort()).toEqual(collected);
+  // The default workload and the complete census both run the census partitions.
+  expect(scheduled.sort()).toEqual([...collected, ...CENSUS_TIER_TESTS].sort());
 });
