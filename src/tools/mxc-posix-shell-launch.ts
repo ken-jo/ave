@@ -10,7 +10,7 @@ import {
 import { buildSeatbeltShellRequest } from "../permissions/mxc-macos.js";
 import { buildBubblewrapShellRequest, linuxContainerPolicyModel, projectLinuxSavedSessionDenies, requireMxcLinuxShellPrograms } from "../permissions/mxc-linux.js";
 import { ContainerPlaceholderChangedError, holdMxcLinuxPlaceholders, takeMxcLinuxPlaceholderRecoveryNotice } from "../permissions/mxc-linux-placeholders.js";
-import { atOrUnder, posixPathFoldsCase, posixPolicyLookups, rankPosixContainerRows, type PosixFilesystemGrants } from "../permissions/mxc-posix.js";
+import { gitExclusions, posixPathFoldsCase, posixPolicyLookups, rankPosixContainerRows } from "../permissions/mxc-posix.js";
 import { requireMxcContainerStartRoot } from "../permissions/mxc-runtime-root.js";
 import { MxcCwdChangedError, stageMxcShellRequest, startMxcShellSupervisor, writeMxcShellRequest, type MxcShellRunAuthorizer } from "../permissions/mxc-shell-supervisor-client.js";
 import { captureShellWorkingDirectoryIdentity, type ShellWorkingDirectoryIdentity } from "../permissions/shell-working-directory-identity.js";
@@ -180,12 +180,4 @@ export async function prepareMxcPosixShellLaunch(input: PreparePosixShellInput, 
       return launch;
     },
   };
-}
-
-function gitExclusions(grants: PosixFilesystemGrants): (path: string, includesChildren?: boolean) => boolean {
-  const protectedRows = [...grants.readonly, ...grants.denied];
-  const covering = (path: string, rows: readonly string[]) => Math.max(-1,
-    ...rows.filter(root => atOrUnder(path, root, false)).map(root => root.length));
-  return (path, includesChildren) => covering(path, grants.readwrite) <= covering(path, protectedRows)
-    || (includesChildren === true && protectedRows.some(row => atOrUnder(row, path, false)));
 }

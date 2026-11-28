@@ -4,7 +4,7 @@ import { createServer as createUnixServer } from "node:net";
 import { join, resolve } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import { collectStream as collect } from "../../__tests__/support/collect-stream.js";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import seccompPins from "../mxc-linux-seccomp-pins.json" with { type: "json" };
 import { buildBubblewrapHolderRequest, requireMxcLinuxShellPrograms } from "../mxc-linux.js";
 import { posixPolicyLookups } from "../mxc-posix.js";
@@ -13,6 +13,13 @@ import {
   translateLinuxHolderRequest,
 } from "../mxc-linux-holder-launch.js";
 import { __resetManagedChildProcessesForTest } from "../../main/managed-child-processes.js";
+import { randomBytes } from "node:crypto";
+import { existsSync, readdirSync } from "node:fs";
+import { spawnMxcConfinedChild, type MxcConfinedChildSpawn, type MxcConfinedChildSpec } from "../confined-child.js";
+import { startEgressRelayService, stopEgressRelayService } from "../egress-relay/relay.js";
+import { setProvenLinuxHolderRoute } from "../linux-holder-route.js";
+import { currentMxcRuntimeHost, establishMxcRuntimeRoot, requireMxcContainerStartRoot, _forgetMxcRuntimeRootForTest } from "../mxc-runtime-root.js";
+import { forgetIssuedContainerHome, recordIssuedContainerHome } from "../sandbox-home-registry.js";
 
 const NATIVE = process.env.AVE_RUN_MXC_LINUX_BOUNDARY === "1";
 const BWRAP = "/usr/bin/bwrap";
@@ -245,5 +252,141 @@ describe.runIf(NATIVE)("native Linux holder start and stop", () => {
   it("refuses in the gate when the system bwrap changed since the canary, or the launch changed after admission", async () => {
     await expect(start("echo started", { bwrap: { path: BWRAP, identity: "0:0:0:0:0" } })).rejects.toMatchObject({ reason: "integrity" });
     await expect(start("echo started", { currentDigest: () => "changed" })).rejects.toThrow("changed after admission");
+  });
+});
+
+describe.runIf(NATIVE)("native Linux holder row-2 admission", () => {
+  const resources = { resourcePath: resolve("resources"), isPackaged: false };
+  const pin = seccompPins[process.arch === "arm64" ? "arm64" : "x64"];
+  const PATH = "/usr/bin:/bin";
+  let root: string;
+  let data: string;
+  let cache: string;
+  const started: MxcConfinedChildSpawn[] = [];
+  const homes: string[] = [];
+  beforeEach(async () => {
+    root = realpathSync.native(mkdtempSync("/tmp/ave-linux-row2-"));
+    data = join(root, "data");
+    mkdirSync(data);
+    vi.stubEnv("AVE_TEST_SANDBOX_BASE", root);
+    cache = currentMxcRuntimeHost().cacheHome;
+    establishMxcRuntimeRoot();
+    startEgressRelayService({ ask: async () => false });
+    const programs = await requireMxcLinuxShellPrograms(resources);
+    setProvenLinuxHolderRoute({
+      programs, helperSha256: pin, captureFolder: establishLinuxCaptureFolder(requireMxcContainerStartRoot(), programs.helper, pin),
+      bwrap: { path: BWRAP, identity: linuxFileIdentity(BWRAP) },
+    });
+  });
+  afterEach(async () => {
+    await Promise.allSettled(started.splice(0).map(holder => holder.release()));
+    for (const home of homes.splice(0)) forgetIssuedContainerHome(home);
+    setProvenLinuxHolderRoute(undefined);
+    await stopEgressRelayService();
+    _forgetMxcRuntimeRootForTest(cache);
+    vi.unstubAllEnvs();
+    __resetManagedChildProcessesForTest();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  /** A holder's own staging tree under the runtime root, issued as the bundled-holder adapter issues it. */
+  function staging() {
+    const parent = join(requireMxcContainerStartRoot(), "staging");
+    mkdirSync(parent, { recursive: true, mode: 0o700 });
+    const folder = join(parent, randomBytes(16).toString("hex"));
+    const home = join(folder, "home");
+    const temp = join(folder, "temp");
+    for (const path of [folder, home, temp]) mkdirSync(path, { mode: 0o700 });
+    recordIssuedContainerHome(home, requireMxcContainerStartRoot());
+    homes.push(home);
+    return { folder, home, temp };
+  }
+
+  async function spawnHolder(script: string, over: Partial<MxcConfinedChildSpec> = {}, tree = staging()): Promise<MxcConfinedChildSpawn> {
+    const holder = await spawnMxcConfinedChild({
+      command: "/bin/sh", args: ["-c", script], cwd: tree.home, home: tree.home, temp: tree.temp, stagingRoot: tree.folder,
+      holder: {}, label: "test:linux-row2", baseEnv: { PATH }, allowRead: [], allowWrite: [data, tree.folder],
+      filesystemOwnership: { readRoots: [], writeRoots: [data, tree.folder], hostStorageRoots: [] },
+      egressOwner: { kind: "worker", role: "mcp-server", pluginId: undefined, instanceId: "row2" } as never,
+      ...over,
+    });
+    started.push(holder);
+    return holder;
+  }
+
+  function line(stream: Readable): Promise<string> {
+    return new Promise((done, fail) => {
+      let text = "";
+      const timer = setTimeout(() => fail(new Error(`no line; got ${JSON.stringify(text)}`)), 15_000);
+      stream.on("data", (chunk: Buffer) => {
+        text += chunk.toString();
+        if (text.includes("\n")) { clearTimeout(timer); done(text.split("\n")[0] as string); }
+      });
+    });
+  }
+
+  const markers = () => join(requireMxcContainerStartRoot(), "holder-markers");
+  const holderFolders = () => readdirSync(requireMxcContainerStartRoot()).filter(name => /^holder-[A-Za-z0-9]{6}$/u.test(name));
+
+  it("starts a holder in the Linux container over its own pipes, writes its marker and releases everything after a verified stop", async () => {
+    const holder = await spawnHolder("echo \"$HOME|$(cat /proc/self/status | grep -c '^Seccomp:.*2')\"; exec /bin/cat");
+    expect(holder.confinement).toBe("linux-container");
+    const [home, filtered] = (await line(holder.process.stdout)).split("|");
+    expect(home).toMatch(/\/staging\/[0-9a-f]{32}\/home$/u);
+    expect(filtered).toBe("1");
+    const echoed = line(holder.process.stdout);
+    holder.process.stdin.write("ping\n");
+    expect(await echoed).toBe("ping");
+    expect(readdirSync(markers())).toHaveLength(1);
+    expect(holderFolders()).toHaveLength(1);
+    await holder.release();
+    started.splice(0);
+    expect(readdirSync(markers())).toEqual([]);
+    expect(holderFolders()).toEqual([]);
+  });
+
+  it("refuses every start while the route is unproven", async () => {
+    setProvenLinuxHolderRoute(undefined);
+    await expect(spawnHolder("true")).rejects.toThrow("Native extension backend is not ready for this start");
+  });
+
+  it("refuses a holder whose executable lies inside a live holder's writable root, and a nested co-holder", async () => {
+    const first = await spawnHolder("echo up; exec /bin/cat");
+    expect(await line(first.process.stdout)).toBe("up");
+    const planted = join(data, "tool");
+    writeFileSync(planted, "#!/bin/sh\necho planted\n", { mode: 0o755 });
+    await expect(spawnHolder("", { command: planted, args: [] })).rejects.toThrow("Container executable lies inside a holder's writable root");
+    const nested = join(data, "nested");
+    mkdirSync(nested);
+    const tree = staging();
+    await expect(spawnHolder("true", {
+      allowWrite: [nested, tree.folder], filesystemOwnership: { readRoots: [], writeRoots: [nested, tree.folder], hostStorageRoots: [] },
+    }, tree)).rejects.toThrow("Container path lies inside another live holder's writable root");
+  });
+
+  it("refuses a write grant outside the captured envelope, and a working directory inside the runtime root", async () => {
+    const outside = join(root, "outside");
+    mkdirSync(outside);
+    const tree = staging();
+    await expect(spawnHolder("true", {
+      allowWrite: [outside, tree.folder], filesystemOwnership: { readRoots: [], writeRoots: [data, tree.folder], hostStorageRoots: [] },
+    }, tree)).rejects.toThrow("Container write grant is outside this holder's captured write roots");
+    await expect(spawnHolder("true", { cwd: requireMxcContainerStartRoot() })).rejects.toThrow("Container working directory is inside the sandbox runtime root");
+  });
+
+  it("admits a holder identity once, and refuses a child of a released parent", async () => {
+    const identity = {};
+    const parent = await spawnHolder("echo up; exec /bin/cat", { holder: identity, egressOwner: { kind: "worker", role: "plugin-child", pluginId: "p" } as never });
+    expect(await line(parent.process.stdout)).toBe("up");
+    await expect(spawnHolder("true", { holder: identity })).rejects.toThrow("Extension holder incarnation is invalid or already admitted");
+    await parent.release();
+    const workerData = join(root, "worker");
+    mkdirSync(workerData);
+    const tree = staging();
+    await expect(spawnHolder("true", {
+      parent, workerTransport: "output-only-v1", egressOwner: { kind: "worker", role: "worker", pluginId: "p", instanceId: "w" } as never,
+      allowWrite: [workerData, tree.folder], filesystemOwnership: { readRoots: [], writeRoots: [workerData, tree.folder], hostStorageRoots: [] },
+    }, tree)).rejects.toThrow("Extension parent backend is no longer admitted");
+    expect(existsSync(markers()) ? readdirSync(markers()) : []).toEqual([]);
   });
 });

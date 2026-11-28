@@ -1,5 +1,6 @@
 
 
+import { provenLinuxHolderRoute } from "./linux-holder-route.js";
 import { MxcExtensionReadinessRefusedError, MxcNativeEntryRequiredError, MxcProcessContractError, WorkerTransportUnsupportedError } from "./mxc-extension-errors.js";
 import { assertMxcExtensionFilesystemOwnership, type MxcExtensionFilesystemOwnership } from "./mxc-filesystem-ownership.js";
 import { mxcRuntimeRootFloorPath } from "./mxc-runtime-root.js";
@@ -1517,6 +1518,11 @@ export function assertExtensionStartAllowed(options?: { readonly backend: "mxc";
     if (!containerPlatform || getMacHolderCapability()?.state !== "ready") {
       throw new MxcProcessContractError("Native extension backend is not ready for this start");
     }
+    return;
+  }
+  // Linux has no extension plan: a native entry needs the holder route this app run proved.
+  if (nativeEntry && process.platform === "linux") {
+    if (provenLinuxHolderRoute() === undefined) throw new MxcProcessContractError("Native extension backend is not ready for this start");
     return;
   }
   const legacy = options !== undefined && "backend" in options ? undefined : options;

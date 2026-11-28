@@ -321,6 +321,8 @@ export interface StartLinuxHolderOptions {
   readonly currentDigest: () => string;
   /** The row-2 recheck. It runs synchronously after the group is registered and before the release byte. */
   readonly assertStillValid: () => void;
+  /** Synchronous, inside the gate after every check and before the release byte: the outer bwrap's marker (design 3 rule 4). */
+  readonly recordHolder?: (pid: number) => void;
   /** Runs before the gate releases: the Git snapshot of the write roots. */
   readonly beforeRelease?: () => Promise<void>;
   /**
@@ -426,6 +428,8 @@ export async function startLinuxHolder(call: LinuxHolderCall, options: StartLinu
       if (options.currentDigest() !== options.admittedDigest) {
         throw new MxcProcessContractError("Container holder launch changed after admission");
       }
+      // Last, once nothing refuses: the gate shell's pid is bwrap's once the release byte lets it exec.
+      if (spawned?.pid !== undefined) options.recordHolder?.(spawned.pid);
     },
   }).catch(async (error: unknown) => {
     // Nothing passed the gate. Its shell was killed by the gate; wait for its group so the owner can release.
