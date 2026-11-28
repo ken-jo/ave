@@ -163,6 +163,31 @@ afterEach(() => {
 });
 
 describe("SubscriptionProvidersController", () => {
+  it("removes the previous catalogue on disconnect and waits for a fresh catalogue on reconnect", async () => {
+    const { api, subscriptionRuntimeStatus, subscriptionListModels } = controllerApi();
+    let update: ((event: SubscriptionRuntimeStatusUpdatedEvent) => void) | undefined;
+    api.onSubscriptionRuntimeStatusUpdated = (listener) => { update = listener; return () => {}; };
+    render(<SubscriptionProvidersController api={api} />);
+    const row = "subscription-chooser:codex:gpt-5.6-codex";
+    await screen.findByTestId(row);
+    if (!update) throw new Error("Missing subscription status listener");
+
+    subscriptionRuntimeStatus.mockResolvedValueOnce({ ok: true, status: signedOutStatus("codex") });
+    act(() => update?.({ provider: "codex", revision: 1 }));
+    await waitFor(() => expect(screen.getByTestId("subscription-state:codex")).toHaveTextContent("signed-out"));
+    expect(screen.queryByTestId(row)).toBeNull();
+
+    const fresh = deferred<Awaited<ReturnType<typeof subscriptionListModels>>>();
+    subscriptionListModels.mockReturnValueOnce(fresh.promise);
+    act(() => update?.({ provider: "codex", revision: 2 }));
+    await waitFor(() => expect(screen.getByTestId("subscription-state:codex")).toHaveTextContent("connected"));
+    expect(screen.queryByTestId(row)).toBeNull();
+    await act(async () => fresh.resolve({
+      ok: true, status: connectedStatus("codex"), models: [{ id: "example-fresh", displayName: "Fresh", isDefault: false }],
+    }));
+    expect(await screen.findByTestId("subscription-chooser:codex:example-fresh")).toBeVisible();
+  });
+
   it("projects quota reports through status invalidations and clears them on sign-out", async () => {
     const { api } = controllerApi();
     let connected = true;

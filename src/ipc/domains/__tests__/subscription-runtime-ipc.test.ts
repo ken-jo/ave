@@ -6,6 +6,7 @@ import type {
 } from "../../../shared/subscription-runtime.js";
 import { MAX_COMPOSER_ATTACHMENT_COUNT, MAX_COMPOSER_IMAGE_BYTES } from "../../../shared/composer-image-input.js";
 import { SETTINGS } from "../../../shared/ipc-channels.js";
+import { CHANNELS } from "../../../contract/app-contract.js";
 import { deferred } from "../../../__tests__/test-helpers.js";
 import { makeAppIpcInvoker } from "./test-helpers.js";
 
@@ -219,7 +220,10 @@ beforeEach(async () => {
   localeMock.normalizeLocale.mockImplementation((value: unknown) => typeof value === "string" ? value : "en");
   localeMock.tryLoadLocaleMessages.mockResolvedValue(true);
   runtimeServiceMock.get.mockResolvedValue(runtime);
-  runtime.getStatus.mockImplementation(async (provider: SubscriptionRuntimeId) => readyStatus(provider));
+  runtime.getStatus.mockImplementation(async (provider: SubscriptionRuntimeId, options?: { onLiveRead?: () => void }) => {
+    options?.onLiveRead?.();
+    return readyStatus(provider);
+  });
   runtime.getCachedStatus.mockReturnValue(undefined);
   runtime.chooseExecutable.mockImplementation(async (provider: SubscriptionRuntimeId) => readyStatus(provider));
   runtime.forgetExecutable.mockImplementation(async (provider: SubscriptionRuntimeId) => readyStatus(provider));
@@ -611,17 +615,139 @@ describe("common subscription runtime IPC", () => {
     expect(events[1]!.revision).toBeGreaterThan(events[0]!.revision);
   });
 
+  it("publishes the saved model only after sign-in and ignores a status reply that predates logout", async () => {
+    const selection = { kind: "subscription", provider: "codex", model: "example-model" } as const;
+    const { deps, currentLlm } = makeStatefulSelectionDeps({
+      provider: "openai", vendors: { openai: { model: "example-api-model", baseUrl: null } }, activeChatRuntime: selection,
+    });
+    const send = vi.fn();
+    deps.getAppWindows.mockReturnValue([{
+      isDestroyed: () => false,
+      webContents: { isDestroyed: () => false, send },
+    }]);
+    const signedOut = { ...readyStatus("codex"), connection: "signed-out" } as const;
+    const noModel = { kind: "none", reason: "no-connected-provider" };
+    const pending = { ...signedOut, connection: "pending", pendingLogin: "browser" } as const;
+    const { registerSettingsHandlers } = await import("../settings.js");
+    registerSettingsHandlers(deps as never);
+    const readStatus = () => invoke(CHANNELS.settings.subscriptionRuntimeStatus, "codex");
+    const readModels = () => send.mock.calls.filter(([channel]) => channel === SETTINGS.updated).map(([, snapshot]) => snapshot.activeChatModel);
+
+    runtime.getStatus.mockResolvedValueOnce(signedOut);
+    await readStatus();
+    await vi.waitFor(() => expect(readModels()).toEqual([noModel]));
+    runtime.startLogin.mockResolvedValueOnce(pending);
+    await expect(invoke(CHANNELS.settings.subscriptionStartLogin, "codex", "browser")).resolves.toMatchObject({ ok: true, status: pending });
+    runtime.cancelLogin.mockResolvedValueOnce(signedOut);
+    await expect(invoke(CHANNELS.settings.subscriptionCancelLogin, "codex")).resolves.toMatchObject({ ok: true, status: signedOut });
+    expect(readModels()).toEqual([noModel]);
+
+    runtime.startLogin.mockResolvedValueOnce(pending);
+    await invoke(CHANNELS.settings.subscriptionStartLogin, "codex", "browser");
+    await readStatus();
+    await vi.waitFor(() => expect(readModels()).toEqual([noModel, selection]));
+
+    const oldRead = deferred<SubscriptionRuntimeStatus>();
+    runtime.getStatus.mockReturnValueOnce(oldRead.promise);
+    const staleReply = readStatus();
+    runtime.logout.mockResolvedValueOnce(signedOut);
+    await invoke(CHANNELS.settings.subscriptionLogout, "codex");
+    await vi.waitFor(() => expect(readModels()).toEqual([noModel, selection, noModel]));
+    oldRead.resolve(readyStatus("codex"));
+    await staleReply;
+    expect(readModels()).toEqual([noModel, selection, noModel]);
+    expect(currentLlm().activeChatRuntime).toEqual(selection);
+  });
+
+  it.each([
+    ["sign-out", "connected", "signed-out"],
+    ["reconnect", "signed-out", "connected"],
+  ] as const)("marks an opening status reply superseded after %s", async (change, before, after) => {
+    const selection = { kind: "subscription", provider: "codex", model: "example-model" } as const;
+    const { deps, currentLlm } = makeStatefulSelectionDeps({
+      provider: "openai", vendors: { openai: { model: "example-api-model", baseUrl: null } }, activeChatRuntime: selection,
+    });
+    const send = vi.fn();
+    deps.getAppWindows.mockReturnValue([{
+      isDestroyed: () => false,
+      webContents: { isDestroyed: () => false, send },
+    }]);
+    const { registerSettingsHandlers } = await import("../settings.js");
+    registerSettingsHandlers(deps as never);
+    const refresh = () => invoke(CHANNELS.settings.subscriptionRuntimeStatus, "codex", { refresh: true });
+    const oldStatus = { ...readyStatus("codex"), connection: before };
+    const newStatus = { ...oldStatus, connection: after };
+    const noModel = { kind: "none", reason: "no-connected-provider" };
+    const readModels = () => send.mock.calls.filter(([name]) => name === SETTINGS.updated).map(([, snapshot]) => snapshot.activeChatModel);
+    const expectedModels = before === "connected" ? [selection, noModel] : [noModel, selection];
+    runtime.getStatus.mockResolvedValueOnce(oldStatus);
+    await refresh();
+    await vi.waitFor(() => expect(readModels()).toEqual(expectedModels.slice(0, 1)));
+
+    const live = deferred<SubscriptionRuntimeStatus>();
+    runtime.getStatus.mockReturnValueOnce(live.promise);
+    const opening = refresh();
+    await vi.waitFor(() => expect(runtime.getStatus).toHaveBeenCalledTimes(2));
+    if (change === "sign-out") {
+      runtime.logout.mockResolvedValueOnce(newStatus);
+      await invoke(CHANNELS.settings.subscriptionLogout, "codex");
+    } else {
+      runtime.getStatus.mockResolvedValueOnce(newStatus);
+      await expect(refresh()).resolves.toEqual({ ok: true, status: newStatus });
+    }
+    await vi.waitFor(() => expect(readModels()).toEqual(expectedModels));
+    live.resolve(oldStatus);
+
+    await expect(opening).resolves.toMatchObject({ superseded: true });
+    expect(readModels()).toEqual(expectedModels);
+    expect(currentLlm().activeChatRuntime).toEqual(selection);
+  });
+
+  it("publishes a live disconnect even when a later read returns cached status", async () => {
+    const selection = { kind: "subscription", provider: "codex", model: "example-model" } as const;
+    const { deps } = makeStatefulSelectionDeps({
+      provider: "openai", vendors: { openai: { model: "example-api-model", baseUrl: null } }, activeChatRuntime: selection,
+    });
+    const send = vi.fn();
+    deps.getAppWindows.mockReturnValue([{
+      isDestroyed: () => false,
+      webContents: { isDestroyed: () => false, send },
+    }]);
+    const { registerSettingsHandlers } = await import("../settings.js");
+    registerSettingsHandlers(deps as never);
+    const channel = CHANNELS.settings.subscriptionRuntimeStatus;
+    const connected = readyStatus("codex");
+    const signedOut = { ...connected, connection: "signed-out" } as const;
+    const live = deferred<SubscriptionRuntimeStatus>();
+    const readModels = () => send.mock.calls.filter(([name]) => name === SETTINGS.updated).map(([, snapshot]) => snapshot.activeChatModel);
+
+    runtime.getStatus.mockResolvedValueOnce(connected);
+    await invoke(channel, "codex");
+    await vi.waitFor(() => expect(readModels()).toEqual([selection]));
+    runtime.getStatus.mockReturnValueOnce(live.promise).mockResolvedValueOnce(connected);
+    const refresh = invoke(channel, "codex", { refresh: true });
+    await vi.waitFor(() => expect(runtime.getStatus).toHaveBeenCalledTimes(2));
+    await expect(invoke(channel, "codex")).resolves.toEqual({ ok: true, status: connected });
+    live.resolve(signedOut);
+    await expect(refresh).resolves.toEqual({ ok: true, status: signedOut });
+    await vi.waitFor(() => expect(readModels()).toEqual([selection, { kind: "none", reason: "no-connected-provider" }]));
+
+    runtime.getStatus.mockResolvedValueOnce(connected);
+    await expect(invoke(channel, "codex")).resolves.toEqual({ ok: true, status: connected });
+    expect(readModels()).toEqual([selection, { kind: "none", reason: "no-connected-provider" }]);
+  });
+
   it("serves settings status and catalog reads from the runtime cache unless the user asks to check again", async () => {
     const deps = makeDeps();
     const { registerSettingsHandlers } = await import("../settings.js");
     registerSettingsHandlers(deps as never);
 
     await invoke("ave:settings:subscription:status", "claude-code");
-    expect(runtime.getStatus).toHaveBeenLastCalledWith("claude-code", { allowCached: true });
+    expect(runtime.getStatus).toHaveBeenLastCalledWith("claude-code", expect.objectContaining({ allowCached: true }));
     await invoke("ave:settings:subscription:status", "claude-code", { refresh: true });
-    expect(runtime.getStatus).toHaveBeenLastCalledWith("claude-code", { allowCached: false });
+    expect(runtime.getStatus).toHaveBeenLastCalledWith("claude-code", expect.objectContaining({ allowCached: false }));
     await invoke("ave:settings:subscription:status", "claude-code", { refresh: "yes" });
-    expect(runtime.getStatus).toHaveBeenLastCalledWith("claude-code", { allowCached: true });
+    expect(runtime.getStatus).toHaveBeenLastCalledWith("claude-code", expect.objectContaining({ allowCached: true }));
     await invoke("ave:settings:subscription:list-models", "codex");
     expect(runtime.listModels).toHaveBeenLastCalledWith("codex", { allowCached: true });
   });

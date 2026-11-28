@@ -42,6 +42,7 @@ import type {
   SubscriptionRuntimeErrorCode,
   SubscriptionRuntimeId,
   SubscriptionRuntimeModelsResult,
+  SubscriptionRuntimeStatusResult,
   SubscriptionUsageSource,
   SubscriptionRuntimeStatusUpdatedEvent,
 } from "../../shared/subscription-runtime.js";
@@ -497,7 +498,7 @@ export type AvePreloadApi = {
   listLlmModels: (request: LlmModelListRequest) => Promise<LlmModelListResult>;
 
   /** `refresh` re-runs discovery instead of reusing main's settled status. */
-  subscriptionRuntimeStatus: (provider: SubscriptionRuntimeId, options?: { refresh?: boolean }) => Promise<SubscriptionRuntimeActionResult>;
+  subscriptionRuntimeStatus: (provider: SubscriptionRuntimeId, options?: { refresh?: boolean }) => Promise<SubscriptionRuntimeStatusResult>;
   subscriptionChooseRuntime: (provider: SubscriptionRuntimeId) => Promise<SubscriptionRuntimeActionResult>;
   subscriptionForgetRuntime: (provider: SubscriptionRuntimeId) => Promise<SubscriptionRuntimeActionResult>;
   subscriptionVerifyRuntime: (provider: SubscriptionRuntimeId) => Promise<SubscriptionRuntimeActionResult>;

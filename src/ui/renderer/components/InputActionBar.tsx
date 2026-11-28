@@ -10,6 +10,7 @@ import { SandboxRestartDialog } from "./SandboxRestartDialog.js";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../../components/ui/tooltip.js";
 import { t } from "../../../i18n/runtime.js";
 import { useTranslation } from "../../../i18n/react.js";
+import { resolveActiveChatModel } from "../../../shared/active-chat-model.js";
 import { isSubscriptionRuntimeId, subscriptionRuntimeDescriptor } from "../../../shared/subscription-runtime.js";
 import type { PluginEntry } from "../types.js";
 import { SandboxStatusBadge } from "./SandboxStatusBadge.js";
@@ -761,28 +762,63 @@ function ModelQuickPicker({
   const billingId = useId();
   const [anyPinned, setAnyPinned] = useState(true);
   const runtimeRef = useRef<string>("api");
+  const setPickerOpen = (next: boolean) => {
+    if (!next) setChoices([]);
+    setOpen(next);
+  };
   const { level, levelLabels, currentLabel, custom, apply } = useReasoningLevel({ enabled: enableThinking, onToggle: onToggleThinking });
 
   // Read on open and follow the broadcast while open: a pin added in Settings, or a pick made in another tile, shows up without reopening.
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
-    const take = (settings: AppSettings) => {
+    let opening = true;
+    let latestUpdate: AppSettings | undefined;
+    const take = (settings: AppSettings, activeChatModel = settings.activeChatModel) => {
       if (cancelled) return;
-      const nextChoices = modelCardChoices(settings.llm);
+      const nextChoices = modelCardChoices(settings.llm, activeChatModel);
       setChoices(nextChoices);
       setAnyPinned((settings.llm.pinnedModels ?? []).length > 0);
       runtimeRef.current = settings.llm.activeChatRuntime?.kind ?? "api";
     };
     const api = getApi();
-    void api.getSettings().then(take).catch(() => { /* card stays as it was */ });
-    const unsubscribe = api.onSettingsUpdated(take);
+    const unsubscribe = api.onSettingsUpdated((settings) => {
+      latestUpdate = settings;
+      if (opening && settings.llm.activeChatRuntime?.kind === "subscription") {
+        take(settings, resolveActiveChatModel(settings.llm, false));
+      } else {
+        take(settings);
+      }
+    });
+    void api.getSettings().catch(() => undefined).then(async (initial) => {
+      const settings = latestUpdate ?? initial;
+      if (cancelled) return;
+      const route = settings?.llm.activeChatRuntime;
+      if (!settings || route?.kind !== "subscription") {
+        opening = false;
+        if (settings && !latestUpdate) take(settings);
+        return;
+      }
+      take(settings, resolveActiveChatModel(settings.llm, false));
+      const result = await api.subscriptionRuntimeStatus(route.provider, { refresh: true }).catch(() => null);
+      opening = false;
+      const latest = latestUpdate ?? settings;
+      if (result?.superseded) {
+        take(latest);
+        return;
+      }
+      const current = latest.llm.activeChatRuntime;
+      const connected = result?.ok === true && result.status.provider === route.provider && result.status.connection === "connected";
+      take(latest, current?.kind === "subscription" && current.provider === route.provider
+        ? resolveActiveChatModel(latest.llm, connected)
+        : latest.activeChatModel);
+    }).catch(() => {});
     return () => { cancelled = true; unsubscribe(); };
   }, [open]);
 
   const pick = async (choice: Extract<ModelCardChoice, { kind: "api" }>) => {
     if (choice.current) {
-      setOpen(false);
+      setPickerOpen(false);
       return;
     }
     const api = getApi();
@@ -800,12 +836,12 @@ function ModelQuickPicker({
     // A pinned model is an API model, so picking one is also choosing the API path when a subscription runtime was in use. That switch
     // has its own request; the settings patch refuses a runtime change on its own; and it is the same one the settings chooser sends.
     if (runtimeRef.current !== "api") await api.subscriptionUseApiForChat();
-    setOpen(false);
+    setPickerOpen(false);
   };
 
   const reasoningLabel = t("bottomActionRow.reasoning");
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover open={open} onOpenChange={setPickerOpen}>
       <PopoverTrigger asChild>
         <button
           type="button"
@@ -839,7 +875,7 @@ function ModelQuickPicker({
           title={`${reasoningLabel}: ${currentLabel}`}
           onClick={() => {
             openedByChipRef.current = !open;
-            setOpen(!open);
+            setPickerOpen(!open);
           }}
           className={`-m-1.5 flex shrink-0 cursor-pointer items-center p-1.5 transition-colors duration-(--motion-fast) ease-(--motion-ease-standard) hover:text-input-bar-action focus:outline-none focus-visible:ring-1 focus-visible:ring-input-bar-focus motion-reduce:transition-none ${level > 0 ? "text-input-bar-action" : "text-input-bar-placeholder"}`}
         >
@@ -922,7 +958,7 @@ function ModelQuickPicker({
         ) : null}
         <button
           type="button"
-          onClick={() => { setOpen(false); onOpenModelSettings(); }}
+          onClick={() => { setPickerOpen(false); onOpenModelSettings(); }}
           data-testid="model-quick-picker-more"
           className="flex w-full items-center justify-between border-t border-border/(--opacity-medium) px-3 py-2 text-sm hover:bg-accent focus:outline-none focus-visible:bg-accent"
         >

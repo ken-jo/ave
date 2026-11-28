@@ -14,7 +14,7 @@ import type {
 import type { InputStatusRow } from "../../hooks/use-input-status-row.js";
 import { TEST_IDS, testIdSelector } from "../../../../shared/test-ids.js";
 import { getLlmThinkingBudgetRungs } from "../../../../shared/llm-vendor-defaults.js";
-import { readRepoFile } from "../../../../__tests__/test-helpers.js";
+import { deferred, readRepoFile } from "../../../../__tests__/test-helpers.js";
 import { mergeLlmPatch } from "../../../../data/settings-normalization.js";
 import type { LLMSettingsPatch } from "../../../../data/settings-store.js";
 import { fakeAppSettings } from "../../../../../test/renderer/fake-app-settings.js";
@@ -29,8 +29,9 @@ const codingPreset: RolePreset = { id: "coding", name: "코딩", systemPromptAdd
 const getSettings = vi.fn();
 const updateSettings = vi.fn();
 const hasApiKey = vi.fn(async () => false);
-const onSettingsUpdated = vi.fn(() => () => {});
+const onSettingsUpdated = vi.fn((_listener: (settings: ReturnType<typeof fakeAppSettings>) => void) => () => {});
 const subscriptionUseApiForChat = vi.fn(async () => ({ ok: true }));
+const subscriptionRuntimeStatus = vi.fn(async (provider: string) => ({ ok: true, status: { provider, connection: "connected" } }));
 // The permission card persists through the same two calls Settings → Permissions makes.
 const setMode = vi.fn();
 const reviewerDispatch = vi.fn();
@@ -62,6 +63,7 @@ vi.mock("../../api-client.js", () => ({
     updateSettings,
     onSettingsUpdated,
     subscriptionUseApiForChat,
+    subscriptionRuntimeStatus,
     hasApiKey,
   }),
 }));
@@ -808,9 +810,85 @@ describe("model card (status-row model cell)", () => {
     expect(subscriptionUseApiForChat).not.toHaveBeenCalled();
   });
 
+  it("checks current status before showing a saved subscription when opening the picker", async () => {
+    const llm = { activeChatRuntime: { kind: "subscription", provider: "codex", model: "example-model" } } as const;
+    getSettings.mockResolvedValue(fakeAppSettings({ llm, activeChatModel: { ...llm.activeChatRuntime } }));
+    subscriptionRuntimeStatus.mockResolvedValueOnce({ ok: true, status: { provider: "codex", connection: "signed-out" } });
+    const view = renderBar();
+    await act(async () => { fireEvent.click(view.getByTestId("iab-status-model")); });
+    expect(view.queryByTestId("model-quick-picker-option:codex")).toBeNull();
+    expect(subscriptionRuntimeStatus).toHaveBeenLastCalledWith("codex", { refresh: true });
+  });
+
+  it("checks current status after a settings broadcast beats the initial picker read", async () => {
+    const llm = { activeChatRuntime: { kind: "subscription", provider: "codex", model: "example-model" } } as const;
+    const connected = fakeAppSettings({ llm, activeChatModel: llm.activeChatRuntime });
+    const initialSettings = deferred<typeof connected>();
+    const live = deferred<Awaited<ReturnType<typeof subscriptionRuntimeStatus>>>();
+    getSettings.mockReturnValue(initialSettings.promise);
+    subscriptionRuntimeStatus.mockReturnValueOnce(live.promise);
+    const view = renderBar();
+    fireEvent.click(view.getByTestId("iab-status-model"));
+    const update = onSettingsUpdated.mock.lastCall?.[0];
+    if (!update) throw new Error("Missing settings listener");
+    act(() => update(connected));
+    await act(async () => { initialSettings.resolve(connected); });
+    expect(subscriptionRuntimeStatus).toHaveBeenLastCalledWith("codex", { refresh: true });
+
+    act(() => update(connected));
+    await act(async () => { live.resolve({ ok: true, status: { provider: "codex", connection: "signed-out" } }); });
+    expect(view.queryByTestId("model-quick-picker-option:codex")).toBeNull();
+  });
+
+  it.each([
+    ["sign-out", "connected"],
+    ["reconnect", "signed-out"],
+  ] as const)("keeps the settings projection after a superseded opening reply following %s", async (_change, staleConnection) => {
+    const llm = { activeChatRuntime: { kind: "subscription", provider: "codex", model: "example-model" } } as const;
+    const connected = fakeAppSettings({ llm, activeChatModel: llm.activeChatRuntime });
+    const signedOut = fakeAppSettings({ llm, activeChatModel: { kind: "none", reason: "no-connected-provider" } });
+    const reconnecting = staleConnection === "signed-out";
+    const latest = reconnecting ? connected : signedOut;
+    const live = deferred<Awaited<ReturnType<typeof subscriptionRuntimeStatus>>>();
+    getSettings.mockResolvedValue(reconnecting ? signedOut : connected);
+    subscriptionRuntimeStatus.mockReturnValueOnce(live.promise);
+    const view = renderBar();
+    await act(async () => { fireEvent.click(view.getByTestId("iab-status-model")); });
+    expect(subscriptionRuntimeStatus).toHaveBeenLastCalledWith("codex", { refresh: true });
+    const update = onSettingsUpdated.mock.lastCall?.[0];
+    if (!update) throw new Error("Missing settings listener");
+    act(() => update(latest));
+    const reply = { ok: true, status: { provider: "codex", connection: staleConnection }, superseded: true } as const;
+    await act(async () => { live.resolve(reply); });
+
+    expect(view.getByTestId("model-quick-picker")).toBeInTheDocument();
+    const row = view.queryByTestId("model-quick-picker-option:codex");
+    expect(row?.closest("[role='option']")?.getAttribute("aria-selected") === "true")
+      .toBe(latest.activeChatModel.kind === "subscription");
+    expect(updateSettings).not.toHaveBeenCalled();
+  });
+
+  it("drops a disconnected subscription from an open picker and adds it back after sign-in", async () => {
+    const llm = { activeChatRuntime: { kind: "subscription", provider: "codex", model: "example-model" } } as const;
+    const connected = fakeAppSettings({ llm, activeChatModel: { ...llm.activeChatRuntime } });
+    const signedOut = fakeAppSettings({ llm, activeChatModel: { kind: "none", reason: "no-connected-provider" } });
+    getSettings.mockResolvedValue(connected);
+    const view = renderBar();
+    fireEvent.click(view.getByTestId("iab-status-model"));
+    const row = "model-quick-picker-option:codex";
+    expect(await view.findByTestId(row)).toHaveTextContent("example-model");
+    const update = onSettingsUpdated.mock.lastCall?.[0];
+    if (!update) throw new Error("Missing settings listener");
+    act(() => update(signedOut));
+    expect(view.queryByTestId(row)).toBeNull();
+    act(() => update(connected));
+    expect(await view.findByTestId(row)).toHaveTextContent("example-model");
+  });
+
   it("also leaves a subscription runtime for the API path when a pin is chosen", async () => {
     getSettings.mockResolvedValue({
       ...settingsWithPins(),
+      activeChatModel: { kind: "subscription", provider: "codex", model: null },
       llm: { ...settingsWithPins().llm, activeChatRuntime: { kind: "subscription", provider: "codex" } },
     });
     const { getByTestId, findByTestId } = renderBar({ onOpenModelSettings: vi.fn() });
@@ -834,6 +912,7 @@ describe("model card (status-row model cell)", () => {
   it("checks the subscription provider — not an API model — while a subscription runtime is active", async () => {
     getSettings.mockResolvedValue({
       ...settingsWithPins(),
+      activeChatModel: { kind: "subscription", provider: "codex", model: null },
       llm: { ...settingsWithPins().llm, activeChatRuntime: { kind: "subscription", provider: "codex" } },
     });
     const { getByTestId, findByTestId } = renderBar({ onOpenModelSettings: vi.fn() });
@@ -859,6 +938,7 @@ describe("model card (status-row model cell)", () => {
   it("disables the subscription row — it is a marker, not a pick, and stays out of the tab order", async () => {
     getSettings.mockResolvedValue({
       ...settingsWithPins(),
+      activeChatModel: { kind: "subscription", provider: "codex", model: null },
       llm: { ...settingsWithPins().llm, activeChatRuntime: { kind: "subscription", provider: "codex" } },
     });
     const { getByTestId, findByTestId } = renderBar({ onOpenModelSettings: vi.fn() });
@@ -879,6 +959,7 @@ describe("model card (status-row model cell)", () => {
   it("shows only subscription billing on the card without querying API credentials", async () => {
     getSettings.mockResolvedValue({
       ...settingsWithPins(),
+      activeChatModel: { kind: "subscription", provider: "claude-code", model: null },
       llm: { ...settingsWithPins().llm, activeChatRuntime: { kind: "subscription", provider: "claude-code" } },
     });
     hasApiKey.mockClear();
@@ -896,6 +977,7 @@ describe("model card (status-row model cell)", () => {
   it("names the subscription provider in the primary column when the runtime has no model of its own", async () => {
     getSettings.mockResolvedValue({
       ...settingsWithPins(),
+      activeChatModel: { kind: "subscription", provider: "kimi-code", model: null },
       llm: { ...settingsWithPins().llm, activeChatRuntime: { kind: "subscription", provider: "kimi-code" } },
     });
     const { getByTestId, findByTestId } = renderBar({ onOpenModelSettings: vi.fn() });
@@ -917,6 +999,7 @@ describe("model card (status-row model cell)", () => {
   it("labels an unchosen subscription model as the CLI default", async () => {
     getSettings.mockResolvedValue({
       ...settingsWithPins(),
+      activeChatModel: { kind: "subscription", provider: "claude-code", model: null },
       llm: { ...settingsWithPins().llm, activeChatRuntime: { kind: "subscription", provider: "claude-code" } },
     });
     const { getByTestId, findByTestId } = renderBar({ onOpenModelSettings: vi.fn() });

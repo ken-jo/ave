@@ -9,9 +9,11 @@ import {
   getLlmVendorSettings,
 } from "../../shared/llm-vendor-defaults.js";
 import { marketplaceProviderPresetSecretKey } from "../../shared/marketplace-package-assets.js";
+import type { SubscriptionRuntimeId } from "../../shared/subscription-runtime.js";
 import { secretKeyFor } from "../llm/provider-factory.js";
 
 export type ActiveChatModelSettingsReader = Pick<SettingsService, "get" | "hasStoredSecret">;
+export type SubscriptionConnectionReader = (provider: SubscriptionRuntimeId) => Promise<boolean>;
 
 /** Check credential presence without decrypting on settings broadcasts. */
 async function activeApiRouteConnected(
@@ -41,11 +43,12 @@ async function activeApiRouteConnected(
 export async function resolveMainActiveChatModel(
   settingsService: ActiveChatModelSettingsReader,
   env: NodeJS.ProcessEnv = process.env,
+  isSubscriptionConnected?: SubscriptionConnectionReader,
 ): Promise<ActiveChatModel> {
   const llm = settingsService.get("llm");
-  // Subscription and retired-provider decisions must not consult the API secret store.
-  if (llm.activeChatRuntime.kind === "subscription" || llm.retiredProvider) {
-    return resolveActiveChatModel(llm, false);
+  if (llm.activeChatRuntime.kind === "subscription") {
+    return resolveActiveChatModel(llm, await isSubscriptionConnected?.(llm.activeChatRuntime.provider) === true);
   }
+  if (llm.retiredProvider) return resolveActiveChatModel(llm, false);
   return resolveActiveChatModel(llm, await activeApiRouteConnected(settingsService, env));
 }

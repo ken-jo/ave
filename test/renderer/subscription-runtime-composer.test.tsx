@@ -6,6 +6,7 @@ import { submitChatMessage } from "./helpers.js";
 import { fakeLlmSettings } from "../../src/shared/__tests__/fake-llm-settings.js";
 import { MOCK_DEFAULT_SETTINGS } from "./mock-ave-api.js";
 import { TEST_IDS, testIdSelector } from "../../src/shared/test-ids.js";
+import type { ActiveChatModel } from "../../src/shared/active-chat-model.js";
 
 const CODEX_CHAT_READY = {
   ok: true,
@@ -37,6 +38,15 @@ const CODEX_CHAT_READY = {
       files: true,
     },
   },
+};
+
+const CONNECTED_SUBSCRIPTION_SETTINGS = {
+  ...MOCK_DEFAULT_SETTINGS,
+  llm: {
+    ...fakeLlmSettings({ provider: "openai", model: "gpt-4o-mini" }),
+    activeChatRuntime: { kind: "subscription", provider: "codex" },
+  },
+  activeChatModel: { kind: "subscription", provider: "codex", model: null } satisfies ActiveChatModel,
 };
 
 function subscriptionChatReady(provider: "codex" | "kimi-code") {
@@ -93,13 +103,7 @@ describe("subscription runtime composer readiness", () => {
     const { container, api } = await renderApp({
       hasApiKey: false,
       subscriptionRuntimeStatus: CODEX_CHAT_READY,
-      settings: {
-        ...MOCK_DEFAULT_SETTINGS,
-        llm: {
-          ...fakeLlmSettings({ provider: "openai", model: "gpt-4o-mini" }),
-          activeChatRuntime: { kind: "subscription", provider: "codex" },
-        },
-      },
+      settings: CONNECTED_SUBSCRIPTION_SETTINGS,
     });
 
     await waitFor(() => expect(api.subscriptionRuntimeStatus).toHaveBeenCalledWith("codex"));
@@ -223,13 +227,7 @@ describe("subscription runtime composer readiness", () => {
     const { container, api } = await renderApp({
       hasApiKey: false,
       subscriptionRuntimeStatus: CODEX_CHAT_READY,
-      settings: {
-        ...MOCK_DEFAULT_SETTINGS,
-        llm: {
-          ...fakeLlmSettings({ provider: "openai", model: "gpt-4o-mini" }),
-          activeChatRuntime: { kind: "subscription", provider: "codex" },
-        },
-      },
+      settings: CONNECTED_SUBSCRIPTION_SETTINGS,
     });
 
     const nativeAttach = {

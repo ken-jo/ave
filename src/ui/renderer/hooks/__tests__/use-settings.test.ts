@@ -50,7 +50,7 @@ describe("useSettings", () => {
       },
     };
     const { api } = makeMockAveApi({ settings: initial, hasApiKey: false });
-    expect(modelCardChoices(initial.llm)).toContainEqual(expect.objectContaining({ modelId: model, current: true }));
+    expect(modelCardChoices(initial.llm, initial.activeChatModel)).toContainEqual(expect.objectContaining({ modelId: model, current: true }));
 
     installModelCatalog({ ...catalog, providers: {
       ...catalog.providers,
@@ -61,7 +61,7 @@ describe("useSettings", () => {
       await waitFor(() => expect(result.current.settingsLoaded).toBe(true));
       expect(result.current.llmModel).toBe(model);
       expect(result.current.retiredLlmProvider).toBeNull();
-      expect(modelCardChoices(initial.llm)).not.toContainEqual(expect.objectContaining({ modelId: model }));
+      expect(modelCardChoices(initial.llm, initial.activeChatModel)).not.toContainEqual(expect.objectContaining({ modelId: model }));
       expect(result.current.deprecatedLlmModel).toMatchObject({ model });
     } finally {
       installModelCatalog(catalog);
@@ -561,6 +561,31 @@ describe("useSettings", () => {
     expect(result.current.subscriptionRuntimePolicy.chatUnavailable).toBe(false);
     expect(result.current.subscriptionImagesReady).toBe(false);
     expect(result.current.subscriptionFilesReady).toBe(false);
+  });
+
+  it("rechecks a pending sign-in and refreshes the selected subscription on focus", async () => {
+    const settings = makeSettings();
+    settings.llm.activeChatRuntime = { kind: "subscription", provider: "codex" };
+    const { api } = makeMockAveApi({ settings });
+    const signIn = { ok: true, status: { provider: "codex", runtime: "ready", connection: "pending", pendingLogin: "browser" } };
+    const signedOut = { ok: true, status: { ...signIn.status, connection: "signed-out", pendingLogin: null } };
+    api.subscriptionRuntimeStatus = vi.fn().mockResolvedValueOnce(signIn).mockResolvedValue(signedOut);
+
+    vi.useFakeTimers();
+    try {
+      const { unmount } = renderHook(() => useSettings(api as unknown as AveApi));
+      await act(async () => {});
+      expect(api.subscriptionRuntimeStatus).toHaveBeenCalledTimes(1);
+      await act(async () => vi.advanceTimersByTimeAsync(3_000));
+      expect(api.subscriptionRuntimeStatus).toHaveBeenCalledTimes(2);
+      await act(async () => { window.dispatchEvent(new Event("focus")); });
+      expect(api.subscriptionRuntimeStatus).toHaveBeenLastCalledWith("codex", { refresh: true });
+      unmount();
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(api.subscriptionRuntimeStatus).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("fails closed synchronously when an active subscription status revision arrives", async () => {

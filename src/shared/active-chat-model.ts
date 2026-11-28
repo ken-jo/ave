@@ -35,18 +35,18 @@ export interface ActiveChatModelSettings {
   activeChatRuntime: ActiveChatRuntime;
 }
 
-/** Main owns the credential check; subscription sign-in readiness is a separate policy. */
+/** The connection belongs to the saved route. Transport readiness is a separate policy. */
 export function resolveActiveChatModel(
   llm: ActiveChatModelSettings,
-  apiRouteConnected: boolean,
+  routeConnected: boolean,
 ): ActiveChatModel {
   const runtime = llm.activeChatRuntime;
+  if (runtime.kind !== "subscription" && llm.retiredProvider) return { kind: "none", reason: "retired-provider" };
+  if (!routeConnected) return { kind: "none", reason: "no-connected-provider" };
   if (runtime.kind === "subscription") {
     const model = runtime.model?.trim() ?? "";
     return { kind: "subscription", provider: runtime.provider, model: model || null };
   }
-  if (llm.retiredProvider) return { kind: "none", reason: "retired-provider" };
-  if (!apiRouteConnected) return { kind: "none", reason: "no-connected-provider" };
   const model = activeLlmRouteModel(llm);
   if (!model) return { kind: "none", reason: "no-model-selected" };
   const presetId = llm.provider === "openai-compatible" ? llm.marketplaceProviderPresetId?.trim() : undefined;

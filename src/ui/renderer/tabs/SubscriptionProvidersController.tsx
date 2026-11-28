@@ -108,7 +108,7 @@ function projectStatus(
     pendingDeviceCode: status.pendingDeviceCode,
     pendingLoginMethod: status.pendingLogin,
     canOpenLoginBrowser: status.canOpenVerificationUrl,
-    models: state.models,
+    models: status.connection === "connected" ? state.models : [],
     capabilities: status.capabilities,
     version: status.version,
     errorCode: state.errorCode,
@@ -176,6 +176,7 @@ export function useSubscriptionProviders(api: AveApi) {
           ...(result.status
             ? { status: result.status }
             : !result.ok ? { status: null } : {}),
+          ...(result.status?.connection !== "connected" ? { models: [] } : {}),
           errorCode: result.ok ? null : result.error,
           statusRefreshPending: false,
         },
@@ -218,6 +219,7 @@ export function useSubscriptionProviders(api: AveApi) {
           ...(statusCurrent && result.status
             ? { status: result.status }
             : statusCurrent && !result.ok ? { status: null } : {}),
+          ...(statusCurrent && result.status?.connection !== "connected" ? { models: [] } : {}),
           errorCode: result.ok ? null : result.error,
           busyAction: null,
           ...(statusCurrent ? { statusRefreshPending: false } : {}),
@@ -279,6 +281,7 @@ export function useSubscriptionProviders(api: AveApi) {
       const previous = current[provider];
       if (mutationRevisionByProviderRef.current[provider] !== mutationRevision) return current;
       if (statusRevisionByProviderRef.current[provider] !== statusRevision) {
+        modelsRequestedByProviderRef.current[provider] = false;
         return {
           ...current,
           [provider]: { ...previous, busyAction: null },
@@ -306,7 +309,7 @@ export function useSubscriptionProviders(api: AveApi) {
         [provider]: {
           ...previous,
           status: result.status,
-          models,
+          models: result.status.connection === "connected" ? models : [],
           errorCode: null,
           busyAction: null,
           statusRefreshPending: false,
@@ -360,7 +363,7 @@ export function useSubscriptionProviders(api: AveApi) {
 
   useEffect(() => {
     const pendingProviders = PROVIDER_IDS.filter((provider) =>
-      states[provider].status?.connection === "pending",
+      states[provider].status?.connection === "pending" || states[provider].status?.pendingLogin != null,
     );
     if (pendingProviders.length === 0) return undefined;
     const timer = window.setInterval(() => {

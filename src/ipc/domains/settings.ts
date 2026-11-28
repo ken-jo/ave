@@ -54,6 +54,7 @@ import type { ActiveChatModel } from "../../shared/active-chat-model.js";
 import {
   resolveMainActiveChatModel,
   type ActiveChatModelSettingsReader,
+  type SubscriptionConnectionReader,
 } from "../../engine/turn/active-chat-model.js";
 import {
   MAX_SUBSCRIPTION_RUNTIME_MODEL_ID_LENGTH,
@@ -65,6 +66,7 @@ import {
   type SubscriptionRuntimeId,
   type SubscriptionRuntimeModelsResult,
   type SubscriptionRuntimeStatus,
+  type SubscriptionRuntimeStatusResult,
   type SubscriptionRuntimeStatusUpdatedEvent,
 } from "../../shared/subscription-runtime.js";
 import {
@@ -104,7 +106,7 @@ function normalizeSubscriptionModel(value: unknown): string | undefined | null {
 }
 
 /** The settings shape the renderer sees. Authoritative remote route lineage (`a2aRemote`) is main-only and never projected to the renderer. The upstream proxy (`upstreamProxy`) crosses only through its own permissions channels; the validated local model location stays in main. The session indexing switch is projected only when applicable.
- * `activeChatModel` is the one derived field. A vendor block always names a model, so the stored settings cannot say whether chat has a model at all; only main, which holds the secret store, can. Every renderer surface that names the active model reads it from here. */
+ * Main resolves the active model from the saved route and its connection. */
 export type RendererSettingsSnapshot = Omit<AppSettings, "a2aRemote" | "upstreamProxy" | "memoryEmbedding"> & {
   readonly activeChatModel: ActiveChatModel;
 };
@@ -112,10 +114,11 @@ export type RendererSettingsSnapshot = Omit<AppSettings, "a2aRemote" | "upstream
 export async function rendererSettingsSnapshot(
   settingsService: ActiveChatModelSettingsReader & Pick<SettingsService, "getAll">,
   snapshot: AppSettings = settingsService.getAll(),
+  isSubscriptionConnected?: SubscriptionConnectionReader,
 ): Promise<RendererSettingsSnapshot> {
   // `upstreamProxy` has its own channels (permissions upstreamProxyGet/Set).
   const { a2aRemote: _mainOnly, upstreamProxy: _ownChannel, memoryEmbedding: _embeddingConfig, ...projected } = structuredClone(snapshot);
-  const activeChatModel = await resolveMainActiveChatModel(settingsService);
+  const activeChatModel = await resolveMainActiveChatModel(settingsService, undefined, isSubscriptionConnected);
   if (process.platform === "win32") {
     if ((await refreshWindowsBackgroundAdmission("switches")).areSwitchesAvailable()) {
       projected.features = { ...projected.features, sessionIndexingWithoutContainment: projected.features?.sessionIndexingWithoutContainment ?? true };
@@ -128,7 +131,7 @@ export async function rendererSettingsSnapshot(
 
 /** Shared by every handler that mutates settings and must re-broadcast the projected snapshot to all windows. */
 export async function broadcastSettingsSnapshot(
-  deps: Pick<IpcDeps, "settingsService" | "getAppWindows" | "getMainWindow">,
+  deps: Pick<IpcDeps, "settingsService" | "getAppWindows" | "getMainWindow" | "isSubscriptionConnected">,
   shouldBroadcast: () => boolean = () => true,
 ): Promise<void> {
   const snapshot = deps.settingsService.getAll();
@@ -139,7 +142,7 @@ export async function broadcastSettingsSnapshot(
   // `appearance`; a partial snapshot (e.g. a test double or a pre-migration settings file) must not crash the broadcast. setLocale coerces undefined to the English default.
   const nextLocale = normalizeLocale(snapshot.appearance?.language);
   const localeLoaded = await tryLoadLocaleMessages(nextLocale);
-  const rendererSnapshot = await rendererSettingsSnapshot(deps.settingsService, snapshot);
+  const rendererSnapshot = await rendererSettingsSnapshot(deps.settingsService, snapshot, deps.isSubscriptionConnected);
   // Locale loading yields. Suppress stale snapshots (and their locale side effect) if any
   // settings mutation or a caller-specific ownership hand-off occurred while it was in flight.
   if (
@@ -439,6 +442,40 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
       };
     }
   };
+  const connectionByProvider = new Map<SubscriptionRuntimeId, { connected: boolean }>();
+  const mutationsByProvider = new Map<SubscriptionRuntimeId, number>();
+  const statusRequestByProvider = new Map<SubscriptionRuntimeId, number>();
+  const startStatusRequest = (provider: SubscriptionRuntimeId): number => {
+    const request = (statusRequestByProvider.get(provider) ?? 0) + 1;
+    statusRequestByProvider.set(provider, request);
+    return request;
+  };
+  const publishActiveSubscriptionStatus = (
+    provider: SubscriptionRuntimeId,
+    request: number | undefined,
+    result: SubscriptionRuntimeActionResult,
+    notify: boolean,
+  ): boolean => {
+    if (statusRequestByProvider.get(provider) !== request || mutationsByProvider.has(provider)) return false;
+    const connected = result.ok && result.status.connection === "connected";
+    const previous = connectionByProvider.get(provider);
+    if (previous?.connected === connected) return true;
+    const observation = { connected };
+    connectionByProvider.set(provider, observation);
+    if (notify && previous) publishSubscriptionRuntimeStatusUpdated(provider);
+    const route = settingsService.get("llm")?.activeChatRuntime;
+    if (route?.kind !== "subscription" || route.provider !== provider) return true;
+    const transition = activeChatRuntimeTransitionRevision;
+    void broadcastSettingsSnapshot({
+      ...deps,
+      isSubscriptionConnected: async (candidate) => candidate === provider && connected,
+    }, () => transition === activeChatRuntimeTransitionRevision
+      && !mutationsByProvider.has(provider)
+      && connectionByProvider.get(provider) === observation).catch((err) => {
+      log.warn({ err }, "Could not publish subscription status");
+    });
+    return true;
+  };
   const runSubscriptionMutation = async (
     provider: SubscriptionRuntimeId,
     operation: (
@@ -446,7 +483,17 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
       runtimeId: SubscriptionRuntimeId,
     ) => Promise<SubscriptionRuntimeStatus>,
   ): Promise<SubscriptionRuntimeActionResult> => {
-    const result = await runSubscriptionAction(provider, operation);
+    startStatusRequest(provider);
+    mutationsByProvider.set(provider, (mutationsByProvider.get(provider) ?? 0) + 1);
+    let result: SubscriptionRuntimeActionResult;
+    try {
+      result = await runSubscriptionAction(provider, operation);
+    } finally {
+      const remaining = (mutationsByProvider.get(provider) ?? 1) - 1;
+      if (remaining > 0) mutationsByProvider.set(provider, remaining);
+      else mutationsByProvider.delete(provider);
+    }
+    publishActiveSubscriptionStatus(provider, startStatusRequest(provider), result, false);
     publishSubscriptionRuntimeStatusUpdated(provider);
     return result;
   };
@@ -653,7 +700,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
 
   ipcMain.handle(CHANNELS.settings.get, (event) => {
     if (!validateHostRendererSender(event)) { auditUnauthorized(CHANNELS.settings.get); return UNAUTHORIZED_FRAME; }
-    return rendererSettingsSnapshot(settingsService);
+    return rendererSettingsSnapshot(settingsService, undefined, deps.isSubscriptionConnected);
   });
 
   // Read-only, and presence only: the answer is a list of settings paths the environment is forcing ON, never the value of any variable. A control that
@@ -747,7 +794,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
       && Object.keys(llmPatch).length === 1 && Object.keys(partial).length === 1) {
       const result = await settingsService.patch(partial);
       await broadcastSettingsSnapshot(deps);
-      return rendererSettingsSnapshot(settingsService, result);
+      return rendererSettingsSnapshot(settingsService, result, deps.isSubscriptionConnected);
     }
     // LOW: validate vendors["azure-foundry"].baseUrl at write time so an invalid Foundry endpoint is rejected before it reaches the settings store.
     const foundryVendorPatch = (llmPatch?.vendors as Record<string, unknown> | undefined)
@@ -906,7 +953,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     if (marketplaceWritten) hooks?.marketplaceSettingsChanged();
     await broadcastSettingsSnapshot(deps);
     if (switchRefused) return { ok: false, error: "invalid-input" };
-    return rendererSettingsSnapshot(settingsService, result);
+    return rendererSettingsSnapshot(settingsService, result, deps.isSubscriptionConnected);
   });
 
   ipcMain.handle(CHANNELS.settings.setApiKey, async (e, vendor: string, apiKey: string) => {
@@ -1039,10 +1086,17 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     if (!isSubscriptionRuntimeId(providerValue)) {
       return { ok: false as const, error: "subscription-provider-not-supported" as const };
     }
-    // Only the user's explicit "check again" re-runs discovery; other card reads may reuse a settled status.
+    // Explicit refreshes re-run discovery; other card reads may reuse a settled status.
     const refresh = typeof optionsValue === "object" && optionsValue !== null
       && (optionsValue as { refresh?: unknown }).refresh === true;
-    return runSubscriptionAction(providerValue, (runtime, provider) => runtime.getStatus(provider, { allowCached: !refresh }));
+    let request = refresh ? startStatusRequest(providerValue) : undefined;
+    const result = await runSubscriptionAction(providerValue, (runtime, provider) => runtime.getStatus(provider, {
+      allowCached: !refresh,
+      onLiveRead: () => { request ??= startStatusRequest(provider); },
+    }));
+    const current = publishActiveSubscriptionStatus(providerValue, request, result, true);
+    const reply: SubscriptionRuntimeStatusResult = refresh && !current ? { ...result, superseded: true } : result;
+    return reply;
   });
   ipcMain.handle(CHANNELS.settings.subscriptionChooseRuntime, async (e, providerValue: unknown) => {
     if (!validateHostRendererSender(e)) {

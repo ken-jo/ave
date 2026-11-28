@@ -4,10 +4,7 @@ import type { SandboxCapabilityInfo } from "../../../shared/sandbox-capability-i
 import type { AveApi } from "../types.js";
 import { shortVendorLabel } from "./status-bar/vendor-label.js";
 import { t } from "../../../i18n/runtime.js";
-import {
-  isSubscriptionRuntimeId,
-  subscriptionRuntimeDescriptor,
-} from "../../../shared/subscription-runtime.js";
+import { subscriptionRuntimeDescriptor } from "../../../shared/subscription-runtime.js";
 import { normalizeExecutionMode, type ExecutionModeDisplay } from "../../../shared/permission-mode.js";
 import type { ModelBillingRoute } from "../utils/model-billing.js";
 import type { ActiveChatModel } from "../../../shared/active-chat-model.js";
@@ -44,6 +41,7 @@ export function useInputStatusRow(api: AveApi): InputStatusRow {
   useEffect(() => {
     if (typeof api.getSettings !== "function") return;
     let cancelled = false;
+    let receivedUpdate = false;
 
     const apply = (settings: Awaited<ReturnType<AveApi["getSettings"]>>) => {
       if (cancelled) return;
@@ -56,13 +54,11 @@ export function useInputStatusRow(api: AveApi): InputStatusRow {
         setVendorModel("");
         return;
       }
-      const activeRuntime = settings.llm?.activeChatRuntime;
-      if (activeRuntime?.kind === "subscription" && isSubscriptionRuntimeId(activeRuntime.provider)) {
-        const model = typeof activeRuntime.model === "string" ? activeRuntime.model.trim() : "";
-        const descriptor = subscriptionRuntimeDescriptor(activeRuntime.provider);
+      if (active.kind === "subscription") {
+        const descriptor = subscriptionRuntimeDescriptor(active.provider);
         // A CLI with no chosen model runs its own default; say so rather than name a model Ave did not pick.
         const unchosen = descriptor.offersCliDefaultModel ? `${descriptor.planName} · ${t("llmTab.cliDefaultModel")}` : descriptor.planName;
-        setVendorModel(model.length > 0 ? `${descriptor.planName} · ${model}` : unchosen);
+        setVendorModel(active.model ? `${descriptor.planName} · ${active.model}` : unchosen);
         return;
       }
       const provider = settings.llm?.provider ?? "";
@@ -71,13 +67,18 @@ export function useInputStatusRow(api: AveApi): InputStatusRow {
       setVendorModel(model.length > 0 ? `${vendorLabel} · ${model}` : vendorLabel);
     };
 
-    void api.getSettings().then(apply).catch(() => {
+    void api.getSettings().then((settings) => {
+      if (!receivedUpdate) apply(settings);
+    }).catch(() => {
       // Awareness-only; leave the prior value on transient read failure.
     });
 
     const unsubs: Array<() => void> = [];
     if (typeof api.onSettingsUpdated === "function") {
-      unsubs.push(api.onSettingsUpdated((next) => apply(next)));
+      unsubs.push(api.onSettingsUpdated((next) => {
+        receivedUpdate = true;
+        apply(next);
+      }));
     }
     return () => {
       cancelled = true;

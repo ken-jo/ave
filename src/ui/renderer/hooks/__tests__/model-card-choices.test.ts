@@ -1,11 +1,17 @@
 import { describe, expect, it } from "vitest";
 import { fakeLlmSettings } from "../../../../shared/__tests__/fake-llm-settings.js";
-import { modelCardChoices } from "../use-settings.js";
+import { modelCardChoices as choicesForModel } from "../use-settings.js";
+import type { ActiveChatModel } from "../../../../shared/active-chat-model.js";
 import type { AppSettings } from "../../types.js";
 import { fakeAppSettings } from "../../../../../test/renderer/fake-app-settings.js";
 
 function llm(overrides: Partial<AppSettings["llm"]>): AppSettings["llm"] {
   return { ...fakeAppSettings({ llm: fakeLlmSettings({ provider: "openai", model: "gpt-5.4" }) }).llm, ...overrides };
+}
+
+const noConnectedModel = { kind: "none", reason: "no-connected-provider" } as const;
+function modelCardChoices(settings: AppSettings["llm"], active: ActiveChatModel = noConnectedModel) {
+  return choicesForModel(settings, active);
 }
 
 describe("modelCardChoices", () => {
@@ -110,7 +116,7 @@ describe("modelCardChoices", () => {
     const choices = modelCardChoices(llm({
       pinnedModels: ["gpt-5.4"],
       activeChatRuntime: { kind: "subscription", provider: "codex", model: "gpt-5.1-codex" },
-    }));
+    }), { kind: "subscription", provider: "codex", model: "gpt-5.1-codex" });
     expect(choices).toEqual([
       expect.objectContaining({ kind: "subscription", provider: "codex", vendorLabel: "ChatGPT", modelId: "gpt-5.1-codex", current: true }),
       expect.objectContaining({ kind: "api", vendor: "openai", modelId: "gpt-5.4", current: false }),
@@ -121,20 +127,18 @@ describe("modelCardChoices", () => {
     const choices = modelCardChoices(llm({
       pinnedModels: [],
       activeChatRuntime: { kind: "subscription", provider: "kimi-code" },
-    }));
+    }), { kind: "subscription", provider: "kimi-code", model: null });
     expect(choices).toEqual([
       expect.objectContaining({ kind: "subscription", provider: "kimi-code", vendorLabel: "Kimi", modelId: null, current: true }),
     ]);
   });
 
-  it("still checks the provider, and shows its raw id, for an unrecognised subscription id — never a borrowed descriptor", () => {
+  it.each(["codex", "unknown-runtime"])("hides a saved subscription with no live connection (%s)", (provider) => {
     const choices = modelCardChoices(llm({
       pinnedModels: ["gpt-5.4"],
-      activeChatRuntime: { kind: "subscription", provider: "unknown-runtime" } as never,
+      activeChatRuntime: { kind: "subscription", provider, model: "example-model" } as never,
     }));
     expect(choices).toEqual([
-      // Unknown runtime ids must not borrow the descriptor registry's first label.
-      expect.objectContaining({ kind: "subscription", provider: "unknown-runtime", vendorLabel: "unknown-runtime", modelId: null, current: true }),
       expect.objectContaining({ kind: "api", vendor: "openai", modelId: "gpt-5.4", current: false }),
     ]);
   });

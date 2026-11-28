@@ -545,6 +545,8 @@ export type SubscriptionRuntimeActionResult =
       status?: SubscriptionRuntimeStatus;
     };
 
+export type SubscriptionRuntimeStatusResult = SubscriptionRuntimeActionResult & { superseded?: true };
+
 export type SubscriptionRuntimeModelsResult =
   | {
       ok: true;

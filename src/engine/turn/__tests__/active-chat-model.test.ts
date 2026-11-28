@@ -133,15 +133,21 @@ describe("main's active chat model", () => {
     });
   });
 
-  it("reports a selected subscription runtime without consulting the secret store", async () => {
+  it("exposes the saved subscription model only while its provider is connected", async () => {
+    const selection = { kind: "subscription", provider: "codex", model: "example-model" } as const;
     const settingsService = fakeSettings({
-      llm: { activeChatRuntime: { kind: "subscription", provider: "codex", model: "gpt-6.1-sol" } },
+      llm: { activeChatRuntime: selection },
     });
-    expect(await resolveMainActiveChatModel(settingsService)).toEqual({
+    const isSubscriptionConnected = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    expect((await rendererSettingsSnapshot(settingsService, undefined, isSubscriptionConnected)).activeChatModel)
+      .toEqual({ kind: "none", reason: "no-connected-provider" });
+    expect((await rendererSettingsSnapshot(settingsService, undefined, isSubscriptionConnected)).activeChatModel).toEqual({
       kind: "subscription",
       provider: "codex",
-      model: "gpt-6.1-sol",
+      model: "example-model",
     });
+    expect(isSubscriptionConnected.mock.calls).toEqual([["codex"], ["codex"]]);
+    expect(settingsService.get("llm").activeChatRuntime).toEqual(selection);
     expect(settingsService.hasStoredSecret).not.toHaveBeenCalled();
   });
 

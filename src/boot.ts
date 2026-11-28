@@ -737,7 +737,9 @@ export async function bootstrap(
       }
     },
   });
-  ctx.subscriptionProviderFactory = createSubscriptionChatLoopBindings().subscriptionProviderFactory;
+  const subscriptionBindings = createSubscriptionChatLoopBindings();
+  ctx.subscriptionProviderFactory = subscriptionBindings.subscriptionProviderFactory;
+  ctx.isSubscriptionConnected = subscriptionBindings.isSubscriptionConnected;
 
   // Permission policy P4 — reviewer agent + PermissionManager broadcast wiring.
   await wireReviewerAndPermissions(ctx);

@@ -840,6 +840,7 @@ describe("bootstrap() integration lock", () => {
         "getPluginToolInvoker",
         "getSubAgentRunner",
         "idleScheduler",
+        "isSubscriptionConnected",
         "listChatGroupLoops",
         "listPluginAuthPartitionsService",
         "mcpAppModelContext",

@@ -1207,10 +1207,11 @@ export class SubscriptionRuntimeService {
   // Read-only status. A connected account remains unavailable until verify() proves isolation.
   async getStatus(
     runtimeId: SubscriptionRuntimeId,
-    options: SubscriptionReadOptions = {},
+    options: SubscriptionReadOptions & { onLiveRead?: () => void } = {},
   ): Promise<SubscriptionRuntimeStatus> {
     this.assertRunning();
     return this.withStableErrors(() => this.readThrough(this.cachedStatuses, runtimeId, options, async () => {
+      options.onLiveRead?.();
       if (runtimeId === "codex") {
         const refreshPlanUsage = options.allowCached !== true || !this.planUsage.get("codex");
         return this.projectCodexStatus(await this.codexClient.getStatus(refreshPlanUsage));
@@ -1478,13 +1479,14 @@ export class SubscriptionRuntimeService {
     }
     let safetyEpoch = this.safetyEpoch(safeSelection.provider);
     let status = await this.getStatus(safeSelection.provider);
+    if (status.connection !== "connected") notifyStatusChanged(safeSelection.provider);
     this.assertSafetyEpochCurrent(safeSelection.provider, safetyEpoch);
     // A persisted selection survives app restart, while the in-memory safety proof intentionally does not. Re-prove only for an explicit model turn.
     if (!status.capabilities.chat && isConnectedAndReady(status)) {
       status = await this.verify(safeSelection.provider);
       this.assertRunning();
       safetyEpoch = this.safetyEpoch(safeSelection.provider);
-      if (status.capabilities.chat) notifyStatusChanged(safeSelection.provider);
+      if (status.capabilities.chat || status.connection !== "connected") notifyStatusChanged(safeSelection.provider);
     }
     if (!status.capabilities.chat) throw new SubscriptionRuntimeServiceError("subscription-chat-unavailable");
 

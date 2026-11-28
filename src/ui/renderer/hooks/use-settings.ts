@@ -327,29 +327,32 @@ export function useSettings(api: AveApi): UseSettingsResult {
       return;
     }
 
-    const requestId = ++subscriptionStatusRequestRef.current;
+    const provider = activeSubscriptionRuntime.provider;
     setSubscriptionRuntimeCapabilities(null);
     setSubscriptionRuntimeProvableOnUse(false);
-    void api.subscriptionRuntimeStatus(activeSubscriptionRuntime.provider)
-      .then((result) => {
-        if (!isMountedRef.current || requestId !== subscriptionStatusRequestRef.current) return;
-        if (
-          result.ok !== true
-          || result.status.provider !== activeSubscriptionRuntime.provider
-        ) {
-          setSubscriptionRuntimeCapabilities(DEFAULT_SUBSCRIPTION_RUNTIME_CAPABILITIES);
-          return;
-        }
-        setSubscriptionRuntimeProvableOnUse(result.status.runtime === "ready" && result.status.connection === "connected");
-        setSubscriptionRuntimeCapabilities(
-          result.status.capabilities ?? DEFAULT_SUBSCRIPTION_RUNTIME_CAPABILITIES,
-        );
-      })
-      .catch(() => {
-        if (isMountedRef.current && requestId === subscriptionStatusRequestRef.current) {
-          setSubscriptionRuntimeCapabilities(DEFAULT_SUBSCRIPTION_RUNTIME_CAPABILITIES);
-        }
-      });
+    let poll: number | undefined;
+    const readStatus = async (refresh = false): Promise<void> => {
+      window.clearTimeout(poll);
+      const request = ++subscriptionStatusRequestRef.current;
+      const result = await (refresh
+        ? api.subscriptionRuntimeStatus(provider, { refresh: true })
+        : api.subscriptionRuntimeStatus(provider)).catch(() => null);
+      if (!isMountedRef.current || request !== subscriptionStatusRequestRef.current) return;
+      const status = result?.ok && result.status.provider === provider ? result.status : null;
+      if (status?.connection === "pending" || status?.pendingLogin != null) {
+        poll = window.setTimeout(() => void readStatus(), 3_000);
+      }
+      setSubscriptionRuntimeProvableOnUse(status?.runtime === "ready" && status.connection === "connected");
+      setSubscriptionRuntimeCapabilities(status?.capabilities ?? DEFAULT_SUBSCRIPTION_RUNTIME_CAPABILITIES);
+    };
+    const handleFocus = () => void readStatus(true);
+    void readStatus();
+    window.addEventListener("focus", handleFocus);
+    return () => {
+      window.clearTimeout(poll);
+      window.removeEventListener("focus", handleFocus);
+      subscriptionStatusRequestRef.current += 1;
+    };
   }, [api, activeSubscriptionRuntime, subscriptionStatusRevision]);
 
   const toggleThinking = useCallback(
@@ -453,7 +456,7 @@ export type ModelCardChoice = ApiModelCardChoice | SubscriptionModelCardChoice;
 
 /** Show the active runtime as checked and API pins as alternatives; resolve pins against offered models and retain user
  * order. */
-export function modelCardChoices(llm: AppSettings["llm"]): ModelCardChoice[] {
+export function modelCardChoices(llm: AppSettings["llm"], activeChatModel: ActiveChatModel): ModelCardChoice[] {
   const pinned = llm.pinnedModels ?? [];
   const offered = new Map<string, Set<LLMVendor>>();
   const active = llm.provider;
@@ -487,11 +490,7 @@ export function modelCardChoices(llm: AppSettings["llm"]): ModelCardChoice[] {
   for (const modelId of getVendorOption(active).modelOptions) {
     offer(active, modelId);
   }
-  // `kind === "subscription"` alone decides the branch: an unrecognised
-  // provider id must still keep the card off the API model it would
-  // otherwise mismark as current. `isSubscriptionRuntimeId` below only
-  // chooses how to *label* that provider — it never re-admits the API
-  // branch.
+  // A saved subscription keeps the stored API choice unchecked, even when the subscription is disconnected.
   const activeRuntime = llm.activeChatRuntime;
   const subscription = activeRuntime?.kind === "subscription" ? activeRuntime : null;
   const choices: ModelCardChoice[] = [];
@@ -515,20 +514,13 @@ export function modelCardChoices(llm: AppSettings["llm"]): ModelCardChoice[] {
   )) {
     choices.unshift({ kind: "api", vendor: active, vendorLabel: getVendorOption(active).label, modelId: currentModel, current: !llm.retiredProvider });
   }
-  if (subscription) {
-    const model = typeof subscription.model === "string" ? subscription.model.trim() : "";
-    // `subscriptionRuntimeDescriptor` falls back to its first entry for an id
-    // it does not recognise — fine for a lookup that only ever sees validated
-    // ids, wrong here: an unrecognised id must show as itself, never borrow
-    // another provider's label.
-    const vendorLabel = isSubscriptionRuntimeId(subscription.provider)
-      ? subscriptionRuntimeDescriptor(subscription.provider).planName
-      : subscription.provider;
+  if (activeChatModel?.kind === "subscription" && activeChatModel.provider === subscription?.provider
+    && isSubscriptionRuntimeId(activeChatModel.provider)) {
     choices.unshift({
       kind: "subscription",
-      provider: subscription.provider,
-      vendorLabel,
-      modelId: model.length > 0 ? model : null,
+      provider: activeChatModel.provider,
+      vendorLabel: subscriptionRuntimeDescriptor(activeChatModel.provider).planName,
+      modelId: activeChatModel.model,
       current: true,
     });
   }
