@@ -29,7 +29,7 @@ import {
 } from "./mxc-linux-raw-ip.js";
 import filterPins from "./mxc-linux-seccomp-pins.json" with { type: "json" };
 import { atOrUnder, canonicalPath, posixPolicyLookups, rankPosixContainerRows, type PosixFilesystemGrants, type PosixPolicyLookups } from "./mxc-posix.js";
-import { requireMxcContainerStartRoot } from "./mxc-runtime-root.js";
+import { canonicalWhereItExists, requireMxcContainerStartRoot } from "./mxc-runtime-root.js";
 import { buildPolicyModel, type PolicyFloorRow, type PolicyModel, policyFloorRow, policyGrantRow } from "./policy-model.js";
 import { buildMandatorySandboxWritePolicy } from "./sandbox-write-policy.js";
 import { containsGlobChars, globPatternBaseDir } from "./sandbox-path-spelling.js";
@@ -425,8 +425,9 @@ export function buildBubblewrapHolderRequest(input: {
  */
 export function linuxHolderWatchedRoots(writeRoots: readonly string[], longLived: boolean): string[] {
   if (!longLived) return [];
-  const aveOwned = [...aveHomeReadBoundaryRoots(), ...appOwnedSandboxPrivateRoots(), requireMxcContainerStartRoot()];
-  return writeRoots.filter(root => !aveOwned.some(owned => atOrUnder(root, owned, false)));
+  // Compared, and returned, in the canonical form the ranker's rows take.
+  const aveOwned = [...aveHomeReadBoundaryRoots(), ...appOwnedSandboxPrivateRoots(), requireMxcContainerStartRoot()].map(root => canonicalWhereItExists(root));
+  return writeRoots.map(root => canonicalWhereItExists(root)).filter(root => !aveOwned.some(owned => atOrUnder(root, owned, false)));
 }
 
 /** Any spelling of the root: a read base is the builder's to add, never a caller's. */

@@ -216,7 +216,22 @@ export interface WatchedRowClaim {
 }
 
 function refusal(path: string, cause?: unknown): Error {
-  return new Error(t("sandboxPolicy.windowsProtectedWriteRefused", { path }), cause === undefined ? undefined : { cause });
+  const message = process.platform === "linux" ? "sandboxPolicy.linuxProtectedWriteRefused" : "sandboxPolicy.windowsProtectedWriteRefused";
+  return new Error(t(message, { path }), cause === undefined ? undefined : { cause });
+}
+
+/**
+ * Linux: an empty folder another run's placeholder holds at a watched name (design 7.3). It is Ave's, not a name a
+ * holder created: it counts as absent until its run removes it, and from then on the name is watched like any other.
+ */
+let heldPlaceholderAt: (path: string) => boolean = () => false;
+
+export function setWatchedPlaceholderOccupant(occupied: (path: string) => boolean): void {
+  heldPlaceholderAt = occupied;
+}
+
+function vacant(path: string): boolean {
+  return entryAt(path) === undefined || heldPlaceholderAt(path);
 }
 
 /**
@@ -245,7 +260,7 @@ export function claimMxcWatchedRows(rows: readonly MxcWatchedRow[], context: Wat
               && facts?.volumeSerial === row.volumeSerial && facts.fileId === row.fileId
               && within(anchor, target) && key(anchor) !== key(target)
               // Still as ranked: once the first missing folder exists the name can carry an exact deny, so a stale ranking is refused.
-              && entryAt(join(anchor, relative(anchor, target).split(/[\\/]/)[0] ?? "")) === undefined
+              && vacant(join(anchor, relative(anchor, target).split(/[\\/]/)[0] ?? ""))
               && (known === undefined || (known.anchorIdentity.dev === before.dev && known.anchorIdentity.ino === before.ino))) {
               identity = { dev: before.dev, ino: before.ino };
             }
@@ -307,7 +322,7 @@ export function watchedProtectedRows(): readonly string[] {
 // A fresh check beneath the recorded folder: the folder must still be the recorded object before the name is looked up in it.
 function rowState(row: WatchedRow, rootCount = row.roots.size): "absent" | "present" | "unverifiable" {
   try {
-    const present = entryAt(row.path) !== undefined;
+    const present = !vacant(row.path);
     if (anchorsIntact(row)) return present ? "present" : "absent";
     // A replaced folder with nothing at the name leaves nothing to read once no contained process can still write there.
     return present || row.holders.size > 0 || (row.exact && rootCount > 0) ? "unverifiable" : "absent";

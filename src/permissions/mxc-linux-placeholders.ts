@@ -11,6 +11,7 @@ import {
   currentMxcRuntimeHost, requireMxcContainerStartRoot, type MxcRuntimeHost,
 } from "./mxc-runtime-root.js";
 import { atOrUnder, type PosixFilesystemGrants, type PosixPolicyLookups } from "./mxc-posix.js";
+import { setWatchedPlaceholderOccupant } from "./windows-watched-rows.js";
 
 const DirectoryIdentity = z.object({ device: z.string().regex(/^\d+$/u), inode: z.string().regex(/^\d+$/u) });
 const AbsolutePath = z.string().refine((path) => path !== "/" && posix.isAbsolute(path) && posix.normalize(path) === path);
@@ -225,6 +226,20 @@ export async function sweepMxcLinuxPlaceholders(
   }, { createTarget: false });
 }
 
+/** Whether `path` is a folder a live run's placeholder holds, by the journal and the folder's identity. */
+function isHeldPlaceholder(path: string): boolean {
+  try {
+    const registry = readRegistry(registryPath(currentMxcRuntimeHost()));
+    return registry.directories.some((directory) => directory.path === path && directory.identity !== undefined
+      && directory.owners.length > 0 && isSameDirectory(path, directory.identity));
+  } catch {
+    // Unreadable: the folder counts as present, so a watch refuses or quarantines rather than ignoring it.
+    return false;
+  }
+}
+
+if (process.platform === "linux") setWatchedPlaceholderOccupant(isHeldPlaceholder);
+
 export interface MxcLinuxPlaceholderHold<Grants> {
   readonly grants: Grants;
   validate(): void;
@@ -252,14 +267,25 @@ export async function holdMxcLinuxPlaceholders<Grants extends PosixFilesystemGra
     const registry = readRegistry(journal);
     if (sweepDeadRuns(registry, host)) saveRegistry(journal, registry);
     const tracked = new Map(registry.directories.map((directory) => [directory.path, directory]));
+    const heldHere = (path: string): boolean => {
+      const directory = tracked.get(path);
+      return directory?.identity !== undefined && isSameDirectory(path, directory.identity);
+    };
+    // Under a watched root a folder another run made for its placeholder is not the user's: the name is anchored on
+    // the user's own nearest folder, so it stays watched once that run removes what it made (design 7.3).
+    const underWatched = (path: string): boolean => lookups.watchedRoots?.some((root) => atOrUnder(path, root, false)) === true;
     const ranked = rank({
       ...lookups,
       exists(path) {
         const directory = tracked.get(path);
-        if (directory?.leaf && directory.identity !== undefined && isSameDirectory(path, directory.identity)) return false;
+        if (directory !== undefined && (directory.leaf || underWatched(path)) && heldHere(path)) return false;
         return lookups.exists(path);
       },
+      directoryIdentity(path) {
+        return underWatched(path) && heldHere(path) ? undefined : lookups.directoryIdentity(path);
+      },
     });
+    const ownRows = [...ranked.readwrite, ...ranked.readonly, ...ranked.denied, ...ranked.pins ?? []];
     // Another run's live placeholder under this launch's write roots is a protected name in that run's set, perhaps
     // not in this one's. Deny it here as well, so this container cannot remove it before the other mounts it.
     const foreignLeaves = registry.directories.filter((directory) => directory.leaf && directory.identity !== undefined
@@ -365,11 +391,13 @@ export async function holdMxcLinuxPlaceholders<Grants extends PosixFilesystemGra
         holderRecorded = true;
       },
       async releaseForeignClaims() {
-        const foreign = [...owned].filter((directory) => !created.has(directory.path));
+        // Only what this launch holds for the mask alone: a folder its own rows equal or sit under stays held.
+        const maskOnly = (path: string): boolean => !created.has(path) && !ownRows.some((row) => atOrUnder(row, path, false));
+        const foreign = [...owned].filter((directory) => maskOnly(directory.path));
         if (foreign.length === 0) return;
         await withFileLock(journal, async () => {
           const registry = readRegistry(journal);
-          dropOwnership(registry, id, (path) => !created.has(path));
+          dropOwnership(registry, id, maskOnly);
           registry.directories = registry.directories.filter((directory) => directory.owners.length > 0);
           saveRegistry(journal, registry);
         }, lockOptions);
