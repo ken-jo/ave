@@ -17,7 +17,7 @@ import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 
 import * as hostResources from "../../main/host-resources.js";
 import { MxcProcessContractError } from "../mxc-extension-errors.js";
 import {
-  AVE_APP_ID, createMxcRunStaging, currentMxcRuntimeHost, establishMxcRuntimeRoot, mxcCacheHome, MxcRuntimeRootError,
+  AVE_APP_ID, canonicalWhereItExists, createMxcRunStaging, currentMxcRuntimeHost, establishMxcRuntimeRoot, mxcCacheHome, MxcRuntimeRootError,
   _forgetMxcRuntimeRootForTest, mxcRunSocketPath, mxcRuntimeRootFloorPath, mxcStagingParent, removeMxcRunStaging,
   requireMxcContainerStartRoot, requireMxcRuntimeRoot, sweepMxcRunStaging,
   type MxcRuntimeHost,
@@ -99,9 +99,11 @@ describe.runIf(darwin)("macOS test runtime root isolation", () => {
 
   it("starts the worker with an isolated HOME for fixtures that use the OS directly", () => {
     const real = realpathSync.native(userInfo().homedir).toLowerCase();
+    const cache = canonicalWhereItExists(accountCache()).toLowerCase();
     const workerHome = realpathSync.native(homedir()).toLowerCase();
     expect(workerHome).not.toBe(real);
-    expect(workerHome.startsWith(`${real}/`)).toBe(false);
+    expect(workerHome).not.toBe(cache);
+    expect(workerHome.startsWith(`${cache}/`)).toBe(false);
   });
 
   it("uses an isolated runtime root even when HOME names the real account", () => {

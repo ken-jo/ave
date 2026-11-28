@@ -2,7 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir, userInfo } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { guardedNodeOptions } from "./lib/document-consumer-node-options.mjs";
@@ -264,10 +264,17 @@ if (isMainModule()) {
     ensureGeneratedAssets();
     const temp = tmpdir();
     if (process.platform === "darwin") {
-      const realHome = realpathSync.native(userInfo().homedir).toLowerCase();
-      const canonicalTemp = realpathSync.native(temp).toLowerCase();
-      if (canonicalTemp === realHome || canonicalTemp.startsWith(`${realHome}/`)) {
-        throw new Error("[electron-vitest-home] TMPDIR must be outside the real macOS account home");
+      const cache = resolve(userInfo().homedir, "Library", "Caches");
+      let canonicalCache = cache;
+      try {
+        canonicalCache = realpathSync.native(cache);
+      } catch {
+        // A cache that cannot be resolved can still be checked by its account path.
+      }
+      const caches = [cache, canonicalCache].map((path) => path.toLowerCase());
+      const tempPaths = [resolve(temp), realpathSync.native(temp)].map((path) => path.toLowerCase());
+      if (tempPaths.some((path) => caches.some((parent) => path === parent || path.startsWith(`${parent}/`)))) {
+        throw new Error("[electron-vitest-home] TMPDIR must be outside the real macOS account cache");
       }
     }
     const scratch = mkdtempSync(join(temp, "ave-vitest-"));
