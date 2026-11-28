@@ -12,5 +12,5 @@ export function defaultWindowsSuites(collected: readonly string[]): string[];
 export function tierWindowsSuites(collected: readonly string[], tiers: readonly WindowsPlanTier[]): string[];
 export function windowsTestCommands(files: readonly string[], bun?: string): string[][];
 export function windowsPlanTiers(value: string | undefined): WindowsPlanTier[];
-export function assertWindowsPlan(plan: unknown, collected: readonly string[], expectedTiers: readonly WindowsPlanTier[]): asserts plan is WindowsTestPlan;
-export function windowsShardFiles(plan: unknown, shard: number, root: string, expectedTiers: readonly WindowsPlanTier[], tier?: "default" | "tiers"): string[];
+export function assertWindowsPlan(plan: unknown, collected: readonly string[], expectedTiers?: readonly WindowsPlanTier[]): asserts plan is WindowsTestPlan;
+export function windowsShardFiles(plan: unknown, shard: number, root: string, expectedTiers?: readonly WindowsPlanTier[], tier?: "default" | "tiers"): string[];

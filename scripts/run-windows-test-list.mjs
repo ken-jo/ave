@@ -59,13 +59,14 @@ export function assertWindowsPlan(plan, collected, expectedTiers) {
   if (!Array.isArray(tiers) || tiers.some(tier => !WINDOWS_PLAN_TIERS.includes(tier)) || new Set(tiers).size !== tiers.length) {
     throw new Error(`Windows plan tiers must be a subset of ${WINDOWS_PLAN_TIERS.join(", ")}`);
   }
-  if (tiers.length !== expectedTiers.length || expectedTiers.some(tier => !tiers.includes(tier))) {
+  if (expectedTiers !== undefined
+    && (tiers.length !== expectedTiers.length || expectedTiers.some(tier => !tiers.includes(tier)))) {
     throw new Error("Windows plan tiers differ from the build selection");
   }
-  if (expectedTiers.length === 0) {
+  if (tiers.length === 0) {
     if (!Array.isArray(plan.tierShards) || plan.tierShards.length !== 0) throw new Error("Windows plan without tiers must have no tier shards");
   } else {
-    assertShardAssignment(plan.tierShards, WINDOWS_TIER_TEST_SHARDS, tierWindowsSuites(collected, expectedTiers), "Windows tier plan");
+    assertShardAssignment(plan.tierShards, WINDOWS_TIER_TEST_SHARDS, tierWindowsSuites(collected, tiers), "Windows tier plan");
   }
 }
 
@@ -112,9 +113,10 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
   if (process.argv.length !== 2) throw new Error("The Windows shard runner takes its plan and shard from the environment");
   const { AVE_WINDOWS_TEST_PLAN: planPath, AVE_WINDOWS_TEST_SHARD: shard, AVE_WINDOWS_TEST_TIER: tier = "default" } = process.env;
   if (!planPath || !/^[1-9]\d*$/u.test(shard ?? "")) throw new Error("A Windows test shard requires AVE_WINDOWS_TEST_PLAN and AVE_WINDOWS_TEST_SHARD");
-  const expectedTiers = windowsPlanTiers(process.env.AVE_WINDOWS_TEST_TIERS);
+  const selection = readTestOnlyFiles();
+  const expectedTiers = selection === null ? undefined : windowsPlanTiers(process.env.AVE_WINDOWS_TEST_TIERS);
   const inventory = windowsShardFiles(JSON.parse(readFileSync(planPath, "utf8")), Number(shard), process.cwd(), expectedTiers, tier);
-  const files = intersectTestOnlyFiles(inventory, readTestOnlyFiles());
+  const files = intersectTestOnlyFiles(inventory, selection);
   if (files.length === 0) {
     console.log(EMPTY_TEST_ONLY_NOTICE);
     process.exit(0);

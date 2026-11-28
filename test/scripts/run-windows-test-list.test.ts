@@ -44,7 +44,8 @@ describe("Windows test shard runner entry point", () => {
   const root = resolve(import.meta.dirname, "../..");
   const runner = join(root, "scripts/run-windows-test-list.mjs");
   function run(env: Record<string, string>, args: string[] = []) {
-    const base = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("AVE_WINDOWS_TEST_")));
+    const base = Object.fromEntries(Object.entries(process.env)
+      .filter(([key]) => !key.startsWith("AVE_WINDOWS_TEST_") && key !== "AVE_CI_TEST_ONLY_PLAN"));
     return spawnSync(process.execPath, [runner, ...args], { cwd: root, encoding: "utf8", env: { ...base, ...env } });
   }
   function withPlan(mutate: (plan: ReturnType<typeof planWindowsTests>) => void, check: (path: string) => void) {
@@ -62,8 +63,6 @@ describe("Windows test shard runner entry point", () => {
     ["a list argument", { AVE_WINDOWS_TEST_SHARD: "1", AVE_WINDOWS_TEST_PLAN: "plan.json" }, ["config/windows-native-tests.txt"],
       "takes its plan and shard from the environment"],
     ["a non-numeric shard", { AVE_WINDOWS_TEST_SHARD: "1/5", AVE_WINDOWS_TEST_PLAN: "plan.json" }, [], "requires AVE_WINDOWS_TEST_PLAN"],
-    ["a missing build tier declaration", { AVE_WINDOWS_TEST_SHARD: "1", AVE_WINDOWS_TEST_PLAN: "plan.json" }, [],
-      "AVE_WINDOWS_TEST_TIERS must name the selected tiers"],
   ])("refuses %s before running any suite", (_name, env, args, message) => {
     const result = run(env, args);
     expect(result.status).not.toBe(0);
