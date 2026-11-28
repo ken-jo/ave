@@ -6,10 +6,9 @@ import {
 } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { posix as posixPath, win32 as winPath } from "node:path";
-import { isPackagedElectronProcess } from "../boot/dev-flags.js";
+import { getIsPackaged, isConfigured, isPackagedElectronProcess } from "../boot/dev-flags.js";
 import { createLogger } from "../lib/logger.js";
 import { renameDirectorySyncOnce } from "../lib/transient-fs-lock-retry.js";
-import { getConfiguredHostResources } from "../main/host-resources.js";
 import { aveHome } from "../shared/ave-home.js";
 import { AVE_HOME_ISOLATION_GUARD_ACTIVE } from "../shared/ave-home-test-guard.js";
 import { MxcProcessContractError } from "./mxc-extension-errors.js";
@@ -98,7 +97,7 @@ export function mxcCacheHome(platform: NodeJS.Platform, env: Readonly<Record<str
 }
 
 function isPackagedHost(): boolean {
-  return getConfiguredHostResources()?.isPackaged ?? isPackagedElectronProcess();
+  return isConfigured() ? getIsPackaged() : isPackagedElectronProcess();
 }
 
 /** Under the test runner the root lives in the run's own directory, never in the account's cache. */
@@ -107,7 +106,10 @@ function currentCacheHome(): string {
   if (AVE_HOME_ISOLATION_GUARD_ACTIVE && !isPackagedHost()) {
     const flavor = platform === "win32" ? winPath : posixPath;
     const base = process.env.AVE_TEST_SANDBOX_BASE;
-    if (!base || !flavor.isAbsolute(base)) refuse("Container runtime tests require an absolute AVE_TEST_SANDBOX_BASE");
+    // Test setup uses the host's path spelling, while callers can simulate another platform.
+    if (!base || !(posixPath.isAbsolute(base) || winPath.isAbsolute(base))) {
+      refuse("Container runtime tests require an absolute AVE_TEST_SANDBOX_BASE");
+    }
     return flavor.join(base, "mxc-cache");
   }
   if (platform === "win32") return windowsLocalAppData(process.env, homedir());

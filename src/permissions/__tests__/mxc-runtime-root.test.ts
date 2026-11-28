@@ -11,9 +11,11 @@ import {
 } from "node:fs";
 import { createServer } from "node:net";
 import { homedir, tmpdir, userInfo } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, posix as posixPath, win32 as winPath } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 
+import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
+import * as devFlags from "../../boot/dev-flags.js";
 import * as hostResources from "../../main/host-resources.js";
 import { MxcProcessContractError } from "../mxc-extension-errors.js";
 import {
@@ -77,6 +79,40 @@ afterEach(() => {
   rmSync(scratch, { recursive: true, force: true });
 });
 
+describe("runtime root paths with a simulated platform", () => {
+  it.each([
+    ["darwin", String.raw`C:\scratch\run`, posixPath],
+    ["linux", String.raw`C:\scratch\run`, posixPath],
+    ["win32", "/scratch/run", winPath],
+  ] as const)("preserves the %s cache spelling for the absolute base %s", (platform, sandboxBase, flavor) => {
+    const nativePlatform = process.platform;
+    try {
+      setProcessPlatform(platform);
+      vi.stubEnv("AVE_TEST_SANDBOX_BASE", sandboxBase);
+      const cache = flavor.join(sandboxBase, "mxc-cache");
+      expect(currentMxcRuntimeHost().cacheHome).toBe(cache);
+      expect(mxcRuntimeRootFloorPath()).toBe(mxcRuntimeRootFloorPath(cache, platform));
+    } finally {
+      setProcessPlatform(nativePlatform);
+    }
+  });
+});
+
+it.runIf(posix)("keeps the startup root when a test switches to packaged resources", () => {
+  vi.stubEnv("AVE_TEST_SANDBOX_BASE", scratch);
+  const resources = vi.spyOn(hostResources, "getConfiguredHostResources")
+    .mockReturnValue({ resourcePath: scratch, isPackaged: false });
+  try {
+    const root = establishMxcRuntimeRoot();
+    resources.mockReturnValue({ resourcePath: scratch, isPackaged: true });
+    expect(requireMxcRuntimeRoot()).toBe(root);
+    expect(mxcRuntimeRootFloorPath()).toBe(root);
+  } finally {
+    resources.mockRestore();
+    _forgetMxcRuntimeRootForTest(join(scratch, "mxc-cache"));
+  }
+});
+
 describe.runIf(darwin)("macOS test runtime root isolation", () => {
   const accountCache = () => mxcCacheHome("darwin", {}, userInfo().homedir);
 
@@ -89,8 +125,7 @@ describe.runIf(darwin)("macOS test runtime root isolation", () => {
     } else {
       mkdirSync(cache);
     }
-    const resources = vi.spyOn(hostResources, "getConfiguredHostResources")
-      .mockReturnValue({ resourcePath: scratch, isPackaged: true });
+    const packaged = vi.spyOn(devFlags, "isPackagedElectronProcess").mockReturnValue(true);
     try {
       vi.stubEnv("HOME", accountHome);
       vi.stubEnv("VITEST", "true");
@@ -101,7 +136,7 @@ describe.runIf(darwin)("macOS test runtime root isolation", () => {
       expect(mxcRuntimeRootFloorPath()).toBe(join(realpathSync.native(cache), AVE_APP_ID, "mxc-runtime"));
       expect(currentMxcRuntimeHost().cacheHome).toBe(cache);
     } finally {
-      resources.mockRestore();
+      packaged.mockRestore();
     }
   });
 
