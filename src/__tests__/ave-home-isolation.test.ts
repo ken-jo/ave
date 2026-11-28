@@ -29,6 +29,16 @@ const refusal = /refusing to resolve AVE_HOME to .* from a test process; it is u
 const scratch = useTempDirs("ave-home-guard-");
 const link = useScratchLinks();
 
+it.runIf(process.platform === "darwin")("refuses a run scratch root inside the real account cache", () => {
+  const home = scratch();
+  const cache = join(home, "Library", "Caches");
+  mkdirSync(cache, { recursive: true });
+  const alias = link(cache, join(scratch(), "cache"));
+  for (const path of [cache, join(alias, "future-run")]) {
+    expect(() => configuredTestTmpRoot(home, path)).toThrow(/outside the real macOS account cache/u);
+  }
+});
+
 afterEach(() => {
   vi.mocked(userInfo).mockImplementation(actualOs.userInfo);
   for (const [name, value] of Object.entries(fileEnv)) {

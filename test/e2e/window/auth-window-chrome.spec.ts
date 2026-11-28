@@ -33,7 +33,7 @@ for (const kind of ["oauth", "cookie"] as const) {
       const origin = `http://127.0.0.1:${address.port}`;
       app = await launchElectron({
         args: [MAIN_ENTRY, `--user-data-dir=${resolve(home, "profile")}`, `--host-resolver-rules=MAP ${longHost} 127.0.0.1, MAP localhost 127.0.0.1`],
-        env: buildIsolatedElectronEnv({ AVE_HOME: resolve(home, "data") }),
+        env: buildIsolatedElectronEnv({ HOME: home, USERPROFILE: home, AVE_HOME: resolve(home, "data") }),
       });
       await app.firstWindow();
       const chunks = resolve(REPO_ROOT, "dist/src/main/chunks");

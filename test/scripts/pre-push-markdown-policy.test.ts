@@ -320,6 +320,8 @@ describe("documentation impact policy", () => {
         } else if (step.name === "Check documentation policy") {
           expect(step.if).toContain("steps.docs-impact.outputs.docs_only == 'true'");
           expect(step.run).toContain("check-asrt-version-claims.mjs");
+        } else if (step.name === "Download the test-only suite plan") {
+          expect(step.if).toBe("steps.docs-impact.outputs.docs_only != 'true' && needs.build.outputs.test_only == 'true'");
         } else {
           expect(step.if).toContain("steps.docs-impact.outputs.docs_only != 'true'");
         }

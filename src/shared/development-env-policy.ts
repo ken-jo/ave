@@ -19,6 +19,7 @@ const DEVELOPMENT_ENV_POLICY = [
   { name: "AVE_E2E_MARKETPLACE_SCHEDULER", lifecycle: "active", packaged: "scrub" },
   // Trusted an E2E-signed whitelist; host-secret grants now come from the app and local snapshots.
   { name: "AVE_E2E_WHITELIST_PUBLIC_KEY", lifecycle: "tombstone", packaged: "scrub" },
+  { name: "AVE_HOME_ISOLATION_GUARD_ACTIVE", lifecycle: "active", packaged: "scrub" },
   { name: "AVE_LOG_FILE", lifecycle: "active", packaged: "scrub" },
   { name: "AVE_LOG_FORMAT", lifecycle: "active", packaged: "scrub" },
   // Removed from plugin path resolution; retained as a scrub/audit tombstone.

@@ -340,6 +340,7 @@ async function launchSmoke(executable, timeoutMs) {
   const aveHomeDir = mkdtempSync(join(smokeTempRoot, "ave-packaged-home-"));
   const env = prepareElectronLaunchEnv({
     ...process.env,
+    ...(process.platform === "darwin" ? { HOME: userDataDir } : {}),
     ELECTRON_ENABLE_LOGGING: "1",
     AVE_DEV_CONSOLE: "0",
     AVE_USER_DATA_DIR: userDataDir,

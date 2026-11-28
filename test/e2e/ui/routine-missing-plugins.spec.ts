@@ -23,7 +23,7 @@ test("missing-plugin routines retain their status and can be removed", async ({}
   ] }));
   const launch = () => launchElectron({
     args: [MAIN_ENTRY, `--user-data-dir=${userData}`, "--no-sandbox"],
-    env: Object.fromEntries(Object.entries(buildIsolatedElectronEnv({ AVE_HOME: aveHome, AVE_DEV: "1", AVE_E2E: "1", AVE_MAIN_ENTRY: MAIN_ENTRY, NODE_ENV: "test", ELECTRON_DISABLE_SECURITY_WARNINGS: "1" })).filter((entry): entry is [string, string] => entry[1] !== undefined)),
+    env: Object.fromEntries(Object.entries(buildIsolatedElectronEnv({ HOME: root, USERPROFILE: root, AVE_HOME: aveHome, AVE_DEV: "1", AVE_E2E: "1", AVE_MAIN_ENTRY: MAIN_ENTRY, NODE_ENV: "test", ELECTRON_DISABLE_SECURITY_WARNINGS: "1" })).filter((entry): entry is [string, string] => entry[1] !== undefined)),
   });
   let app: ElectronApplication | undefined;
   try {

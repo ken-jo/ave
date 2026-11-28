@@ -16,6 +16,7 @@ const keyFile = join(home, "secrets", "headless-key");
 writeFileSync(keyFile, randomBytes(32), { mode: 0o600 });
 const env = {
   ...process.env,
+  ...(process.platform === "darwin" ? { HOME: profile } : {}),
   NODE_ENV: process.env.NODE_ENV ?? "production",
   AVE_HOME: home,
   AVE_USER_DATA_DIR: join(profile, "user-data"),

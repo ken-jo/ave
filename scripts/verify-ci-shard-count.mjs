@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
+import { testOnlyFilesFromPlan } from "./lib/ci-test-only-selection.mjs";
 
 const COVERAGE_EVENTS = Object.freeze(["schedule", "workflow_dispatch"]);
 
@@ -25,21 +26,24 @@ export function validateCiShardCount(plan, coverage, nativeChecks, reportedCount
 }
 
 // Every shard consumes the same written plan rather than recomputing selection.
-export function readPlanFile(text) {
+export function readPlanFile(text, root) {
   const plan = JSON.parse(text);
   const valid = plan !== null && typeof plan === "object"
     && (plan.mode === "full" || plan.mode === "affected")
     && typeof plan.reason === "string"
     && Array.isArray(plan.tests) && plan.tests.every((test) => typeof test === "string");
   if (!valid) throw new Error("the CI plan file is not a { mode, reason, tests } plan");
-  return { mode: plan.mode, reason: plan.reason, tests: plan.tests };
+  const testOnlyFiles = testOnlyFilesFromPlan(plan, root);
+  const { mode, reason, tests, testOnlyChanges } = plan;
+  if (mode === "affected" && tests.length === 0) throw new Error("affected CI selection must not be empty");
+  return testOnlyFiles === null ? { mode, reason, tests } : { mode, reason, tests, testOnlyFiles, testOnlyChanges };
 }
 
 if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
   try {
     const planFile = process.env.AVE_CI_PLAN_FILE;
     if (!planFile) throw new Error("shard count verification requires AVE_CI_PLAN_FILE");
-    const plan = readPlanFile(readFileSync(planFile, "utf8"));
+    const plan = readPlanFile(readFileSync(planFile, "utf8"), process.cwd());
     const coverage = runsCoverage(process.env.GITHUB_EVENT_NAME, plan);
     const platforms = process.env.PLATFORM_CHECKS;
     if (platforms !== "true" && platforms !== "false") throw new Error("native platform selection was not resolved");

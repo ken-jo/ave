@@ -12,6 +12,7 @@
 // that names a changed key (selectMessageCatalogChecks).
 
 import { posix } from "node:path";
+import { isFullCheckGlobalInput, isMessageCatalogPath, MESSAGE_CATALOG_DIRECTORY } from "../lib/global-test-inputs.mjs";
 import { isCollectedVitestFile } from "../lib/vitest-collection.mjs";
 import * as ast from "typescript/unstable/ast";
 import { parseSourceTexts, withParsedSourceTexts } from "../lib/ts7-ast.mjs";
@@ -114,73 +115,12 @@ export function selectTriggeredLockSuites(changedPaths) {
   return selected;
 }
 
-/**
- * Inputs every test or the build depends on without importing them. A change
- * here can move any result, so it keeps the full checks.
- *
- * - dependency and compiler inputs: package.json, bun.lock, bunfig.toml,
- *   tsconfig*.json
- * - test runner inputs: vitest.config.ts, everything under config/ (the
- *   Vitest config and global setup, the Playwright config, and the gate
- *   baselines), and the per-project setup files the Vitest config names
- * - the test-only module the Vitest config injects by file identity
- * - build inputs: webpack, PostCSS and shadcn configs, and scripts/ (the
- *   build script chain, the Vitest runner, and this hook)
- * - .github/: CI workflows and their scripts
- */
-export const FULL_CHECK_GLOBAL_INPUT_FILES = Object.freeze([
-  "bun.lock",
-  "bunfig.toml",
-  "components.json",
-  "package.json",
-  "postcss.config.cjs",
-  "src/__tests__/support/ave-home-isolation-guard.ts",
-  "src/__tests__/vitest-ave-home.ts",
-  "src/__tests__/vitest-model-catalog.ts",
-  "src/__tests__/vitest-renderer-web-streams.ts",
-  "src/__tests__/vitest-vm-exit-hooks.ts",
-  "src/i18n/testing/vitest-ambient-intl.ts",
-  "src/shared/ave-home-test-guard.ts",
-  "tsconfig.json",
-  "tsconfig.tests.json",
-  "vitest.config.ts",
-  "webpack.config.cjs",
-]);
-
-const FULL_CHECK_GLOBAL_INPUT_PREFIXES = Object.freeze([
-  ".github/",
-  "config/",
-  "scripts/",
-]);
-
-/**
- * Locale catalogs contain static message data; select tests by changed key
- * namespace instead of the shared translation import graph. The registry and
- * unknown files stay global inputs. Structural edits require full checks.
- */
-const MESSAGE_CATALOG_DIRECTORY = "src/i18n/messages/";
-const messageCatalogPath = /^src\/i18n\/messages\/[a-z]{2}(?:-[A-Z]{2})?\.ts$/;
-
-export function isMessageCatalogPath(relativePath) {
-  return messageCatalogPath.test(relativePath);
-}
-
 const safeCliPath = /^[A-Za-z0-9._+@/-]+$/;
 const deniedTestTreeSegments = new Set(["e2e", "screenshots"]);
 const importableModulePath = /^(?:src|test)\/(?:[^/]+\/)*[^/]+\.(?:ts|tsx|mts|cts|js|mjs|cjs)$/;
 
-export function isFullCheckGlobalInput(relativePath) {
-  return (
-    FULL_CHECK_GLOBAL_INPUT_FILES.includes(relativePath) ||
-    /(?:^|\/)tsconfig[^/]*\.json$/.test(relativePath) ||
-    /\.d\.(?:ts|mts|cts)$/.test(relativePath) ||
-    /(?:^|\/)[^/]*(?:preload|worker-entry|worker-main|child-main)\.(?:ts|tsx|js|mjs|cjs)$/.test(relativePath) ||
-    FULL_CHECK_GLOBAL_INPUT_PREFIXES.some((prefix) => relativePath.startsWith(prefix)) ||
-    (relativePath.startsWith(MESSAGE_CATALOG_DIRECTORY) && !isMessageCatalogPath(relativePath))
-  );
-}
-
 export { isCollectedVitestFile };
+export { FULL_CHECK_GLOBAL_INPUT_FILES, isFullCheckGlobalInput, isMessageCatalogPath } from "../lib/global-test-inputs.mjs";
 
 /** Local test helpers and fixture assets, excluding every shared global input. */
 export function isTestSupportFile(path) {
@@ -443,7 +383,7 @@ function readParsedMessageCatalog(source, relativePath) {
     ? source.statements[0] && ast.isImportDeclaration(source.statements[0]) ? "ko" : "en"
     : posix.basename(relativePath, ".ts");
   if (relativePath !== undefined &&
-      (!messageCatalogPath.test(relativePath) || !["en", "ko"].includes(locale))) return null;
+      (!isMessageCatalogPath(relativePath) || !["en", "ko"].includes(locale))) return null;
   const statements = [...source.statements];
   if (locale === "ko") {
     const statement = statements.shift();

@@ -4,10 +4,10 @@ import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { platformChecksRequired, type CiSuitePlan } from "../../scripts/run-ci-suite.mjs";
 import { modifiedEntry } from "../../src/__tests__/support/git-diff-entry.js";
-import { planWindowsTests, WINDOWS_TEST_TIMES, windowsPlanTiers, windowsTestDurations } from "../../scripts/plan-windows-tests.js";
+import { planWindowsTests, WINDOWS_TEST_TIMES, windowsTestDurations } from "../../scripts/plan-windows-tests.js";
 import { collectedVitestFiles } from "../../scripts/lib/vitest-collection.mjs";
 import { CENSUS_TIER_TESTS, NATIVE_TIER_TESTS } from "../../scripts/lib/vitest-tiers.mjs";
-import { assertWindowsPlan, WINDOWS_TEST_SHARDS, WINDOWS_TIER_TEST_SHARDS, windowsShardFiles } from "../../scripts/run-windows-test-list.mjs";
+import { assertWindowsPlan, WINDOWS_TEST_SHARDS, WINDOWS_TIER_TEST_SHARDS, windowsPlanTiers, windowsShardFiles } from "../../scripts/run-windows-test-list.mjs";
 
 const root = resolve(import.meta.dirname, "../..");
 const collected = collectedVitestFiles(root);
@@ -125,30 +125,30 @@ describe("Windows plan check against the checkout", () => {
   ])("rejects %s", (_name, mutate, message) => {
     const plan = clone();
     mutate(plan);
-    expect(() => assertWindowsPlan(plan, collected)).toThrow(message);
-    expect(() => windowsShardFiles(plan, 1, root)).toThrow(message);
+    expect(() => assertWindowsPlan(plan, collected, [])).toThrow(message);
+    expect(() => windowsShardFiles(plan, 1, root, [])).toThrow(message);
   });
 
   it.each([
     ["a tier suite dropped from the tier shards", (plan: ReturnType<typeof clone>) => { plan.tierShards[0]?.files.shift(); }, "Windows tier plan omits 1 collected suite"],
     ["a native suite in a default shard", (plan: ReturnType<typeof clone>) => { plan.shards[0]?.files.push(NATIVE_TIER_TESTS[0] ?? ""); }, "names an uncollected suite"],
-    ["tier shards without a tier", (plan: ReturnType<typeof clone>) => { plan.tiers = []; }, "no tier shards"],
+    ["missing build tiers", (plan: ReturnType<typeof clone>) => { plan.tiers = []; }, "tiers differ from the build selection"],
     ["an unknown tier", (plan: ReturnType<typeof clone>) => { (plan.tiers as string[]).push("default"); }, "tiers must be a subset"],
   ])("rejects %s in a tiered plan", (_name, mutate, message) => {
     const plan = structuredClone(tieredPlan());
     mutate(plan);
-    expect(() => assertWindowsPlan(plan, collected)).toThrow(message);
+    expect(() => assertWindowsPlan(plan, collected, ["native", "census"])).toThrow(message);
   });
 
   it("returns one shard's files and refuses an unknown shard ID", () => {
     const plan = committedPlan();
-    expect(windowsShardFiles(plan, 3, root)).toEqual(plan.shards[2]?.files);
+    expect(windowsShardFiles(plan, 3, root, [])).toEqual(plan.shards[2]?.files);
     const unknown = WINDOWS_TEST_SHARDS.length + 1;
-    expect(() => windowsShardFiles(plan, unknown, root)).toThrow(`Invalid Windows test shard: ${unknown}`);
-    expect(() => windowsShardFiles(plan, 1, root, "tiers")).toThrow("selects no tier");
+    expect(() => windowsShardFiles(plan, unknown, root, [])).toThrow(`Invalid Windows test shard: ${unknown}`);
+    expect(() => windowsShardFiles(plan, 1, root, [], "tiers")).toThrow("selects no tier");
     const tiered = tieredPlan();
-    expect(windowsShardFiles(tiered, 2, root, "tiers")).toEqual(tiered.tierShards[1]?.files);
-    expect(() => windowsShardFiles(tiered, WINDOWS_TIER_TEST_SHARDS.length + 1, root, "tiers")).toThrow("Invalid Windows test shard");
+    expect(windowsShardFiles(tiered, 2, root, ["native", "census"], "tiers")).toEqual(tiered.tierShards[1]?.files);
+    expect(() => windowsShardFiles(tiered, WINDOWS_TIER_TEST_SHARDS.length + 1, root, ["native", "census"], "tiers")).toThrow("Invalid Windows test shard");
   });
 });
 
@@ -156,6 +156,7 @@ it.each([
   { event: "pull_request", base: "main", mode: "affected", file: "src/core/route-input.ts", runs: true },
   { event: "pull_request", base: "main", mode: "affected", file: "src/ui/renderer/hooks/use-chat-state.ts", runs: false },
   { event: "pull_request", base: "integration/core", mode: "affected", file: "src/core/route-input.ts", runs: false },
+  { event: "pull_request", base: "integration/core", mode: "full", file: "", runs: true },
   { event: "push", base: "main", mode: "affected", file: "src/core/route-input.ts", runs: true },
   { event: "schedule", base: "main", mode: "full", file: "", runs: true },
   { event: "workflow_dispatch", base: "main", mode: "full", file: "", runs: true },
@@ -165,7 +166,7 @@ it.each([
   expect(workflow.jobs["windows-native-preparation"].if).toBe("needs.build.outputs.platform_checks == 'true' || needs.build.outputs.windows_tier_tests == 'true'");
   expect(job.if).toBe("needs.build.outputs.platform_checks == 'true' && needs.windows-native-preparation.result == 'success'");
   const plan: CiSuitePlan = { mode, reason: "platform gate", tests: [] };
-  const selected = platformChecksRequired(event, plan, file ? [modifiedEntry(file)] : [], base);
+  const selected = platformChecksRequired(event, plan, file ? [modifiedEntry(file)] : undefined, base);
   expect(selected).toBe(runs);
   if (!selected) return;
 
@@ -175,7 +176,12 @@ it.each([
   expect(job.env.AVE_VITEST_MAX_WORKERS).toBe("2");
   const tierShards: number[] = workflow.jobs["windows-tier-tests"].strategy.matrix.shard;
   expect(tierShards).toEqual([...WINDOWS_TIER_TEST_SHARDS]);
-  const windowsPlan = planWindowsTests(collected, windowsTestDurations(times), ["native"]);
-  const scheduled = [...shards.flatMap(shard => windowsShardFiles(windowsPlan, shard, root)), ...tierShards.flatMap(shard => windowsShardFiles(windowsPlan, shard, root, "tiers"))];
-  expect(scheduled.sort()).toEqual(collected);
+  const tiers = ["native", "census"] as const;
+  const windowsPlan = planWindowsTests(collected, windowsTestDurations(times), tiers);
+  const scheduled = [
+    ...shards.flatMap(shard => windowsShardFiles(windowsPlan, shard, root, tiers)),
+    ...tierShards.flatMap(shard => windowsShardFiles(windowsPlan, shard, root, tiers, "tiers")),
+  ];
+  // The default workload and the complete census both run the census partitions.
+  expect(scheduled.sort()).toEqual([...collected, ...CENSUS_TIER_TESTS].sort());
 });

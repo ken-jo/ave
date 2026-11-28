@@ -1,9 +1,9 @@
 // The macOS holder boundary, natively: row 2 and the bundled-holder adapter driving the real chain (launch gate,
 // /usr/bin/sandbox-exec, ready shim) and the real label helper (built by test:prepare). Every case has a control.
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import type { Readable } from "node:stream";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -98,6 +98,11 @@ describe.runIf(NATIVE)("macOS holder boundary (native)", () => {
     const [home, temp, fds] = (await line(started.process.stdout)).split("|") as [string, string, string];
     expect(home).toMatch(/\/staging\/[0-9a-f]{32}\/home$/u);
     expect(temp).toBe(home.replace(/home$/u, "temp"));
+    const run = dirname(home);
+    expect(statSync(dirname(run)).mode & 0o777).toBe(0o700);
+    for (const directory of [run, home, temp, join(run, ".ave")]) {
+      expect(statSync(directory).mode & 0o777, directory).toBe(0o777 & ~process.umask());
+    }
     expect(fds).toBe("fds=");
     const echoed = line(started.process.stdout);
     started.process.stdin.write("round-trip\n");

@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import childProcess, { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -301,12 +301,46 @@ describe("Electron Node-mode Vitest runner", () => {
     expect(mainBlock).toBeGreaterThanOrEqual(0);
     const ensureCall = runnerSource.indexOf("ensureGeneratedAssets();", mainBlock);
     const skillBuild = runnerSource.indexOf(".buildSkillScripts({ directory })", mainBlock);
-    const launch = runnerSource.indexOf("runVitestUnderElectron(process.argv.slice(2),", mainBlock);
+    const launch = runnerSource.indexOf("runVitestUnderElectron(args,", mainBlock);
     expect(ensureCall).toBeGreaterThan(mainBlock);
     expect(skillBuild).toBeGreaterThan(ensureCall);
     expect(launch).toBeGreaterThan(skillBuild);
     expect(runnerSource).toContain('const directory = join(scratch, "dist", "skill-scripts");');
     expect(runnerSource).toContain("AVE_TEST_SKILL_SCRIPTS_DIR: directory");
+  });
+
+  it.runIf(process.platform === "darwin")("allows account scratch outside the cache and refuses cache aliases", () => {
+    const root = mkdtempSync(join(tmpdir(), "ave-vitest-scratch-"));
+    try {
+      const preload = join(root, "account.cjs");
+      const scratch = join(root, ".tmp");
+      const cache = join(root, "Library", "Caches");
+      const cacheChild = join(cache, "child");
+      const alias = join(root, "cache-alias");
+      mkdirSync(scratch);
+      mkdirSync(cacheChild, { recursive: true });
+      symlinkSync(cache, alias);
+      writeFileSync(preload, [
+        'require("node:os").userInfo = () => ({ homedir: process.env.AVE_FIXTURE_ACCOUNT_HOME });',
+        'require("node:module").syncBuiltinESMExports();',
+      ].join("\n"));
+      const runner = fileURLToPath(new URL("../../scripts/run-vitest-under-electron.mjs", import.meta.url));
+      const launch = (temp: string) => spawnSync(process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath,
+        ["--require", preload, runner, "--version"], {
+          encoding: "utf8",
+          env: { ...process.env, AVE_FIXTURE_ACCOUNT_HOME: root, TMPDIR: temp, AVE_TEST_TMP_ROOT: scratch },
+        });
+      for (const temp of [cache, cacheChild, alias]) {
+        const rejected = launch(temp);
+        expect(rejected.status).toBe(1);
+        expect(rejected.stderr).toMatch(/\[electron-vitest-home\]/u);
+      }
+      const allowed = launch(scratch);
+      expect(allowed.status, allowed.stderr).toBe(0);
+      expect(allowed.stdout).toContain("vitest/");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("rejects partially injected runtime paths instead of ignoring them", async () => {

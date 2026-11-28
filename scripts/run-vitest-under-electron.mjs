@@ -1,10 +1,11 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
-import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { tmpdir, userInfo } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { EMPTY_TEST_ONLY_NOTICE, readTestOnlyFiles, testOnlyVitestArgs } from "./lib/ci-test-only-selection.mjs";
 import { guardedNodeOptions } from "./lib/document-consumer-node-options.mjs";
 
 const require = createRequire(import.meta.url);
@@ -261,14 +262,39 @@ function isMainModule() {
 
 if (isMainModule()) {
   try {
+    const args = testOnlyVitestArgs(process.argv.slice(2), readTestOnlyFiles(), process.env.AVE_VITEST_TIERS);
+    if (args === null) {
+      console.log(EMPTY_TEST_ONLY_NOTICE);
+      process.exit(0);
+    }
     ensureGeneratedAssets();
-    const scratch = mkdtempSync(join(tmpdir(), "ave-vitest-skill-scripts-"));
+    const temp = tmpdir();
+    if (process.platform === "darwin") {
+      const cache = resolve(userInfo().homedir, "Library", "Caches");
+      let canonicalCache = cache;
+      try {
+        canonicalCache = realpathSync.native(cache);
+      } catch {
+        // A cache that cannot be resolved can still be checked by its account path.
+      }
+      const caches = [cache, canonicalCache].map((path) => path.toLowerCase());
+      const tempPaths = [resolve(temp), realpathSync.native(temp)].map((path) => path.toLowerCase());
+      if (tempPaths.some((path) => caches.some((parent) => path === parent || path.startsWith(`${parent}/`)))) {
+        throw new Error("[electron-vitest-home] TMPDIR must be outside the real macOS account cache");
+      }
+    }
+    const scratch = mkdtempSync(join(temp, "ave-vitest-"));
     const directory = join(scratch, "dist", "skill-scripts");
     let result;
     try {
       await (await import("./build-skill-scripts.mjs")).buildSkillScripts({ directory });
-      result = await runVitestUnderElectron(process.argv.slice(2), {
-        env: { ...process.env, AVE_TEST_SKILL_SCRIPTS_DIR: directory },
+      result = await runVitestUnderElectron(args, {
+        env: {
+          ...process.env,
+          // Raw filesystem fixtures and their subprocesses also resolve the macOS cache from HOME.
+          ...(process.platform === "darwin" ? { HOME: scratch } : {}),
+          AVE_TEST_SKILL_SCRIPTS_DIR: directory,
+        },
       });
     } finally {
       rmSync(scratch, { recursive: true, force: true });

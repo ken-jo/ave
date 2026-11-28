@@ -12,7 +12,7 @@ type PathApi = Pick<typeof import("node:path"), "isAbsolute" | "join" | "resolve
 /**
  * Undefined when unset, so the default roots apply. A set value replaces every default test root, so it must be absolute
  * (a relative one would resolve against each worker's cwd), must not contain the account home or its Ave home, and inside
- * the Ave home may only be its test-tmp: anything else there would sanction the real data the guard protects. Links,
+ * the Ave home may only be its test-tmp. The macOS account cache is also excluded. Links,
  * short names and trailing dots are resolved first (`canonical`), so another spelling of a protected path is refused too.
  */
 export function configuredTestTmpRoot(
@@ -32,6 +32,7 @@ export function configuredTestTmpRoot(
   const homes = [...new Set([resolve(accountHome), canonical(resolve(accountHome))])];
   for (const home of homes) {
     const ave = join(home, ".ave");
+    const cache = process.platform === "darwin" ? join(home, "Library", "Caches") : undefined;
     for (const candidate of roots) {
       for (const real of [home, ave]) {
         if (inside(real, candidate)) {
@@ -40,6 +41,9 @@ export function configuredTestTmpRoot(
       }
       if (inside(candidate, ave) && !inside(candidate, join(ave, "test-tmp"))) {
         throw new Error(`AVE_TEST_TMP_ROOT may sit inside ${ave} only under its test-tmp, got ${JSON.stringify(value)}`);
+      }
+      if (cache !== undefined && [cache, canonical(cache)].some((path) => inside(candidate, path))) {
+        throw new Error("AVE_TEST_TMP_ROOT must be outside the real macOS account cache");
       }
     }
   }

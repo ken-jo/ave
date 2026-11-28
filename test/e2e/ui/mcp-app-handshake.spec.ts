@@ -5,7 +5,7 @@ import { build } from "esbuild";
 import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
-import { launchElectron, quitElectron } from "./seeded-electron.js";
+import { buildIsolatedElectronEnv, launchElectron, quitElectron } from "./seeded-electron.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, "../../..");
@@ -50,9 +50,12 @@ test.beforeAll(async () => {
 });
 
 for (const capabilityCase of ["undeclared", "declared", "over-declared"] as const) {
-test(`real <webview> initializes and enforces ${capabilityCase} resource host capabilities`, async () => {
+test(`real <webview> initializes and enforces ${capabilityCase} resource host capabilities`, async ({ browserName: _browserName }, testInfo) => {
+  const home = testInfo.outputPath("home");
+  fs.mkdirSync(home, { recursive: true });
   const app = await launchElectron({
     args: [MAIN_OUT, "--no-sandbox", `--capability-case=${capabilityCase}`],
+    env: buildIsolatedElectronEnv({ HOME: home, USERPROFILE: home }),
     timeout: 30_000,
   });
 
