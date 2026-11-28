@@ -2679,7 +2679,7 @@ async function runToolInvocationAttempt(
       return (operands.length > 0 ? operands : [target.filePath]).map((path) => {
         const expanded = expandLeadingTilde(path);
         // A leading `.` names the working directory itself; spelling it as a dot component would make a share cwd ambiguous.
-        const relative = expanded.replace(/^(?:\.(?:[\\/]+|$))+/u, "");
+        const relative = expanded.replace(isWindows ? /^(?:\.(?:[\\/]+|$))+/u : /^(?:\.(?:\/+|$))+/u, "");
         return { lexical: isAbsolute(expanded) ? expanded : relative === "" ? executionCwd : executionCwd + "/" + relative, canonical: target.canonicalPath, runtimePath: target.runtimePath,
           effect: canonicalFileTool !== undefined ? canonicalFilePathEffect(tool, finalInput, target.filePath, executionCwd) : requiredTier(invocationCategory) };
       });

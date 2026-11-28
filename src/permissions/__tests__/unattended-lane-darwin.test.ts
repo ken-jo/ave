@@ -43,3 +43,34 @@ it.skipIf(process.platform === "win32")("judges native spelling independently of
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+it.skipIf(process.platform === "win32")("matches scheduled write globs against native names", () => {
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "ave-unattended-write-")));
+  try {
+    const request: PermissionDecisionRequest = {
+      mode: "default", headless: true, tool: { name: "write_file", kind: "file-write", source: "builtin" },
+      unattendedEffect: "safe", fileWrite: { insideProject: true, checkpointAvailable: true },
+      unattended: {
+        runKey: "run", stageId: "stage", workspaceRoot: root, isolation: { proven: true },
+        envelope: {
+          tools: ["write_file"], readRoots: [], writePaths: ["Output/*.txt", "literal\\backslash.txt"],
+          commands: [], network: [], mcpReadOnlyTools: [], mcpGenerationTools: [], pluginGenerationTools: [],
+          outputs: [], budget: { rounds: 1, minutes: 1, costUsd: 0 },
+        },
+      },
+    };
+    const check = (lexicalName: string, actualName = lexicalName) => {
+      const lexical = join(root, lexicalName);
+      const runtimePath = join(root, actualName);
+      return decideUnattended({ ...request, paths: [{ lexical, canonical: runtimePath.toLowerCase(), runtimePath, effect: "write" }] }).outcome;
+    };
+    expect.soft(check("Output/result.txt")).toBe("allow");
+    expect.soft(check("Output/result.txt", "output/result.txt")).toBe("deny");
+    expect.soft(check("Output\\result.txt")).toBe("deny");
+    expect.soft(check("literal\\backslash.txt")).toBe("allow");
+    expect.soft(check("literal/backslash.txt")).toBe("deny");
+    expect.soft(check("literal\\backslash.txt\n")).toBe("deny");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

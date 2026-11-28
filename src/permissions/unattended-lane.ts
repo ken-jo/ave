@@ -61,7 +61,8 @@ function insideEnvelope(request: PermissionDecisionRequest, entry: UnattendedSta
       const workspace = roots.find(root => root.workspace);
       if (workspace === undefined) return false;
       return [relativeNativePath(workspace.lexical, operand), relativeNativePath(workspace.physical, runtimePath)].every(child =>
-        child !== undefined && child !== "" && envelope.writePaths.some(pattern => globMatch(child.split(sep).join("/"), pattern)));
+        child !== undefined && child !== "" && envelope.writePaths.some(pattern =>
+          globMatch(child.split(sep).join("/"), pattern, { caseInsensitive: false, normalizeSeparators: sep === "\\" })));
     });
   })) {
     return { inside: false, why: "Target is outside the envelope." };
