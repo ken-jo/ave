@@ -3615,6 +3615,12 @@ arm64 host.
 
 ### Linux extensions and hooks in containers
 
+**Status: built, route off.** The holder path below is built and tested, but the Linux holder route is off
+(`holderRoute: false` in `src/shared/container-platform.ts`): today Linux extensions and hooks still run on the
+existing sandbox, no Linux extension start asks for the no-backend consent, and no holder canary runs at boot. This
+section describes what the route does once it is switched on; the decision tree gains its Linux text with that
+switch.
+
 Once the Linux holder route is on, extension processes (plugin children, MCP
 stdio servers, the worker parent and workers) and hooks run as holders: each its
 own bwrap sandbox, started by Ave, with a network namespace that holds only
