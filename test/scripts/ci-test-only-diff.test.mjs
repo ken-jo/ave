@@ -119,6 +119,16 @@ it("pins the existing mixed PR and main push plan bytes", (t) => {
   ]);
 });
 
+it("retains the platform shortcut for a resolved non-test PR into integration/core", (t) => {
+  const repo = fixture(t);
+  repo.git("switch", "-qc", "topic");
+  repo.file("src/core/routing-data.json", '{"enabled":true}\n');
+  merge(repo);
+  const [plan, outputs] = writePlan(repo.root, "pull_request", repo.base, "integration/core");
+  assert.equal(JSON.parse(plan).mode, "affected");
+  assert.equal(outputs, "shards=[1]\nshard_count=1\nplatform_checks=false\n");
+});
+
 it("runs changed Linux suites and unconditional guards from the written plan", (t) => {
   const repo = fixture(t);
   repo.git("switch", "-qc", "topic");
@@ -134,6 +144,35 @@ it("runs changed Linux suites and unconditional guards from the written plan", (
   });
   const [push] = writePlan(repo.root, "push", repo.base);
   assert.equal(Object.hasOwn(JSON.parse(push), "testOnlyFiles"), false);
+});
+
+it("schedules platforms and both tiers for a Windows-only script test change into integration/core", (t) => {
+  const repo = fixture(t);
+  const windowsSuite = "test/scripts/windows-path-kind-build.test.mjs";
+  repo.file(windowsSuite, "// original\n");
+  repo.git("add", windowsSuite);
+  repo.git("commit", "-qm", "Seed Windows script suite");
+  repo.git("switch", "-qc", "topic");
+  repo.file(windowsSuite, "// modified\n");
+  merge(repo);
+
+  for (const baseRef of ["main", "integration/core"]) {
+    const [plan, outputs] = writePlan(repo.root, "pull_request", repo.base, baseRef);
+    assert.deepEqual(JSON.parse(plan).testOnlyFiles, [windowsSuite]);
+    assert.match(outputs, /^test_only=true$/mu);
+    const tiers = spawnSync(process.execPath, [tiersRunner, "ci-plan.json"], {
+      cwd: repo.root, encoding: "utf8", env: {
+        ...process.env, GITHUB_EVENT_NAME: "pull_request", GITHUB_BASE_REF: baseRef,
+        GITHUB_OUTPUT: "", GITHUB_STEP_SUMMARY: "",
+      },
+    });
+    assert.ifError(tiers.error);
+    assert.equal(tiers.status, 0, tiers.stderr);
+    const allTiers = baseRef === "integration/core";
+    assert.match(outputs, /^platform_checks=true$/mu);
+    assert.match(tiers.stdout, new RegExp(`\\bcensus_tier=${allTiers}\\b`, "u"));
+    assert.match(tiers.stdout, new RegExp(`\\bnative_tier=${allTiers}\\b`, "u"));
+  }
 });
 
 for (const base of ["main", "integration/core"]) {

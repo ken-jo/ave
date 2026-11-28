@@ -396,7 +396,8 @@ export function planCiSuite(eventName, { headRef, baseRef, ref, before } = {}) {
 // paths and broad plans retain all platforms, including on scheduled releases.
 export function platformChecksRequired(eventName, plan, changes, baseRef) {
   if (eventName === "pull_request" && (!Array.isArray(changes) || changes.some(({ status }) => /^[RC]/u.test(status)))) return true;
-  if (eventName === "pull_request" && baseRef?.startsWith("integration/")) return false;
+  // A selected suite may require a platform job outside the integration shortcut.
+  if (eventName === "pull_request" && baseRef?.startsWith("integration/")) return plan.testOnlyFiles !== undefined;
   if (plan.mode === "full" || !["pull_request", "push"].includes(eventName) || !Array.isArray(changes) || changes.length === 0) return true;
   return changes.some(({ path }) => path === "src/ui/renderer/types.ts" || !["src/ui/renderer/", "src/components/", "src/i18n/messages/"].some((prefix) => path.startsWith(prefix)));
 }

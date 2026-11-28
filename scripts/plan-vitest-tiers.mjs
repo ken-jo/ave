@@ -68,11 +68,11 @@ function decodePlan(plan) {
 }
 
 /**
- * eventName and ref are the GitHub event; plan is the written CI suite plan; changedPaths is null when the diff is unresolved.
+ * eventName, ref and baseRef describe the GitHub event; plan is the written CI suite plan; changedPaths is null when the diff is unresolved.
  * Pull requests select a tier from the diff and a fully traced affected plan. Main pushes always select the native tier and
  * select the census like a pull request. A full, empty or best-effort plan and every other event select all tiers.
  */
-export function planVitestTiers({ eventName, ref, plan, changedPaths }) {
+export function planVitestTiers({ eventName, ref, baseRef, plan, changedPaths }) {
   const mainPush = eventName === "push" && ref === "refs/heads/main";
   const all = reason => ({ census: true, native: true, reason });
   if (eventName !== "pull_request" && !mainPush) return all(`${eventName} runs every tier`);
@@ -83,6 +83,7 @@ export function planVitestTiers({ eventName, ref, plan, changedPaths }) {
       || plan.testOnlyChanges.some(({ path }) => !changed.has(path))) {
       throw new Error("Invalid test-only CI plan: tier diff does not match");
     }
+    if (baseRef?.startsWith("integration/")) return all("an integration-base test-only PR schedules every tier");
     return {
       census: selected.some(path => CENSUS_TIER_TESTS.includes(path)),
       native: selected.some(path => NATIVE_TIER_TESTS.includes(path)),
@@ -161,6 +162,7 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
   const tiers = planVitestTiers({
     eventName,
     ref: process.env.GITHUB_REF,
+    baseRef: process.env.GITHUB_BASE_REF,
     plan,
     changedPaths: needsDiff ? changedPathsFor(eventName, process.env.AVE_CI_DIFF_BASE) : [],
   });
