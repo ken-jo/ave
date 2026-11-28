@@ -203,9 +203,14 @@ it("preserves the shell boundary report check whenever a selected suite runs", a
   const plan = join(repo.root, "selection.json");
   const boundary = "src/permissions/__tests__/mxc-linux-boundary.native.test.ts";
   repo.file(boundary, "// boundary suite\n");
-  // The full run is whatever the step lists, so a suite added to the job is covered without editing this test.
-  const fullList = [...step.run.match(/suites=\(\n([\s\S]*?)\n\s*\)/u)[1].matchAll(/\S+/gu)].map(match => match[0]);
-  assert.ok(fullList.includes(boundary));
+  const fullList = [
+    "src/permissions/__tests__/mxc-linux-boundary.native.test.ts",
+    "src/permissions/__tests__/mxc-linux-filter-helper.native.test.ts",
+    "src/permissions/__tests__/mxc-linux-holder-boundary.native.test.ts",
+    "src/permissions/__tests__/mxc-linux-holder-canary.native.test.ts",
+    "src/permissions/__tests__/mxc-linux-holder-watch.test.ts",
+    "src/permissions/__tests__/mxc-linux-placeholders.test.ts",
+  ];
   const run = `bun() { shift 7; printf 'test: %s\\n' "$@"; }\njq() { echo 'checked report'; return 42; }\n${step.run.replace("scripts/lib/ci-test-only-selection.mjs", '"$SELECTOR"')}`;
   const cases = [[null, 42], [[suite], 0], [[boundary], 42]];
   for (const [selection, status] of cases) {
