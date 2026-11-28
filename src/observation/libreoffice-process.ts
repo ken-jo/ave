@@ -48,6 +48,13 @@ const HOST_TEXT_DOCUMENT = `<?xml version="1.0" encoding="UTF-8"?>
 `;
 
 
+/**
+ * The private profile. With the app now unconfined, these settings are what keeps a document's own references (linked
+ * sections, external data, remote images) from reading files or the network. Each barrier holds alone (measured with
+ * 26.8.3.1 on macOS, pinned by `libreoffice-document-reads.native.test.ts`): `DisableActiveContent`, the empty trusted
+ * location list, and link updates set to never. The two link settings number their choices differently: Calc's 1 and
+ * Writer's 0 both mean never (Writer's 2 is always).
+ */
 const PROFILE_SETTINGS = `<?xml version="1.0" encoding="UTF-8"?>
 <oor:items xmlns:oor="http://openoffice.org/2001/registry">
 <item oor:path="/org.openoffice.Office.Common/Security/Scripting">
@@ -61,7 +68,7 @@ const PROFILE_SETTINGS = `<?xml version="1.0" encoding="UTF-8"?>
 <prop oor:name="Link" oor:op="fuse"><value>1</value></prop>
 </item>
 <item oor:path="/org.openoffice.Office.Writer/Content/Update">
-<prop oor:name="Link" oor:op="fuse"><value>2</value></prop>
+<prop oor:name="Link" oor:op="fuse"><value>0</value></prop>
 </item>
 <item oor:path="/org.openoffice.Office.Calc/Formula/Load">
 <prop oor:name="OOXMLRecalcMode" oor:op="fuse"><value>0</value></prop>
@@ -76,6 +83,13 @@ const PROFILE_SETTINGS = `<?xml version="1.0" encoding="UTF-8"?>
 const RUNTIME_PREFIX = "avd-";
 const RUNTIME_OWNER = "owner.json";
 const RUNTIME_OWNER_KIND = "ave-document-engine-runtime";
+
+let profileSettingsForTest: ((settings: string) => string) | undefined;
+
+/** @internal native tests only: weakens the private profile of sessions started afterwards, to prove each barrier. */
+export function _setDocumentEngineProfileSettingsForTest(edit: ((settings: string) => string) | undefined): void {
+  profileSettingsForTest = edit;
+}
 
 function runtimeTempRoot(): string {
   // POSIX uses the world-shared temp; privacy comes from createPrivateTempDirectory (mkdtemp + owner
@@ -434,7 +448,8 @@ export class LibreOfficeSessionPool {
       await mkdir(input, { mode: 0o700 });
       await mkdir(join(profile, "user"), { recursive: true, mode: 0o700 });
       await mkdir(ipc, { mode: 0o700 });
-      await writeFile(join(profile, "user", "registrymodifications.xcu"), PROFILE_SETTINGS, { flag: "wx", mode: 0o600 });
+      await writeFile(join(profile, "user", "registrymodifications.xcu"), profileSettingsForTest?.(PROFILE_SETTINGS) ?? PROFILE_SETTINGS,
+        { flag: "wx", mode: 0o600 });
       aborted(signal);
       await this.startResident(session, runtime, signal);
       return runtime;

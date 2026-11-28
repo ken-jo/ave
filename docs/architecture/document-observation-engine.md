@@ -176,7 +176,14 @@ profile below turns off the office's own remote content and link updates.
 The isolated profile is written before the instance starts. It sets
 `DisableMacrosExecution`, the highest macro security level, no trusted macro
 locations, `DisableActiveContent` and `BlockUntrustedRefererLinks`, and sets
-Calc and Writer link updates to never. Macro execution is disabled for the profile rather than per load.
+Calc and Writer link updates to never. The two settings number their choices
+differently: Calc's `1` and Writer's `0` mean never, and Writer's `2` means
+always. Macro execution is disabled for the profile rather than per load.
+With the app unconfined these settings are the barrier against a document's
+own references. Measured with 26.8.3.1 on macOS, a linked local-file section
+and a linked HTTP section are blocked by each barrier alone: active content
+off, no trusted location, and link updates never. A profile without all three
+reads both; the native document-reads test pins each case.
 Headless mode alone is not the macro or network boundary. A conversion may read
 an untrusted parser input; signature verification establishes executable
 provenance, not the safety of that document.
