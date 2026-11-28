@@ -83,6 +83,8 @@
       "src/tools/__tests__/file-tools.test.ts",
       "src/main/__tests__/headless-image-qualification.test.ts",
       "src/tools/__tests__/image-preparation.test.ts",
+      "src/observation/__tests__/libreoffice-document-reads.native.test.ts",
+      "src/observation/__tests__/libreoffice-installed.native.test.ts",
       "src/tools/__tests__/preview-document-process.test.ts",
       "src/tools/__tests__/xlsx-edit-journal-open.test.ts",
       "src/tools/__tests__/xlsx-edit-skill.test.ts",
