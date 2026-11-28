@@ -140,6 +140,12 @@ const HOLDER_LABEL = /^dev\.ave\.holder\.[a-z0-9.]{1,96}$/u;
  */
 const SEATBELT_PROFILE_MAX_BYTES = 128 * 1024;
 
+/** Whether a container launch was refused because its policy renders past the profile bound: the shell names that
+ * cause to the user, since narrowing the granted folders is the remedy. */
+export function isSeatbeltProfileTooLarge(error: unknown): boolean {
+  return error instanceof SeatbeltDenyError && error.code === "profile-string-too-long";
+}
+
 function assertSeatbeltProfileSize(profile: string, what: string): string {
   if (Buffer.byteLength(profile) > SEATBELT_PROFILE_MAX_BYTES) {
     throw new SeatbeltDenyError("profile-string-too-long", `${what} profile exceeds the size limit`);
@@ -326,6 +332,9 @@ function buildSeatbeltProfile(input: SeatbeltProfileInput, proxyPort: number | n
   const writable = new Set(readwrite);
   const forms = [SHELL_BASELINE, ...rows.map(path =>
     `(allow file-read*${writable.has(path) ? " file-write*" : ""} ${subpath(path)})`)];
+  // srt's allowUnixSockets form: socket() itself has no path, so AF_UNIX creation is allowed once, and bind and connect
+  // only under each named directory.
+  if (unixSocketRoots.length > 0) forms.push("(allow system-socket (socket-domain AF_UNIX))");
   for (const root of unixSocketRoots) {
     forms.push(`(allow network-bind (local unix-socket ${subpath(root)}))`);
     forms.push(`(allow network-outbound (remote unix-socket ${subpath(root)}))`);

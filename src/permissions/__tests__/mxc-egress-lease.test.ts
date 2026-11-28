@@ -63,6 +63,25 @@ describe("container egress lease", () => {
     await lease.close();
     await expect(request(lease.port)).rejects.toThrow();
   });
+  it("keeps a held endpoint bound and refusing after release, until its owner closes it", async () => {
+    const { invocation, relay } = await fixture();
+    const lease = await openMxcEgressLease(invocation.token, undefined, { holdPortAfterRelease: true });
+    cleanups.push(lease.close);
+    expect(await request(lease.port)).toBe(200);
+    invocation.release();
+    // The release revokes the relay and the listener, but the port stays bound to them.
+    expect(relay.close).not.toHaveBeenCalled();
+    await expect(request(lease.port)).rejects.toThrow();
+    const rebind = (): Promise<NodeJS.ErrnoException | undefined> => new Promise((resolve) => {
+      const probe = net.createServer();
+      probe.once("error", (error: NodeJS.ErrnoException) => resolve(error));
+      probe.listen(lease.port, "127.0.0.1", () => probe.close(() => resolve(undefined)));
+    });
+    expect((await rebind())?.code).toBe("EADDRINUSE");
+    await lease.close();
+    expect(relay.close).toHaveBeenCalledTimes(1);
+    expect(await rebind()).toBeUndefined();
+  });
   it("refuses preparation when admission ends during the runtime await", async () => {
     const { invocation, relay } = await fixture();
     const signal = egressInvocationAbortSignal(invocation.token);

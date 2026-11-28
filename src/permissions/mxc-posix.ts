@@ -192,8 +192,12 @@ function carveGrants(
     }
   }
 
-  let rw = readwrite.filter(path => !chain.has(key(path)));
-  let ro = readonly.filter(path => !chain.has(key(path)));
+  // The root is always carved. Any other chain folder is carved only where it covers a carved deny: a grant wholly inside
+  // one (a plugin's install root above its data root, both inside the Ave home) stays a grant of its own, its subpath.
+  const coversCarvedDeny = (path: string) => [...carvedDenies].some(deny => covers(path, deny));
+  const carvedChain = (path: string) => chain.has(key(path)) && (path === "/" || coversCarvedDeny(path));
+  let rw = readwrite.filter(path => !carvedChain(path));
+  let ro = readonly.filter(path => !carvedChain(path));
   const denied = readDenies.filter(deny => !carvedDenies.has(deny));
   let final = finalize({ readwrite: rw, readonly: ro, denied });
   const firstExcess = [...final.readwrite, ...final.readonly][MAX_CARVE_GRANTS];
@@ -206,6 +210,8 @@ function carveGrants(
   let remainingEntries = MAX_CARVE_ENTRIES;
   const chainFolders = [...chain.values()].sort((left, right) => left.length - right.length);
   for (const folder of chainFolders) {
+    // A grant kept whole already opens its subtree.
+    if (emitted.has(key(folder))) continue;
     const enclosing = nearestEnclosing(folder, grants, lookups.foldsCase);
     if (enclosing === undefined) continue;
     // A surviving grant reopens its subtree inside a carved deny. Denies inside that grant still apply.

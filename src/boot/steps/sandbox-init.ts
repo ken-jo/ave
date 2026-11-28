@@ -358,7 +358,8 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
                 import("../../permissions/seatbelt-holder-boot.js"), import("../../main/host-resources.js"), import("../../shared/ave-home.js"),
               ]);
               publish({ state: "checking" });
-              // Boot waits for the decision (two canary starts and three helper runs, about 0.1 s): no extension start
+              // Boot waits for the decision (two canary starts, three helper runs and the boot sweep; the proof measured
+              // about 0.13 s on an M-series Mac): no extension start
               // can then meet a "checking" plan, which has no retry path. Holder starts also wait on the sequence.
               await startSeatbeltHolderBootServices({
                 resourcePath: getHostResources().resourcePath, home: aveHome(), signal: startupSignal,

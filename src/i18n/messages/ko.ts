@@ -1173,7 +1173,7 @@ export const ko: Record<MessageCatalogKey, string> = {
 
   // be_mxcExtensionErrors
   "be_mxcExtensionErrors.workerTransportUnsupported": "이 익스텐션의 워커는 Windows 익스텐션 컨테이너가 지원하지 않는 연결 방식을 씁니다. 워커에는 stdio control v1 이 필요하니 익스텐션을 업데이트하세요({code})",
-  "be_mxcExtensionErrors.nativeEntryRequired": "이 프로세스 유형은 아직 Windows 익스텐션 컨테이너용으로 갱신되지 않아 시작하지 않았습니다({code})",
+  "be_mxcExtensionErrors.nativeEntryRequired": "이 프로세스 유형은 아직 익스텐션 컨테이너용으로 갱신되지 않아 시작하지 않았습니다({code})",
   "be_mxcExtensionErrors.readinessRefused": "허용된 익스텐션 백엔드가 없어 이 시작을 거부했습니다. 격리 없이 실행되지 않습니다({code})",
   "be_mxcRuntimeRoot.elevatedOwned": "{path} 폴더는 Ave 를 관리자 권한으로 실행했을 때 만들어져 일반 실행에서는 쓸 수 없습니다. 이 폴더를 삭제한 뒤 Ave 를 다시 시작하거나, 원래 그렇게 설정했다면 다시 관리자 권한으로 실행하세요",
 
@@ -1507,6 +1507,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   // be_wrapBundledCommand
   "be_wrapBundledCommand.executableNotAdmissible": "이 프로그램은 익스텐션 컨테이너에서 실행할 수 없습니다: {detail}({code})",
   "be_wrapBundledCommand.executableRelative": "\"{command}\" 는 상대 경로라 작업 폴더 안에서 해석됩니다",
+  "be_wrapBundledCommand.interpreterNotAdmissible": "\"{path}\" 는 Ave 가 컨테이너에서 실행할 수 없는 인터프리터 줄을 가진 스크립트입니다({line}). 절대 경로 인터프리터나 옵션 없는 `#!/usr/bin/env NAME` 을 사용하세요.",
   "be_wrapBundledCommand.executableNotFound": "PATH 에서 \"{command}\" 를 Windows 실행 파일(.exe)로 찾지 못했습니다",
   "be_wrapBundledCommand.executableUnresolvable": "\"{path}\" 를 확인할 수 없습니다({reason})",
   "be_wrapBundledCommand.executableNotExe": "\"{path}\" 는 Windows 실행 파일(.exe)이 아닙니다. 해당 인터프리터를 직접 실행하세요",
@@ -5198,6 +5199,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "sandboxPolicy.linuxContainerStartRefused": "Linux 샌드박스 컨테이너가 셸 명령 시작을 거부했습니다.",
   "sandboxPolicy.linuxContainerShellRefused": "Linux 샌드박스 컨테이너가 셸 명령을 거부했습니다. {reason}",
   "sandboxPolicy.containerShellCleanupUnverified": "셸 명령을 중단했지만 관련 프로세스가 모두 종료되었는지 확인하지 못했습니다.",
+  "sandboxPolicy.containerShellProfileTooLarge": "macOS 샌드박스 컨테이너가 셸 명령을 시작하지 않았습니다. 허용한 폴더가 많아 샌드박스 정책이 macOS 가 불러올 수 있는 크기를 넘었습니다. 허용 폴더를 줄이거나 공통 상위 폴더 하나를 허용한 뒤 다시 실행하세요.",
   "sandboxPolicy.containerShellRefused": "macOS 샌드박스 컨테이너가 셸 명령을 거부했습니다: {reason}",
   "sandboxPolicy.containerShellStartFailed": "macOS 샌드박스 컨테이너가 셸 명령을 시작하지 못했고, Ave 는 아무것도 시작되지 않았는지 확인하지 못했습니다.",
   "sandboxPolicy.containerShellNotStarted": "셸 명령을 시작하지 않았습니다. 실행 전에 작업 폴더나 권한 상태가 바뀌었습니다. 다시 실행하세요.",

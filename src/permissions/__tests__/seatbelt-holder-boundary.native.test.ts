@@ -53,7 +53,7 @@ async function holder(script: string, over: Partial<Parameters<typeof spawnMxcBu
   const started = await spawnMxcBundledHolder({
     label: "test:holder", command: "/bin/sh", args: ["-c", script], baseEnv: { PATH }, holderEnv: {},
     allowRead: [], allowWrite: [data], ownedReadRoots: [],
-    egressOwner: { kind: "worker", role: "mcp", pluginId: undefined, serverId: "native-test" } as never, ...over,
+    egressOwner: { kind: "worker", role: "mcp-server", pluginId: undefined, instanceId: "native-test" }, ...over,
   });
   holders.push(started);
   return started;
@@ -130,6 +130,21 @@ describe.runIf(NATIVE)("macOS holder boundary (native)", () => {
     chmodSync(outside, 0o755);
     const started = await holder("", { command: outside, args: [] });
     expect(await line(started.process.stdout)).toBe("ran");
+  });
+
+  it("P2-2: a #!/usr/bin/env script runs the interpreter admission resolved, never one a writable PATH entry supplies", async () => {
+    const good = join(root, "good");
+    mkdirSync(good);
+    // A copied platform binary is killed at exec; a link resolves to the system program.
+    symlinkSync("/bin/echo", join(good, "interp"));
+    // The impostor sits in the holder's own writable root, first on the PATH the holder receives.
+    writeFileSync(join(data, "interp"), "#!/bin/sh\necho impostor\n");
+    chmodSync(join(data, "interp"), 0o755);
+    const script = join(root, "server.js");
+    writeFileSync(script, "#!/usr/bin/env interp\n");
+    chmodSync(script, 0o755);
+    const started = await holder("", { command: script, args: ["--flag"], baseEnv: { PATH: good }, holderEnv: { PATH: `${data}:${good}` } });
+    expect(await line(started.process.stdout)).toBe(`${script} --flag`);
   });
 
   it("T12: refuses a second holder nested inside a live holder's writable root, and admits a sibling", async () => {
@@ -306,6 +321,258 @@ describe.runIf(NATIVE)("macOS holder boundary (native)", () => {
       unix.close();
     }
   });
+
+  it("L-O1: a session holder binds and connects only in its one 0700 socket directory, and writes only its root", async () => {
+    const { createServer } = await import("node:net");
+    const session = join(root, "session");
+    const output = join(session, "output");
+    const ipc = join(output, "ipc");
+    const input = join(session, "input");
+    mkdirSync(ipc, { recursive: true, mode: 0o700 });
+    chmodSync(ipc, 0o700);
+    mkdirSync(input);
+    // A host socket in the same write root but outside the socket directory, and one elsewhere: both stay unreachable.
+    const beside = join(output, "beside.sock");
+    const elsewhere = join(root, "elsewhere.sock");
+    const servers = [createServer(socket => socket.end()).listen(beside), createServer(socket => socket.end()).listen(elsewhere)];
+    await Promise.all(servers.map(server => new Promise(r => server.once("listening", r))));
+    const perlConnect = (path: string) => `/usr/bin/perl -MIO::Socket::UNIX -e 'IO::Socket::UNIX->new(Peer => $ARGV[0]) or exit 1' '${path}' 2>/dev/null`;
+    const pipe = join(ipc, "OSL_PIPE_test");
+    const serve = `/usr/bin/perl -MIO::Socket::UNIX -e 'my $s = IO::Socket::UNIX->new(Local => $ARGV[0], Listen => 1) or exit 3; print "bound\\n"; $| = 1; my $c = $s->accept; print scalar <$c>' '${pipe}'`;
+    const sessionOf = { writeRoot: output, runtimeReads: [], socketDirectory: ipc };
+    try {
+      for (const path of [beside, elsewhere]) execFileSync("/usr/bin/perl", ["-MIO::Socket::UNIX", "-e", "IO::Socket::UNIX->new(Peer => $ARGV[0]) or exit 1", path], { timeout: 5000 });
+      const server = await spawnSeatbeltOfflineHolder({ label: "test:engine-a", command: "/bin/sh", args: ["-c", serve], baseEnv: { PATH }, session: sessionOf });
+      const client = [
+        `${perlConnect(beside)} && echo beside-open || echo beside-refused`,
+        `${perlConnect(elsewhere)} && echo elsewhere-open || echo elsewhere-refused`,
+        `/usr/bin/perl -MIO::Socket::UNIX -e 'my $c = IO::Socket::UNIX->new(Peer => $ARGV[0]) or exit 1; print $c "hello\\n"' '${pipe}' && echo pipe-open || echo pipe-refused`,
+        `(echo x > "$HOME/ok" && echo home-written) || echo home-refused`,
+        `(echo x > '${join(input, "x")}' 2>/dev/null && echo input-written) || echo input-refused`,
+      ].join("; ");
+      try {
+        expect(await line(server.process.stdout)).toBe("bound");
+        const received = line(server.process.stdout);
+        const started = await spawnSeatbeltOfflineHolder({ label: "test:engine-b", command: "/bin/sh", args: ["-c", client], baseEnv: { PATH }, session: sessionOf });
+        try {
+          const out: string[] = [];
+          started.process.stdout.on("data", (chunk: Buffer) => out.push(chunk.toString()));
+          await started.process.completion;
+          await vi.waitFor(() => expect(out.join("").trim().split("\n")).toEqual(["beside-refused", "elsewhere-refused", "pipe-open", "home-written", "input-refused"]),
+            { timeout: 5_000, interval: 25 });
+          expect(await received).toBe("hello");
+          expect(readFileSync(join(output, "ok"), "utf8")).toBe("x\n");
+        } finally {
+          await started.release();
+        }
+      } finally {
+        await server.release();
+      }
+    } finally {
+      for (const server of servers) server.close();
+    }
+  });
+
+  it("L-O1: a session's socket directory must be a private 0700 directory inside its write root", async () => {
+    const output = join(root, "out2");
+    const open = join(output, "ipc");
+    mkdirSync(open, { recursive: true });
+    chmodSync(open, 0o755);
+    await expect(spawnSeatbeltOfflineHolder({ label: "test:engine-c", command: "/usr/bin/true", args: [], baseEnv: { PATH },
+      session: { writeRoot: output, runtimeReads: [], socketDirectory: open } })).rejects.toThrow("private 0700 directory");
+    const outside = join(root, "ipc-outside");
+    mkdirSync(outside, { mode: 0o700 });
+    await expect(spawnSeatbeltOfflineHolder({ label: "test:engine-c", command: "/usr/bin/true", args: [], baseEnv: { PATH },
+      session: { writeRoot: output, runtimeReads: [], socketDirectory: outside } })).rejects.toThrow("private 0700 directory");
+    // Control: the same directory made private starts.
+    chmodSync(open, 0o700);
+    const started = await spawnSeatbeltOfflineHolder({ label: "test:engine-c", command: "/usr/bin/true", args: [], baseEnv: { PATH },
+      session: { writeRoot: output, runtimeReads: [], socketDirectory: open } });
+    await started.process.completion;
+    await started.release();
+  });
+
+  /** A write root of its own: two live holders may not share one. */
+  function own(name: string): { allowWrite: string[] } {
+    const dir = join(root, name);
+    mkdirSync(dir, { recursive: true });
+    return { allowWrite: [dir] };
+  }
+
+  async function output(started: MxcBundledHolder): Promise<string> {
+    const out: string[] = [];
+    started.process.stdout.on("data", (chunk: Buffer) => out.push(chunk.toString()));
+    started.process.stderr.on("data", (chunk: Buffer) => out.push(chunk.toString()));
+    await started.process.completion;
+    // Completion waits for the output tail; poll bounded rather than assume a fixed delay.
+    let last = "";
+    await vi.waitFor(() => { const now = out.join(""); expect(now.includes("done") || now === last).toBe(true); last = now; }, { timeout: 5_000, interval: 50 });
+    return out.join("");
+  }
+
+  it("N8/N9: through its lease a holder reaches an allowed host; a direct connect, another holder's proxy and a reserved Tailnet port are refused", async () => {
+    const { createServer } = await import("node:net");
+    const { createServer: createHttpServer } = await import("node:http");
+    const { reserveTailnetListenerPort } = await import("../../shared/tailnet-listener-port.js");
+    const listen = (server: { listen(port: number, host: string, cb: () => void): unknown; address(): unknown }) =>
+      new Promise<number>(done => server.listen(0, "127.0.0.1", () => done((server.address() as { port: number }).port)));
+    const hits: string[] = [];
+    const upstream = createHttpServer((req, res) => { hits.push(req.url ?? ""); res.end("relay-control"); });
+    const upstreamPort = await listen(upstream);
+    let direct = 0;
+    const plain = createServer(socket => { direct++; socket.destroy(); });
+    const plainPort = await listen(plain);
+    let tailnetHits = 0;
+    const tailnet = createServer(socket => { tailnetHits++; socket.destroy(); });
+    const tailnetPort = await listen(tailnet);
+    const releaseTailnet = reserveTailnetListenerPort(tailnetPort);
+    const asked: string[] = [];
+    await stopEgressRelayService();
+    startEgressRelayService({
+      ask: async (destination) => { asked.push(`${destination.host}:${destination.port}`); return destination.host === "allowed.example"; },
+      resolve: async () => [{ address: "93.184.215.14" }],
+      router: async () => ({ routes: [{ kind: "http", host: "127.0.0.1", port: upstreamPort, resolvesNames: true }] }),
+    });
+    try {
+      // Holder A only keeps its lease (and so its proxy port) open.
+      const a = await holder('printf "%s\\n" "$HTTP_PROXY"; exec /bin/sleep 30', { ...own("a"), egressOwner: { kind: "worker", role: "mcp-server", pluginId: undefined, instanceId: "native-a" } });
+      const aProxy = (await line(a.process.stdout)).replace(/^http:\/\/[^@/]*@/u, "http://");
+      expect(aProxy).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/u);
+      const probe = [
+        "set -u",
+        `/usr/bin/curl -fsS --max-time 5 http://allowed.example:${upstreamPort + 1}/ok && echo " allowed-ok" || echo allowed-refused`,
+        `/usr/bin/curl -fsS --max-time 5 http://denied.example:${upstreamPort + 1}/no >/dev/null 2>&1 && echo denied-open || echo denied-refused`,
+        `/usr/bin/nc -z -w 2 127.0.0.1 ${plainPort} 2>/dev/null && echo direct-open || echo direct-refused`,
+        `/usr/bin/curl -fsS --noproxy '' -x ${aProxy} --max-time 5 http://allowed.example:${upstreamPort + 1}/borrowed >/dev/null 2>&1 && echo borrowed-open || echo borrowed-refused`,
+        `/usr/bin/nc -z -w 2 127.0.0.1 ${tailnetPort} 2>/dev/null && echo tailnet-open || echo tailnet-refused`,
+        `/usr/bin/curl -fsS --max-time 5 http://tailnet-check.example:${tailnetPort}/ >/dev/null 2>&1 && echo tailnet-name-open || echo tailnet-name-refused`,
+        "echo done",
+      ].join("\n");
+      const b = await holder(probe, { ...own("b"), egressOwner: { kind: "worker", role: "mcp-server", pluginId: undefined, instanceId: "native-b" } });
+      const text = await output(b);
+      expect(text, text).toContain("relay-control allowed-ok");
+      for (const refused of ["denied-refused", "direct-refused", "borrowed-refused", "tailnet-refused", "tailnet-name-refused"]) expect(text, text).toContain(refused);
+      // Controls: the host reaches the same listeners.
+      execFileSync("/usr/bin/nc", ["-z", "-w", "2", "127.0.0.1", String(plainPort)], { timeout: 5000 });
+      expect(hits).toEqual([`http://allowed.example:${upstreamPort + 1}/ok`]);
+      await vi.waitFor(() => expect(direct).toBe(1), { timeout: 5_000, interval: 25 });
+      expect(tailnetHits).toBe(0);
+      expect(asked.some(entry => entry.endsWith(`:${tailnetPort}`))).toBe(false);
+    } finally {
+      releaseTailnet();
+      for (const server of [upstream, plain, tailnet]) server.close();
+    }
+  }, 60_000);
+
+  it("N17: a holder cannot have launchd or Launch Services start a program; the host can", async () => {
+    const marker = join(root, "n17-launchd");
+    const label = `dev.ave.test.n17.${process.pid}`;
+    const probe = [
+      `/bin/launchctl submit -l ${label} -- /usr/bin/touch '${marker}' 2>/dev/null && echo submit-ok || echo submit-refused`,
+      `/usr/bin/open -g -j -a /System/Applications/Calculator.app 2>/dev/null && echo open-ok || echo open-refused`,
+      "echo done",
+    ].join("\n");
+    try {
+      const text = await output(await holder(probe));
+      expect(text, text).toContain("submit-refused");
+      expect(text, text).toContain("open-refused");
+      await new Promise(resolve => setTimeout(resolve, 1_000));
+      expect(existsSync(marker)).toBe(false);
+      // Control: the same submit from the host runs the job.
+      execFileSync("/bin/launchctl", ["submit", "-l", label, "--", "/usr/bin/touch", marker]);
+      await vi.waitFor(() => expect(existsSync(marker)).toBe(true), { timeout: 10_000, interval: 100 });
+    } finally {
+      try { execFileSync("/bin/launchctl", ["remove", label]); } catch { /* not loaded */ }
+    }
+  }, 30_000);
+
+  it("N19: a holder cannot exec setuid programs; the host can", async () => {
+    const probe = [
+      "for p in /usr/bin/su /bin/ps /usr/bin/top; do",
+      '  err=$("$p" -h 2>&1 </dev/null >/dev/null); code=$?',
+      '  case "$err" in *"Operation not permitted"*) echo "$p refused";; *) echo "$p ran $code";; esac',
+      "done",
+      "echo done",
+    ].join("\n");
+    const text = await output(await holder(probe));
+    expect(text, text).toContain("/usr/bin/su refused");
+    expect(text, text).toContain("/bin/ps refused");
+    expect(text, text).toContain("/usr/bin/top refused");
+    // Control: the host runs ps.
+    expect(execFileSync("/bin/ps", ["-p", String(process.pid), "-o", "pid="], { encoding: "utf8" }).trim()).toBe(String(process.pid));
+  }, 30_000);
+
+  it("N21: a holder cannot signal another holder; it can signal its own child", async () => {
+    const victim = await holder("exec /bin/sleep 30", own("victim"));
+    const probe = [
+      `kill -9 ${victim.process.id} 2>/dev/null && echo other-killed || echo other-refused`,
+      "/bin/sleep 30 & child=$!",
+      'kill -9 "$child" 2>/dev/null && echo own-killed || echo own-refused',
+      "echo done",
+    ].join("\n");
+    const text = await output(await holder(probe, own("attacker")));
+    expect(text, text).toContain("other-refused");
+    expect(text, text).toContain("own-killed");
+    // The victim still runs.
+    expect(() => process.kill(victim.process.id, 0)).not.toThrow();
+  }, 30_000);
+
+  it("N6: a plugin hook runs as a holder through the hook runner: stdin JSON in, its verdict out, a timeout that leaves nothing", async () => {
+    const { runOneHookScript } = await import("../../hooks/script-hook-runner.js");
+    const generationRoot = join(root, "generation");
+    const dataDir = join(root, "hookdata");
+    mkdirSync(generationRoot); mkdirSync(dataDir);
+    const verdict = join(generationRoot, "verdict.sh");
+    writeFileSync(verdict, '#!/bin/sh\nread -r line\ncase "$line" in *read_file*) printf \'{"action":"deny","reason":"saw read_file"}\';; *) printf \'{"action":"allow"}\';; esac\n');
+    const pidFile = join(dataDir, "escaped.pid");
+    const stuck = join(generationRoot, "stuck.sh");
+    writeFileSync(stuck, `#!/bin/sh\n/usr/bin/perl -e 'use POSIX; POSIX::setsid(); exec "/bin/sleep", "59"' & echo $! > '${pidFile}'\nexec /bin/sleep 59\n`);
+    chmodSync(verdict, 0o755); chmodSync(stuck, 0o755);
+    const payload = { hookType: "pre", event: "pre", toolName: "read_file", source: "builtin", category: "read", input: {},
+      sessionId: "native-hook", trustOrigin: "user-keyboard" } as const;
+    const hook = (script: string, timeoutMs?: number) => ({ id: `hook-${script.length}`, hookType: "pre" as const, source: "config" as const,
+      hookPath: script, command: ["/bin/sh", script], configDir: generationRoot, fileDependencies: [script],
+      ...(timeoutMs === undefined ? {} : { timeoutMs }),
+      confinement: { kind: "bundled" as const, pluginId: "native-hook-plugin", dataDir, generationRoot } });
+    const decided = await runOneHookScript(hook(verdict), payload as never, { cwd: dataDir });
+    expect(decided.decision, decided.reason).toBe("deny");
+    expect(decided.reason).toContain("saw read_file");
+    const timedOut = await runOneHookScript(hook(stuck, 1_500), payload as never, { cwd: dataDir });
+    expect(timedOut.decision).toBe("deny");
+    expect(timedOut.reason).toMatch(/time/iu);
+    const escaped = Number(readFileSync(pidFile, "utf8").trim());
+    expect(Number.isInteger(escaped) && escaped > 0).toBe(true);
+    // The holder's stop swept its label: the setsid escape is gone.
+    await vi.waitFor(() => expect(() => process.kill(escaped, 0)).toThrow(), { timeout: 5_000, interval: 50 });
+  }, 60_000);
+
+  it("N5b: the watcher killed while two holders run: it comes back, both still stop verified, a new start works", async () => {
+    const { startHolderWatcher } = await import("../seatbelt-holder-boot.js");
+    const watcher = startHolderWatcher(verifyHolderSweepHelper(RESOURCES), { respawnMinMs: 200 });
+    try {
+      const write = (name: string) => { const dir = join(root, name); mkdirSync(dir); return { allowWrite: [dir] }; };
+      const a = await holder("exec /bin/cat", write("a"));
+      const b = await holder("exec /bin/cat", write("b"));
+      await vi.waitFor(() => expect(watcher.pid()).toBeGreaterThan(0), { timeout: 5_000, interval: 25 });
+      const first = watcher.pid() ?? 0;
+      process.kill(first, "SIGKILL");
+      await vi.waitFor(() => expect(watcher.pid() ?? first).not.toBe(first), { timeout: 5_000, interval: 25 });
+      expect(watcher.available()).toBe(true);
+      for (const started of [a, b]) {
+        const echoed = line(started.process.stdout);
+        started.process.stdin.write("alive\n");
+        expect(await echoed).toBe("alive");
+      }
+      // A verified stop removes the staging tree; a quarantined one would refuse the next start.
+      await a.release();
+      await b.release();
+      const next = await holder("echo next; exec /bin/cat", write("c"));
+      expect(await line(next.process.stdout)).toBe("next");
+      await next.release();
+    } finally {
+      expect(await watcher.stop()).toBe(true);
+    }
+  }, 30_000);
 
   it("N13: a kernel-refused start runs nothing and leaves no staging tree", async () => {
     const staging = join(cache, "ai.agent-connector.ave", "mxc-runtime", "staging");

@@ -175,6 +175,24 @@ describe("POSIX container filesystem ranking", () => {
     });
   });
 
+  // A plugin's install root under the Ave home is a read grant and also the folder above its data write root. It sits
+  // wholly inside the carved home deny, so it stays a grant of its own: no carve of its children, and no carve budget
+  // spent above it (a large home or temp folder) can take its code away.
+  it.each([3, 401])("keeps a read grant inside a carved deny whole when another grant sits beneath it (%i entries above)", (count) => {
+    const ave = "/users/example/.ave";
+    const plugin = `${ave}/plugins/p`;
+    const result = rankPosixContainerRows(model([deny(ave, "ave-home")], read("/"), read(plugin), write(`${plugin}/data`)), "seatbelt", {
+      ...lookups,
+      children: (path) => {
+        if (path === plugin || path.startsWith(`${plugin}/`)) throw new Error("Do not enumerate a folder that is a grant");
+        return path === "/" ? Array.from({ length: count }, (_, index) => `entry-${index}`) : [];
+      },
+    });
+    expect(result.readwrite).toEqual([`${plugin}/data`]);
+    expect(result.readonly).toContain(plugin);
+    expect(result.ungrantedDenies).toEqual([ave]);
+  });
+
   it.each([401, 2001])("withholds the whole folder that exceeds the carve budget with %i entries", (count) => {
     const result = rankPosixContainerRows(model([], read("/"), write("/work")), "seatbelt", {
       ...lookups, children: () => Array.from({ length: count }, (_, index) => `entry-${index}`),

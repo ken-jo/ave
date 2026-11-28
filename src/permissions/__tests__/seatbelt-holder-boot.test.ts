@@ -5,6 +5,7 @@ import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 
 const lock = vi.hoisted(() => ({ held: true }));
 vi.mock("../../shared/ave-home-configuration-access.js", () => ({ isAveHomeConfigurationOwner: () => lock.held }));
@@ -61,8 +62,11 @@ describe.runIf(NATIVE)("macOS holder boot sequence", () => {
   });
 
   it("passes all three controls on this machine", async () => {
+    const started = Date.now();
     const proof = await proveSeatbeltHolderRoute({ resourcePath: RESOURCES, home });
     expect(proof.state === "unproven" ? proof.detail : "proven").toBe("proven");
+    // Boot waits on this proof. A canary job that held the holder's pipes cost the 1 s drain and the 2 s grace (4.2 s).
+    expect(Date.now() - started).toBeLessThan(TOOL_TIMEOUT_POLICY.mxcMacHolderOutputDrainMs + TOOL_TIMEOUT_POLICY.mxcMacHolderTermGraceMs);
   }, 20_000);
 
   it("is unproven when the helper never signals (C1), when it ends a non-member (C2), or when the stale identity is not refused (C3)", async () => {

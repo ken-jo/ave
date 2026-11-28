@@ -616,6 +616,19 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
         assertNesting();
         return { launch, identity: measureIdentity(spec.command) };
       });
+      // Between the gate and the ready byte, a revocation stops the holder at once instead of at the post-start recheck.
+      const revokeStart = new AbortController();
+      const revoke = (): void => revokeStart.abort();
+      const checkStart = (): void => {
+        try {
+          withLocalityDecision(() => {
+            recheck("during native start");
+            if (measureIdentity(spec.command) !== identity) throw new MxcProcessContractError("Container executable changed after admission");
+          });
+        } catch { revoke(); }
+      };
+      const unsubscribe = [onSandboxStatusChanged(checkStart), onMxcHolderLifetimeAdmissionSealed(revoke)];
+      for (const admission of [signal, parentAdmission]) admission?.addEventListener("abort", revoke, { once: true });
       // The launch gate holds the holder until this recheck passed; the gate then compares the launch record with this digest.
       starting = startSeatbeltHolder(launch, {
         label: spec.label, helper: route.helper, launchers: route.launchers, admittedDigest: launch.digest,
@@ -624,11 +637,17 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
           if (measureIdentity(spec.command) !== identity) throw new MxcProcessContractError("Container executable changed after admission");
         }),
         egress: { release: egress.release, lease },
+        revoked: revokeStart.signal,
       }).then((holder) => { child = seatbeltHolderProcess(holder); native = child; }, (error: unknown) => {
         if (error instanceof MxcProcessCleanupError) startCleanupFailure = error;
         throw error;
       });
-      await starting;
+      try {
+        await starting;
+      } finally {
+        for (const stop of unsubscribe) stop();
+        for (const admission of [signal, parentAdmission]) admission?.removeEventListener("abort", revoke);
+      }
     } else {
       const windowsPlan = isMacExtensionPlan(plan) ? undefined : plan;
       if (windowsPlan === undefined) throw new MxcProcessContractError("Extension container backend is not ready");

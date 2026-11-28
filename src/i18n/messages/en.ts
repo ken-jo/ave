@@ -1171,7 +1171,7 @@ export const en = {
 
   // be_mxcExtensionErrors
   "be_mxcExtensionErrors.workerTransportUnsupported": "This extension's worker uses a connection a Windows extension container cannot carry: workers need stdio control v1. Update the extension ({code})",
-  "be_mxcExtensionErrors.nativeEntryRequired": "This process type has not been updated for Windows extension containers yet, so it was not started ({code})",
+  "be_mxcExtensionErrors.nativeEntryRequired": "This process type has not been updated for extension containers yet, so it was not started ({code})",
   "be_mxcExtensionErrors.readinessRefused": "No extension backend has admitted this start, so it was refused; it does not run unconfined ({code})",
   "be_mxcRuntimeRoot.elevatedOwned": "the folder {path} was created while Ave ran as administrator, so a normal run cannot use it. Delete that folder and restart Ave, or run Ave as administrator again if that is how you set it up",
 
@@ -1505,6 +1505,7 @@ export const en = {
   // be_wrapBundledCommand
   "be_wrapBundledCommand.executableNotAdmissible": "This program cannot run in an extension container: {detail} ({code})",
   "be_wrapBundledCommand.executableRelative": "\"{command}\" is a relative path, which would resolve inside the working folder",
+  "be_wrapBundledCommand.interpreterNotAdmissible": "\"{path}\" is a script whose interpreter line Ave cannot run in a container ({line}). Use an absolute interpreter, or `#!/usr/bin/env NAME` with no options.",
   "be_wrapBundledCommand.executableNotFound": "\"{command}\" was not found as a Windows executable (.exe) on PATH",
   "be_wrapBundledCommand.executableUnresolvable": "\"{path}\" cannot be resolved ({reason})",
   "be_wrapBundledCommand.executableNotExe": "\"{path}\" is not a Windows executable (.exe); run its interpreter directly",
@@ -5196,6 +5197,7 @@ export const en = {
   "sandboxPolicy.linuxContainerStartRefused": "The Linux sandbox container refused to start the shell command.",
   "sandboxPolicy.linuxContainerShellRefused": "The Linux sandbox container refused the shell command. {reason}",
   "sandboxPolicy.containerShellCleanupUnverified": "The shell command was stopped, but its processes could not be confirmed gone.",
+  "sandboxPolicy.containerShellProfileTooLarge": "The macOS sandbox container did not start the shell command: its folder grants make the sandbox policy larger than macOS can load. Remove some granted folders, or grant a common parent folder instead, and run it again.",
   "sandboxPolicy.containerShellRefused": "The macOS sandbox container refused the shell command: {reason}",
   "sandboxPolicy.containerShellStartFailed": "The macOS sandbox container failed to start the shell command, and Ave could not confirm that nothing started.",
   "sandboxPolicy.containerShellNotStarted": "The shell command was not started: its working directory or permission state changed before it could run. Run it again.",

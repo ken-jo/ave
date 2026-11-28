@@ -101,6 +101,7 @@ import { isWindowsPathAtOrUnder, mayIndicateMxcShellStartupFailure, MXC_BASH_UNA
 import { recheckWindowsContainerBackendAfterShellFailure, type WindowsBackendObservation } from "../permissions/windows-confinement-evidence.js";
 import { prepareMxcPosixShellLaunch } from "./mxc-posix-shell-launch.js";
 import { MxcCwdChangedError } from "../permissions/mxc-shell-supervisor-client.js";
+import { isSeatbeltProfileTooLarge } from "../permissions/seatbelt-profile.js";
 import { prepareMxcShellLaunch, type MxcParserPreparationStage, type MxcShellLaunch, type MxcShellPreparationStage } from "./mxc-shell-launch.js";
 import { deferWatchedReceipt } from "../permissions/windows-watched-rows.js";
 import { createContainedShellLifecycle } from "./contained-shell-lifecycle.js";
@@ -2931,6 +2932,8 @@ async function runPosixContainerShell(input: {
       ? { output: t("sandboxPolicy.containerShellCancelled"), isError: true, metadata: { aborted: true, sandboxed: false } }
       : revoked ? { output: `spawn failed: ${HOST_SHELL_AUTHORIZATION_REVOKED_ERROR}`, isError: true, metadata: { sandboxed: false, sandboxAttempted: true } }
         : cwdChanged ? { output: t("sandboxPolicy.containerShellNotStarted"), isError: true, metadata: { sandboxed: false, sandboxAttempted: true } }
+        : isSeatbeltProfileTooLarge(error) ? { output: t("sandboxPolicy.containerShellProfileTooLarge"), isError: true,
+          metadata: { sandboxed: false, sandboxAttempted: true, isolation: "unavailable" } }
         : { output: t(process.platform === "linux" ? "sandboxPolicy.linuxContainerShellRefused" : "sandboxPolicy.containerShellRefused",
           { reason: shellFailureText([error], "code") }), isError: true,
           metadata: { sandboxed: false, sandboxAttempted: true, isolation: "unavailable" } };

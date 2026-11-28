@@ -20,6 +20,7 @@ vi.mock("node:fs/promises", async (importOriginal) => ({
 }));
 vi.mock("../asrt-sandbox.js", () => ({
   isOfflineProcessConfinementActive: vi.fn(() => true),
+  isOfflineHolderConfinementActive: vi.fn(() => false),
   getDefaultSensitiveReadDenyPaths: () => ["/private-service-secrets"],
   getDefaultSensitiveWriteDenyEntries: () => ["/private-service-control"],
   buildPerCommandSandboxCustomConfig: vi.fn(policy => ({ filesystem: policy })),

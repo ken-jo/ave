@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { rankPosixContainerRows, type PosixPolicyLookups } from "../mxc-posix.js";
 import { buildPolicyModel, policyFloorRow, policyGrantRow, type PolicyModel, type PolicyRow } from "../policy-model.js";
-import { _seatbeltDenyGlobForTest, buildSeatbeltHolderProfile, buildSeatbeltShellProfile, seatbeltProfileAllowsOnlyProxyIpEgress, splitSeatbeltPolicyRows } from "../seatbelt-profile.js";
+import { _seatbeltDenyGlobForTest, buildSeatbeltHolderProfile, buildSeatbeltShellProfile, isSeatbeltProfileTooLarge, seatbeltProfileAllowsOnlyProxyIpEgress, splitSeatbeltPolicyRows } from "../seatbelt-profile.js";
 
 const lookups: PosixPolicyLookups = {
   home: "/users/example", foldsCase: true, canonical: path => path,
@@ -211,5 +211,17 @@ describe("Seatbelt shell and holder profile size", () => {
     const shell = (count: number) => ({ ...withDenies(count), proxyPort: 4100 });
     expect(Buffer.byteLength(buildSeatbeltShellProfile(shell(100)))).toBeLessThan(128 * 1024);
     expect(() => buildSeatbeltShellProfile(shell(3_000))).toThrow(expect.objectContaining({ code: "profile-string-too-long", message: expect.stringContaining("shell") }));
+  });
+
+  it("names an over-cap profile for the shell's user-facing refusal, and nothing else", () => {
+    const shell = (count: number) => ({ ...withDenies(count), proxyPort: 4100 });
+    let refusal: unknown;
+    try { buildSeatbeltShellProfile(shell(3_000)); } catch (error) { refusal = error; }
+    expect(isSeatbeltProfileTooLarge(refusal)).toBe(true);
+    let other: unknown;
+    try { buildSeatbeltShellProfile({ ...shell(1), proxyPort: 0 }); } catch (error) { other = error; }
+    expect(other).toBeDefined();
+    expect(isSeatbeltProfileTooLarge(other)).toBe(false);
+    expect(isSeatbeltProfileTooLarge(new Error("Container shell profile exceeds the size limit"))).toBe(false);
   });
 });
