@@ -287,6 +287,33 @@ describe.runIf(NATIVE)("macOS holder boundary (native)", () => {
     await expect(start(true)).rejects.toThrow("Container filesystem changed after admission");
   });
 
+  it("T12: a #! script replaced after admission refuses the start, as its interpreter would (rv13 P3-2)", async () => {
+    const scripts = join(root, "scripts");
+    mkdirSync(scripts);
+    // The last two calls of the adapter check are the recheck before native creation and the one after the start; the
+    // control run counts them, and the swap run replaces the script at that recheck, after the launch was measured.
+    let controlCalls = 0;
+    const start = async (swapAt: number | undefined) => {
+      const name = swapAt === undefined ? "kept" : "swapped";
+      const script = join(scripts, `${name}.sh`);
+      writeFileSync(script, "#!/bin/sh\necho up\nexec /bin/cat\n");
+      chmodSync(script, 0o755);
+      const write = join(root, `write-${name}`);
+      mkdirSync(write);
+      let calls = 0;
+      const started = await holder("", { command: script, args: [], allowWrite: [write],
+        assertStillValid: () => {
+          calls += 1;
+          if (swapAt === undefined) controlCalls = calls;
+          else if (calls === swapAt) { rmSync(script); writeFileSync(script, "#!/bin/sh\necho swapped\nexec /bin/cat\n"); chmodSync(script, 0o755); }
+        } });
+      return line(started.process.stdout);
+    };
+    await expect(start(undefined)).resolves.toBe("up");
+    expect(controlCalls).toBeGreaterThan(2);
+    await expect(start(controlCalls - 1)).rejects.toThrow("Container executable changed after admission");
+  });
+
   it("N12: an offline holder reaches no TCP listener and no Unix socket, writes only its staging; the host controls connect", async () => {
     const { createServer } = await import("node:net");
     const tcp = createServer(socket => socket.end()).listen(0, "127.0.0.1");

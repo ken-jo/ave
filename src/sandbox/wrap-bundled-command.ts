@@ -951,6 +951,7 @@ export async function spawnMxcBundledHolder(input: MxcBundledHolderInput): Promi
       ...(input.workerTransport ? { workerTransport: input.workerTransport } : {}),
       ...(input.parent ? { parent: input.parent } : {}),
       ...(input.signal ? { signal: input.signal } : {}),
+      ...(posixLaunch && posixLaunch.files.length > 1 ? { interpretedFiles: posixLaunch.files.filter(file => file !== executable) } : {}),
     });
   } catch (error) {
     // An unverified startup cleanup keeps the staging tree with the rest of the holder's resources.
