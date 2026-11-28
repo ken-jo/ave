@@ -115,6 +115,7 @@ export function checkBwrapCall(record: BwrapRecord, request: LinuxHolderRequestS
   const counts = new Map<string, number>();
   const rows = new Set([...request.filesystem.readwritePaths, ...request.filesystem.readonlyPaths, ...request.filesystem.deniedPaths]
     .flatMap(path => [path, canonicalOrSelf(path)]));
+  const denied = new Set(request.filesystem.deniedPaths.flatMap(path => [path, canonicalOrSelf(path)]));
   const renumbered = [...options];
   for (let index = 0; index < options.length;) {
     const option = options[index] ?? "";
@@ -129,7 +130,9 @@ export function checkBwrapCall(record: BwrapRecord, request: LinuxHolderRequestS
       if (!LAUNCHER_BASELINE_MOUNTS.has(destination) && !rows.has(destination)) {
         throw new LinuxHolderRequestRejected(`${option} mounts ${JSON.stringify(destination)}, which is not a path of the request`);
       }
-      if (option !== "--tmpfs" && operands[0] !== destination) {
+      // The launcher denies a file by binding the empty device over it, read-only; only a denied path may take it.
+      const deniesFile = option === "--ro-bind" && operands[0] === "/dev/null" && denied.has(destination);
+      if (option !== "--tmpfs" && operands[0] !== destination && !deniesFile) {
         throw new LinuxHolderRequestRejected(`${option} mounts ${JSON.stringify(operands[0])} at another path`);
       }
     }

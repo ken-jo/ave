@@ -78,8 +78,15 @@ describe("Linux holder bwrap record", () => {
     ["a bind of a path not in the request", [...measured, "--bind", "/home/user", "/home/user"], "not a path of the request"],
     ["a bind of another source", replace(measured, measured.indexOf("/work"), "/elsewhere"), "at another path"],
     ["a read-only bind of a path not in the request", [...measured, "--ro-bind", "/etc/shadow", "/etc/shadow"], "not a path of the request"],
+    ["the empty device over a write grant", [...measured, "--ro-bind", "/dev/null", "/work"], "at another path"],
+    ["the empty device writable over a denied file", [...measured, "--bind", "/dev/null", "/work/.ave/hooks"], "at another path"],
   ] as const)("refuses a call with %s", (_name, options, reason) => {
     expect(() => checkBwrapCall(parseBwrapRecord(record([...options, "--", "sh", "-c", request.process.commandLine], fds)), request)).toThrow(reason);
+  });
+
+  it("accepts the empty device read-only over a denied file, the launcher's file deny", () => {
+    const checked = checkBwrapCall(parseBwrapRecord(record([...measured, "--ro-bind", "/dev/null", "/work/.ave/hooks", "--", "sh", "-c", request.process.commandLine], fds)), request);
+    expect(checked.options.slice(-3)).toEqual(["--ro-bind", "/dev/null", "/work/.ave/hooks"]);
   });
 
   it.each([
