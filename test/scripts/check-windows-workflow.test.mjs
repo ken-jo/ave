@@ -727,6 +727,12 @@ for (const [name, change, expected] of [
   ["a platform-gated tier selection", jobs => {
     jobs.build.outputs.windows_tier_tests = `\${{ steps.plan.outputs.platform_checks == 'true' && steps.tiers.outputs.windows_tiers != '' }}`;
   }, /tier selection through preparation/u],
+  ["a missing Windows build tier declaration", jobs => {
+    delete jobs.build.outputs.windows_tiers;
+  }, /must validate against the build's selected tiers/u],
+  ["a Windows shard without the build tier declaration", jobs => {
+    delete jobs["windows-permission-tests"].env.AVE_WINDOWS_TEST_TIERS;
+  }, /must validate against the build's selected tiers/u],
   ["a platform-gated plan upload", jobs => {
     jobs.build.steps.find(step => step.name === "Upload the Windows regression plan").if =
       "steps.docs-impact.outputs.docs_only != 'true' && steps.plan.outputs.platform_checks == 'true'";

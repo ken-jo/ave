@@ -297,7 +297,8 @@ describe("CI test selection fallbacks", () => {
     ["affected", "pull_request", true, "1", "2"],
     ["affected", "pull_request", false, "1", "4"],
   ] as const)("validates the reported count for %s/%s with native checks %s", (mode, event, platforms, expected, wrong) => {
-    const plan = readPlanFile(JSON.stringify({ mode, reason: "planned", tests: [] }));
+    const tests = mode === "affected" ? ["src/core/__tests__/route-input.test.ts"] : [];
+    const plan = readPlanFile(JSON.stringify({ mode, reason: "planned", tests }));
     expect(() => validateCiShardCount(plan, runsCoverage(event, plan), platforms, wrong))
       .toThrow(`expected ${expected} Vitest shard(s)`);
     expect(() => validateCiShardCount(plan, runsCoverage(event, plan), platforms, expected)).not.toThrow();
@@ -385,10 +386,10 @@ describe("event rules over the pull request merge and the whole push", () => {
     withGitOutputs(["head first second\n", `:100644 100644 aaaa bbbb M\0${changedTest}\0`, trackedTests.join("\0")], () => {
       const plan = planCiSuite("pull_request", { headRef: "integration/test-speed", baseRef: "main" });
       expect(plan.mode).toBe("affected");
-      expect(plan.reason).toContain("test-only category merge");
-      expect(plan.reason).toContain("test-only diff");
-      expect(plan.tests).toEqual(expect.arrayContaining([changedTest, ...expandMustRunTests(mustRunDocument, trackedTests, [changedTest, "src/core/route-input.ts"])]));
-      expect(vi.mocked(spawnSync).mock.calls[1][1]).toEqual(["diff", "--no-renames", "--raw", "-z", "first", "HEAD", "--"]);
+      expect(plan.reason).toBe("test-only diff: changed test files");
+      expect(plan.tests).toEqual([...new Set([changedTest, ...expandMustRunTests(mustRunDocument, trackedTests, [])])].sort());
+      expect(plan).toHaveProperty("testOnlyFiles", [changedTest]);
+      expect(vi.mocked(spawnSync).mock.calls[1][1]).toEqual(["diff", "--find-renames", "--find-copies-harder", "-l0", "--raw", "-z", "first", "HEAD", "--"]);
     });
   });
 
@@ -676,10 +677,10 @@ describe("unresolved pull request diffs", () => {
     },
   ];
 
-  it.each(cases)("fails clearly for $name on an integration base before selecting tests", ({ outputs, reason }) => {
+  it.each(cases)("keeps the full fallback for $name on an integration base", ({ outputs, reason }) => {
     withGitOutputs(outputs, () => {
-      expect(() => planCiSuite("pull_request", { headRef: "ci/change", baseRef: "integration/test-speed" }))
-        .toThrow(`integration base requires a resolved pull request diff: ${reason}`);
+      expect(planCiSuite("pull_request", { headRef: "ci/change", baseRef: "integration/test-speed" }))
+        .toEqual({ mode: "full", reason, tests: [] });
     });
   });
 

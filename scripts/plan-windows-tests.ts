@@ -1,7 +1,7 @@
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { assertWindowsPlan, defaultWindowsSuites, tierWindowsSuites, WINDOWS_TEST_SHARDS, WINDOWS_TEST_WORKERS, WINDOWS_TIER_TEST_SHARDS, type WindowsPlanTier, type WindowsTestPlan } from "./run-windows-test-list.mjs";
+import { assertWindowsPlan, defaultWindowsSuites, tierWindowsSuites, WINDOWS_TEST_SHARDS, WINDOWS_TEST_WORKERS, WINDOWS_TIER_TEST_SHARDS, windowsPlanTiers, type WindowsPlanTier, type WindowsTestPlan } from "./run-windows-test-list.mjs";
 import { collectedVitestFiles } from "./lib/vitest-collection.mjs";
 
 export const WINDOWS_TEST_TIMES = "config/windows-test-times.json";
@@ -61,16 +61,8 @@ export function planWindowsTests(collected: readonly string[], duration: Windows
     tiers: [...tiers],
     tierShards: tiers.length === 0 ? [] : assignShards(WINDOWS_TIER_TEST_SHARDS, tierWindowsSuites(collected, tiers), file => weight(file, fullCensus)),
   };
-  assertWindowsPlan(plan, collected);
+  assertWindowsPlan(plan, collected, tiers);
   return plan;
-}
-
-/** AVE_WINDOWS_TEST_TIERS names the tiers the build job selected, comma-separated. */
-export function windowsPlanTiers(value: string | undefined): WindowsPlanTier[] {
-  if (value === undefined) throw new Error("AVE_WINDOWS_TEST_TIERS must name the selected tiers, or be empty");
-  const tiers = value.split(",").map(tier => tier.trim()).filter(Boolean);
-  for (const tier of tiers) if (tier !== "native" && tier !== "census") throw new Error(`Unknown Windows test tier: ${tier}`);
-  return tiers as WindowsPlanTier[];
 }
 
 export function windowsPlanSummary(plan: WindowsTestPlan): string {
