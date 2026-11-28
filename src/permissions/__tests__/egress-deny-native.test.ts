@@ -204,9 +204,10 @@ describe.runIf(nativePlatform)("proxy deny attribution (native)", () => {
     }
   }, 60_000);
 
-  // A worker reaches this proxy only where it is wrapped: Linux, and macOS before its holder route. On that route a worker
-  // is a holder beneath its plugin's holder and egresses through its relay lease (seatbelt-holder-boundary.native N8).
-  it.runIf(!(process.platform === "darwin" && isContainerHolderRouteEnabled("darwin")))("audits a plugin worker's refused host under the worker", async (context) => {
+  // A worker reaches this proxy only where it is wrapped: macOS and Linux before their holder routes. On those routes a
+  // worker is a holder beneath its plugin's holder and egresses through its relay lease (seatbelt-holder-boundary.native
+  // N8; on Linux through its bridge, which the holder canary proves refuses an unasked host).
+  it.runIf(!((process.platform === "darwin" || process.platform === "linux") && isContainerHolderRouteEnabled(process.platform)))("audits a plugin worker's refused host under the worker", async (context) => {
     await requireNativeCase(context);
     // Plugin-worker confinement is its own boot setting; without it the child would run unconfined and reach the network.
     setPluginWorkerConfinementRequestedAtBoot(true);

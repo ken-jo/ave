@@ -9,7 +9,7 @@ describe("Linux holder start thread", () => {
     const beforeRelease = vi.fn(async () => {});
     await expect(startLinuxHolder({ options: [], command: ["sh", "-c", "true"], seccomp: Buffer.from("x") }, {
       label: "test", bwrap: { path: "/usr/bin/bwrap", identity: "" }, cwd: "/", admittedDigest: "", currentDigest: () => "",
-      assertStillValid: () => {}, beforeRelease,
+      assertStillValid: () => {}, beforeRelease, online: false,
     })).rejects.toThrow("main thread");
     expect(beforeRelease).not.toHaveBeenCalled();
   });

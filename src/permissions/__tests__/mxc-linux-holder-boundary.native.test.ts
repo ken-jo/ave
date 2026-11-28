@@ -1,15 +1,16 @@
-import { spawn, execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { spawn, execFile, execFileSync } from "node:child_process";
+import { promisify } from "node:util";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createServer as createUnixServer } from "node:net";
 import { join, resolve } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import { collectStream as collect } from "../../__tests__/support/collect-stream.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import seccompPins from "../mxc-linux-seccomp-pins.json" with { type: "json" };
-import { buildBubblewrapHolderRequest, requireMxcLinuxShellPrograms } from "../mxc-linux.js";
+import { buildBubblewrapHolderRequest, linuxHolderBwrap, requireMxcLinuxShellPrograms } from "../mxc-linux.js";
 import { posixPolicyLookups } from "../mxc-posix.js";
 import {
-  establishLinuxCaptureFolder, linuxFileIdentity, linuxHolderLaunchDigest, linuxHolderReplay, startLinuxHolder, type StartLinuxHolderOptions,
+  establishLinuxCaptureFolder, linuxHolderLaunchDigest, linuxHolderReplay, startLinuxHolder, type StartLinuxHolderOptions,
   translateLinuxHolderRequest,
 } from "../mxc-linux-holder-launch.js";
 import { __resetManagedChildProcessesForTest } from "../../main/managed-child-processes.js";
@@ -17,17 +18,14 @@ import { randomBytes } from "node:crypto";
 import { existsSync, readdirSync } from "node:fs";
 import { spawnMxcConfinedChild, type MxcConfinedChildSpawn, type MxcConfinedChildSpec } from "../confined-child.js";
 import { startEgressRelayService, stopEgressRelayService } from "../egress-relay/relay.js";
+import { egressInvocationOwner } from "../egress-invocations.js";
 import { setProvenLinuxHolderRoute } from "../linux-holder-route.js";
 import { __resetSandboxRequestedAtBootForTest, setPluginWorkerConfinementRequestedAtBoot } from "../sandbox-capability.js";
 import { currentMxcRuntimeHost, establishMxcRuntimeRoot, requireMxcContainerStartRoot, _forgetMxcRuntimeRootForTest } from "../mxc-runtime-root.js";
 import { forgetIssuedContainerHome, recordIssuedContainerHome } from "../sandbox-home-registry.js";
 import { spawnMxcBundledHolder, type MxcBundledHolder } from "../../sandbox/wrap-bundled-command.js";
-
-vi.mock("../../shared/container-platform.js", async (actual) => {
-  const real = await actual<typeof import("../../shared/container-platform.js")>();
-  // The route is switched on here, before the product switch: the proof is injected, the chain is real.
-  return { ...real, isContainerHolderRouteEnabled: (platform: NodeJS.Platform) => platform === "linux" || real.isContainerHolderRouteEnabled(platform) };
-});
+import { aveHome } from "../../shared/ave-home.js";
+import { initializeAsrtSandbox, resetAsrtSandbox } from "../asrt-sandbox.js";
 
 const NATIVE = process.env.AVE_RUN_MXC_LINUX_BOUNDARY === "1";
 const BWRAP = "/usr/bin/bwrap";
@@ -177,7 +175,7 @@ describe.runIf(NATIVE)("native Linux holder start and stop", () => {
     const prepared = await prepare(script, argv);
     const events: string[] = [];
     const holder = await startLinuxHolder(prepared.call, {
-      label: "test:linux-holder", bwrap: { path: BWRAP, identity: linuxFileIdentity(BWRAP) }, cwd: work,
+      label: "test:linux-holder", bwrap: linuxHolderBwrap(BWRAP), cwd: work, online: false,
       admittedDigest: prepared.admitted, currentDigest: prepared.digest, assertStillValid: () => { events.push("recheck"); },
       beforeRelease: async () => { events.push("before-release"); }, afterVerifiedStop: async () => { events.push("after-verified-stop"); },
       ...over,
@@ -206,6 +204,53 @@ describe.runIf(NATIVE)("native Linux holder start and stop", () => {
     expect(output.join("")).toContain("term");
     expect(events).toEqual(["before-release", "recheck", "after-verified-stop"]);
     expect(await holder.process.completion).toMatchObject({ code: expect.any(Number) });
+  });
+
+  // Design 10.4 N4: a resident member that cannot be confirmed gone. The process reader the start reads the resident set
+  // through reports the inner bwrap alive after the real one ended; the stop must say "cleanup unverified" and must not
+  // run the verified-stop step that releases the holder's placeholders, Git hold and marker.
+  it("N4: a resident member it cannot confirm gone makes the stop unverified, and nothing a verified stop releases is released", async () => {
+    const stat = (pid: number): string[] | undefined => {
+      try { return readFileSync(`/proc/${pid}/stat`, "utf8").replace(/^.*\) /su, "").split(" "); } catch { return undefined; }
+    };
+    const seen = new Map<number, string>();
+    let stuck: number | undefined;
+    const reader = {
+      start: (pid: number): string | null => {
+        const fields = stat(pid);
+        if (fields === undefined) return pid === stuck ? seen.get(pid) ?? null : null;
+        const start = `boot:${fields[19]}`;
+        seen.set(pid, start);
+        // The inner bwrap: a bwrap whose parent is the outer bwrap, not this process.
+        const words = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0");
+        if (stuck === undefined && words[0]?.endsWith("bwrap") && Number(fields[1]) !== process.pid) stuck = pid;
+        return start;
+      },
+      parent: (pid: number): number | undefined => { const fields = stat(pid); return fields === undefined ? undefined : Number(fields[1]); },
+      children: (pid: number): readonly number[] | undefined => {
+        try { return readFileSync(`/proc/${pid}/task/${pid}/children`, "utf8").trim().split(/\s+/u).filter(Boolean).map(Number); } catch { return undefined; }
+      },
+      commandLine: (pid: number): readonly string[] | undefined => {
+        try { return readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").slice(0, -1); } catch { return undefined; }
+      },
+    };
+    const { holder, events } = await start("echo started; exec /bin/cat", { processReader: reader });
+    expect(await line(holder.process.stdout)).toBe("started");
+    expect(stuck).toBeDefined();
+    await expect(holder.dispose()).rejects.toThrow("Container holder stopped, cleanup unverified");
+    expect(events).not.toContain("after-verified-stop");
+    // The real process is gone: only the reader could not confirm it.
+    expect(stat(stuck as number)).toBeUndefined();
+  }, 30_000);
+
+  // Design 10.4 N14: an offline holder has no network but its loopback and no bridge listener on it.
+  it("N14: an offline holder sees only lo and no listener on the bridge port", async () => {
+    const { holder } = await start("while IFS=: read -r name rest; do case $name in *Inter*|*face*) ;; *) printf '%s ' $name ;; esac; done < /proc/net/dev; echo; if (exec 3<>/dev/tcp/127.0.0.1/3128) 2>/dev/null; then echo bridge; else echo no-bridge; fi");
+    // Read to the stream's end: its last bytes may arrive after the completion settles.
+    const out = await collect(holder.process.stdout);
+    await holder.process.completion;
+    expect(out.trim().split("\n").map(row => row.trim())).toEqual(["lo", "no-bridge"]);
+    await holder.dispose();
   });
 
   it("releases a holder that exits 1.5 s after its TERM, within its grace", async () => {
@@ -240,7 +285,7 @@ describe.runIf(NATIVE)("native Linux holder start and stop", () => {
     // bwrap itself fails before the helper runs: the request's working directory is gone.
     rmSync(work, { recursive: true });
     const refused = startLinuxHolder(prepared.call, {
-      label: "test:linux-holder", bwrap: { path: BWRAP, identity: linuxFileIdentity(BWRAP) }, cwd: root,
+      label: "test:linux-holder", bwrap: linuxHolderBwrap(BWRAP), cwd: root, online: false,
       admittedDigest: prepared.admitted, currentDigest: prepared.digest, assertStillValid: () => {},
     });
     await expect(refused).rejects.toMatchObject({ reason: "holder-start-failed" });
@@ -285,7 +330,7 @@ describe.runIf(NATIVE)("native Linux holder row-2 admission", () => {
     const programs = await requireMxcLinuxShellPrograms(resources);
     setProvenLinuxHolderRoute({
       programs, helperSha256: pin, captureFolder: establishLinuxCaptureFolder(requireMxcContainerStartRoot(), programs.helper, pin),
-      bwrap: { path: BWRAP, identity: linuxFileIdentity(BWRAP) },
+      bwrap: linuxHolderBwrap(BWRAP),
     });
   });
   afterEach(async () => {
@@ -427,6 +472,361 @@ describe.runIf(NATIVE)("native Linux holder row-2 admission", () => {
       const text = await echoed;
       expect(text.length).toBe(payload.length);
       expect(text === payload.toString()).toBe(true);
+    });
+
+    it("a one-shot holder that ended before its start returned still hands over all it wrote, on both streams", async () => {
+      // The run ends before its ready byte's resident set can be read; its output must outlive that wait.
+      const holder = await bundledHolder("echo one-shot-out; echo one-shot-err >&2");
+      const [out, err] = await Promise.all([collect(holder.process.stdout), collect(holder.process.stderr)]);
+      expect(await holder.process.completion).toMatchObject({ exitCode: 0 });
+      expect(out).toBe("one-shot-out\n");
+      expect(err).toBe("one-shot-err\n");
+    });
+
+    // Design 10.4 N2: what a holder with one write root cannot reach. Each probe prints ok or no; nothing prints content.
+    it("N2: denies the Ave home, the home's secret dotfolder and writes outside its root, and its own root cannot be moved; writing inside works", async () => {
+      // The sensitive floor is anchored at the policy home ($HOME): a fixture home with its own key, never the account's.
+      const policyHome = join(root, "policy-home");
+      const ssh = join(policyHome, ".ssh");
+      mkdirSync(ssh, { recursive: true });
+      writeFileSync(join(ssh, "id_fixture"), "fixture key");
+      vi.stubEnv("HOME", policyHome);
+      // The Ave home too is a fixture with content, so its denial is not an empty folder read as one.
+      const fixtureHome = join(root, "ave-home");
+      mkdirSync(fixtureHome);
+      writeFileSync(join(fixtureHome, "settings.json"), "{}");
+      vi.stubEnv("AVE_HOME", fixtureHome);
+      expect(aveHome()).toBe(fixtureHome);
+      // Control: the host sees both. A denied folder is masked: inside it is absent or empty.
+      expect(readdirSync(ssh)).toEqual(["id_fixture"]);
+      expect(readdirSync(aveHome())).toEqual(["settings.json"]);
+      const probe = `r() { if "$@" >/dev/null 2>&1; then printf ok; else printf no; fi; printf '|'; }
+        seen() { [ -n "$(ls -A "$1" 2>/dev/null)" ]; }
+        r seen "$1"; r seen "$2"; r sh -c 'echo x > "$0/x"' "$3"; r sh -c 'echo own > "$0/own"' "$4"; r mv "$4" "$4-moved"; echo`;
+      const holder = await bundledHolder("", { args: ["-c", probe, "sh", aveHome(), ssh, root, data] });
+      const out = await collect(holder.process.stdout);
+      expect(await holder.process.completion).toMatchObject({ exitCode: 0 });
+      // Ave home, dotfolder, outside, own write, rename of its own root
+      expect(out.trim().split("|").slice(0, 5)).toEqual(["no", "no", "no", "ok", "no"]);
+      expect(readFileSync(join(data, "own"), "utf8")).toBe("own\n");
+      expect(existsSync(join(root, "x"))).toBe(false);
+    });
+
+    // Design 10.4 N20 through a real holder: a long-lived holder's user-folder root watches its absent protected names
+    // (design 7.1). The write succeeds inside; at release it is in quarantine. Control: a one-run holder is masked.
+    it("N20: a long-lived holder's protected-name writes succeed inside and are quarantined at release; a one-run holder is denied", async () => {
+      mkdirSync(join(data, ".git"));
+      const writes = `for t in .vscode/tasks.json .git/hooks/pre-commit; do mkdir -p "$1/$(dirname $t)" 2>/dev/null; if echo x > "$1/$t" 2>/dev/null; then printf ok; else printf no; fi; printf '|'; done; echo`;
+      const server = await bundledHolder("", { args: ["-c", `${writes}; exec /bin/cat`, "sh", data] });
+      expect(await line(server.process.stdout)).toBe("ok|ok|");
+      expect(readdirSync(data).filter(name => name.startsWith(".vscode"))).toEqual([".vscode"]);
+      await server.release();
+      expect(existsSync(join(data, ".vscode", "tasks.json"))).toBe(false);
+      expect(existsSync(join(data, ".git", "hooks", "pre-commit"))).toBe(false);
+      const hook = await spawnHolder("", { args: ["-c", writes, "sh", data], cwd: data,
+        egressOwner: { kind: "worker", role: "hook", pluginId: "p20" } as never });
+      const hookOut = await collect(hook.process.stdout);
+      // N16: the protected name is masked; a Git hook written during the run is quarantined after it.
+      expect(hookOut.trim()).toBe("no|ok|");
+      await hook.release();
+      expect(existsSync(join(data, ".git", "hooks", "pre-commit"))).toBe(false);
+    });
+
+    it("N2b: two holders cannot read each other's staging HOME or temp", async () => {
+      const first = await bundledHolder("echo \"$HOME|$TMPDIR\"; echo first > \"$HOME/h\"; echo first > \"$TMPDIR/t\"; exec /bin/cat");
+      const [home, temp] = (await line(first.process.stdout)).split("|") as [string, string];
+      const second = await bundledHolder("", { args: ["-c", "for f in \"$1/h\" \"$2/t\"; do if cat \"$f\" >/dev/null 2>&1; then printf ok; else printf no; fi; done; echo", "sh", home, temp],
+        egressOwner: { kind: "worker", role: "mcp-server", pluginId: undefined, instanceId: "n2b" } as never });
+      expect((await collect(second.process.stdout)).trim()).toBe("nono");
+      // Control: the files are there.
+      expect(readFileSync(join(home, "h"), "utf8")).toBe("first\n");
+      expect(readFileSync(join(temp, "t"), "utf8")).toBe("first\n");
+    });
+
+    it("N9: arguments with spaces, quotes, $, backticks, a newline and a leading - arrive identical", async () => {
+      const words = ["a b", "q'uote", "d\"q", "$HOME", "`id`", "line\nbreak", "-leading", "--seccomp", "*", ""];
+      const holder = await bundledHolder("", { args: ["-c", "for a in \"$@\"; do printf '%s\\0' \"$a\"; done", "sh", ...words] });
+      const out = await collect(holder.process.stdout);
+      expect(out.split("\0").slice(0, -1)).toEqual(words);
+    });
+
+    it("N6: a hook's stdin JSON comes out, its non-zero status passes through, and a stop at a deadline leaves nothing running", async () => {
+      const hookOwner = { kind: "worker", role: "hook", pluginId: "p6" } as never;
+      const hook = await bundledHolder("cat; exit 3", { egressOwner: hookOwner });
+      const json = JSON.stringify({ hook_event_name: "PreToolUse", tool_input: { command: "ls -la" } });
+      const out = collect(hook.process.stdout);
+      hook.process.stdin.end(json);
+      expect(await out).toBe(json);
+      expect(await hook.process.completion).toMatchObject({ exitCode: 3 });
+      await hook.release();
+      const late = await bundledHolder("exec /bin/sleep 3319", { egressOwner: hookOwner });
+      const running = (): boolean => execFileSync("/bin/ps", ["-Ao", "args="]).toString().includes("sleep 3319");
+      await vi.waitFor(() => expect(running()).toBe(true), { timeout: 5_000, interval: 50 });
+      await late.release();
+      expect(running()).toBe(false);
+    });
+
+    // Design 10.4 N10, as Linux has it: two holders never share a write root (the co-holder refusal), so a one-run
+    // holder's placeholder is its own and goes when its run ends.
+    it("N10: a second holder on a live holder's write root is refused; the one-run holder's placeholder stays while it runs and goes after", async () => {
+      const first = await spawnHolder("echo up; exec /bin/cat", { cwd: data, egressOwner: { kind: "worker", role: "hook", pluginId: "p10" } as never });
+      expect(await line(first.process.stdout)).toBe("up");
+      expect(existsSync(join(data, ".vscode"))).toBe(true);
+      await expect(bundledHolder("true")).rejects.toThrow("Container path lies inside another live holder's writable root");
+      expect(existsSync(join(data, ".vscode"))).toBe(true);
+      await first.release();
+      expect(existsSync(join(data, ".vscode"))).toBe(false);
+    });
+
+    // Design 10.4 N17 online, through the bridge: the holder's own TERM reaches the holder, not the bridge above it.
+    it("N17: an online holder that traps TERM runs its trap at release; control: TERM to its outer bwrap alone does not reach it", async () => {
+      const script = `trap 'echo term > "$1/n17-$2"; exit 0' TERM; echo up; while :; do sleep 0.1; done`;
+      const holder = await bundledHolder("", { args: ["-c", script, "sh", data, "release"] });
+      expect(await line(holder.process.stdout)).toBe("up");
+      await holder.release();
+      expect(readFileSync(join(data, "n17-release"), "utf8")).toBe("term\n");
+      const control = await bundledHolder("", { args: ["-c", script, "sh", data, "bwrap"],
+        egressOwner: { kind: "worker", role: "mcp-server", pluginId: undefined, instanceId: "n17c" } as never });
+      expect(await line(control.process.stdout)).toBe("up");
+      // The outer bwrap: the holder's ancestor whose parent is this process.
+      const parentOf = (pid: number): number => Number(readFileSync(`/proc/${pid}/stat`, "utf8").replace(/^.*\) /su, "").split(" ")[1]);
+      let outer = control.process.id;
+      while (parentOf(outer) !== process.pid) outer = parentOf(outer);
+      process.kill(outer, "SIGTERM");
+      await control.process.completion;
+      expect(existsSync(join(data, "n17-bwrap"))).toBe(false);
+    });
+
+    // Design 10.4 N5: a stand-in host proves the route, starts a holder that does not read stdin, and is killed with
+    // SIGKILL. bwrap's parent-death signal ends the holder. Control: a detached process the host started survives.
+    it("N5: a host killed with SIGKILL leaves no holder running; its detached non-holder child survives (control)", async () => {
+      const { spawnSacrificialHost } = await import("../../__tests__/support/sacrificial-host.js");
+      const report = join(root, "n5.json");
+      const hostBase = join(root, "n5-base");
+      const hostHome = join(hostBase, "ave");
+      const write = join(root, "n5-write");
+      mkdirSync(hostHome, { recursive: true, mode: 0o700 });
+      mkdirSync(write);
+      const source = `
+        const [wrap, route, linux, launch, capability, runtime, relay, resources, report, write] = process.argv.slice(1);
+        const { spawn } = await import("node:child_process");
+        const { writeFileSync } = await import("node:fs");
+        const { establishMxcRuntimeRoot, requireMxcContainerStartRoot } = await import(runtime);
+        const { requireMxcLinuxShellPrograms, linuxHolderBwrap } = await import(linux);
+        const { establishLinuxCaptureFolder } = await import(launch);
+        const pins = (await import("${resolve("src/permissions/mxc-linux-seccomp-pins.json")}", { with: { type: "json" } })).default;
+        establishMxcRuntimeRoot();
+        (await import(relay)).startEgressRelayService({ ask: async () => false });
+        const programs = await requireMxcLinuxShellPrograms({ resourcePath: resources, isPackaged: false });
+        const pin = pins[process.arch === "arm64" ? "arm64" : "x64"];
+        (await import(route)).setProvenLinuxHolderRoute({ programs, helperSha256: pin,
+          captureFolder: establishLinuxCaptureFolder(requireMxcContainerStartRoot(), programs.helper, pin), bwrap: linuxHolderBwrap("/usr/bin/bwrap") });
+        (await import(capability)).setPluginWorkerConfinementRequestedAtBoot(true);
+        const started = await (await import(wrap)).spawnMxcBundledHolder({ label: "test:n5", command: "/bin/sh", args: ["-c", "exec /bin/sleep 3331"],
+          baseEnv: { PATH: "/usr/bin:/bin" }, holderEnv: {}, allowRead: [], allowWrite: [write], ownedReadRoots: [],
+          egressOwner: { kind: "worker", role: "mcp-server", pluginId: undefined, instanceId: "n5" } });
+        const control = spawn("/bin/sleep", ["3332"], { detached: true, stdio: "ignore" });
+        control.unref();
+        writeFileSync(report, JSON.stringify([started.process.id, control.pid]));
+        setInterval(() => {}, 1000);
+      `;
+      const host = spawnSacrificialHost(source, [resolve("src/sandbox/wrap-bundled-command.ts"), resolve("src/permissions/linux-holder-route.ts"),
+        resolve("src/permissions/mxc-linux.ts"), resolve("src/permissions/mxc-linux-holder-launch.ts"), resolve("src/permissions/sandbox-capability.ts"),
+        resolve("src/permissions/mxc-runtime-root.ts"), resolve("src/permissions/egress-relay/relay.ts"), resolve("resources"), report, write],
+        { HOME: hostBase, AVE_HOME: hostHome, AVE_TEST_MXC_RUNTIME_ROOT: "null" });
+      let pids: number[] = [];
+      const alive = (pid: number): boolean => { try { process.kill(pid, 0); return true; } catch { return false; } };
+      try {
+        await vi.waitFor(() => { pids = JSON.parse(readFileSync(report, "utf8")) as number[]; }, { timeout: 30_000, interval: 100 });
+        const [holderPid, controlPid] = pids as [number, number];
+        expect(alive(holderPid)).toBe(true);
+        host.kill("SIGKILL");
+        await vi.waitFor(() => expect(alive(holderPid)).toBe(false), { timeout: 5_000, interval: 50 });
+        expect(execFileSync("/bin/ps", ["-Ao", "args="]).toString()).not.toContain("sleep 3331");
+        expect(alive(controlPid)).toBe(true);
+      } finally {
+        host.kill("SIGKILL");
+        for (const pid of pids) { try { process.kill(pid, "SIGKILL"); } catch { /* gone */ } }
+      }
+    }, 60_000);
+
+    // R3 / A5, a known limit (architecture.md, Linux): bwrap binds literal paths, so a user write-deny glob cannot rank
+    // as a row and every holder start is refused, never asked. Control: the same deny as a literal path starts.
+    it("refuses a holder start while a user write-deny glob is set, and starts with the same deny as a literal path", async () => {
+      try {
+        await initializeAsrtSandbox({ allowedDomains: [], denyWrite: [join(data, "*.env")] });
+        await expect(bundledHolder("true")).rejects.toMatchObject({ code: "pattern-row" });
+        // The reset stops the relay the holders' bridge reaches; this suite's own one comes back with it.
+        await resetAsrtSandbox();
+        startEgressRelayService({ ask: async () => false });
+        await initializeAsrtSandbox({ allowedDomains: [], denyWrite: [join(data, "local.env")] });
+        const holder = await bundledHolder("echo started");
+        expect(await line(holder.process.stdout)).toBe("started");
+      } finally {
+        await resetAsrtSandbox();
+        startEgressRelayService({ ask: async () => false });
+      }
+    });
+
+    // Design 10.4 N8 for a worker: a refused host goes through the worker's own bridge to the relay's ask, under the
+    // worker's owner, and the worker gets the refusal. (egress-deny-native audits the wrapped worker where a wrap remains.)
+    it("N8: a worker holder's unasked host reaches the relay's ask under the worker and is refused", async () => {
+      const asked: { host: string; owner: string }[] = [];
+      await stopEgressRelayService();
+      startEgressRelayService({ ask: async (destination, context) => {
+        // The ask's key is the invocation token; the owner it names is the one the start registered.
+        asked.push({ host: destination.host, owner: JSON.stringify(egressInvocationOwner(context.attributionKey) ?? null) });
+        return false;
+      } });
+      const tree = staging();
+      const parentData = join(root, "n8-plugin");
+      mkdirSync(parentData);
+      const parent = await spawnHolder("echo parent; exec /bin/cat", {
+        label: "plugin-child:p8", egressOwner: { kind: "worker", role: "plugin-child", pluginId: "p8" } as never,
+        allowWrite: [parentData, tree.folder], filesystemOwnership: { readRoots: [], writeRoots: [parentData, tree.folder], hostStorageRoots: [] },
+      }, tree);
+      expect(await line(parent.process.stdout)).toBe("parent");
+      const connect = `port=\${HTTPS_PROXY##*:}; exec 3<>"/dev/tcp/127.0.0.1/$port" || exit 9
+        printf 'CONNECT refused-n8.example:443 HTTP/1.1\\r\\nHost: refused-n8.example:443\\r\\n\\r\\n' >&3; IFS= read -r line <&3; echo "$line"`;
+      const worker = await bundledHolder("", { command: "/bin/bash", args: ["-c", connect],
+        label: "worker:p8:w", egressOwner: { kind: "worker", role: "worker", pluginId: "p8", instanceId: "w" } as never,
+        workerTransport: "output-only-v1", parent });
+      expect((await collect(worker.process.stdout)).trim()).toMatch(/^HTTP\/1\.[01] 403 /u);
+      expect(asked.map(entry => entry.host)).toEqual(["refused-n8.example"]);
+      expect(JSON.parse(asked[0]?.owner ?? "null")).toMatchObject({ role: "worker", pluginId: "p8", instanceId: "w" });
+    });
+
+    // Design 10.4 N3: release ends what a holder started to escape it; a live control holder keeps its own.
+    it("N3: release ends a setsid sleeper, a setpgid escape, a nohup loop and a double fork; a live control holder keeps its own", async () => {
+      const shapes = (base: number) => [
+        `/usr/bin/setsid /bin/sleep ${base} &`,
+        `set -m; /bin/sleep ${base + 1} & set +m`,
+        `nohup /bin/sh -c 'while :; do /bin/sleep ${base + 2}; done' >/dev/null 2>&1 &`,
+        `/bin/sh -c '/bin/sleep ${base + 3} & exit 0' &`,
+        "sleep 0.3; echo up",
+        "exec /bin/cat",
+      ].join("\n");
+      const survivors = (base: number): string[] => execFileSync("/bin/ps", ["-Ao", "args="]).toString().split("\n")
+        .filter(row => [0, 1, 2, 3].some(offset => row.includes(`sleep ${base + offset}`)));
+      const controlRoot = join(root, "n3-control");
+      mkdirSync(controlRoot);
+      const target = await bundledHolder(shapes(3340));
+      const control = await bundledHolder(shapes(3350), { allowWrite: [controlRoot],
+        egressOwner: { kind: "worker", role: "mcp-server", pluginId: undefined, instanceId: "n3c" } as never });
+      expect(await line(target.process.stdout)).toBe("up");
+      expect(await line(control.process.stdout)).toBe("up");
+      expect(survivors(3340).length).toBeGreaterThanOrEqual(4);
+      await target.release();
+      await vi.waitFor(() => expect(survivors(3340)).toEqual([]), { timeout: 5_000, interval: 50 });
+      expect(survivors(3350).length).toBeGreaterThanOrEqual(4);
+      await control.release();
+      await vi.waitFor(() => expect(survivors(3350)).toEqual([]), { timeout: 5_000, interval: 50 });
+    });
+
+    // The document engine stays unsupported on Linux (no office on the validation host to prove it, see architecture.md).
+    // Supporting evidence only: a holder cannot connect to a live Unix socket named like an office instance's pipe.
+    it("refuses a holder's connect to a socket named like an office instance's pipe; the host connects (control)", async () => {
+      const python = "/usr/bin/python3";
+      if (!existsSync(python)) throw new Error(`this case needs ${python} as the holder's socket client`);
+      const pipe = `/tmp/OSL_PIPE_${process.getuid?.() ?? "unknown"}_SingleOfficeIPC_avetest${randomBytes(4).toString("hex")}`;
+      const server = createUnixServer(socket => socket.end("office\n"));
+      await new Promise<void>(done => server.listen(pipe, done));
+      try {
+        const client = `import socket, sys
+try:
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.connect(sys.argv[1]); print("connected:" + s.recv(16).decode().strip())
+except OSError as error:
+    print("refused:" + type(error).__name__)`;
+        // Asynchronous: the server answers on this process's event loop.
+        const control = (await promisify(execFile)(python, ["-c", client, pipe], { encoding: "utf8" })).stdout.trim();
+        expect(control).toBe("connected:office");
+        const holder = await bundledHolder("", { command: python, args: ["-c", client, pipe] });
+        const [out, err] = await Promise.all([collect(holder.process.stdout), collect(holder.process.stderr)]);
+        const { exitCode } = await holder.process.completion;
+        // The filter refuses the Unix socket itself, before any path is named.
+        expect(`${out.trim()}|${exitCode}|${err.slice(-300)}`).toMatch(/^refused:(PermissionError|OSError)\|0\|$/u);
+      } finally {
+        await new Promise(done => server.close(done));
+      }
+    });
+
+    it("a holder whose stderr nobody reads still runs to its end: unread diagnostics never stall it", async () => {
+      const holder = await bundledHolder("head -c 1048576 /dev/zero >&2; echo done");
+      expect(await line(holder.process.stdout)).toBe("done");
+      expect(await holder.process.completion).toMatchObject({ exitCode: 0 });
+    });
+
+    it("N1: 1,000 JSON-RPC round trips through a holder arrive byte-exact and in order", async () => {
+      const holder = await bundledHolder("exec /bin/cat");
+      let buffered = "";
+      const waiting: ((row: string) => void)[] = [];
+      holder.process.stdout.on("data", (chunk: Buffer) => {
+        buffered += chunk.toString();
+        for (let at = buffered.indexOf("\n"); at >= 0; at = buffered.indexOf("\n")) {
+          const row = buffered.slice(0, at);
+          buffered = buffered.slice(at + 1);
+          waiting.shift()?.(row);
+        }
+      });
+      for (let id = 1; id <= 1_000; id++) {
+        const request = JSON.stringify({ jsonrpc: "2.0", id, method: "tools/call", params: { text: `ü ${id} \u0000 "q"` } });
+        const echoed = new Promise<string>(done => waiting.push(done));
+        holder.process.stdin.write(`${request}\n`);
+        expect(await echoed).toBe(request);
+      }
+    }, 60_000);
+
+    // Design 10.4 N15: a holder's environment never travels as words. Read from the host: the command lines of every
+    // process in its tree (both bwraps, the launcher shell, the bridge, the holder). Control: the same value as an argument.
+    it("N15: a secret in a holder's environment is in no command line of its tree; the holder sees it; as an argument it shows", async () => {
+      const secret = `n15-${randomBytes(12).toString("hex")}`;
+      const tree = (pid: number): number[] => {
+        let outer = pid;
+        const parentOf = (of: number): number => Number(readFileSync(`/proc/${of}/stat`, "utf8").replace(/^.*\) /su, "").split(" ")[1]);
+        while (parentOf(outer) !== process.pid) outer = parentOf(outer);
+        const below = (of: number): number[] => readFileSync(`/proc/${of}/task/${of}/children`, "utf8").trim().split(/\s+/u).filter(Boolean)
+          .map(Number).flatMap(child => [child, ...below(child)]);
+        return [outer, ...below(outer)];
+      };
+      const words = (pids: number[]): string => pids.map(pid => readFileSync(`/proc/${pid}/cmdline`, "utf8")).join("\n");
+      const holder = await bundledHolder("echo \"$N15_SECRET\"; exec /bin/cat", { holderEnv: { N15_SECRET: secret } });
+      expect(await line(holder.process.stdout)).toBe(secret);
+      const members = tree(holder.process.id);
+      expect(members.length).toBeGreaterThanOrEqual(4);
+      expect(words(members)).not.toContain(secret);
+      await holder.release();
+      const control = await bundledHolder("", { args: ["-c", "echo up; exec /bin/cat", "sh", secret] });
+      expect(await line(control.process.stdout)).toBe("up");
+      expect(words(tree(control.process.id))).toContain(secret);
+    });
+
+    // Design 10.4 N7, the tree's :206 limit, pinned: a file deny binds the file present at spawn, so a file the host
+    // renames over a read-denied one under a live holder is readable to it afterwards.
+    it("N7: a file the host renames over a read-denied file under a live holder is readable to it (the :206 limit)", async () => {
+      const denied = join(data, "denied.env");
+      writeFileSync(denied, "first");
+      try {
+        await initializeAsrtSandbox({ allowedDomains: [], denyRead: [denied] });
+        const holder = await bundledHolder("", { args: ["-c",
+          "probe() { if c=$(cat \"$1\" 2>/dev/null) && [ -n \"$c\" ]; then echo \"read:$c\"; else echo denied; fi; }; probe \"$1\"; read go; probe \"$1\"", "sh", denied] });
+        expect(await line(holder.process.stdout)).toBe("denied");
+        writeFileSync(join(data, "replacement"), "second");
+        renameSync(join(data, "replacement"), denied);
+        const after = line(holder.process.stdout);
+        holder.process.stdin.write("go\n");
+        expect(await after).toBe("read:second");
+      } finally {
+        await resetAsrtSandbox();
+        startEgressRelayService({ ask: async () => false });
+      }
+    });
+
+    // Review #758 P3-5: the launcher's call carries each environment value as a word, and the helper's capture walks
+    // the words by arity, so a value that reads like a descriptor option is an operand, never an option.
+    it("starts a holder whose environment values read --seccomp, --file, --args and --", async () => {
+      const holder = await bundledHolder("echo \"$A|$B|$C|$D\"", { holderEnv: { A: "--seccomp", B: "--file", C: "--args", D: "--" } });
+      expect(await line(holder.process.stdout)).toBe("--seccomp|--file|--args|--");
     });
 
     it("N18: a worker under a plugin child is released with it when the parent goes first, and a new one under it is refused", async () => {

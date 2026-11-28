@@ -6,6 +6,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { createHmac, randomBytes } from "node:crypto";
 import { isPluginWorkerConfinementActive } from "../../permissions/asrt-sandbox.js";
+import { isMxcExtensionBackendSelected } from "../../sandbox/wrap-bundled-command.js";
 import { renameDirectory } from "../../lib/transient-fs-lock-retry.js";
 import { isMissingPathError } from "../../lib/atomic-file.js";
 import { appVersionSatisfiesMin } from "../../shared/semver-compare.js";
@@ -1519,7 +1520,8 @@ export class MarketplaceService implements RetirementEntryLookup {
       runsCode: runsCode(row.kind, version.components),
       authority: version.authority ? authorityView(version.authority) : null,
       components: version.components ?? null,
-      hookConfinement: isPluginWorkerConfinementActive()
+      // A plugin hook is confined by the wrap, or as a holder where the container backend is selected (macOS, Linux).
+      hookConfinement: isPluginWorkerConfinementActive() || isMxcExtensionBackendSelected()
         ? process.platform === "win32" ? "unavailable" : "sandboxed"
         : "user-permissions",
       rungs,

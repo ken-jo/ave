@@ -3662,13 +3662,12 @@ arm64 host.
 
 ### Linux extensions and hooks in containers
 
-**Status: built, route off.** The holder path below is built and tested, but the Linux holder route is off
-(`holderRoute: false` in `src/shared/container-platform.ts`): today Linux extensions and hooks still run on the
-existing sandbox, no Linux extension start asks for the no-backend consent, and no holder canary runs at boot. This
-section describes what the route does once it is switched on; the decision tree gains its Linux text with that
-switch.
+**Status: on** (`holderRoute: true` in `src/shared/container-platform.ts`). No Linux extension or hook runs on the
+existing sandbox: unproven, a start asks once (tree :154, owner decision 2026-11-27); with extension isolation off it
+runs unconfined; process-kind plugins are refused, as on Windows and macOS. A user hook admitted under a container
+shell plan is a holder of its own.
 
-Once the Linux holder route is on, extension processes (plugin children, MCP
+Extension processes (plugin children, MCP
 stdio servers, the worker parent and workers) and hooks run as holders: each its
 own bwrap sandbox, started by Ave, with a network namespace that holds only
 `lo`. Holders need `bwrap` alone; the shells' `slirp4netns`, `iptables`, `ip`,
@@ -3701,7 +3700,15 @@ cannot reach the unfiltered bridge even at `ptrace_scope` 0, and the holder's
 own process gets the Unix-socket filter.
 
 **Verified.** The ready byte arrives after the filters are in place; the
-resident set (outer bwrap, inner bwrap, bridge) is read then. A stop sends TERM
+resident set is read then: outer bwrap, inner bwrap, the launcher's `sh -c` where
+that shell did not exec (dash does not), the helper, and online the holder under
+the bridge. The inner bwrap is its namespace's init, so a holder that already
+forked a daemon has orphans beside the launcher member; the launcher shell is
+picked out by its exact words, and without one the first-started child is the
+helper. A set short of a member stops and refuses the start, unless the run
+already ended. At the ready byte the placeholder folders are validated again and
+a changed one stops the holder by name; the staged request's bytes are compared
+with what Ave wrote after the launcher read them. A stop sends TERM
 to the holder's own process, waits, then TERM to bwrap and KILL to its group,
 and is verified only when all three residents are gone. Otherwise the stop is
 "cleanup unverified" and the existing quarantine applies. A per-holder marker
@@ -3722,9 +3729,24 @@ arrival control passed, and only `lo`; anything less is `unknown`.
 **Limits.** A file deny binds the file present at spawn (above). A revocation
 between the gate and the ready byte is caught by the post-start recheck, which
 stops the holder. Local inference stays on the existing offline sandbox on
-Linux. The document engine is not a confined child on any platform: LibreOffice
-runs as the app the user installed (owner decision 2026-11-28, see
-[document observation engine](document-observation-engine.md)).
+Linux. Known limits, recorded rather than closed:
+- **Write-deny globs (R3/A5).** bwrap binds literal paths, so a user write-deny
+  glob cannot rank as a row: while one is set every Linux shell command and every
+  holder start is refused (`pattern-row`), never asked. A literal deny works.
+- **Folder identity without statx.** Where statx is unavailable the reported
+  birth time is the change time; Ave detects that per process and identifies a
+  placeholder folder by device and inode alone, so a folder made again at a
+  reused inode number is not told apart there.
+- **Document engine.** The document engine is not a confined child on any
+  platform: LibreOffice runs as the app the user installed (owner decision
+  2026-11-28, see [document observation engine](document-observation-engine.md)).
+  It stays unsupported on Linux: the route flip could not prove its
+  `/tmp/OSL_PIPE_<uid>_SingleOfficeIPC_*` pipe unreachable, because the
+  validation host has no office to run, and host-owned offline processes stay
+  on the wrap, whose Unix-socket filter depends on srt finding its seccomp
+  helper. As supporting evidence a holder cannot create a Unix socket at all
+  (a stand-in socket by that name, reachable from the host, is not reachable
+  from a holder).
 
 ### Windows agent shells in Microsoft Execution Containers
 

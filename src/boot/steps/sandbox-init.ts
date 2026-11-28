@@ -624,7 +624,7 @@ async function recordLinuxShellSupport(startupSignal?: AbortSignal) {
   const [
     { detectHostMxcLinuxShellSupport },
     { establishMxcRuntimeRoot },
-    { sweepMxcLinuxPlaceholders },
+    { installMxcLinuxWatchedPlaceholderOccupant, sweepMxcLinuxPlaceholders },
     { setContainerShellSubstrate },
     { getHostResources },
     { isHostInstanceLockHeld },
@@ -636,13 +636,23 @@ async function recordLinuxShellSupport(startupSignal?: AbortSignal) {
     import("../../main/host-resources.js"),
     import("../../main/host-instance-lock.js"),
   ]);
+  installMxcLinuxWatchedPlaceholderOccupant();
+  let runtimeRoot = false;
   try {
     establishMxcRuntimeRoot();
-    // Boot runs after the host instance lock, so an unreadable journal can be set aside here and nowhere else.
-    // It also stops Linux holders an exited Ave left running, before the canary opens the first listener.
-    await sweepMxcLinuxPlaceholders(undefined, { recoverCorruptJournal: { ownsHostInstance: isHostInstanceLockHeld }, stopOrphanHolders: true });
+    runtimeRoot = true;
   } catch (error) {
     log.warn("boot: container runtime root unavailable: %s", errorMessage(error));
+  }
+  // Each failure under its own name (review #758 P3-3): a sweep or orphan stop that failed is not a missing root.
+  if (runtimeRoot) {
+    try {
+      // Boot runs after the host instance lock, so an unreadable journal can be set aside here and nowhere else.
+      // It also stops Linux holders an exited Ave left running, before the canary opens the first listener.
+      await sweepMxcLinuxPlaceholders(undefined, { recoverCorruptJournal: { ownsHostInstance: isHostInstanceLockHeld }, stopOrphanHolders: true });
+    } catch (error) {
+      log.warn("boot: Linux placeholder sweep and orphan holder stop failed: %s", errorMessage(error));
+    }
   }
   const support = await detectHostMxcLinuxShellSupport(getHostResources(), startupSignal);
   setContainerShellSubstrate("linux", support);

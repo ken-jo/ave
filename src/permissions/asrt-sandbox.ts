@@ -1421,7 +1421,8 @@ export function isAsrtSandboxActive(): boolean {
 
 /** Offline host processes always require OS isolation, independently of shell and extension routing. */
 export function isOfflineProcessConfinementActive(): boolean {
-  return active && !holderConfinementIsExternal && getAveHomePrivacyFailure() === undefined;
+  // Linux keeps its offline host processes on the wrap with its holder route on: a host-owned process is never a holder there.
+  return active && (!holderConfinementIsExternal || process.platform === "linux") && getAveHomePrivacyFailure() === undefined;
 }
 
 /** macOS once its holder route is on: an offline host process runs in an offline holder, never on the wrap, and only on
@@ -3464,9 +3465,10 @@ async function initializeSandboxRuntime(
     await discardFailedAsrtInitialization(SandboxManager);
     throw windowsAclBudgetError(error, configuredDenies);
   }
+  // macOS and Linux once their holder route is on: extensions run as holders or, consented, unconfined; never on the wrap.
   holderConfinementIsExternal = process.platform === "win32"
     ? initialSettings.windows?.externalConfinement === true
-    : process.platform === "darwin" && isContainerHolderRouteEnabled("darwin");
+    : (process.platform === "darwin" || process.platform === "linux") && isContainerHolderRouteEnabled(process.platform);
   loadedSandboxManagerForRelease = SandboxManager;
   active = true;
   const isCurrent = (): boolean => active && sandboxSession === session;

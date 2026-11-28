@@ -1,6 +1,6 @@
 import { accessSync, constants, lstatSync, opendirSync, realpathSync, statSync } from "node:fs";
 import { posix } from "node:path";
-import { sameFileIdentity } from "../lib/file-identity.js";
+import { reportedBirthTimeNs, sameFileIdentity } from "../lib/file-identity.js";
 import type { ContainerBackend } from "../shared/container-platform.js";
 import { canonicalWhereItExists } from "./mxc-runtime-root.js";
 import { mxcPolicyRows, type MxcFilesystemGrants, type MxcPolicyRows, type MxcWatchedRow } from "./mxc-windows.js";
@@ -112,7 +112,8 @@ export function posixPolicyLookups(home: string, foldsCase: boolean): PosixPolic
       try {
         const stat = lstatSync(path, { bigint: true });
         if (!stat.isDirectory()) return undefined;
-        return stat.birthtimeNs > 0n ? { device: stat.dev, inode: stat.ino, birth: stat.birthtimeNs } : { device: stat.dev, inode: stat.ino };
+        const birth = reportedBirthTimeNs(stat);
+        return birth === undefined ? { device: stat.dev, inode: stat.ino } : { device: stat.dev, inode: stat.ino, birth };
       } catch (error) {
         if (isAbsent(error)) return undefined;
         throw error;

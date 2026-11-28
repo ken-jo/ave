@@ -8,6 +8,7 @@ import { stageLocalAgentPlugin } from "../../marketplace/content/store.js";
 import { deriveAgentPluginComponents } from "../../marketplace/content/agent-plugin-components.js";
 import { compareSemver } from "../../shared/semver-compare.js";
 import { isPluginWorkerConfinementActive } from "../../permissions/asrt-sandbox.js";
+import { isMxcExtensionBackendSelected } from "../../sandbox/wrap-bundled-command.js";
 import type { ComponentConsent } from "../../shared/git-marketplace.js";
 import type { StudioConnectorConfirmation, StudioLocalPreview, StudioResult, StudioWriteRequest } from "../../shared/plugin-studio.js";
 import { PluginStudioStore } from "../../studio/store.js";
@@ -80,7 +81,8 @@ export function registerPluginStudioHandlers(deps: IpcDeps, content: () => Promi
     return { previewId, name: staged.plan.name, version: staged.plan.version, description: manifest.description,
       files: files.map(({ path, data }) => ({ path, text: studioFileText(data) })),
       components: deriveAgentPluginComponents(files),
-      hookConfinement: isPluginWorkerConfinementActive()
+      // A plugin hook is confined by the wrap, or as a holder where the container backend is selected (macOS, Linux).
+      hookConfinement: isPluginWorkerConfinementActive() || isMxcExtensionBackendSelected()
         ? process.platform === "win32" ? "unavailable" : "sandboxed" : "user-permissions",
       treeDigest: staged.contentSha256, expiresAt: new Date(expires).toISOString() };
   };

@@ -104,8 +104,8 @@ async function invoke(dialect: "bash" | "powershell", extraAllowedDirectories: r
   });
 }
 
-// The hook plan still issues the wrap on Linux, and on macOS before its holder route; after it a macOS hook is a holder.
-const hookPlanWraps = (platform: NodeJS.Platform): boolean => !(platform === "darwin" && isContainerHolderRouteEnabled("darwin"));
+// The hook plan issues the wrap only where no holder route is on (macOS and Linux before theirs); on it a hook is a holder.
+const hookPlanWraps = (platform: NodeJS.Platform): boolean => !((platform === "darwin" || platform === "linux") && isContainerHolderRouteEnabled(platform));
 const wrappedDialects = (["bash", "powershell"] as const).filter(dialect => dialect === "bash" || hookPlanWraps(process.platform));
 
 describe.skipIf(process.platform === "win32")("saved-session native shell policy wiring", () => {

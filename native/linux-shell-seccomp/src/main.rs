@@ -204,6 +204,32 @@ const REFUSED_DESCRIPTOR_OPTIONS: [&str; 11] = [
     "--bind-data",
     "--ro-bind-data",
 ];
+/// How many words follow each option the launcher's measured call uses (Ave's allowlist,
+/// `mxc-linux-holder-launch.ts`). The capture walks the words by these arities, so an operand (an
+/// environment value that reads `--`, `--file` or `--seccomp`) is never taken for an option.
+const OPTION_ARITY: [(&str, usize); 21] = [
+    ("--new-session", 0),
+    ("--unshare-user", 0),
+    ("--unshare-pid", 0),
+    ("--unshare-ipc", 0),
+    ("--unshare-uts", 0),
+    ("--die-with-parent", 0),
+    ("--unshare-net", 0),
+    ("--symlink", 2),
+    ("--ro-bind-try", 2),
+    ("--dev", 1),
+    ("--proc", 1),
+    ("--tmpfs", 1),
+    ("--dir", 1),
+    ("--file", 2),
+    ("--remount-ro", 1),
+    ("--ro-bind", 2),
+    ("--bind", 2),
+    ("--chdir", 1),
+    ("--clearenv", 0),
+    ("--setenv", 2),
+    ("--seccomp", 1),
+];
 /// The most bytes one captured descriptor may hold.
 const CAPTURED_DESCRIPTOR_LIMIT: usize = 1 << 20;
 const RECORD_MAGIC: &[u8; 8] = b"AVEBWRAP";
@@ -245,12 +271,18 @@ fn capture_record(args: &[OsString]) -> Result<Vec<u8>, Box<dyn Error>> {
         push_bytes(&mut record, arg.as_bytes());
     }
     let mut descriptors = Vec::new();
-    let end = args.iter().position(|arg| arg == "--").unwrap_or(args.len());
-    for (index, arg) in args[..end].iter().enumerate() {
-        let Some(name) = arg.to_str() else { continue };
+    // Walked by arity up to the `--` that stands where an option would. An option outside the measured
+    // set ends the walk: the record still carries every word, and Ave refuses that option by name.
+    let mut index = 0;
+    while index < args.len() {
+        let Some(name) = args[index].to_str() else { break };
+        if name == "--" {
+            break;
+        }
         if REFUSED_DESCRIPTOR_OPTIONS.contains(&name) {
             return Err(format!("{name} takes a descriptor the capture cannot replay").into());
         }
+        let Some(&(_, arity)) = OPTION_ARITY.iter().find(|(option, _)| *option == name) else { break };
         if CAPTURED_DESCRIPTOR_OPTIONS.contains(&name) {
             let fd: libc::c_int = args
                 .get(index + 1)
@@ -260,6 +292,7 @@ fn capture_record(args: &[OsString]) -> Result<Vec<u8>, Box<dyn Error>> {
                 .ok_or_else(|| format!("{name} needs a descriptor above 2"))?;
             descriptors.push((fd, read_descriptor(fd)?));
         }
+        index += 1 + arity;
     }
     record.extend_from_slice(&(descriptors.len() as u32).to_le_bytes());
     for (fd, bytes) in descriptors {

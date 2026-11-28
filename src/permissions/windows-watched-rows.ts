@@ -1,6 +1,7 @@
 import { type BigIntStats, lstatSync, readdirSync, readFileSync, rmdirSync, type Stats, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { t } from "../i18n/index.js";
+import { reportedBirthTimeNs } from "../lib/file-identity.js";
 import { createLogger } from "../lib/logger.js";
 import { renameFileOnce, renameFileOnceSync } from "../lib/transient-fs-lock-retry.js";
 import { errorMessage } from "../shared/error-message.js";
@@ -29,8 +30,8 @@ interface FileIdentity {
 
 /** A Linux folder's identity: device, inode and, where reported, birth time. Elsewhere device and file index only. */
 function linuxIdentity(entry: BigIntStats): FileIdentity {
-  return process.platform === "linux" && entry.birthtimeNs > 0n
-    ? { dev: entry.dev, ino: entry.ino, birth: entry.birthtimeNs } : { dev: entry.dev, ino: entry.ino };
+  const birth = process.platform === "linux" ? reportedBirthTimeNs(entry) : undefined;
+  return birth === undefined ? { dev: entry.dev, ino: entry.ino } : { dev: entry.dev, ino: entry.ino, birth };
 }
 
 function sameBirth(expected: FileIdentity, entry: BigIntStats): boolean {

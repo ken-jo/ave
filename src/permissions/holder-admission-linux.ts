@@ -8,11 +8,11 @@ import { getPolicyHome } from "../shared/policy-home.js";
 import { holdSandboxGitWrites } from "../shared/host-git.js";
 import { errorMessage } from "../shared/error-message.js";
 import { createLogger } from "../lib/logger.js";
-import { MxcProcessCleanupError } from "./mxc-extension-errors.js";
+import { MxcHolderStartRefusedError, MxcProcessCleanupError } from "./mxc-extension-errors.js";
 import type { MxcHolderProcess } from "./holder-admission-darwin.js";
 import { buildBubblewrapHolderRequest, linuxHolderPolicyModel, linuxHolderWatchedRoots } from "./mxc-linux.js";
 import type { ProvenLinuxHolderRoute } from "./linux-holder-route.js";
-import { holdMxcLinuxPlaceholders } from "./mxc-linux-placeholders.js";
+import { ContainerPlaceholderChangedError, holdMxcLinuxPlaceholders } from "./mxc-linux-placeholders.js";
 import {
   linuxHolderLaunchDigest, startLinuxHolder, translateLinuxHolderRequest, type LinuxHolder,
 } from "./mxc-linux-holder-launch.js";
@@ -157,13 +157,16 @@ export async function startLinuxContainerHolder(input: {
       proxySocket: input.proxySocket, helper: route.programs.helper,
     });
     const requestPath = posix.join(staging.folder, "request.json");
-    await writeFile(requestPath, JSON.stringify(request), { flag: "wx", mode: 0o600 });
+    const written = Buffer.from(JSON.stringify(request));
+    await writeFile(requestPath, written, { flag: "wx", mode: 0o600 });
     const call = await translateLinuxHolderRequest({
       launcher: route.programs.launcher, env: route.programs.env, captureFolder: route.captureFolder,
       helperSha256: route.helperSha256, bwrap: route.bwrap.path, requestPath, logPath: posix.join(staging.folder, "launcher.log"),
       request, signal: input.signal,
     });
     const requestBytes = await readFile(requestPath);
+    // The bytes the launcher read are the ones Ave wrote (review #758 P3-4); the digest below only fixes them from here on.
+    if (!requestBytes.equals(written)) throw new MxcHolderStartRefusedError("request-rejected", "the staged request changed before the launcher's call was checked");
     const executable = input.argv[0] as string;
     // What the gate compares: the request as staged, the checked call and the executable, read again at that moment.
     const digest = (): string => linuxHolderLaunchDigest({ request: requestBytes, call, executable });
@@ -179,6 +182,7 @@ export async function startLinuxContainerHolder(input: {
     const watched = claim;
     const holder = await startLinuxHolder(call, {
       label: input.label, bwrap: route.bwrap, cwd: request.process.cwd, admittedDigest: admitted, currentDigest: digest,
+      online: input.proxySocket !== "offline",
       assertStillValid: () => {
         const check = (): void => {
           input.recheck();
@@ -194,6 +198,15 @@ export async function startLinuxContainerHolder(input: {
       },
       afterVerifiedStop: release,
     });
+    // Proved again at the ready byte (design 8.1 R4, review #758 P2-2): a folder replaced between the gate and bwrap's
+    // mount would leave the mask on another object for the holder's whole life. The start is stopped and refused by name.
+    try {
+      hold.validate();
+    } catch (error) {
+      if (!(error instanceof ContainerPlaceholderChangedError)) throw error;
+      await holder.dispose("holder placeholder changed before its ready byte");
+      throw new MxcHolderStartRefusedError("integrity", `a placeholder folder changed between the gate and the holder's start: ${error.path}`, { cause: error });
+    }
     await hold.releaseForeignClaims();
     return holder;
   } catch (error) {

@@ -1,11 +1,13 @@
 // The staging parent start-up establishes under the runtime root, as a synthetic path.
 // Faked win32 on a POSIX host: no backend state to check here; a Windows host keeps its own.
 const { hostPlatform, macHolderRoute } = vi.hoisted(() => ({ hostPlatform: process.platform, macHolderRoute: { forced: false } }));
-// A case may put macOS on its holder route regardless of the product switch.
+// A case may put macOS on its holder route regardless of the product switch. Simulated Linux is Linux before its holder
+// route, the one POSIX place a process entry still met the wrap these cases pin; with the route on it is refused
+// (process-plugin-host-death, adversarial-escapes).
 vi.mock("../../../shared/container-platform.js", async (original) => {
   const actual = await original<typeof import("../../../shared/container-platform.js")>();
   return { ...actual, isContainerHolderRouteEnabled: (platform: NodeJS.Platform) =>
-    (platform === "darwin" && macHolderRoute.forced) || actual.isContainerHolderRouteEnabled(platform) };
+    (platform === "darwin" && macHolderRoute.forced) || (platform !== "linux" && actual.isContainerHolderRouteEnabled(platform)) };
 });
 vi.mock("../../../permissions/confinement-state-paths.js", async (original) => {
   const actual = await original<typeof import("../../../permissions/confinement-state-paths.js")>();

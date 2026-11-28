@@ -30,6 +30,7 @@ import { prepareSandboxFixture } from "./support/prepared-shell.js";
 import { buildSafeChildEnv } from "../safe-env.js";
 import { TEST_WORKER_EGRESS_OWNER } from "../../__tests__/support/egress-fixture.js";
 import { MAC_HOLDER_ROUTE, provenMacHolderRoute } from "../../__tests__/support/mac-holder-route.js";
+import { LINUX_HOLDER_ROUTE, provenLinuxHolderRouteFixture } from "../../__tests__/support/linux-holder-route.js";
 import { spawnMxcBundledHolder } from "../../sandbox/wrap-bundled-command.js";
 
 let root: string;
@@ -254,9 +255,9 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("s
     expect(builtin.isError, builtin.output).toBe(false);
     expect(builtin.output).toContain(CONTENT.trim());
     const ordinary = join(cwd, "ordinary.txt"); writeFileSync(ordinary, "ordinary-child-fixture");
-    if (MAC_HOLDER_ROUTE) {
-      // macOS on its holder route: the confined child is a holder, granted the same reads; the session floor still holds.
-      const route = provenMacHolderRoute();
+    if (MAC_HOLDER_ROUTE || LINUX_HOLDER_ROUTE) {
+      // macOS and Linux on their holder routes: the confined child is a holder, granted the same reads; the session floor still holds.
+      const route = MAC_HOLDER_ROUTE ? provenMacHolderRoute() : await provenLinuxHolderRouteFixture();
       try {
         const holder = await spawnMxcBundledHolder({
           label: "session-read-confined-fixture", command: "/bin/cat", args: [ordinary, transcript], baseEnv: buildSafeChildEnv(), holderEnv: {},

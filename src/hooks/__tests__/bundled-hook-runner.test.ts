@@ -2,6 +2,12 @@ vi.mock("../../shared/windows-path-facts.js", async original => (await import(".
 vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
 vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
 
+// Simulated Linux here is Linux before its holder route, the one POSIX place an extension still met the wrap these
+// cases pin; with the route on a Linux extension is a holder (mxc-linux-holder-boundary.native, adversarial-escapes).
+vi.mock("../../shared/container-platform.js", async (original) => {
+  const actual = await original<typeof import("../../shared/container-platform.js")>();
+  return { ...actual, isContainerHolderRouteEnabled: (platform: NodeJS.Platform) => platform !== "linux" && actual.isContainerHolderRouteEnabled(platform) };
+});
 import { ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
