@@ -442,11 +442,11 @@ function isolationPlan(rawIp: "blocked" | "unknown") {
   };
 }
 
-async function isolationHarness(onSpawn?: () => void, effects: ToolEffectResolver | null = { effectOf: () => "safe" }) {
+async function isolationHarness(onSpawn?: () => void, effects: ToolEffectResolver | null = { effectOf: () => "safe" }, script?: () => { summary: string }) {
   const manager = runScopePermissions();
   manager.setUnattendedToolEffectResolver({ effectOf: () => "safe" });
   const h = await stageRunHarness({
-    onSpawn,
+    onSpawn, script,
     wiring: (store, harness) => ({
       ...workflowEngineExtensions(store, harness.templates, manager, unavailableOutputAdapter, effects),
       workspace: harness.workspace, workspaceBinding: undefined,
@@ -492,11 +492,32 @@ it.each([
   }
 });
 
-it.each([false, true])("registers a linked stage and permanently denies reads after proof loss (before link: %s)", async loseBeforeLink => {
+it("refuses the link before a stage can complete on prose when isolation proof is lost", async () => {
+  const plan = vi.spyOn(sandboxCapability, "getHostShellExecutionPlan").mockReturnValue(isolationPlan("blocked"));
+  const model = vi.fn(() => ({ summary: "Stage complete" }));
+  const { h } = await isolationHarness(() => plan.mockReturnValue(isolationPlan("unknown")), undefined, model);
+  try {
+    await h.runThenEnd(async () => {
+      const { itemId, source, version } = await pinIsolationSchedule(h, { ...auto("a"), toolScope: "all", envelope: readEnvelope });
+      await h.start(itemId, source);
+      const { record } = await h.item(itemId);
+      if (!record) throw new Error("Missing stored run");
+      const blocked = { code: "isolation-unproven", reason: "boundary-unverified" };
+      expect(record.stageRuns[0]).toMatchObject({ status: "failed", blocked });
+      expect(projectWorkflowRun(record, version).stages[0]?.blocked).toMatchObject(blocked);
+      expect(model).not.toHaveBeenCalled();
+      expect(h.events.some(event => event.phase === "executing" && event.runSessionId !== undefined)).toBe(false);
+      expect(unattendedStageOf("child-1")).toBeUndefined();
+    });
+  } finally {
+    plan.mockRestore();
+  }
+});
+
+it("registers a linked stage and permanently denies reads after live proof loss", async () => {
   const plan = vi.spyOn(sandboxCapability, "getHostShellExecutionPlan").mockReturnValue(isolationPlan("blocked"));
   const { h, manager } = await isolationHarness(() => {
     expect(unattendedStageOf("child-1")).toBeUndefined();
-    if (loseBeforeLink) plan.mockReturnValue(isolationPlan("unknown"));
   });
   const notify = () => sandboxCapability.setActiveSandboxCapability(sandboxCapability.detectSandboxCapability());
   try {
@@ -505,16 +526,14 @@ it.each([false, true])("registers a linked stage and permanently denies reads af
       const run = h.start(itemId, source);
       const [child] = await h.untilLive(1);
       const entry = unattendedStageOf(child.sessionId);
-      expect(entry?.isolation.proven).toBe(!loseBeforeLink);
+      expect(entry?.isolation.proven).toBe(true);
       const grandchild = "isolation-grandchild";
       expect(inheritUnattendedStage(grandchild, child.sessionId)).toBe(true);
       try {
         const check = (sessionId: string) => manager.checkDetailed("read_file", "builtin", "read", undefined, { sessionId });
-        if (!loseBeforeLink) {
-          expect(check(child.sessionId).decision).toBe("allow");
-          plan.mockReturnValue(isolationPlan("unknown"));
-          notify();
-        }
+        expect(check(child.sessionId).decision).toBe("allow");
+        plan.mockReturnValue(isolationPlan("unknown"));
+        notify();
         expect(check(child.sessionId)).toMatchObject({ decision: "deny", reasonCode: "isolation-unproven" });
         expect(check(grandchild)).toMatchObject({ decision: "deny", reasonCode: "isolation-unproven" });
         plan.mockReturnValue(isolationPlan("blocked"));

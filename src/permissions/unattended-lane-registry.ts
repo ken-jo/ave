@@ -125,11 +125,14 @@ export const unattendedLaneHooks = {
     const admission = admittedUnattendedStage(runKey, stageId);
     if (!admission) return;
     if (admission.workspaceRoot !== workspaceRoot) throw new Error("Unattended stage workspace changed before linking");
+    const isolation = admission.prove();
+    if (!isolation.proven) return { code: "isolation-unproven", reason: isolation.reason };
     registerStage(sessionId, {
       stageSessionId: sessionId,
-      entry: { runKey, stageId, envelope: admission.envelope, workspaceRoot, isolation: admission.prove() },
+      entry: { runKey, stageId, envelope: admission.envelope, workspaceRoot, isolation },
       prove: admission.prove,
     });
+    return undefined;
   },
   sessionEnded: endUnattendedStage,
   onDenied: onUnattendedDenied,

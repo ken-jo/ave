@@ -81,7 +81,7 @@ interface LaneHooks {
   admit(a: { runKey: string; stageId: string; envelope: StageEnvelope | undefined; workspaceRoot: string }): Promise<
     { ok: true; activate?: () => () => void; toolchainReadRoots?: readonly string[] } | ({ ok: false } & LaneBlock)
   >;
-  sessionLinked(a: { runKey: string; stageId: string; sessionId: string; envelope: StageEnvelope; workspaceRoot: string }): void;
+  sessionLinked(a: { runKey: string; stageId: string; sessionId: string; envelope: StageEnvelope; workspaceRoot: string }): LaneBlock | undefined;
   sessionEnded(sessionId: string): void;
   onDenied(listener: (e: { sessionId: string; code: string; call: { toolName: string } }) => void): () => void;
 }
@@ -1569,7 +1569,8 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
           }
           if (unattended) {
             laneLinkStarted = true;
-            deps.lane?.sessionLinked({ ...unattended, sessionId });
+            const blocked = deps.lane?.sessionLinked({ ...unattended, sessionId });
+            if (blocked) throw new LaneAdmissionError(blocked);
           }
         } catch (error) {
           release();
@@ -1607,11 +1608,11 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
                   && !deps.scopeAuthorised({ kind: "project", projectRoot: state.projectRoot })) {
                   throw new WorkflowInvariantError("run-not-authorised", "scope-not-authorised");
                 }
-                linked = childSessionId;
-                lifetime.linked = true;
                 state.live.set(stageId, childSessionId);
                 state.starting.delete(stageId);
                 releaseStageSession = linkStageSession(childSessionId);
+                linked = childSessionId;
+                lifetime.linked = true;
                 state.scheduledStart = undefined;
                 emit({ itemId: state.itemId, phase: "executing", stageId, attempt, runSessionId: childSessionId });
                 post(state, { type: "stage_linked", stageId, childSessionId, ...(budget ? { usage: snapshotUsage() } : {}) }, attempt);
