@@ -17,6 +17,8 @@ import { setProcessPlatform } from "../../__tests__/support/process-platform.js"
 
 const HOST_PLATFORM = process.platform;
 const residentStartup = { publish: true };
+/** `squat`: an entry someone else made appears at the resident's pipe name before its start checks that name. */
+const pipeFixture = vi.hoisted(() => ({ squat: false, squatted: [] as string[] }));
 const javaFixture = vi.hoisted(() => ({ home: undefined as string | undefined, broken: false, registrationFails: false }));
 const engineRegistration = vi.hoisted(() => ({ beforeRetain: undefined as (() => void) | undefined }));
 // win32 chmod maps only the read-only attribute, so a 0o400 create reads back as 0o444 (r--r--r--).
@@ -48,9 +50,15 @@ vi.mock("../../main/codex-executable-location.js", async original => ({
 vi.mock("node:fs/promises", async importOriginal => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
   // A regular fixture file stands in for the instance's private UNIX socket.
-  return { ...actual, lstat: vi.fn(async (path, ...args) => String(path).includes("OSL_PIPE_")
-    ? Object.assign(await actual.lstat(path), { isSocket: (): boolean => true, isFile: (): boolean => false })
-    : actual.lstat(path, ...args)),
+  return { ...actual, lstat: vi.fn(async (path, ...args) => {
+    if (!String(path).includes("OSL_PIPE_")) return actual.lstat(path, ...args);
+    if (pipeFixture.squat) {
+      pipeFixture.squat = false;
+      await actual.writeFile(path, "not this resident's");
+      pipeFixture.squatted.push(String(path));
+    }
+    return Object.assign(await actual.lstat(path), { isSocket: (): boolean => true, isFile: (): boolean => false });
+  }),
     realpath: vi.fn(async (path, ...args) => javaFixture.home && String(path).includes("fixture-java")
       ? javaFixture.home : actual.realpath(path, ...args)),
     readdir: vi.fn(async (path, ...args) => ["/Library/Java/JavaVirtualMachines", "/usr/lib/jvm", "/usr/java"].includes(String(path))
@@ -199,7 +207,7 @@ beforeEach(async () => {
   pool = new LibreOfficeSessionPool();
 });
 
-afterEach(async () => { await pool.dispose(); for (const pipe of sharedPipes) await rm(pipe, { force: true }); sharedPipes.clear(); if (HOST_PLATFORM === "win32") _setWindowsAclTransportForTest(undefined); await rm(directory, { recursive: true, force: true }); });
+afterEach(async () => { pipeFixture.squat = false; for (const pipe of pipeFixture.squatted.splice(0)) await rm(pipe, { force: true }); await pool.dispose(); for (const pipe of sharedPipes) await rm(pipe, { force: true }); sharedPipes.clear(); if (HOST_PLATFORM === "win32") _setWindowsAclTransportForTest(undefined); await rm(directory, { recursive: true, force: true }); });
 
 function mockManagedEngineGroup(startResident = false) {
   setProcessPlatform("linux");
@@ -293,6 +301,16 @@ describe("private conversion process ownership", () => {
     resume();
     await pending;
     expect(jobs()).toHaveLength(1);
+  });
+
+  it.skipIf(HOST_PLATFORM === "win32")("refuses a start whose pipe name is taken, by name, and leaves that entry alone", async () => {
+    pipeFixture.squat = true;
+    await expect(pool.prepare(installation, "one", "docx", new AbortController().signal))
+      .rejects.toMatchObject({ code: "engine-failed", message: "Document engine instance pipe name is already in use." });
+    expect(residents()).toHaveLength(0);
+    const [squatted] = pipeFixture.squatted;
+    if (!squatted) throw new Error("Expected the squatted pipe name.");
+    expect(await readFile(squatted, "utf8")).toBe("not this resident's");
   });
 
   it("forwards nothing until the resident's holder document is framed and its pipe exists", async () => {

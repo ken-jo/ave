@@ -453,14 +453,16 @@ export class LibreOfficeSessionPool {
     recordManagedPaths(residentResources, { path: holderDirectory, recursive: true });
     const holder = join(holderDirectory, `${randomUUID()}.fodt`);
     const pipe = instancePipePath(runtime);
-    // A shared-temp pipe the resident left behind (a killed office does not unlink it) is removed with its receipt.
-    if (pipe !== undefined) recordManagedPaths(residentResources, { path: pipe });
     try {
-      // The name is derived from this session's fresh profile; an entry already there is not this resident's.
+      // The name is derived from this session's fresh profile; an entry already there is not this resident's, so it is
+      // refused by name and never recorded, and the abandon below leaves it alone.
       if (pipe !== undefined && await lstat(pipe).then(() => true, (error: NodeJS.ErrnoException) => {
         if (error.code === "ENOENT") return false;
         throw error;
       })) throw failure("Document engine instance pipe name is already in use.");
+      // Only now is the name this resident's: the pipe it leaves behind (a killed office does not unlink it) is removed
+      // with its receipt.
+      if (pipe !== undefined) recordManagedPaths(residentResources, { path: pipe });
       await mkdir(holderDirectory, { mode: 0o700 });
       await writeFile(holder, HOST_TEXT_DOCUMENT, { flag: "wx", mode: 0o600 });
     } catch (error) {
