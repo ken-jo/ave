@@ -28,8 +28,14 @@ it("keeps helpers, setup and fixtures on the existing path even if their names l
   for (const path of [
     "src/core/__tests__/support/example.test.ts",
     "src/core/__tests__/helpers/example.ts",
+    "src/core/__tests__/helpers/example.test.ts",
     "src/core/__tests__/fixtures/example.json",
+    "src/permissions/__tests__/__fixtures__/example.test.ts",
     "test/renderer/fixtures/example.test.ts",
+    "test/scripts/helpers/seed.test.mjs",
+    "test/script-fixture/entry.test.mjs",
+    "test/e2e/ui/approval-dialog.spec.ts",
+    "src/core/renamed.test.ts",
     "test/setup.ts",
   ]) {
     assert.equal(ci.testOnlyFilesForDiff([modified(suite), modified(path)]), null, path);

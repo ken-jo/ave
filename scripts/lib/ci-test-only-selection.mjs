@@ -2,17 +2,19 @@ import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { isCanonicalGitPath } from "../hooks/pre-push-markdown-policy.mjs";
 import { isFullCheckGlobalInput } from "../hooks/pre-push-source-policy.mjs";
+import { isCollectedScriptTest } from "./script-test-collection.mjs";
 import { isCollectedVitestFile } from "./vitest-collection.mjs";
 import { CENSUS_TIER_TESTS, NATIVE_TIER_TESTS } from "./vitest-tiers.mjs";
 
 export const EMPTY_TEST_ONLY_NOTICE = "::notice::test-only diff: 0 files for this job";
 
 const REGULAR_MODES = new Set(["100644", "100755"]);
+const NON_SUITE_DIRECTORIES = new Set(["support", "helpers", "fixtures", "__fixtures__"]);
 
 function isTestFile(path) {
   return isCanonicalGitPath(path) && /^[A-Za-z0-9._+@/-]+$/u.test(path)
-    && !isFullCheckGlobalInput(path) && !path.split("/").slice(0, -1).some(part => part === "support" || part === "fixtures")
-    && (isCollectedVitestFile(path) || /\.test\.(?:tsx?|mjs)$/u.test(path) || /^test\/.*\.spec\.tsx?$/u.test(path));
+    && !isFullCheckGlobalInput(path) && !path.split("/").slice(0, -1).some(part => NON_SUITE_DIRECTORIES.has(part))
+    && (isCollectedVitestFile(path) || isCollectedScriptTest(path));
 }
 
 /** Null retains the current run. An empty selection is a verified deletion-only diff. */

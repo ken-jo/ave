@@ -1,19 +1,13 @@
 import { spawnSync } from "node:child_process";
-import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { EMPTY_TEST_ONLY_NOTICE, intersectTestOnlyFiles, readTestOnlyFiles } from "./lib/ci-test-only-selection.mjs";
+import { discoverScriptTests } from "./lib/script-test-collection.mjs";
 
 const PROJECT_ROOT = fileURLToPath(new URL("../", import.meta.url));
-const TEST_DIRECTORY = new URL("../test/scripts/", import.meta.url);
 
-export function discoverScriptTests(directory = TEST_DIRECTORY) {
-  return readdirSync(directory, { withFileTypes: true })
-    .filter((entry) => entry.isFile() && entry.name.endsWith(".test.mjs"))
-    .map((entry) => entry.name)
-    .sort();
-}
+export { discoverScriptTests };
 
 if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
   const tests = discoverScriptTests();
