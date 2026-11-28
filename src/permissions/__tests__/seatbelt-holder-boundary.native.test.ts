@@ -14,6 +14,7 @@ vi.mock("../../shared/container-platform.js", async (actual) => {
 });
 
 import { __resetManagedChildProcessesForTest } from "../../main/managed-child-processes.js";
+import { PROCESS_GROUP_REAPER_SCRIPT } from "../../main/process-group-reaper.js";
 import { __resetOfflineHolderQuarantineForTest, prepareMxcHolderStart, spawnMxcBundledHolder, spawnSeatbeltOfflineHolder, type MxcBundledHolder } from "../../sandbox/wrap-bundled-command.js";
 import { spawnMxcConfinedChild } from "../confined-child.js";
 import { startEgressRelayService, stopEgressRelayService } from "../egress-relay/relay.js";
@@ -640,7 +641,8 @@ describe.runIf(NATIVE)("macOS holder boundary (native)", () => {
     }
   }, 30_000);
 
-  // N18: the boot sweep is scoped to the instance's own Ave home. Stand-in hosts, each with its own home and HOME.
+  // N18: the boot sweep is scoped to the instance's own Ave home. Stand-in hosts, each with its own home and HOME. The
+  // sweep is the backstop for a host whose process-group reaper did not run; a host's death alone is the reaper's job.
   it("N18: one host's boot sweep leaves another home's holder alone; the same home cannot get the lock; a later run of the same home sweeps its leftover", async () => {
     const { spawnSacrificialHost } = await import("../../__tests__/support/sacrificial-host.js");
     const source = `
@@ -682,6 +684,15 @@ describe.runIf(NATIVE)("macOS holder boundary (native)", () => {
       const result = async () => { let value: Record<string, unknown> = {}; await vi.waitFor(() => { value = JSON.parse(readFileSync(report, "utf8")); }, { timeout: 30_000, interval: 100 }); return value; };
       return { child, result };
     };
+    /** The host's process-group reaper: its `/bin/sh` child running the reaper script (`process-group-reaper.ts`). */
+    const reaperOf = (hostPid: number): number => {
+      const found = execFileSync("/bin/ps", ["-axo", "pid=,ppid=,command="]).toString().split("\n").flatMap((entry) => {
+        const match = /^\s*(\d+)\s+(\d+)\s+(.*)$/u.exec(entry);
+        return match && Number(match[2]) === hostPid && match[3]?.startsWith(`/bin/sh -c ${PROCESS_GROUP_REAPER_SCRIPT.split("\n")[0]}`) ? [Number(match[1])] : [];
+      });
+      if (found.length !== 1) throw new Error(`Expected one reaper under host ${hostPid}, found ${found.length}`);
+      return found[0] as number;
+    };
     const hosts: ReturnType<typeof host>[] = [];
     const pids: number[] = [];
     try {
@@ -696,13 +707,29 @@ describe.runIf(NATIVE)("macOS holder boundary (native)", () => {
       const same = host(homes.a, "sweep"); hosts.push(same);
       expect(await same.result()).toMatchObject({ lock: "refused" });
       expect(() => process.kill(aPid, 0)).not.toThrow();
-      // Control: once A is gone, the next run of home A sweeps what A left.
+      // A true leftover: A dies and its process-group reaper never runs. A live reaper reads EOF when its host dies and
+      // kills every registered group within milliseconds (the control below), so A's death alone leaves nothing behind.
+      // Its reaper is held stopped across A's death, then killed: the holder outlives both.
+      const aReaper = reaperOf(a.child.pid as number);
+      pids.push(aReaper);
+      process.kill(aReaper, "SIGSTOP");
       a.child.kill("SIGKILL");
       await new Promise(done => a.child.once("exit", done));
+      process.kill(aReaper, "SIGKILL");
+      await vi.waitFor(() => expect(() => process.kill(aReaper, 0)).toThrow(), { timeout: 5_000, interval: 20 });
+      await new Promise(done => setTimeout(done, 250));
       expect(() => process.kill(aPid, 0)).not.toThrow();
+      // The next run of home A sweeps what A left.
       const later = host(homes.a, "sweep"); hosts.push(later);
       expect(await later.result()).toEqual({ swept: true });
       await vi.waitFor(() => expect(() => process.kill(aPid, 0)).toThrow(), { timeout: 5_000, interval: 50 });
+      // Control: with its reaper running, a host's death ends its holder without any sweep.
+      const c = host(homes.b, "holder"); hosts.push(c);
+      const cPid = (await c.result()).pid as number;
+      pids.push(cPid);
+      c.child.kill("SIGKILL");
+      await new Promise(done => c.child.once("exit", done));
+      await vi.waitFor(() => expect(() => process.kill(cPid, 0)).toThrow(), { timeout: 5_000, interval: 20 });
     } finally {
       for (const started of hosts) started.child.kill("SIGKILL");
       for (const pid of pids) { try { process.kill(pid, "SIGKILL"); } catch { /* gone */ } }
