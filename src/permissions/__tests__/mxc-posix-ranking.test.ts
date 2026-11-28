@@ -193,6 +193,21 @@ describe("POSIX container filesystem ranking", () => {
     expect(result.ungrantedDenies).toEqual([ave]);
   });
 
+  it("does not enumerate the folders between a kept grant and a deeper grant beneath it", () => {
+    const ave = "/users/example/.ave";
+    const plugin = `${ave}/plugins/p`;
+    const result = rankPosixContainerRows(model([deny(ave, "ave-home")], read("/"), read(plugin), write(`${plugin}/a/b/data`)), "seatbelt", {
+      ...lookups,
+      children: (path) => {
+        if (path === plugin || path.startsWith(`${plugin}/`)) throw new Error(`Do not enumerate ${path}: a kept grant covers it`);
+        return [];
+      },
+    });
+    expect(result.readwrite).toEqual([`${plugin}/a/b/data`]);
+    expect(result.readonly).toContain(plugin);
+    expect(result.readonly.filter(row => row.startsWith(`${plugin}/`))).toEqual([]);
+  });
+
   it.each([401, 2001])("withholds the whole folder that exceeds the carve budget with %i entries", (count) => {
     const result = rankPosixContainerRows(model([], read("/"), write("/work")), "seatbelt", {
       ...lookups, children: () => Array.from({ length: count }, (_, index) => `entry-${index}`),

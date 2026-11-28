@@ -216,13 +216,14 @@ function carveGrants(
     throw new PosixContainerPolicyError("grant-limit-exceeded", `Container grant limit (${MAX_CARVE_GRANTS}) exceeded at: ${firstExcess}`);
   }
   const grantKeys = new Set(grants.map(key));
-  const emitted = new Set([...rw, ...ro].map(key));
+  const keptWhole = [...rw, ...ro];
+  const emitted = new Set(keptWhole.map(key));
   const limited: string[] = [];
   let remainingEntries = MAX_CARVE_ENTRIES;
   const chainFolders = [...chain.values()].sort((left, right) => left.length - right.length);
   for (const folder of chainFolders) {
-    // A grant kept whole already opens its subtree.
-    if (emitted.has(key(folder))) continue;
+    // A grant kept whole already opens its subtree, including the chain folders down to a deeper grant inside it.
+    if (keptWhole.some(kept => covers(kept, folder))) continue;
     const enclosing = nearestEnclosing(folder, grants, lookups.foldsCase);
     if (enclosing === undefined) continue;
     // A surviving grant reopens its subtree inside a carved deny. Denies inside that grant still apply.
