@@ -19,7 +19,7 @@ User document, browser and terminal activity never becomes agent observation.
 | ODT | A temporary PDF rendered by the existing page reader, plus bounded paragraph source elements. | A bounded text outline from the isolated reader. |
 | PPTX | A temporary PDF rendered by the existing page reader, plus bounded slide-shape source elements. | The existing slide text outline. |
 | XLSX, ODS | A recalculated temporary workbook of the same format decoded by the existing table reader. | The existing cached-value grid and source recalculation signal. |
-| HWP v5, HWPX | Linux: a temporary PDF page, with an ODT import representation when available, through the private-profile extension and verified Java 11 or newer. macOS: an explicit `engine-format-unsupported-on-platform` result (see [Korean document importer](#korean-document-importer)). | An explicit `engine-unavailable` result; on macOS, `engine-format-unsupported-on-platform`. |
+| HWP v5, HWPX | macOS: an explicit `engine-format-unsupported-on-platform` result (see [Korean document importer](#korean-document-importer)). Where the engine is offered and imports HWP: a temporary PDF page, with an ODT import representation when available, through the private-profile extension and verified Java 11 or newer. | An explicit `engine-unavailable` result; on macOS, `engine-format-unsupported-on-platform`. |
 | PDF, CSV, TSV, XLS, text/code | The existing bounded reader. | The same reader. |
 
 LibreOffice supplies conversion and formula recalculation behind
@@ -71,11 +71,19 @@ The [installation owner](../../src/main/document-engine-installation.ts) looks
 for the app only at the platform's standard locations, never on PATH:
 
 - macOS: `/Applications/LibreOffice.app`, then `~/Applications/LibreOffice.app`.
-- Linux: `/usr/lib/libreoffice`, `/usr/lib64/libreoffice`, `/opt/libreoffice`
-  (not yet validated natively).
-- Windows: not offered yet; status reports `unsupported` and the install
-  action returns `unsupported-platform` before any download. The session's
-  readiness check knows only the POSIX single-instance pipe.
+  Only macOS is offered.
+- Windows: not offered; the session's readiness check knows only the POSIX
+  single-instance pipe.
+- Linux: not offered (lead decision 2026-11-28, pending the owner's
+  correction). The unconfined office's `/tmp` pipe accepts forwarded command
+  lines, and a wrapped Linux extension may reach Unix sockets, so it could drive
+  the office to read files as the user. Linux is offered from the slice 8 route
+  flip, once that pipe is proven unreachable from wraps.
+
+On Windows and Linux the status is `unsupported` with main's payload and copy,
+the install action returns `unsupported-platform` before any discovery,
+download or signature check, and any receipt is refused as integrity-failed,
+as main refused it.
 
 Ave admits the app it finds once per app identity, off the main thread and
 without blocking status reads (`verifying-installation`):
@@ -84,8 +92,6 @@ without blocking status reads (`verifying-installation`):
   `codesign --verify --deep --strict`, TDF's Developer ID team `7P5S3ZLCN7` and
   identifier `org.libreoffice.script`, and the Gatekeeper execution assessment.
   The version comes from the app's `Info.plist`.
-- Linux requires the install root and its executables to sit in locations only
-  the system can write. The version comes from `program/versionrc`.
 
 The admission is bound to the app's identity (device, inode, mtime and ctime of
 its root and executables). An update or replacement makes it a different app,

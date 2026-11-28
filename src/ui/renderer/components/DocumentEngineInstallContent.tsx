@@ -7,11 +7,22 @@ import { useTranslation } from "../../../i18n/react.js";
 import type { DocumentEngineApi, DocumentEngineApiError } from "../../../shared/document-engine-api.js";
 import type { DocumentEngineInstallationState } from "../../../shared/document-engine.js";
 import { DOCUMENT_ENGINE_IMPORTER } from "../../../shared/document-engine-importer.js";
-import { getApi } from "../api-client.js";
+import { getApi, isDarwin } from "../api-client.js";
 
 const INSTALLATION_POLL_MS = 500;
 /** LibreOffice is installed by the user, like any other app (owner decision 2026-11-28). */
 const LIBREOFFICE_DOWNLOAD_URL = "https://www.libreoffice.org/download/download-libreoffice/";
+/** Copy written for the installed-app engine; another platform keeps main's copy until its engine moves (lead decision). */
+const INSTALLED_APP_COPY: ReadonlySet<string> = new Set(["busy", "cancelled", "description", "downloading", "install",
+  "installFailed", "installing", "integrityFailed", "localOnly", "platformAvailability", "previewIntegrity",
+  "previewUnavailable", "ready", "retry", "signatureFailed", "size", "title", "uninstall", "verifying",
+  "verifyingInstallation"].map(name => `documentEngine.${name}`));
+
+/** The copy key to show: on macOS the installed-app wording, elsewhere the key as it is. */
+export function documentEngineCopyKey(key: string, darwin: boolean): string {
+  return darwin && INSTALLED_APP_COPY.has(key) ? key.replace("documentEngine.", "documentEngine.app.") : key;
+}
+
 const ACTIVE_INSTALL_PHASES: readonly DocumentEngineInstallationState["phase"][] = Object.freeze([
   "downloading", "verifying", "installing", "cancelling", "verifying-installation",
 ]);
@@ -32,11 +43,14 @@ function installationErrorKey(error: DocumentEngineApiError): string {
 }
 
 /** Optional installation is a direct user action and grants no document write authority. */
-export function DocumentEngineInstallContent({ onDismiss, api = getApi().documentEngine }: {
+export function DocumentEngineInstallContent({ onDismiss, api = getApi().documentEngine, darwin = isDarwin() }: {
   onDismiss?: () => void;
   api?: DocumentEngineApi;
+  /** macOS runs the LibreOffice the user installed; other platforms keep main's copy. */
+  darwin?: boolean;
 }) {
-  const { t } = useTranslation();
+  const { t: translate } = useTranslation();
+  const t = (key: string, vars?: Parameters<typeof translate>[1]): string => translate(documentEngineCopyKey(key, darwin), vars);
   const [state, setState] = useState<DocumentEngineInstallationState>();
   const [error, setError] = useState<DocumentEngineApiError>();
   const [statusReadFailed, setStatusReadFailed] = useState(false);
@@ -141,8 +155,8 @@ export function DocumentEngineInstallContent({ onDismiss, api = getApi().documen
       </Button> : null}
     </div>
     {state ? <p className="text-xs text-muted-foreground" data-testid="document-engine-size">{t("documentEngine.size", {
-      download: mebibytes(state.downloadBytes),
-    })}{state.version ? ` · LibreOffice ${state.version}` : ""}</p> : <p role="status" className="text-xs text-muted-foreground">{t("documentEngine.loading")}</p>}
+      download: mebibytes(state.downloadBytes), installed: mebibytes(state.installedBytes), version: state.version,
+    })}{darwin && state.version ? ` · LibreOffice ${state.version}` : ""}</p> : <p role="status" className="text-xs text-muted-foreground">{t("documentEngine.loading")}</p>}
     <p className="text-xs text-muted-foreground">{t("documentEngine.localOnly")}</p>
     <p className="text-xs text-muted-foreground">{t("documentEngine.hwpRuntime")}</p>
     <div className="flex flex-wrap gap-3 text-xs">

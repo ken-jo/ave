@@ -28,7 +28,7 @@ describe("optional document engine installation", () => {
   it("discloses the extension size and local processing before a direct setup action", async () => {
     const { api, install } = installation();
     const dismissed = vi.fn();
-    render(<DocumentEngineInstallContent api={api} onDismiss={dismissed} />);
+    render(<DocumentEngineInstallContent darwin api={api} onDismiss={dismissed} />);
     expect(await screen.findByTestId("document-engine-size")).toHaveTextContent("HWP import extension · 300 MiB download · LibreOffice 26.8.1");
     expect(screen.getByRole("heading")).toHaveTextContent("Document engine (LibreOffice) (optional)");
     expect(screen.getByText(/private copy/)).toBeTruthy();
@@ -40,7 +40,7 @@ describe("optional document engine installation", () => {
 
   it("shows progress, cancels directly, and offers a retry after cleanup", async () => {
     const { api, install, cancel } = installation();
-    render(<DocumentEngineInstallContent api={api} />);
+    render(<DocumentEngineInstallContent darwin api={api} />);
     fireEvent.click(await screen.findByRole("button", { name: "Install import extension" }));
     await waitFor(() => expect(screen.getByRole("progressbar")).toHaveValue(ABSENT.downloadBytes / 2));
     expect(screen.getByText(/50%/)).toBeTruthy();
@@ -55,7 +55,7 @@ describe("optional document engine installation", () => {
   it("surfaces a signature refusal and removes an installed engine without a confirmation", async () => {
     const { api, uninstall } = installation({ ...ABSENT, phase: "ready" });
     const confirm = vi.spyOn(window, "confirm");
-    render(<DocumentEngineInstallContent api={api} />);
+    render(<DocumentEngineInstallContent darwin api={api} />);
     fireEvent.click(await screen.findByRole("button", { name: "Remove import extension" }));
     await screen.findByRole("button", { name: "Install import extension" });
     expect(uninstall).toHaveBeenCalledOnce();
@@ -67,7 +67,7 @@ describe("optional document engine installation", () => {
 
   it("shows first-use verification of an installed engine without offering a cancel or install action", async () => {
     const { api, status, setState } = installation({ ...ABSENT, phase: "verifying-installation" });
-    render(<DocumentEngineInstallContent api={api} />);
+    render(<DocumentEngineInstallContent darwin api={api} />);
     expect(await screen.findByText("Verifying LibreOffice before first use")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Cancel download" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Install import extension" })).toBeNull();
@@ -79,7 +79,7 @@ describe("optional document engine installation", () => {
 
   it("releases polling and ignores a late state response after unmount", async () => {
     const { api, status } = installation({ ...ABSENT, phase: "downloading" });
-    const view = render(<DocumentEngineInstallContent api={api} />);
+    const view = render(<DocumentEngineInstallContent darwin api={api} />);
     await screen.findByRole("progressbar");
     vi.useFakeTimers();
     const pending = deferred<Awaited<ReturnType<DocumentEngineApi["status"]>>>();
@@ -95,7 +95,7 @@ describe("optional document engine installation", () => {
   it("uses the Korean optional-install copy and disables unsupported package installation", async () => {
     setLocale("ko");
     const { api, install } = installation({ ...ABSENT, phase: "unsupported", error: "unsupported-platform" });
-    render(<DocumentEngineInstallContent api={api} />);
+    render(<DocumentEngineInstallContent darwin api={api} />);
     expect(screen.getByRole("heading")).toHaveTextContent("문서 엔진 (LibreOffice)");
     expect(await screen.findByRole("button", { name: "다시 설정" })).toBeDisabled();
     expect(install).not.toHaveBeenCalled();
@@ -104,7 +104,7 @@ describe("optional document engine installation", () => {
   it("reports an unverifiable installation record without promising an automatic repair", async () => {
     const { api, install, uninstall, status } = installation();
     status.mockResolvedValueOnce({ ok: false, error: "integrity-failed" } as never);
-    render(<DocumentEngineInstallContent api={api} />);
+    render(<DocumentEngineInstallContent darwin api={api} />);
     expect(await screen.findByText(/installation record could not be verified/)).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Retry setup" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Remove import extension" })).toBeNull();
@@ -120,7 +120,7 @@ describe("optional document engine installation", () => {
     const openExternalUrl = vi.fn(async () => ({ ok: true }));
     window.aveApi = { openExternalUrl } as never;
     try {
-      render(<DocumentEngineInstallContent api={api} />);
+      render(<DocumentEngineInstallContent darwin api={api} />);
       expect(await screen.findByTestId("document-engine-app-missing")).toHaveTextContent("LibreOffice is not installed");
       expect(screen.queryByRole("button", { name: "Install import extension" })).toBeNull();
       fireEvent.click(screen.getByRole("link", { name: "Get LibreOffice" }));
@@ -136,13 +136,36 @@ describe("optional document engine installation", () => {
     }
   });
 
+  // Windows and Linux are not offered: they keep main's copy and main's unsupported payload, word for word.
+  const UNSUPPORTED: DocumentEngineInstallationState = { phase: "unsupported", version: "26.8.1", downloadBytes: 611_297,
+    downloadedBytes: 0, installedBytes: 0 };
+
+  it("keeps main's Korean copy and disabled retry off macOS", async () => {
+    setLocale("ko");
+    const { api, install } = installation({ ...UNSUPPORTED, error: "unsupported-platform" });
+    render(<DocumentEngineInstallContent darwin={false} api={api} />);
+    expect(screen.getByRole("heading")).toHaveTextContent("문서 엔진 설치");
+    expect(await screen.findByRole("button", { name: "설치 다시 시도" })).toBeDisabled();
+    expect(install).not.toHaveBeenCalled();
+  });
+
+  it("keeps main's English copy, size line and availability text off macOS", async () => {
+    const { api } = installation(UNSUPPORTED);
+    render(<DocumentEngineInstallContent darwin={false} api={api} />);
+    expect(screen.getByRole("heading")).toHaveTextContent("Install document engine (optional)");
+    expect(await screen.findByTestId("document-engine-size")).toHaveTextContent("Version 26.8.1 · 1 MiB download · about 0 MiB on disk");
+    expect(screen.getByText(/Windows conversion is currently unavailable/)).toBeTruthy();
+    expect(screen.queryByText(/LibreOffice/)).toBeNull();
+    expect(screen.getByRole("button", { name: "Download and install" })).toBeDisabled();
+  });
+
   it("exposes pinned source and license links and opens them only on a user click", async () => {
     const { api } = installation();
     const previousApi = window.aveApi;
     const openExternalUrl = vi.fn(async () => ({ ok: true }));
     window.aveApi = { openExternalUrl } as never;
     try {
-      render(<DocumentEngineInstallContent api={api} />);
+      render(<DocumentEngineInstallContent darwin api={api} />);
       const source = screen.getByRole("link", { name: "H2Orestart source" });
       const license = screen.getByRole("link", { name: "GPL-3.0 license" });
       expect(source).toHaveAttribute("href", DOCUMENT_ENGINE_IMPORTER.source);

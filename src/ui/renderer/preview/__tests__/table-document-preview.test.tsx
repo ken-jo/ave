@@ -90,6 +90,12 @@ describe("tableErrorKey", () => {
     expect(tableErrorKey("busy")).toBe("chatPreviewRail.tableErrorBusy");
     expect(tableErrorKey("invalid-index")).toBe("formatIpcError.invalidIndex");
     expect(tableErrorKey("page-not-found")).toBe("pagePreview.notFound");
+    // The document engine's copy: main's off macOS, the installed-app wording on macOS (owner decision 2026-11-28).
+    expect(tableErrorKey("engine-unavailable", false)).toBe("documentEngine.previewUnavailable");
+    expect(tableErrorKey("engine-integrity-failed", false)).toBe("documentEngine.previewIntegrity");
+    expect(tableErrorKey("engine-unavailable", true)).toBe("documentEngine.app.previewUnavailable");
+    expect(tableErrorKey("engine-integrity-failed", true)).toBe("documentEngine.app.previewIntegrity");
+    expect(tableErrorKey("page-not-found", true)).toBe("pagePreview.notFound");
     expect(tableErrorKey("renderer-unavailable")).toBe("pagePreview.rendererUnavailable");
   });
 });

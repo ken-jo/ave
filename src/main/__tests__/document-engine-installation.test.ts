@@ -1,6 +1,7 @@
 // The document engine is the LibreOffice the user installed (owner decision 2026-11-28): Ave finds and verifies it,
-// and installs, verifies and removes only its own part, the pinned HWP import extension.
-import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+// and installs, verifies and removes only its own part, the pinned HWP import extension. The cases set the platform to
+// macOS, the only one offered.
+import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -38,7 +39,8 @@ async function installApp() {
     await writeFile(path, text);
     await chmod(path, 0o755);
   }
-  return { root, executable, unopkg };
+  // What admission sees: the canonical paths of the bundle and of its two executables.
+  return { root: await realpath(root), executable: await realpath(executable), unopkg: await realpath(unopkg) };
 }
 
 
@@ -176,5 +178,39 @@ describe("the document engine the user installed", () => {
     await mkdir(join(home, "document-engine"), { recursive: true, mode: 0o700 });
     await writeFile(join(home, "document-engine", "installation.json"), "{");
     await expect(installer.getDocumentEngineInstallationState()).rejects.toMatchObject({ code: "integrity-failed" });
+  });
+});
+
+// Windows and Linux are not offered (Linux: lead decision 2026-11-28, pending the owner): each behaves exactly as main
+// did on Windows, before any discovery, download, signature check or receipt action.
+describe.each(["win32", "linux"] as const)("the document engine on %s", (platform) => {
+  beforeEach(() => {
+    installer._setDocumentEngineAppCandidatesForTest(undefined);
+    setProcessPlatform(platform);
+  });
+
+  it("reports main's unsupported payload and offers nothing", async () => {
+    expect(await installer.getDocumentEngineInstallationState()).toEqual({ phase: "unsupported", version: "26.8.1",
+      downloadBytes: fixtures.extension.length, downloadedBytes: 0, installedBytes: 0 });
+    expect(await installer.getVerifiedDocumentEngineInstallation(new AbortController().signal)).toBeNull();
+    expect(await installer.isDocumentEngineAppInstalled()).toBe(false);
+  });
+
+  it("refuses the install before any network step, signature check or write", async () => {
+    await expect(installer.installDocumentEngine(() => {}, new AbortController().signal)).rejects.toMatchObject({ code: "unsupported-platform" });
+    expect(fixtures.fetch).not.toHaveBeenCalled();
+    expect(fixtures.verifyPlatform).not.toHaveBeenCalled();
+    expect(fixtures.system).not.toHaveBeenCalled();
+    expect(await readdir(home)).toEqual([]);
+  });
+
+  it("refuses every receipt, as main did, and removes nothing", async () => {
+    const slot = "slot-00000000-0000-4000-8000-000000000000";
+    await mkdir(join(home, "document-engine", slot), { recursive: true, mode: 0o700 });
+    const receipt = join(home, "document-engine", "installation.json");
+    await writeFile(receipt, JSON.stringify({ schema: 3, slot }));
+    await expect(installer.uninstallDocumentEngine()).rejects.toMatchObject({ code: "integrity-failed" });
+    expect(await readdir(join(home, "document-engine"))).toEqual(expect.arrayContaining([slot, "installation.json"]));
+    await expect(installer.getDocumentEngineInstallationState()).resolves.toMatchObject({ phase: "unsupported" });
   });
 });

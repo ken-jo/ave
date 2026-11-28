@@ -70,22 +70,17 @@ export function _setDocumentEngineAppCandidatesForTest(candidates: readonly Inst
 }
 
 /**
- * The standard install locations of the app, per platform, in preference order; undefined where the engine does not
- * run. Windows is not offered yet: the session's readiness check knows the POSIX single-instance pipe only.
+ * The standard install locations of the app; undefined where the engine is not offered. Only macOS is offered.
+ * Windows: the session's readiness check knows the POSIX single-instance pipe only. Linux (lead decision 2026-11-28,
+ * pending the owner): unsupported until the slice 8 flip proves that a wrapped extension cannot reach the unconfined
+ * office's `/tmp` pipe, which the Linux wrap's Unix-socket allowance leaves reachable today.
  */
 function appCandidates(platform: NodeJS.Platform = process.platform): readonly InstalledApp[] | undefined {
   if (candidatesForTest !== undefined) return candidatesForTest;
-  if (platform === "darwin") {
-    return ["/Applications/LibreOffice.app", join(homedir(), "Applications", "LibreOffice.app")].map(root => ({
-      root, executable: join(root, "Contents", "MacOS", "soffice"), unopkg: join(root, "Contents", "MacOS", "unopkg"),
-    }));
-  }
-  if (platform === "linux") {
-    return ["/usr/lib/libreoffice", "/usr/lib64/libreoffice", "/opt/libreoffice"].map(root => ({
-      root, executable: join(root, "program", "soffice"), unopkg: join(root, "program", "unopkg"),
-    }));
-  }
-  return undefined;
+  if (platform !== "darwin") return undefined;
+  return ["/Applications/LibreOffice.app", join(homedir(), "Applications", "LibreOffice.app")].map(root => ({
+    root, executable: join(root, "Contents", "MacOS", "soffice"), unopkg: join(root, "Contents", "MacOS", "unopkg"),
+  }));
 }
 
 async function isExecutableFile(path: string): Promise<boolean> {
@@ -134,34 +129,21 @@ function appKey(app: InstalledApp): string {
 }
 
 async function readAppVersion(app: InstalledApp, signal: AbortSignal): Promise<string> {
-  if (process.platform === "darwin") {
-    const version = (await runDocumentEngineSystemCommand("/usr/bin/plutil",
-      ["-extract", "CFBundleShortVersionString", "raw", join(app.root, "Contents", "Info.plist")], signal)).trim();
-    if (!/^\d+(\.\d+){1,3}$/u.test(version)) throw new Error("Document engine version is unreadable");
-    return version;
-  }
-  const text = await fs.readFile(join(app.root, "program", "versionrc"), "utf8");
-  const value = (key: string): string | undefined => new RegExp(`^${key}=([^\\r\\n]+)$`, "mu").exec(text)?.[1]?.trim();
-  const version = value("MsiProductVersion") ?? value("ProductVersion") ?? value("buildid")?.slice(0, 12);
-  if (!version) throw new Error("Document engine version is unreadable");
+  const version = (await runDocumentEngineSystemCommand("/usr/bin/plutil",
+    ["-extract", "CFBundleShortVersionString", "raw", join(app.root, "Contents", "Info.plist")], signal)).trim();
+  if (!/^\d+(\.\d+){1,3}$/u.test(version)) throw new Error("Document engine version is unreadable");
   return version;
 }
 
 /**
- * Admission of the app the user installed, once per app identity: on macOS the publisher's signature (TDF Developer ID
- * and Gatekeeper), on Linux a location only the system can write.
+ * Admission of the app the user installed, once per app identity: the publisher's signature (TDF Developer ID and
+ * Gatekeeper).
  */
 async function admitInstalledApp(app: InstalledApp, signal: AbortSignal): Promise<string> {
-  if (process.platform === "darwin") {
-    try { await verifyDocumentEngineAppSignature(app.executable, signal); }
-    catch (error) {
-      signal.throwIfAborted();
-      throw new DocumentEngineInstallError("signature-failed", "Document engine executable signer is invalid", { cause: error });
-    }
-  } else {
-    await assertCodexLocations([{ path: app.root, kind: "directory", routeKind: "native" },
-      { path: app.executable, kind: "executable", routeKind: "guarded-script" },
-      { path: app.unopkg, kind: "executable", routeKind: "guarded-script" }]);
+  try { await verifyDocumentEngineAppSignature(app.executable, signal); }
+  catch (error) {
+    signal.throwIfAborted();
+    throw new DocumentEngineInstallError("signature-failed", "Document engine executable signer is invalid", { cause: error });
   }
   return readAppVersion(app, signal);
 }
@@ -199,6 +181,8 @@ async function readReceipt(): Promise<InstallationReceipt | null> {
     const raw: unknown = JSON.parse(buffer.subarray(0, bytesRead).toString("utf8"));
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("Invalid receipt");
     const receipt = raw as Record<string, unknown>;
+    // An unsupported platform has no receipt Ave could have written: any one is refused, as main refused it.
+    if (appCandidates() === undefined) throw new Error("Receipt on an unsupported platform");
     if ((receipt.schema !== 2 && receipt.schema !== 3) || typeof receipt.slot !== "string" || !/^slot-[a-f0-9-]{36}$/.test(receipt.slot)
       || receipt.schema === 3 && Object.keys(receipt).length !== 2) throw new Error("Invalid receipt identity");
     return { schema: receipt.schema, slot: receipt.slot };
@@ -218,7 +202,12 @@ async function verifyFile(path: string, bytes: number, sha256: string, signal: A
   signal.throwIfAborted();
 }
 
+/** An unsupported platform reports exactly main's payload, so its card and status read as they did before. */
+const UNSUPPORTED_STATE: DocumentEngineInstallationState = Object.freeze({ phase: "unsupported", version: "26.8.1",
+  downloadBytes: DOCUMENT_ENGINE_IMPORT_EXTENSION.bytes, downloadedBytes: 0, installedBytes: 0 });
+
 function stateFor(phase: DocumentEngineInstallationState["phase"], version = ""): DocumentEngineInstallationState {
+  if (phase === "unsupported") return { ...UNSUPPORTED_STATE };
   const bytes = DOCUMENT_ENGINE_IMPORT_EXTENSION.bytes;
   return { phase, version, downloadBytes: bytes, downloadedBytes: phase === "ready" ? bytes : 0, installedBytes: bytes };
 }
