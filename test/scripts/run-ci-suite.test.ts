@@ -382,11 +382,11 @@ describe("event rules over the pull request merge and the whole push", () => {
   const isAncestor = { stdout: "", status: 0 };
 
   it("selects a test-only category merge over the merge commit's first parent", () => {
-    withGitOutputs(["head first second\n", `:100644 100644 aaaa bbbb M\0${changedTest}\0`], () => {
+    withGitOutputs(["head first second\n", `:100644 100644 aaaa bbbb M\0${changedTest}\0`, trackedTests.join("\0")], () => {
       const plan = planCiSuite("pull_request", { headRef: "integration/test-speed", baseRef: "main" });
       expect(plan.mode).toBe("affected");
       expect(plan.reason).toBe("test-only diff: changed test files");
-      expect(plan.tests).toEqual([changedTest]);
+      expect(plan.tests).toEqual([...new Set([changedTest, ...expandMustRunTests(mustRunDocument, trackedTests, [])])].sort());
       expect(plan).toHaveProperty("testOnlyFiles", [changedTest]);
       expect(vi.mocked(spawnSync).mock.calls[1][1]).toEqual(["diff", "--find-renames", "--find-copies-harder", "-l0", "--raw", "-z", "first", "HEAD", "--"]);
     });

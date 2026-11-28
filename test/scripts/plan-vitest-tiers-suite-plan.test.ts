@@ -44,7 +44,11 @@ describe("Vitest tiers for written planCiSuite plans", () => {
     ["a pull request into an integration base", { headRef: "test/renderer", baseRef: "integration/renderer" }],
   ])("selects neither tier for %s with only a default-tier test change", (_label, refs) => {
     const { written, tiers } = suitePlan([UNRELATED_TEST], PULL_REQUEST, refs);
-    expect(written).toMatchObject({ mode: "affected", reason: "test-only diff: changed test files", tests: [UNRELATED_TEST] });
+    expect(written).toMatchObject({
+      mode: "affected", reason: "test-only diff: changed test files",
+      tests: expect.arrayContaining([UNRELATED_TEST, "test/scripts/run-ci-suite.test.ts"]),
+      testOnlyFiles: [UNRELATED_TEST],
+    });
     expect(tiers()).toMatchObject({ census: false, native: false });
   }, 120_000);
 

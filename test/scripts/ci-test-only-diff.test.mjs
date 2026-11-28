@@ -113,7 +113,7 @@ it("pins the existing mixed PR and main push plan bytes", (t) => {
   ]);
 });
 
-it("writes the changed files from the PR's merged tree without unrelated must-run tests", (t) => {
+it("runs changed Linux suites and unconditional guards from the written plan", (t) => {
   const repo = fixture(t);
   repo.git("switch", "-qc", "topic");
   repo.file(suite, "// modified\n");
@@ -121,7 +121,11 @@ it("writes the changed files from the PR's merged tree without unrelated must-ru
   merge(repo);
   const [plan] = writePlan(repo.root, "pull_request", repo.base);
   assert.deepEqual(JSON.parse(plan).testOnlyFiles, [suite, scriptSuite]);
-  assert.deepEqual(JSON.parse(plan).tests, [suite]);
+  assert.deepEqual(JSON.parse(plan).tests, [mustRun, suite]);
+  assert.deepEqual(runLinuxPlan(repo), {
+    args: ["run", "--silent=true", `./${mustRun}`, `./${suite}`],
+    filter: "",
+  });
   const [push] = writePlan(repo.root, "push", repo.base);
   assert.equal(Object.hasOwn(JSON.parse(push), "testOnlyFiles"), false);
 });
@@ -159,7 +163,7 @@ it("keeps native, census and explicit platform inventories separate", async () =
   assert.equal(testOnlyVitestArgs(command, [scriptSuite]), null);
 });
 
-it("writes an empty plan for deleted tests and exits the Linux shard without spawning Vitest", (t) => {
+it("runs the unconditional Linux guards when the only changed suite was deleted", (t) => {
   const repo = fixture(t);
   repo.git("switch", "-qc", "topic");
   repo.git("rm", suite);
@@ -167,6 +171,12 @@ it("writes an empty plan for deleted tests and exits the Linux shard without spa
   const [plan, outputs] = writePlan(repo.root, "pull_request", repo.base);
   assert.deepEqual(JSON.parse(plan).testOnlyFiles, []);
   assert.match(outputs, /^test_only=true$/mu);
+  assert.deepEqual(runLinuxPlan(repo), { args: ["run", "--silent=true", `./${mustRun}`], filter: "" });
+});
+
+function runLinuxPlan(repo) {
+  repo.file("scripts/run-vitest-under-electron.mjs",
+    'console.log(JSON.stringify({ args: process.argv.slice(2), filter: process.env.AVE_CI_TEST_ONLY_PLAN ?? "" }));\n');
   const path = join(repo.root, "ci-plan.json");
   const result = spawnSync(process.execPath, [planner], {
     cwd: repo.root, encoding: "utf8", env: {
@@ -176,8 +186,8 @@ it("writes an empty plan for deleted tests and exits the Linux shard without spa
   });
   assert.ifError(result.error);
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /::notice::test-only diff: 0 files for this job/u);
-});
+  return JSON.parse(result.stdout.trim().split("\n").at(-1));
+}
 
 it("preserves the shell boundary report check whenever a selected suite runs", async (t) => {
   const { parse } = await import("yaml");

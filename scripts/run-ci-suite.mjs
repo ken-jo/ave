@@ -385,16 +385,19 @@ export function planCiSuite(eventName, { headRef, baseRef, ref, before } = {}) {
     return full("the pull request renames or copies files");
   }
   const testOnlyFiles = mainPush ? null : testOnlyFilesForDiff(changes.entries);
+  const trackedTests = trackedVitestFiles();
+  const mustRunDocument = JSON.parse(readFileSync(MUST_RUN_TESTS_PATH, "utf8"));
   if (testOnlyFiles !== null) {
+    const guards = expandMustRunTests(mustRunDocument, trackedTests, []);
+    const changedTests = testOnlyFiles.filter(path => isCollectedVitestFile(path) && !NATIVE_TIER_TESTS.includes(path));
     return {
       mode: "affected",
       reason: "test-only diff: changed test files",
-      tests: testOnlyFiles.filter(path => isCollectedVitestFile(path) && !NATIVE_TIER_TESTS.includes(path)),
+      tests: [...new Set([...changedTests, ...guards])].sort(),
       testOnlyFiles,
     };
   }
-  const trackedTests = trackedVitestFiles();
-  const mustRunTests = expandMustRunTests(JSON.parse(readFileSync(MUST_RUN_TESTS_PATH, "utf8")), trackedTests, changes.entries.map(({ path }) => path));
+  const mustRunTests = expandMustRunTests(mustRunDocument, trackedTests, changes.entries.map(({ path }) => path));
   const textCache = new Map();
   const plan = selectCiTests({
     changes: changes.entries,
@@ -460,7 +463,11 @@ export function ciSuiteArguments(plan, coverage, shard = null) {
 }
 
 function runPlan(plan, coverage, shard) {
-  return spawnSync(process.execPath, ciSuiteArguments(plan, coverage, shard), { stdio: "inherit" });
+  // This plan already includes the unconditional guards, alongside the changed suites.
+  return spawnSync(process.execPath, ciSuiteArguments(plan, coverage, shard), {
+    stdio: "inherit",
+    env: { ...process.env, AVE_CI_TEST_ONLY_PLAN: "" },
+  });
 }
 
 if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
