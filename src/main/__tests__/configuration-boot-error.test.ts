@@ -70,7 +70,9 @@ describe("configuration boot refusal", () => {
     expect(source).toContain("? migrateAveHomeConfiguration(homePrivacy.home, homePrivacy) : []");
     const lock = readFileSync(join(import.meta.dirname, "..", "host-instance-lock.ts"), "utf8");
     expect(lock).toContain('database.exec("BEGIN EXCLUSIVE")');
-    expect(lock).toContain("setAveHomeConfigurationOwner({ hasSingleInstanceLock: () => processLock?.open === true && processLock.inTransaction })");
+    // The owner check is the lock's own predicate: an open connection still inside its exclusive transaction.
+    expect(lock).toContain("setAveHomeConfigurationOwner({ hasSingleInstanceLock: isHostInstanceLockHeld })");
+    expect(lock).toContain("export function isHostInstanceLockHeld(): boolean {\n  return processLock?.open === true && processLock.inTransaction;\n}");
     for (const entry of ["desktop-boot.ts", "headless-host.ts"]) {
       const caller = readFileSync(join(import.meta.dirname, "..", "..", entry), "utf8");
       expect(caller).toContain("await acquireHostInstanceLock()");
