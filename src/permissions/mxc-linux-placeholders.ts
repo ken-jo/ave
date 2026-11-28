@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, rmdirSync } from "node:fs";
+import { lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmdirSync, rmSync } from "node:fs";
 import { posix } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
@@ -19,11 +19,7 @@ const DirectoryIdentity = z.object({ device: z.string().regex(/^\d+$/u), inode: 
 const AbsolutePath = z.string().refine((path) => path !== "/" && posix.isAbsolute(path) && posix.normalize(path) === path);
 const PidMarker = z.object({ pid: z.number().int().positive(), start: z.string().min(1).nullable() });
 const PlaceholderRegistry = z.object({
-  runs: z.array(z.object({
-    id: z.uuid(), owner: PidMarker, launcher: PidMarker.optional(),
-    /** A Linux holder's outer bwrap, which Ave started directly: stopped at the next boot if its owner died first. */
-    holder: z.object({ pid: z.number().int().positive(), start: z.string().min(1), executable: AbsolutePath }).optional(),
-  })),
+  runs: z.array(z.object({ id: z.uuid(), owner: PidMarker, launcher: PidMarker.optional() })),
   directories: z.array(z.object({
     path: AbsolutePath, identity: DirectoryIdentity.optional(), parent: DirectoryIdentity,
     leaf: z.boolean(), owners: z.array(z.uuid()),
@@ -143,8 +139,7 @@ function dropOwnership(registry: PlaceholderRegistry, id: string, drop: (path: s
 function sweepDeadRuns(registry: PlaceholderRegistry, host: MxcRuntimeHost): boolean {
   let changed = false;
   for (const run of registry.runs) {
-    if (isLive(run.owner, host) || (run.launcher !== undefined && isLive(run.launcher, host))
-      || (run.holder !== undefined && isLive(run.holder, host))) continue;
+    if (isLive(run.owner, host) || (run.launcher !== undefined && isLive(run.launcher, host))) continue;
     retireRun(registry, run.id);
     changed = true;
   }
@@ -175,31 +170,56 @@ const PROC_ORPHAN_HOLDER_OPS: MxcLinuxOrphanHolderOps = {
 };
 
 /**
- * Boot, before any listener opens (design 3 rule 4): a holder whose Ave died, and whose recorded bwrap is still the
- * same process (same start time) running the recorded executable, is stopped. A pid failing either check is a
- * different process now and is left alone; its marker is dropped. Either way the run is retired by the dead-run sweep.
+ * A Linux holder's marker: Ave's pid and the outer bwrap's pid, start time and executable, one file per holder beside
+ * the journal. It is written synchronously inside the launch gate, before the release byte, so it exists for the whole
+ * window design 3 rule 4 names; the journal's lock is asynchronous and cannot be taken there.
  */
-async function stopOrphanHolders(registry: PlaceholderRegistry, host: MxcRuntimeHost, ops: MxcLinuxOrphanHolderOps): Promise<boolean> {
-  let changed = false;
-  for (const run of registry.runs) {
-    const holder = run.holder;
-    if (holder === undefined || isLive(run.owner, host)) continue;
+const HolderMarker = z.object({
+  owner: PidMarker,
+  holder: z.object({ pid: z.number().int().positive(), start: z.string().min(1), executable: AbsolutePath }),
+});
+
+function holderMarkerFolder(host: MxcRuntimeHost): string {
+  if (host.platform !== "linux") throw new Error("Container holder markers require Linux");
+  return posix.join(requireMxcContainerStartRoot(host), "holder-markers");
+}
+
+/**
+ * Boot, before any listener opens (design 3 rule 4): a holder whose Ave died, and whose recorded bwrap is still the
+ * same process (same start time) running the recorded executable, is stopped and waited for. A pid failing either
+ * check is a different process now and is left alone. The marker goes either way, except for one that outlives the
+ * KILL: it stays for the next start.
+ */
+async function stopOrphanHolders(host: MxcRuntimeHost, ops: MxcLinuxOrphanHolderOps): Promise<void> {
+  const folder = holderMarkerFolder(host);
+  let names: string[];
+  try { names = readdirSync(folder); } catch (error) {
+    if (isMissingPathError(error)) return;
+    throw error;
+  }
+  for (const name of names) {
+    const path = posix.join(folder, name);
+    let marker: z.infer<typeof HolderMarker>;
+    try { marker = HolderMarker.parse(JSON.parse(readFileSync(path, "utf8"))); } catch {
+      log.warn("Linux holder marker %s is unreadable; removed", path);
+      rmSync(path, { force: true });
+      continue;
+    }
+    if (isLive(marker.owner, host)) continue;
+    const { holder } = marker;
     const same = (): boolean => host.processExists(holder.pid) && host.processStart(holder.pid) === holder.start;
     if (same() && ops.executable(holder.pid) === holder.executable) {
       log.warn("Stopping Linux holder bwrap %d left running by an Ave that exited", holder.pid);
       ops.kill(holder.pid);
-      // Gone before the first listener opens; one that outlives the KILL keeps its run for the next start.
       const deadline = Date.now() + TOOL_TIMEOUT_POLICY.processTreeKillMs;
       while (same() && Date.now() < deadline) await sleep(ORPHAN_POLL_MS);
       if (same()) {
-        log.warn("Linux holder bwrap %d did not end after KILL; its run is kept", holder.pid);
+        log.warn("Linux holder bwrap %d did not end after KILL; its marker is kept", holder.pid);
         continue;
       }
     }
-    delete run.holder;
-    changed = true;
+    rmSync(path, { force: true });
   }
-  return changed;
 }
 
 const ORPHAN_POLL_MS = 20;
@@ -218,6 +238,9 @@ export async function sweepMxcLinuxPlaceholders(
   host: MxcRuntimeHost = currentMxcRuntimeHost(), options: MxcLinuxPlaceholderSweepOptions = {},
 ): Promise<void> {
   const journal = registryPath(host);
+  const orphans = options.stopOrphanHolders;
+  // First, so the dead runs retired below no longer have a holder mounted on their placeholders.
+  if (orphans !== undefined) await stopOrphanHolders(host, orphans === true ? PROC_ORPHAN_HOLDER_OPS : orphans);
   await withFileLock(journal, async () => {
     let registry: PlaceholderRegistry;
     try {
@@ -232,9 +255,7 @@ export async function sweepMxcLinuxPlaceholders(
       recoveryNotice = t("sandboxPolicy.linuxPlaceholderJournalRecovered", { file: aside });
       return;
     }
-    const orphans = options.stopOrphanHolders;
-    const stopped = orphans !== undefined && await stopOrphanHolders(registry, host, orphans === true ? PROC_ORPHAN_HOLDER_OPS : orphans);
-    if (sweepDeadRuns(registry, host) || stopped) saveRegistry(journal, registry);
+    if (sweepDeadRuns(registry, host)) saveRegistry(journal, registry);
   }, { createTarget: false });
 }
 
@@ -256,8 +277,11 @@ export interface MxcLinuxPlaceholderHold<Grants> {
   readonly grants: Grants;
   validate(): void;
   recordLauncher(pid: number): Promise<void>;
-  /** A Linux holder's run entry, written even when it owns no placeholder: Ave's pid and its outer bwrap. */
-  recordHolder(pid: number, executable: string): Promise<void>;
+  /**
+   * A Linux holder's marker (Ave's pid and its outer bwrap), written synchronously: inside the launch gate, after the
+   * spawn and before the release byte. Removed at release.
+   */
+  recordHolder(pid: number, executable: string): void;
   /**
    * A long-lived holder, at its ready byte: give up the other runs' placeholders it held while its container was
    * mounted (design 7.3). Its mask of each stays; when their own run ends the folder goes, and the name is watched.
@@ -364,7 +388,7 @@ export async function holdMxcLinuxPlaceholders<Grants extends PosixFilesystemGra
       throw error;
     }
 
-    let holderRecorded = false;
+    let markerPath: string | undefined;
     return {
       grants,
       validate() {
@@ -385,22 +409,13 @@ export async function holdMxcLinuxPlaceholders<Grants extends PosixFilesystemGra
           saveRegistry(journal, registry);
         }, lockOptions);
       },
-      async recordHolder(pid, executable) {
+      recordHolder(pid, executable) {
         const start = host.processStart(pid);
         if (start === null) throw new Error("Container holder marker could not be proved");
-        await withFileLock(journal, async () => {
-          const registry = readRegistry(journal);
-          let run = registry.runs.find((run) => run.id === id);
-          if (run === undefined) {
-            // A run that owns no placeholder was never saved; the holder's marker needs its entry all the same.
-            if (owned.size > 0) throw new Error("Container placeholder ownership was lost");
-            run = { id, owner };
-            registry.runs.push(run);
-          }
-          run.holder = { pid, start, executable };
-          saveRegistry(journal, registry);
-        }, lockOptions);
-        holderRecorded = true;
+        const folder = holderMarkerFolder(host);
+        mkdirSync(folder, { mode: 0o700, recursive: true });
+        markerPath = posix.join(folder, `${id}.json`);
+        writeUtf8FileAtomicSync(markerPath, JSON.stringify({ owner, holder: { pid, start, executable } }), 0o600);
       },
       async releaseForeignClaims() {
         // Only what this launch holds for the mask alone: a folder its own rows equal or sit under stays held.
@@ -416,7 +431,8 @@ export async function holdMxcLinuxPlaceholders<Grants extends PosixFilesystemGra
         for (const directory of foreign) owned.delete(directory);
       },
       async release() {
-        if (owned.size === 0 && !holderRecorded) return;
+        if (markerPath !== undefined) rmSync(markerPath, { force: true });
+        if (owned.size === 0) return;
         await withFileLock(journal, async () => {
           const registry = readRegistry(journal);
           if (!registry.runs.some((run) => run.id === id)) return;
