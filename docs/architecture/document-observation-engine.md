@@ -76,10 +76,14 @@ for the app only at the platform's standard locations, never on PATH:
   single-instance pipe.
 - Linux: not offered (lead decision 2026-11-28, pending the owner's
   correction). Earlier builds offered a confined Linux x64 engine; Linux loses
-  it until the slice 8 route flip. The unconfined office's `/tmp` pipe accepts
-  forwarded command lines, and a wrapped Linux extension may reach Unix sockets,
-  so it could drive the office to read files as the user. Linux is offered again
-  from the slice 8 flip, once that pipe is proven unreachable from wraps.
+  it. The unconfined office's `/tmp` pipe accepts forwarded command lines, so
+  anything that can connect to it could drive the office to read files as the
+  user. The slice 8 flip made Linux extensions holders, which cannot create a
+  Unix socket, but it could not prove the pipe unreachable: its validation host
+  has no office to run, and host-owned offline processes stay on the wrap, whose
+  Unix-socket filter depends on srt finding its seccomp helper. Linux stays
+  unsupported until a native test drives a live office pipe from every
+  remaining wrap and is refused.
 
 On Windows and Linux the status is `unsupported` with the same payload and copy
 Windows had before, and the install action returns `unsupported-platform`
