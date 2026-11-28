@@ -1,3 +1,4 @@
+import { trackPermissionEvents } from "../../__tests__/support/permission-events.js";
 import { describe, expect, it, vi } from "vitest";
 import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 import { A2AJsonRpcMethod } from "../../shared/a2a-wire.js";
@@ -22,6 +23,8 @@ const agentActionApprover = vi.fn(async () => ({
   decisionId: "test-approval",
   decidedAt: "2026-07-16T00:00:00.000Z",
 }));
+
+const permissionEvents = trackPermissionEvents();
 
 describe("A2A remote boot runtime", () => {
   it("has zero config, secret, namespace, Hub, DNS, and listener effect when both gates are OFF", async () => {
@@ -53,11 +56,10 @@ describe("A2A remote boot runtime", () => {
     async (outcome) => {
       const value = settings({ a2aRemoteRouting: true }, { "a2a.remote.route-control-auth": "control-secret" });
       const approve = vi.fn(async () => ({ approved: false as const, outcome }));
-      const audit = vi.fn();
       const writeJson = vi.fn(async () => undefined);
       const runtime = await createA2ARemoteRuntime({
         settings: value.value, agentActionApprover: approve, projectRoot: "/project", encryption,
-        namespace: { ...namespace, writeJson }, audit,
+        namespace: { ...namespace, writeJson },
       });
       if (!runtime) throw new Error("fixture did not enable outbound routing");
       const interfaceUrl = "https://agent.example.test/a2a";
@@ -74,7 +76,9 @@ describe("A2A remote boot runtime", () => {
           messageId: "outbound-message",
         })).resolves.toEqual({ ok: false, outcome: "not-sent", approvalOutcome: outcome });
         expect(approve).toHaveBeenCalledOnce();
-        expect(audit).toHaveBeenCalledWith(`initial-send:approval-denied:foreground-approval-${outcome}`);
+        expect(permissionEvents()).toContainEqual(expect.objectContaining({
+          event: "remote_agent_operation", operation: "initial-send", outcome: "approval-denied", reasonCode: `foreground-approval-${outcome}`,
+        }));
         expect(value.getEncryptedSecret.mock.calls).toEqual([["a2a.remote.route-control-auth"]]);
         expect(writeJson).not.toHaveBeenCalled();
       } finally {

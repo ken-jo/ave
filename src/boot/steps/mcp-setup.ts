@@ -1,3 +1,4 @@
+import { logPermissionEvent, permissionLogId } from "../../lib/permission-log.js";
 /** Create signed artifact stores only when verified downloads are available. */
 import { McpGovernance } from "../../mcp/mcp-governance.js";
 import { McpManager } from "../../mcp/mcp-manager.js";
@@ -12,23 +13,19 @@ import type { BootContext } from "../context.js";
 const log = createLogger("ave");
 
 export async function setupMcp(ctx: BootContext): Promise<void> {
-  const { approvalGate, toolRegistry, bootAuditLogger } = ctx;
+  const { approvalGate, toolRegistry } = ctx;
 
   const mcpGovernance = new McpGovernance();
   // Route server elicitation through the host approval gate.
   const mcpInputResolverFactory = createElicitationResolverFactory({
     approvalGate,
-    onApprovalFailure: (requestId, outcome) => bootAuditLogger.log({
-      timestamp: new Date().toISOString(), sessionId: "mcp-elicitation", type: "approval",
-      input: `[mcp-elicitation] request=${requestId}`, output: `approval=${outcome}`,
-    }),
+    onApprovalFailure: (requestId, outcome) => logPermissionEvent("mcp_elicitation_refused", { sessionId: permissionLogId("mcp-elicitation"), requestId: permissionLogId(requestId), outcome: permissionLogId(outcome) }, "warn"),
   });
   const mcpManager = new McpManager(
     mcpGovernance,
     toolRegistry,
     ctx.singleHopNetworkFetch,
     undefined,
-    bootAuditLogger,
     mcpInputResolverFactory,
     // Resolve the window manager at emit time; it is installed after boot context creation.
     createMcpServerDisconnectedSink({ getAllWindows: () => ctx.host.desktop?.getAppWindows() ?? [] }),

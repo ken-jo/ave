@@ -120,7 +120,6 @@ function makeMinimalDeps(loop: ReturnType<typeof makeConversationLoop>) {
       updateUserPreferences: vi.fn(),
     },
     starredStore: null,
-    auditLogger: { log: vi.fn() },
     askUserQuestionGate: null,
     preferenceRefreshService: null,
     memoryConsolidationService: undefined,

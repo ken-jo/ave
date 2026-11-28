@@ -1,4 +1,5 @@
-import { admitToolInvocation, admitToolInvocationWhileAuditOpen, appendToolInvocationAudit, toolInvocationsSealed } from "../../tools/invocation-ledger.js";
+import { logPermissionEvent, permissionLogId } from "../../lib/permission-log.js";
+import { admitToolInvocation, admitToolInvocationWhileOpen, appendToolInvocationAudit, toolInvocationsSealed } from "../../tools/invocation-ledger.js";
 import { HostExitAbortError, isHostExitAbort } from "../../shared/host-exit-abort.js";
 import { maskSensitiveData } from "../../shared/dlp.js";
 import { abortSupersedesApprovalDecision } from "../../tools/pipeline/approval-outcome.js";
@@ -68,8 +69,8 @@ const EXTENSION_START_NOTICE_KEYS = {
 } as const satisfies Record<PendingExtensionStart["cause"], Record<"declined" | "unattended", string>>;
 
 /** The card, the notice and the audit rows of an extension start that nothing confines. */
-export function bootExtensionStartAsker(ctx: Pick<BootContext, "approvalGate" | "bootAuditLogger" | "notificationService">): ExtensionStartAsker {
-  const { approvalGate, bootAuditLogger } = ctx;
+export function bootExtensionStartAsker(ctx: Pick<BootContext, "approvalGate" | "notificationService">): ExtensionStartAsker {
+  const { approvalGate } = ctx;
   return createExtensionStartAsker({
     approvalGate,
     reason: (starts) => {
@@ -83,16 +84,12 @@ export function bootExtensionStartAsker(ctx: Pick<BootContext, "approvalGate" | 
       const body = EXTENSION_START_NOTICE_KEYS[start.cause][why];
       ctx.notificationService.deliver({ kind: "system", title: t("extensionStart.notStartedTitle"), body: t(body, { name: start.label }), bypassFocusGate: true });
     },
-    record: (event, start) => bootAuditLogger.log({
-      timestamp: new Date().toISOString(), sessionId: "extension-start", type: "info",
-      input: JSON.stringify({ event, kind: start.kind, key: start.key, cause: start.cause }),
-      output: `[extension_start_${event}] ${start.label}`,
-    }),
+    record: (outcome, start) => logPermissionEvent("extension_start_decision", { kind: start.kind, outcome }),
   });
 }
 
 export async function setupPluginToolExecutor(ctx: BootContext): Promise<void> {
-  const { toolRegistry, permissionManager, bashAstValidator, approvalGate, bootAuditLogger, pluginRuntime, lateBinding } = ctx;
+  const { toolRegistry, permissionManager, bashAstValidator, approvalGate, pluginRuntime, lateBinding } = ctx;
 
   setExtensionStartAsker(bootExtensionStartAsker(ctx));
 
@@ -100,18 +97,14 @@ export async function setupPluginToolExecutor(ctx: BootContext): Promise<void> {
   const hookRunner = createHookRunner();
 
   // New or changed hooks are quarantined at boot without a renderer prompt.
-  const hookSystem = await wireHookSystem({ auditLogger: bootAuditLogger, notificationService: ctx.notificationService,
+  const hookSystem = await wireHookSystem({ notificationService: ctx.notificationService,
     authorizeCommand: createHookCommandAuthorizer({ permissionManager, approvalGate }) });
   const scriptHookManager = hookSystem.manager;
   scriptHookManager.setHttpHookRuntime({
     transport: ctx.singleHopNetworkFetch,
     allowedUrls: hookSystem.policy.allowedHttpHookUrls,
     allowedEnvVars: hookSystem.policy.httpHookAllowedEnvVars,
-    auditTarget: (entry) => bootAuditLogger.log({
-      timestamp: new Date().toISOString(), sessionId: "hooks", type: "info",
-      input: JSON.stringify(entry), output: "HTTP hook request target reviewed",
-      toolCalls: [{ name: "hook_http_request", isError: entry.outcome === "denied", trust: "high" }],
-    }),
+    auditTarget: (_entry) => logPermissionEvent("hook_http_target_checked", { sessionId: permissionLogId("hooks") }),
   });
   const pluginOperationGrants = new PluginOperationGrantCoordinator();
   const pluginOperationIdentityProvider: PluginOperationIdentityProvider = (
@@ -152,8 +145,6 @@ export async function setupPluginToolExecutor(ctx: BootContext): Promise<void> {
     bashAstValidator,
     approvalGate,
     scriptHookManager,
-    bootAuditLogger,
-    // Only the tracked worker's filesystem confinement can relax command reads.
     isActiveSandboxFilesystemContainedForPluginEffects,
     getWorkspaceRootLifecycle,
     pluginOperationGrants,
@@ -638,7 +629,7 @@ export async function setupPluginToolExecutor(ctx: BootContext): Promise<void> {
     expectedGenerationId,
   }) => {
     // A closed audit has no row left for the denial; refuse instead of admitting.
-    const admission = admitToolInvocationWhileAuditOpen(toolName);
+    const admission = admitToolInvocationWhileOpen(toolName);
     if (!admission) throw new HostExitAbortError();
     try {
       const lifecycle = ctx.pluginBundleLifecycle;
@@ -725,7 +716,7 @@ export async function setupPluginToolExecutor(ctx: BootContext): Promise<void> {
           }
           if (denialReason !== undefined || answer?.choice !== "allow-once") {
             const reason = denialReason ?? "approval rejected by host";
-            await appendToolInvocationAudit(bootAuditLogger, {
+            await appendToolInvocationAudit({
               decision: "deny",
               ts: new Date().toISOString(),
               auditId: randomUUID(),
@@ -772,7 +763,7 @@ export async function setupPluginToolExecutor(ctx: BootContext): Promise<void> {
             ttlMs,
           });
           try {
-            await appendToolInvocationAudit(bootAuditLogger, {
+            await appendToolInvocationAudit({
               decision: "allow",
               ts: new Date().toISOString(),
               auditId: randomUUID(),
@@ -793,7 +784,7 @@ export async function setupPluginToolExecutor(ctx: BootContext): Promise<void> {
           }
           if (admission.signal.aborted) {
             pluginSurfaceExecutor.revokePluginOperationSession(appSessionId);
-            await appendToolInvocationAudit(bootAuditLogger, {
+            await appendToolInvocationAudit({
               decision: "deny",
               ts: new Date().toISOString(),
               auditId: randomUUID(),

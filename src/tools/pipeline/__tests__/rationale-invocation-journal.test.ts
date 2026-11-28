@@ -16,7 +16,7 @@ import { useTempDirs } from "../../../__tests__/test-helpers.js";
 import {
   MemorySecretStore,
   type SecretStore,
-} from "../../../audit/hmac-chain.js";
+} from "../../../lib/protected-secret-store.js";
 import { writeUtf8FileAtomicSync } from "../../../lib/atomic-file.js";
 import { canonicalStringify } from "../../../shared/canonical-json.js";
 import {
@@ -43,10 +43,10 @@ import {
 } from "../rationale-ticket-lifecycle.js";
 
 const TEST_SECRET = "rationale-invocation-journal-test-secret-v1";
-const CHECKPOINT_A = "rationale-invocation-journal-checkpoint-v1-a";
-const CHECKPOINT_B = "rationale-invocation-journal-checkpoint-v1-b";
-const JOURNAL_HEAD = "rationale-invocation-journal-head-v1";
-const sealStoresByPath = new Map<string, MemorySecretStore>();
+const CHECKPOINT_A = "invocation-execution-checkpoint-a";
+const CHECKPOINT_B = "invocation-execution-checkpoint-b";
+const JOURNAL_HEAD = "invocation-execution-head";
+const checkpointStoresByPath = new Map<string, MemorySecretStore>();
 
 class SwitchableSecretStore implements SecretStore {
   readonly values = new Map<string, string>();
@@ -84,19 +84,19 @@ function journalOptions(
   filePath: string,
   overrides: JournalOptionsOverrides = {},
 ): DurableHostInvocationStartCasStoreOptions {
-  let sealStore: SecretStore | undefined = overrides.sealStore;
-  if (!sealStore) {
-    let stored = sealStoresByPath.get(filePath);
+  let checkpointStore: SecretStore | undefined = overrides.checkpointStore;
+  if (!checkpointStore) {
+    let stored = checkpointStoresByPath.get(filePath);
     if (!stored) {
       stored = new MemorySecretStore();
-      sealStoresByPath.set(filePath, stored);
+      checkpointStoresByPath.set(filePath, stored);
     }
-    sealStore = stored;
+    checkpointStore = stored;
   }
   return {
     filePath,
-    auditSecret: TEST_SECRET,
-    sealStore,
+    executionKey: TEST_SECRET,
+    checkpointStore,
     ...overrides,
   };
 }
@@ -248,7 +248,7 @@ function terminal(
 
 afterEach(() => {
   controlsByInvocation.clear();
-  sealStoresByPath.clear();
+  checkpointStoresByPath.clear();
 });
 
 describe("DurableHostInvocationStartCasStore", () => {
@@ -258,7 +258,6 @@ describe("DurableHostInvocationStartCasStore", () => {
     const first = journalStore(filePath);
     const second = journalStore(filePath);
     const record = authorized(1, { sessionId: "session-one" });
-    const audits: InvocationAuditRecord[] = [];
 
     const results = await Promise.all([
       first.commitStart({
@@ -266,7 +265,6 @@ describe("DurableHostInvocationStartCasStore", () => {
         control: controlFor(record),
         authorized: record,
         expectedInvocationVersion: 0,
-        persistAudit: (audit) => { audits.push(audit); },
         now: 100,
       }),
       second.commitStart({
@@ -274,13 +272,11 @@ describe("DurableHostInvocationStartCasStore", () => {
         control: controlFor(record),
         authorized: record,
         expectedInvocationVersion: 0,
-        persistAudit: (audit) => { audits.push(audit); },
         now: 100,
       }),
     ]);
 
     expect(results.filter((value) => value !== null)).toHaveLength(1);
-    expect(audits.map((audit) => audit.state)).toEqual(["authorized", "started"]);
 
     const persisted = readFileSync(filePath, "utf8");
     expect(persisted).not.toContain("raw-secret-command");
@@ -291,7 +287,6 @@ describe("DurableHostInvocationStartCasStore", () => {
       "authorized",
       "controlDigest",
       "lease",
-      "pendingAuditVersions",
       "sessionId",
       "started",
       "terminal",
@@ -300,110 +295,32 @@ describe("DurableHostInvocationStartCasStore", () => {
     if (platform !== "win32") {
       expect(statSync(root).mode & 0o777).toBe(0o700);
       expect(statSync(filePath).mode & 0o777).toBe(0o600);
-      expect(statSync(`${filePath}.lock-target`).mode & 0o777).toBe(0o600);
     }
   });
 
-  it("keeps a failed start projection non-executable and recovers unknown in the original session", async () => {
-    const root = directory();
-    const filePath = join(root, "invocations.json");
+  it("recovers an active invocation as unknown and retires its exact start", async () => {
+    const filePath = join(directory(), "invocations.json");
     const record = authorized(2, { sessionId: "original-session" });
-    const store = journalStore(filePath);
-    const toolExecuted = false;
-
-    await expect(store.commitStart({
+    const input = {
       sessionId: "original-session",
       control: controlFor(record),
       authorized: record,
-      expectedInvocationVersion: 0,
-      persistAudit: (audit) => {
-        if (audit.version === 1) throw new Error("audit unavailable");
-      },
+      expectedInvocationVersion: 0 as const,
       now: 200,
-    })).rejects.toThrow("audit unavailable");
-    expect(toolExecuted).toBe(false);
-
-    const recovered: Array<{ sessionId: string; record: InvocationAuditRecord }> = [];
-    const restarted = journalStore(filePath);
-    const result = await restarted.recoverAfterCrash({
-      persistAudit: (sessionId, audit) => {
-        recovered.push({ sessionId, record: audit });
-      },
-      now: 300,
-    });
-
-    expect(result).toEqual({ recovered: 1, delivered: 2 });
-    expect(recovered.map(({ sessionId }) => sessionId)).toEqual([
-      "original-session",
-      "original-session",
-    ]);
-    expect(recovered.map(({ record: audit }) => audit.state)).toEqual([
-      "started",
-      "unknown-after-crash",
-    ]);
-    expect(await restarted.commitStart({
-      sessionId: "original-session",
-      control: controlFor(record),
-      authorized: record,
-      expectedInvocationVersion: 0,
-      persistAudit: () => {},
-      now: 301,
-    })).toBeNull();
-  });
-
-  it("replays an identical audit record after append succeeds but delivery marking fails", async () => {
-    const root = directory();
-    const filePath = join(root, "at-least-once-projection.json");
-    const sealStore = new SwitchableSecretStore();
-    let writeCount = 0;
-    const failDeliveryMarkWriter: typeof writeUtf8FileAtomicSync = (
-      path,
-      content,
-      mode,
-    ) => {
-      writeCount += 1;
-      if (writeCount === 3) throw new Error("delivery mark unavailable");
-      writeUtf8FileAtomicSync(path, content, mode);
     };
-    const firstProjection: InvocationAuditRecord[] = [];
-    const record = authorized(26, { sessionId: "at-least-once-session" });
-    const store = journalStore(filePath, {
-      sealStore,
-      writeFileAtomic: failDeliveryMarkWriter,
-    });
+    expect(await journalStore(filePath).commitStart(input)).not.toBeNull();
 
-    await expect(store.commitStart({
-      sessionId: "at-least-once-session",
-      control: controlFor(record),
-      authorized: record,
-      expectedInvocationVersion: 0,
-      persistAudit: (audit) => { firstProjection.push(audit); },
-      now: 200,
-    })).rejects.toThrow("delivery mark unavailable");
-    expect(firstProjection.map((audit) => audit.state)).toEqual(["authorized"]);
-
-    const replayed: InvocationAuditRecord[] = [];
-    await expect(journalStore(filePath, { sealStore }).recoverAfterCrash({
-      persistAudit: (_sessionId, audit) => { replayed.push(audit); },
-      now: 300,
-    })).resolves.toEqual({ recovered: 1, delivered: 3 });
-    expect(replayed.map((audit) => audit.state)).toEqual([
-      "authorized",
-      "started",
-      "unknown-after-crash",
-    ]);
-    expect(canonicalStringify(replayed[0])).toBe(
-      canonicalStringify(firstProjection[0]),
-    );
-    expect(replayed[0]).toMatchObject({
-      invocationDigest: record.invocationDigest,
-      version: 0,
+    const restarted = journalStore(filePath);
+    await expect(restarted.recoverAfterCrash({ now: 300 })).resolves.toEqual({ recovered: 1 });
+    expect(persistedSnapshot(filePath).entries[record.invocationDigest]).toMatchObject({
+      sessionId: "original-session",
+      terminal: { state: "unknown-after-crash" },
     });
+    await expect(restarted.commitStart({ ...input, now: 301 })).resolves.toBeNull();
   });
 
-  it("persists terminal state before projection and never downgrades it on recovery", async () => {
-    const root = directory();
-    const filePath = join(root, "invocations.json");
+  it("preserves a completed invocation across recovery", async () => {
+    const filePath = join(directory(), "invocations.json");
     const record = authorized(3, { sessionId: "terminal-session" });
     const store = journalStore(filePath, { now: () => 400 });
     const commit = await store.commitStart({
@@ -411,35 +328,14 @@ describe("DurableHostInvocationStartCasStore", () => {
       control: controlFor(record),
       authorized: record,
       expectedInvocationVersion: 0,
-      persistAudit: () => {},
       now: 400,
     });
     if (!commit) throw new Error("expected committed start");
-    const completed = terminal(commit);
-
-    expect(await store.commitTerminal({
-      lease: commit.lease,
-      terminal: completed,
-      persistAudit: () => { throw new Error("audit unavailable"); },
-    })).toBe(false);
-
-    const beforeRecovery = persistedSnapshot(filePath);
-    expect((beforeRecovery.entries[record.invocationDigest]?.terminal as
-      InvocationAuditRecord | null)?.state).toBe("completed");
-    expect(beforeRecovery.entries[record.invocationDigest]?.pendingAuditVersions)
-      .toEqual([2]);
-
-    const projected: InvocationAuditRecord[] = [];
-    const result = await journalStore(filePath)
-      .recoverAfterCrash({
-        persistAudit: (sessionId, audit) => {
-          expect(sessionId).toBe("terminal-session");
-          projected.push(audit);
-        },
-        now: 500,
-      });
-    expect(result).toEqual({ recovered: 0, delivered: 1 });
-    expect(projected.map((audit) => audit.state)).toEqual(["completed"]);
+    await expect(store.commitTerminal({ lease: commit.lease, terminal: terminal(commit) })).resolves.toBe(true);
+    await expect(journalStore(filePath).recoverAfterCrash({ now: 500 })).resolves.toEqual({ recovered: 0 });
+    expect(persistedSnapshot(filePath).entries[record.invocationDigest]).toMatchObject({
+      terminal: { state: "completed" },
+    });
   });
 
   it("fails closed on corruption without replacing the journal", async () => {
@@ -449,7 +345,7 @@ describe("DurableHostInvocationStartCasStore", () => {
     const store = journalStore(filePath);
 
     await expect(store.recoverAfterCrash({
-      persistAudit: () => {},
+
       now: 600,
     })).rejects.toThrow(/corrupt/);
     expect(readFileSync(filePath, "utf8")).toBe("{not-json");
@@ -459,7 +355,7 @@ describe("DurableHostInvocationStartCasStore", () => {
     const root = directory();
     const filePath = join(root, "invocations.json");
     const store = journalStore(filePath);
-    await store.recoverAfterCrash({ persistAudit: () => {}, now: 10 });
+    await store.recoverAfterCrash({ now: 10 });
     const signedGenesis = readFileSync(filePath, "utf8");
 
     writeFileSync(filePath, canonicalStringify({
@@ -468,7 +364,7 @@ describe("DurableHostInvocationStartCasStore", () => {
       entries: {},
     }) + "\n", "utf8");
     await expect(journalStore(filePath).recoverAfterCrash({
-      persistAudit: () => {},
+
       now: 11,
     })).rejects.toThrow(/envelope/);
 
@@ -479,9 +375,8 @@ describe("DurableHostInvocationStartCasStore", () => {
       control: controlFor(record),
       authorized: record,
       expectedInvocationVersion: 0,
-      persistAudit: () => { throw new Error("hold pending audits"); },
       now: 100,
-    })).rejects.toThrow("hold pending audits");
+    })).resolves.not.toBeNull();
     const signedActive = readFileSync(filePath, "utf8");
     const cleared = JSON.parse(signedActive) as {
       snapshot: { entries: Record<string, unknown> };
@@ -489,51 +384,34 @@ describe("DurableHostInvocationStartCasStore", () => {
     cleared.snapshot.entries = {};
     writeFileSync(filePath, canonicalStringify(cleared) + "\n", "utf8");
     await expect(journalStore(filePath).recoverAfterCrash({
-      persistAudit: () => {},
+
       now: 101,
     })).rejects.toThrow(/HMAC mismatch/);
 
-    writeFileSync(filePath, signedActive, "utf8");
-    const pendingCleared = JSON.parse(signedActive) as {
-      snapshot: {
-        entries: Record<string, { pendingAuditVersions: number[] }>;
-      };
-    };
-    pendingCleared.snapshot.entries[record.invocationDigest]!
-      .pendingAuditVersions = [];
-    writeFileSync(
-      filePath,
-      canonicalStringify(pendingCleared) + "\n",
-      "utf8",
-    );
-    await expect(journalStore(filePath).recoverAfterCrash({
-      persistAudit: () => {},
-      now: 102,
-    })).rejects.toThrow(/HMAC mismatch/);
   });
 
   it("fails closed when either the journal or its checkpoint authority is missing", async () => {
     const root = directory();
     const journalMissingPath = join(root, "journal-missing.json");
     await journalStore(journalMissingPath).recoverAfterCrash({
-      persistAudit: () => {},
+
       now: 10,
     });
     unlinkSync(journalMissingPath);
     await expect(journalStore(journalMissingPath).recoverAfterCrash({
-      persistAudit: () => {},
+
       now: 11,
     })).rejects.toThrow(/missing behind its checkpoint/);
 
     const checkpointMissingPath = join(root, "checkpoint-missing.json");
     await journalStore(checkpointMissingPath).recoverAfterCrash({
-      persistAudit: () => {},
+
       now: 10,
     });
     await expect(journalStore(checkpointMissingPath, {
-      sealStore: new MemorySecretStore(),
+      checkpointStore: new MemorySecretStore(),
     }).recoverAfterCrash({
-      persistAudit: () => {},
+
       now: 11,
     })).rejects.toThrow(/checkpoint is absent/);
   });
@@ -541,15 +419,15 @@ describe("DurableHostInvocationStartCasStore", () => {
   it("fails closed when the sealed head is deleted", async () => {
     const root = directory();
     const filePath = join(root, "head-missing.json");
-    const sealStore = new SwitchableSecretStore();
-    await journalStore(filePath, { sealStore }).recoverAfterCrash({
-      persistAudit: () => {},
+    const checkpointStore = new SwitchableSecretStore();
+    await journalStore(filePath, { checkpointStore }).recoverAfterCrash({
+
       now: 10,
     });
-    sealStore.delete(JOURNAL_HEAD);
+    checkpointStore.delete(JOURNAL_HEAD);
 
-    await expect(journalStore(filePath, { sealStore }).recoverAfterCrash({
-      persistAudit: () => {},
+    await expect(journalStore(filePath, { checkpointStore }).recoverAfterCrash({
+
       now: 11,
     })).rejects.toThrow(/head is absent/);
   });
@@ -558,19 +436,19 @@ describe("DurableHostInvocationStartCasStore", () => {
     const root = directory();
     const filePath = join(root, "invocations.json");
     await journalStore(filePath).recoverAfterCrash({
-      persistAudit: () => {},
+
       now: 10,
     });
-    const sealStore = sealStoresByPath.get(filePath);
-    if (!sealStore) throw new Error("expected journal seal store");
-    const raw = sealStore.read(CHECKPOINT_A);
+    const checkpointStore = checkpointStoresByPath.get(filePath);
+    if (!checkpointStore) throw new Error("expected journal seal store");
+    const raw = checkpointStore.read(CHECKPOINT_A);
     if (raw === null) throw new Error("expected journal checkpoint");
     const tampered = JSON.parse(raw) as { journalMac: string };
     tampered.journalMac = "0".repeat(64);
-    sealStore.write(CHECKPOINT_A, canonicalStringify(tampered));
+    checkpointStore.write(CHECKPOINT_A, canonicalStringify(tampered));
 
     await expect(journalStore(filePath).recoverAfterCrash({
-      persistAudit: () => {},
+
       now: 11,
     })).rejects.toThrow(/checkpoint seal mismatch/);
   });
@@ -578,27 +456,27 @@ describe("DurableHostInvocationStartCasStore", () => {
   it("bounds checkpoint and head authority before JSON parsing", async () => {
     const root = directory();
     const filePath = join(root, "bounded-authority.json");
-    const sealStore = new SwitchableSecretStore();
-    await journalStore(filePath, { sealStore }).recoverAfterCrash({
-      persistAudit: () => {},
+    const checkpointStore = new SwitchableSecretStore();
+    await journalStore(filePath, { checkpointStore }).recoverAfterCrash({
+
       now: 10,
     });
-    const checkpoint = sealStore.read(CHECKPOINT_A);
-    const head = sealStore.read(JOURNAL_HEAD);
+    const checkpoint = checkpointStore.read(CHECKPOINT_A);
+    const head = checkpointStore.read(JOURNAL_HEAD);
     if (checkpoint === null || head === null) {
       throw new Error("expected initialized journal authority");
     }
 
-    sealStore.write(CHECKPOINT_A, "x".repeat(4 * 1024 + 1));
-    await expect(journalStore(filePath, { sealStore }).recoverAfterCrash({
-      persistAudit: () => {},
+    checkpointStore.write(CHECKPOINT_A, "x".repeat(4 * 1024 + 1));
+    await expect(journalStore(filePath, { checkpointStore }).recoverAfterCrash({
+
       now: 11,
     })).rejects.toThrow(/read byte limit/);
 
-    sealStore.write(CHECKPOINT_A, checkpoint);
-    sealStore.write(JOURNAL_HEAD, "x".repeat(4 * 1024 + 1));
-    await expect(journalStore(filePath, { sealStore }).recoverAfterCrash({
-      persistAudit: () => {},
+    checkpointStore.write(CHECKPOINT_A, checkpoint);
+    checkpointStore.write(JOURNAL_HEAD, "x".repeat(4 * 1024 + 1));
+    await expect(journalStore(filePath, { checkpointStore }).recoverAfterCrash({
+
       now: 12,
     })).rejects.toThrow(/read byte limit/);
   });
@@ -613,18 +491,17 @@ describe("DurableHostInvocationStartCasStore", () => {
       control: controlFor(record),
       authorized: record,
       expectedInvocationVersion: 0,
-      persistAudit: () => { throw new Error("retain first signed revision"); },
       now: 100,
-    })).rejects.toThrow("retain first signed revision");
+    })).resolves.not.toBeNull();
     const earlierSignedJournal = readFileSync(filePath, "utf8");
 
     await store.recoverAfterCrash({
-      persistAudit: () => {},
+
       now: 200,
     });
     writeFileSync(filePath, earlierSignedJournal, "utf8");
     await expect(journalStore(filePath).recoverAfterCrash({
-      persistAudit: () => {},
+
       now: 201,
     })).rejects.toThrow(/rollback detected/);
   });
@@ -632,9 +509,9 @@ describe("DurableHostInvocationStartCasStore", () => {
   it("detects genesis rollback after the newest checkpoint slot is deleted", async () => {
     const root = directory();
     const filePath = join(root, "slot-deletion-rollback.json");
-    const sealStore = new SwitchableSecretStore();
-    const store = journalStore(filePath, { sealStore });
-    await store.recoverAfterCrash({ persistAudit: () => {}, now: 10 });
+    const checkpointStore = new SwitchableSecretStore();
+    const store = journalStore(filePath, { checkpointStore });
+    await store.recoverAfterCrash({ now: 10 });
     const genesisJournal = readFileSync(filePath, "utf8");
 
     const record = authorized(23, { now: 100, ttlMs: 10_000 });
@@ -643,15 +520,14 @@ describe("DurableHostInvocationStartCasStore", () => {
       control: controlFor(record),
       authorized: record,
       expectedInvocationVersion: 0,
-      persistAudit: () => { throw new Error("retain revision one"); },
       now: 100,
-    })).rejects.toThrow("retain revision one");
-    expect(sealStore.read(CHECKPOINT_B)).not.toBeNull();
+    })).resolves.not.toBeNull();
+    expect(checkpointStore.read(CHECKPOINT_B)).not.toBeNull();
 
-    sealStore.delete(CHECKPOINT_B);
+    checkpointStore.delete(CHECKPOINT_B);
     writeFileSync(filePath, genesisJournal, "utf8");
-    await expect(journalStore(filePath, { sealStore }).recoverAfterCrash({
-      persistAudit: () => {},
+    await expect(journalStore(filePath, { checkpointStore }).recoverAfterCrash({
+
       now: 101,
     })).rejects.toThrow(/head is ahead of available checkpoint/);
   });
@@ -659,38 +535,31 @@ describe("DurableHostInvocationStartCasStore", () => {
   it("repairs a one-revision crash-ahead journal without replaying the start", async () => {
     const root = directory();
     const filePath = join(root, "invocations.json");
-    const sealStore = new SwitchableSecretStore();
-    const store = journalStore(filePath, { sealStore });
-    await store.recoverAfterCrash({ persistAudit: () => {}, now: 10 });
+    const checkpointStore = new SwitchableSecretStore();
+    const store = journalStore(filePath, { checkpointStore });
+    await store.recoverAfterCrash({ now: 10 });
 
     const record = authorized(22, { now: 100, ttlMs: 10_000 });
-    sealStore.failNextWrite = true;
+    checkpointStore.failNextWrite = true;
     await expect(store.commitStart({
       sessionId: controlFor(record).anchor.sessionId,
       control: controlFor(record),
       authorized: record,
       expectedInvocationVersion: 0,
-      persistAudit: () => {},
+
       now: 100,
     })).rejects.toThrow("checkpoint write unavailable");
 
-    const projected: InvocationAuditRecord[] = [];
-    const restarted = journalStore(filePath, { sealStore });
+    const restarted = journalStore(filePath, { checkpointStore });
     await expect(restarted.recoverAfterCrash({
-      persistAudit: (_sessionId, audit) => projected.push(audit),
       now: 200,
-    })).resolves.toEqual({ recovered: 1, delivered: 3 });
-    expect(projected.map((audit) => audit.state)).toEqual([
-      "authorized",
-      "started",
-      "unknown-after-crash",
-    ]);
+    })).resolves.toEqual({ recovered: 1 });
     await expect(restarted.commitStart({
       sessionId: controlFor(record).anchor.sessionId,
       control: controlFor(record),
       authorized: record,
       expectedInvocationVersion: 0,
-      persistAudit: () => {},
+
       now: 201,
     })).resolves.toBeNull();
   });
@@ -698,41 +567,34 @@ describe("DurableHostInvocationStartCasStore", () => {
   it("repairs a committed checkpoint when the following head write fails", async () => {
     const root = directory();
     const filePath = join(root, "head-write-crash.json");
-    const sealStore = new SwitchableSecretStore();
-    const store = journalStore(filePath, { sealStore });
-    await store.recoverAfterCrash({ persistAudit: () => {}, now: 10 });
-    const genesisHead = sealStore.read(JOURNAL_HEAD);
+    const checkpointStore = new SwitchableSecretStore();
+    const store = journalStore(filePath, { checkpointStore });
+    await store.recoverAfterCrash({ now: 10 });
+    const genesisHead = checkpointStore.read(JOURNAL_HEAD);
 
     const record = authorized(24, { now: 100, ttlMs: 10_000 });
-    sealStore.failNextName = JOURNAL_HEAD;
+    checkpointStore.failNextName = JOURNAL_HEAD;
     await expect(store.commitStart({
       sessionId: controlFor(record).anchor.sessionId,
       control: controlFor(record),
       authorized: record,
       expectedInvocationVersion: 0,
-      persistAudit: () => {},
+
       now: 100,
     })).rejects.toThrow("checkpoint write unavailable");
-    expect(sealStore.read(CHECKPOINT_B)).not.toBeNull();
-    expect(sealStore.read(JOURNAL_HEAD)).toBe(genesisHead);
+    expect(checkpointStore.read(CHECKPOINT_B)).not.toBeNull();
+    expect(checkpointStore.read(JOURNAL_HEAD)).toBe(genesisHead);
 
-    const projected: InvocationAuditRecord[] = [];
-    const restarted = journalStore(filePath, { sealStore });
+    const restarted = journalStore(filePath, { checkpointStore });
     await expect(restarted.recoverAfterCrash({
-      persistAudit: (_sessionId, audit) => projected.push(audit),
       now: 200,
-    })).resolves.toEqual({ recovered: 1, delivered: 3 });
-    expect(projected.map((audit) => audit.state)).toEqual([
-      "authorized",
-      "started",
-      "unknown-after-crash",
-    ]);
+    })).resolves.toEqual({ recovered: 1 });
     await expect(restarted.commitStart({
       sessionId: controlFor(record).anchor.sessionId,
       control: controlFor(record),
       authorized: record,
       expectedInvocationVersion: 0,
-      persistAudit: () => {},
+
       now: 201,
     })).resolves.toBeNull();
   });
@@ -740,13 +602,13 @@ describe("DurableHostInvocationStartCasStore", () => {
   it("does not advance authority after repeated committed atomic-write faults", async () => {
     const root = directory();
     const filePath = join(root, "committed-atomic-fault.json");
-    const sealStore = new SwitchableSecretStore();
-    await journalStore(filePath, { sealStore }).recoverAfterCrash({
-      persistAudit: () => {},
+    const checkpointStore = new SwitchableSecretStore();
+    await journalStore(filePath, { checkpointStore }).recoverAfterCrash({
+
       now: 10,
     });
-    const genesisCheckpoint = sealStore.read(CHECKPOINT_A);
-    const genesisHead = sealStore.read(JOURNAL_HEAD);
+    const genesisCheckpoint = checkpointStore.read(CHECKPOINT_A);
+    const genesisHead = checkpointStore.read(JOURNAL_HEAD);
     let remainingFaults = 2;
     const committedFaultWriter: typeof writeUtf8FileAtomicSync = (
       path,
@@ -763,7 +625,7 @@ describe("DurableHostInvocationStartCasStore", () => {
       }
     };
     const store = journalStore(filePath, {
-      sealStore,
+      checkpointStore,
       writeFileAtomic: committedFaultWriter,
     });
     const record = authorized(25, { now: 100, ttlMs: 10_000 });
@@ -773,31 +635,24 @@ describe("DurableHostInvocationStartCasStore", () => {
       control: controlFor(record),
       authorized: record,
       expectedInvocationVersion: 0,
-      persistAudit: () => {},
+
       now: 100,
     })).rejects.toThrow("retry parent directory sync unavailable");
     expect(remainingFaults).toBe(0);
-    expect(sealStore.read(CHECKPOINT_A)).toBe(genesisCheckpoint);
-    expect(sealStore.read(CHECKPOINT_B)).toBeNull();
-    expect(sealStore.read(JOURNAL_HEAD)).toBe(genesisHead);
+    expect(checkpointStore.read(CHECKPOINT_A)).toBe(genesisCheckpoint);
+    expect(checkpointStore.read(CHECKPOINT_B)).toBeNull();
+    expect(checkpointStore.read(JOURNAL_HEAD)).toBe(genesisHead);
 
-    const projected: InvocationAuditRecord[] = [];
-    const restarted = journalStore(filePath, { sealStore });
+    const restarted = journalStore(filePath, { checkpointStore });
     await expect(restarted.recoverAfterCrash({
-      persistAudit: (_sessionId, audit) => projected.push(audit),
       now: 200,
-    })).resolves.toEqual({ recovered: 1, delivered: 3 });
-    expect(projected.map((audit) => audit.state)).toEqual([
-      "authorized",
-      "started",
-      "unknown-after-crash",
-    ]);
+    })).resolves.toEqual({ recovered: 1 });
     await expect(restarted.commitStart({
       sessionId: controlFor(record).anchor.sessionId,
       control: controlFor(record),
       authorized: record,
       expectedInvocationVersion: 0,
-      persistAudit: () => {},
+
       now: 201,
     })).resolves.toBeNull();
   });
@@ -806,18 +661,18 @@ describe("DurableHostInvocationStartCasStore", () => {
     const root = directory();
     const filePath = join(root, "invocations.json");
     const store = journalStore(filePath, { maxBytes: 1_024 });
-    await store.recoverAfterCrash({ persistAudit: () => {}, now: 10 });
+    await store.recoverAfterCrash({ now: 10 });
     const valid = readFileSync(filePath, "utf8");
 
     writeFileSync(filePath, "x".repeat(1_025), "utf8");
     await expect(journalStore(filePath, { maxBytes: 1_024 }).recoverAfterCrash({
-      persistAudit: () => {},
+
       now: 11,
     })).rejects.toThrow(/invocation journal exceeds read byte limit/);
 
     writeFileSync(filePath, valid.slice(0, -2), "utf8");
     await expect(journalStore(filePath, { maxBytes: 1_024 }).recoverAfterCrash({
-      persistAudit: () => {},
+
       now: 12,
     })).rejects.toThrow(/corrupt|canonical/);
   });
@@ -830,7 +685,7 @@ describe("DurableHostInvocationStartCasStore", () => {
       const root = directory();
       const filePath = join(root, "invocations.json");
       await journalStore(filePath).recoverAfterCrash({
-        persistAudit: () => {},
+
         now: 10,
       });
       if (linkKind === "file symlink") {
@@ -839,7 +694,7 @@ describe("DurableHostInvocationStartCasStore", () => {
         unlinkSync(filePath);
         symlinkSync(targetPath, filePath);
         await expect(journalStore(filePath).recoverAfterCrash({
-          persistAudit: () => {},
+
           now: 11,
         })).rejects.toThrow(/not a regular file|ELOOP/);
         return;
@@ -849,7 +704,7 @@ describe("DurableHostInvocationStartCasStore", () => {
       mkdirSync(targetDir);
       symlinkSync(targetDir, filePath, "junction");
       await expect(journalStore(filePath).recoverAfterCrash({
-        persistAudit: () => {},
+
         now: 11,
       })).rejects.toThrow(/invocation journal path is not a stable regular file|ELOOP/);
       expect(readdirSync(targetDir)).toEqual([]);
@@ -876,7 +731,7 @@ describe("DurableHostInvocationStartCasStore", () => {
       control: controlFor(other),
       authorized: record,
       expectedInvocationVersion: 0,
-      persistAudit: () => {},
+
       now: 100,
     })).rejects.toThrow(/invalid invocation-start CAS expectation/);
     expect(existsSync(mismatchedPath)).toBe(false);
@@ -888,7 +743,7 @@ describe("DurableHostInvocationStartCasStore", () => {
       control: controlFor(record),
       authorized: record,
       expectedInvocationVersion: 0,
-      persistAudit: () => {},
+
       now: 150,
     })).rejects.toThrow(/invalid invocation-start CAS expectation/);
     expect(existsSync(expiredPath)).toBe(false);
@@ -908,7 +763,7 @@ describe("DurableHostInvocationStartCasStore", () => {
       control: controlFor(baselineRecord),
       authorized: baselineRecord,
       expectedInvocationVersion: 0,
-      persistAudit: () => {},
+
       now: 100,
     });
     if (!baselineCommit) throw new Error("expected baseline invocation start");
@@ -925,7 +780,7 @@ describe("DurableHostInvocationStartCasStore", () => {
       control: controlFor(headroomRecord),
       authorized: headroomRecord,
       expectedInvocationVersion: 0,
-      persistAudit: () => {},
+
       now: 100,
     })).rejects.toThrow(/size limit/);
     expect(existsSync(headroomPath)).toBe(true);
@@ -944,7 +799,7 @@ describe("DurableHostInvocationStartCasStore", () => {
       control: controlFor(secondRecord),
       authorized: secondRecord,
       expectedInvocationVersion: 0,
-      persistAudit: () => {},
+
       now: 100,
     })).rejects.toThrow(/size limit/);
     expect(readFileSync(baselinePath, "utf8")).toBe(before);
@@ -952,7 +807,7 @@ describe("DurableHostInvocationStartCasStore", () => {
     expect(await baselineStore.commitTerminal({
       lease: baselineCommit.lease,
       terminal: terminal(baselineCommit),
-      persistAudit: () => {},
+
     })).toBe(true);
   });
 
@@ -968,9 +823,8 @@ describe("DurableHostInvocationStartCasStore", () => {
       control: controlFor(record),
       authorized: record,
       expectedInvocationVersion: 0,
-      persistAudit: () => { throw new Error("measure pending start"); },
       now: 100,
-    })).rejects.toThrow("measure pending start");
+    })).resolves.not.toBeNull();
     const pendingStartBytes = Buffer.byteLength(readFileSync(sizingPath, "utf8"), "utf8");
 
     const liveRoot = directory();
@@ -984,18 +838,18 @@ describe("DurableHostInvocationStartCasStore", () => {
       control: controlFor(record),
       authorized: record,
       expectedInvocationVersion: 0,
-      persistAudit: () => {},
+
       now: 100,
     });
     if (!commit) throw new Error("expected headroom-admitted start");
     expect(await liveStore.commitTerminal({
       lease: commit.lease,
       terminal: terminal(commit),
-      persistAudit: () => {},
+
     })).toBe(true);
   });
 
-  it("compacts an expired delivered terminal under byte pressure below the entry cap", async () => {
+  it("compacts an expired terminal under byte pressure below the entry cap", async () => {
     const root = directory();
     const filePath = join(root, "invocations.json");
     let now = 100;
@@ -1011,7 +865,7 @@ describe("DurableHostInvocationStartCasStore", () => {
       control: controlFor(expired),
       authorized: expired,
       expectedInvocationVersion: 0,
-      persistAudit: () => {},
+
       now,
     });
     if (!expiredCommit) throw new Error("expected expired candidate start");
@@ -1019,7 +873,7 @@ describe("DurableHostInvocationStartCasStore", () => {
     expect(await generousStore.commitTerminal({
       lease: expiredCommit.lease,
       terminal: terminal(expiredCommit),
-      persistAudit: () => {},
+
     })).toBe(true);
 
     now = 120;
@@ -1028,7 +882,7 @@ describe("DurableHostInvocationStartCasStore", () => {
       control: controlFor(survivor),
       authorized: survivor,
       expectedInvocationVersion: 0,
-      persistAudit: () => {},
+
       now,
     });
     if (!survivorCommit) throw new Error("expected survivor start");
@@ -1046,7 +900,7 @@ describe("DurableHostInvocationStartCasStore", () => {
       control: controlFor(candidate),
       authorized: candidate,
       expectedInvocationVersion: 0,
-      persistAudit: () => {},
+
       now,
     });
     if (!candidateCommit) throw new Error("expected byte-pressure start");
@@ -1059,11 +913,11 @@ describe("DurableHostInvocationStartCasStore", () => {
     expect(await cappedStore.commitTerminal({
       lease: candidateCommit.lease,
       terminal: terminal(candidateCommit),
-      persistAudit: () => {},
+
     })).toBe(true);
   });
 
-  it("retains delivered terminals through expiry and blocks replay after restart", async () => {
+  it("retains terminal executions through expiry and blocks replay after restart", async () => {
     const root = directory();
     const filePath = join(root, "invocations.json");
     let now = 700;
@@ -1078,7 +932,7 @@ describe("DurableHostInvocationStartCasStore", () => {
         control: controlFor(record),
         authorized: record,
         expectedInvocationVersion: 0,
-        persistAudit: () => {},
+
         now,
       });
       if (!commit) throw new Error("expected committed start");
@@ -1086,7 +940,7 @@ describe("DurableHostInvocationStartCasStore", () => {
       expect(await store.commitTerminal({
         lease: commit.lease,
         terminal: terminal(commit),
-        persistAudit: () => {},
+
       })).toBe(true);
       now += 1;
     };
@@ -1111,7 +965,7 @@ describe("DurableHostInvocationStartCasStore", () => {
       control: controlFor(first),
       authorized: first,
       expectedInvocationVersion: 0,
-      persistAudit: () => {},
+
       now,
     })).toBeNull();
     await expect(restarted.commitStart({
@@ -1119,7 +973,7 @@ describe("DurableHostInvocationStartCasStore", () => {
       control: controlFor(blockedCandidate),
       authorized: blockedCandidate,
       expectedInvocationVersion: 0,
-      persistAudit: () => {},
+
       now,
     })).rejects.toThrow(/no safely compactable/);
 
@@ -1129,7 +983,7 @@ describe("DurableHostInvocationStartCasStore", () => {
       control: controlFor(third),
       authorized: third,
       expectedInvocationVersion: 0,
-      persistAudit: () => {},
+
       now,
     });
     expect(thirdCommit).not.toBeNull();
@@ -1142,7 +996,7 @@ describe("DurableHostInvocationStartCasStore", () => {
       control: controlFor(first),
       authorized: first,
       expectedInvocationVersion: 0,
-      persistAudit: () => {},
+
       now: now + 1,
     })).rejects.toThrow(/invalid invocation-start CAS expectation/);
   });
@@ -1156,21 +1010,16 @@ it("does not restore an expired model authorization from a human-approved journa
   const lease = beginRationaleHumanApprovalWait(control, 100);
   try {
     approveRationaleHumanWait(control, lease, 2000);
-    const started: InvocationAuditRecord[] = [];
     const commit = await journalStore(filePath).commitStart({ sessionId: control.anchor.sessionId,
-      control, authorized: record, expectedInvocationVersion: 0,
-      persistAudit: (audit) => { started.push(audit); }, now: 2000 });
+      control, authorized: record, expectedInvocationVersion: 0, now: 2000 });
     expect(commit).not.toBeNull();
-    expect(started.map((audit) => audit.state)).toEqual(["authorized", "started"]);
     expect(readFileSync(filePath, "utf8")).toContain('"authorizationExpiresAt":null');
     retireRationaleHumanWait(control, lease);
-    const recovered: InvocationAuditRecord[] = [];
     const restarted = journalStore(filePath);
-    await expect(restarted.recoverAfterCrash({ persistAudit: (_sessionId, audit) => { recovered.push(audit); }, now: 2100 }))
-      .resolves.toEqual({ recovered: 1, delivered: 1 });
-    expect(recovered.map((audit) => audit.state)).toEqual(["unknown-after-crash"]);
+    await expect(restarted.recoverAfterCrash({ now: 2100 }))
+      .resolves.toEqual({ recovered: 1 });
     await expect(restarted.commitStart({ sessionId: control.anchor.sessionId, control,
-      authorized: record, expectedInvocationVersion: 0, persistAudit: () => {}, now: 2200 }))
+      authorized: record, expectedInvocationVersion: 0, now: 2200 }))
       .rejects.toThrow("invalid invocation-start CAS expectation");
   } finally { retireRationaleHumanWait(control, lease); }
 });

@@ -84,7 +84,6 @@ function makeCoordinator(
     requestAnchor: anchor,
     rationaleProvenance: provenance,
     materializeRationaleControl: vi.fn(),
-    onInvocationAudit: vi.fn(),
     handleRationaleRoundResult: vi.fn(async () => ({ status: "ready" })),
     promptForApproval: vi.fn(async () => ({ outcome: "allowed-once" as const })),
     createSealedResume: vi.fn(async () => ({ resumeRequest: sealedResume })),

@@ -55,7 +55,6 @@ function fixture(
     approvalGate: undefined,
     agentProfileStore: {},
     getSubAgentRunner: () => undefined,
-    auditLogger: { log: vi.fn() },
   } as unknown as AppServices;
 
   const runtimeDispose = vi.fn(async () => undefined);

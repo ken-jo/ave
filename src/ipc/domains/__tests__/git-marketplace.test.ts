@@ -159,7 +159,7 @@ async function setup(overrides: Record<string, unknown> = {}, window: unknown = 
   // Use a private lifetime; the app's shared lifetime would outlive test shutdown.
   const lifetime = new AbortController();
   const registration = registerGitMarketplaceHandlers(
-    { auditLogger: { log: vi.fn() }, getMainWindow: () => window, settingsService: settings, conversationSurfaceRuntime: { activity } } as never,
+    { getMainWindow: () => window, settingsService: settings, conversationSurfaceRuntime: { activity } } as never,
     async () => null,
     create,
     onBuilt,
@@ -1288,7 +1288,7 @@ describe("git marketplace IPC boundary", () => {
       .mockRejectedValueOnce(new Error("policy unreadable"))
       .mockResolvedValue({ service: { listSources: async () => [] }, close: async () => {} });
     const { registerGitMarketplaceHandlers } = await import("../git-marketplace.js");
-    registerGitMarketplaceHandlers({ auditLogger: { log: vi.fn() } } as never, async () => null, create, async () => {});
+    registerGitMarketplaceHandlers({  } as never, async () => null, create, async () => {});
     await expect(invokeFileIpcHandler(handlers, channels.sourcesList)).resolves.toMatchObject({ ok: false, code: "unavailable" });
     await expect(invokeFileIpcHandler(handlers, channels.sourcesList)).resolves.toEqual({ ok: true, value: [] });
     expect(create).toHaveBeenCalledTimes(2);
@@ -1302,7 +1302,7 @@ describe("git marketplace IPC boundary", () => {
       .mockResolvedValueOnce({ service: { listSources: async () => [] }, close: closes[1] });
     const onBuilt = vi.fn().mockRejectedValueOnce(new Error("shutdown hook unavailable")).mockResolvedValue(undefined);
     const { registerGitMarketplaceHandlers } = await import("../git-marketplace.js");
-    registerGitMarketplaceHandlers({ auditLogger: { log: vi.fn() } } as never, async () => null, create, onBuilt);
+    registerGitMarketplaceHandlers({  } as never, async () => null, create, onBuilt);
     await expect(invokeFileIpcHandler(handlers, channels.sourcesList)).resolves.toMatchObject({ ok: false, code: "unavailable" });
     expect(closes[0]).toHaveBeenCalledTimes(1);
     await expect(invokeFileIpcHandler(handlers, channels.sourcesList)).resolves.toEqual({ ok: true, value: [] });
@@ -1428,7 +1428,7 @@ describe("a package installed from a source stored under a credential-shaped id 
       handlers.clear();
       const { registerGitMarketplaceHandlers } = await import("../git-marketplace.js");
       registerGitMarketplaceHandlers(
-        { auditLogger: { log: vi.fn() }, getMainWindow: () => null, settingsService: { get: () => ({}) } } as never,
+        { getMainWindow: () => null, settingsService: { get: () => ({}) } } as never,
         async () => null,
         async () => ({ service: harness.service as never, close: async () => {} }),
         async () => {},
@@ -1500,7 +1500,7 @@ describe("folder dialogs (§18.9)", () => {
       handlers.clear();
       const { registerGitMarketplaceHandlers } = await import("../git-marketplace.js");
       registerGitMarketplaceHandlers(
-        { auditLogger: { log: vi.fn() }, getMainWindow: () => null, settingsService: { get: () => ({}) } } as never,
+        { getMainWindow: () => null, settingsService: { get: () => ({}) } } as never,
         async () => null,
         async () => ({ service: built.service as never, close: async () => {} }),
         async () => {},
@@ -1605,7 +1605,7 @@ describe("folder dialogs (§18.9)", () => {
       handlers.clear();
       const { registerGitMarketplaceHandlers } = await import("../git-marketplace.js");
       registerGitMarketplaceHandlers(
-        { auditLogger: { log: vi.fn() }, getMainWindow: () => null, settingsService: { get: () => ({}) } } as never,
+        { getMainWindow: () => null, settingsService: { get: () => ({}) } } as never,
         async () => null,
         async () => ({ service: harness.service as never, close: async () => {} }),
         async () => {},
@@ -1644,7 +1644,7 @@ describe("folder dialogs (§18.9)", () => {
       handlers.clear();
       const { registerGitMarketplaceHandlers } = await import("../git-marketplace.js");
       registerGitMarketplaceHandlers(
-        { auditLogger: { log: vi.fn() }, getMainWindow: () => null, settingsService: { get: () => ({}) } } as never,
+        { getMainWindow: () => null, settingsService: { get: () => ({}) } } as never,
         async () => null,
         async () => ({ service: harness.service as never, close: async () => {} }),
         async () => {},

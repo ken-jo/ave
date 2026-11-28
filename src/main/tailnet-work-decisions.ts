@@ -1,4 +1,4 @@
-import type { AuditLogger } from "../audit/audit-logger.js";
+import { logPermissionEvent, permissionLogId } from "../lib/permission-log.js";
 import { redactForLLM } from "../audit/dlp-filter.js";
 import { hasUnsafeDirectiveControlChars } from "../engine/parent-directive.js";
 import type { TailnetOutputSnapshot, TailnetWorkDecisionHandler } from "../api/tailnet-surface-server.js";
@@ -9,7 +9,7 @@ import type { ApprovalGate } from "../permissions/approval-gate.js";
 import type { RequestedOutputPage } from "../permissions/requested-output-approval.js";
 import { isExactApprovalText } from "../shared/approval-args-display.js";
 import type { TailnetRequestedOutputDecision, TailnetRequestedOutputReview, TailnetWorkDecisionRequest, TailnetWorkDecisionResponse, TailnetWorkReview, TailnetWorkReviewSnapshot } from "../shared/tailnet-work-decisions.js";
-import { MAX_PLAN_NOTE_LENGTH, workBoardOriginSessionId } from "../shared/work-board-types.js";
+import { MAX_PLAN_NOTE_LENGTH } from "../shared/work-board-types.js";
 import { isWorkflowTemplateProposalId, type TemplateScope, type TemplateVersionPin, type WorkflowTemplateDraftInput } from "../shared/workflow-template-types.js";
 import type { ToolRegistry } from "../tools/registry.js";
 import { requireTemplate, WorkflowTemplateError } from "../work-board/template-graph.js";
@@ -31,7 +31,6 @@ interface TailnetWorkDecisionServices {
   workBoardEngine: WorkBoardEngine;
   workflowTemplateStore: WorkflowTemplateStore;
   routinesStore: RoutinesStore;
-  auditLogger: Pick<AuditLogger, "log">;
   settingsService: Pick<SettingsService, "get">;
   toolRegistry: Pick<ToolRegistry, "findByName">;
   approvalGate: ApprovalGate;
@@ -82,12 +81,12 @@ function withProjectAuthority(evidence: RemoteWorkDecisionEvidence, projectRoot:
 
 export function createTailnetWorkDecisions(services: Partial<TailnetWorkDecisionServices>): TailnetWorkDecisions | undefined {
   if (!services.workBoardStore || !services.workBoardEngine || !services.workflowTemplateStore
-    || !services.routinesStore || !services.auditLogger || !services.settingsService || !services.toolRegistry) return undefined;
+    || !services.routinesStore || !services.settingsService || !services.toolRegistry) return undefined;
   const board = services.workBoardStore;
   const engine = services.workBoardEngine;
   const templates = services.workflowTemplateStore;
   const routines = services.routinesStore;
-  const auditLogger = services.auditLogger;
+
   const settingsService = services.settingsService;
   const effects = createToolEffectResolver(services.toolRegistry);
   const gate = services.approvalGate;
@@ -296,7 +295,7 @@ export function createTailnetWorkDecisions(services: Partial<TailnetWorkDecision
       const scope = request.input.expectedScope;
       const scoped = withProjectAuthority(evidence, scope.kind === "project" ? scope.projectRoot : undefined);
       const { attachment: result } = await attachWorkflowSchedule(templates, routines, request.input,
-        () => mintProof(scoped), auditLogger);
+        () => mintProof(scoped));
       return { ok: true, kind: request.kind, attachmentId: result.id, scheduleId: result.scheduleId };
     }
 
@@ -417,16 +416,13 @@ export function createTailnetWorkDecisions(services: Partial<TailnetWorkDecision
         throw error;
       }
       if (result.ok && request.kind !== "output-execution-card") {
-        const binding = auditBindingOf(request);
-        auditLogger.log({
-          timestamp: new Date().toISOString(),
-          sessionId: result.kind === "create-and-run" ? workBoardOriginSessionId(result.itemId)
-            : binding.itemId !== undefined ? workBoardOriginSessionId(binding.itemId) : `work-board:${binding.templateId}`,
-          type: "approval",
-          output: JSON.stringify({
-            event: workDecisionAuditEvent(request.kind), origin: "tailnet-surface", login: evidence.login, kind: request.kind, auditId,
-            ...binding, ...("status" in result ? { decision: result.status } : {}), result,
-          }),
+        logPermissionEvent("remote_work_decision", {
+          origin: "tailnet-surface",
+          kind: request.kind,
+          auditId: permissionLogId(auditId),
+          ...workDecisionLogFields(request),
+          ...("status" in result && { decision: result.status }),
+          ...(result.kind === "create-and-run" && { itemId: result.itemId, runId: permissionLogId(result.runId) }),
         });
       }
       return result;
@@ -461,39 +457,31 @@ export function createTailnetWorkDecisions(services: Partial<TailnetWorkDecision
   return runtime;
 }
 
-function workDecisionAuditEvent(kind: TailnetWorkDecisionRequest["kind"]): string {
-  if (kind === "stage" || kind === "join") return "work-approval:stage-decided";
-  if (kind === "plan") return "work-approval:decided";
-  return "work_approval_decided";
-}
 
-function auditBindingOf(request: Exclude<TailnetWorkDecisionRequest, { kind: "output-execution-card" }>) {
+function workDecisionLogFields(request: Exclude<TailnetWorkDecisionRequest, { kind: "output-execution-card" }>) {
   switch (request.kind) {
     case "plan":
-      return { itemId: request.itemId, runId: request.input.runId, planHash: request.input.planHash, decision: request.input.decision };
+      return { itemId: request.itemId, runId: permissionLogId(request.input.runId), decision: request.input.decision };
     case "stage":
-      return {
-        itemId: request.itemId, runId: request.input.runId, stageId: request.input.stageId, attempt: request.input.attempt,
-        resultHash: request.input.resultHash, outputHash: request.input.outputHash, decision: request.input.decision,
-      };
-    case "join": {
-      const { runId, joinId, generation, conflictHash, decision } = request.input;
-      return { itemId: request.itemId, runId, joinId, generation, conflictHash, decision };
-    }
     case "requested-output": {
-      const { itemId, runId, stageId, attempt, outputHash, decision } = request.input;
-      return { itemId, runId, stageId, attempt, outputHash, decision };
+      const { runId, stageId, attempt, decision } = request.input;
+      const itemId = request.kind === "requested-output" ? request.input.itemId : request.itemId;
+      return { itemId, runId: permissionLogId(runId), stageId: permissionLogId(stageId), attempt, decision };
     }
-    case "output-retry":
-      return { itemId: request.itemId, ...request.input };
-    case "template-confirmation": {
-      const { expectedGraphHash, expectedDraftRevision } = request.input;
-      return { templateId: request.templateId, expectedGraphHash, expectedDraftRevision };
+    case "join": {
+      const { runId, joinId, generation, decision } = request.input;
+      return { itemId: request.itemId, runId: permissionLogId(runId), joinId: permissionLogId(joinId), generation, decision };
     }
+    case "output-retry": {
+      const { runId, stageId, attempt } = request.input;
+      return { itemId: request.itemId, runId: permissionLogId(runId), stageId: permissionLogId(stageId), attempt };
+    }
+    case "template-confirmation":
+      return { templateId: permissionLogId(request.templateId) };
     case "create-and-run":
     case "schedule-attachment": {
-      const { templateId, version, graphHash } = request.input;
-      return { templateId, version, graphHash };
+      const { templateId, version } = request.input;
+      return { templateId: permissionLogId(templateId), version };
     }
   }
 }

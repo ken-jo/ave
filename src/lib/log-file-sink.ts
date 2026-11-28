@@ -7,20 +7,13 @@ import {
   statSync,
   unlinkSync,
 } from "node:fs";
+import fsPromises, { readdir, unlink } from "node:fs/promises";
 import { join } from "node:path";
-// Keep the CommonJS default runtime import separate from its constructor type.
-import sonicBoomDefault, {
-  type SonicBoom as SonicBoomInstance,
-  type SonicBoomOpts,
-} from "sonic-boom";
 import { aveHome } from "../shared/ave-home.js";
 import { LOG_RETENTION_DAYS } from "../shared/log-retention.js";
 import { utcDateKey } from "../shared/local-date.js";
 import { PRIVATE_DIR_MODE, PRIVATE_FILE_MODE } from "./atomic-file.js";
-
-const SonicBoomCtor = sonicBoomDefault as unknown as {
-  new (opts: SonicBoomOpts): SonicBoomInstance;
-};
+import { createAsyncLogDestination } from "./async-log-destination.js";
 
 export { LOG_RETENTION_DAYS } from "../shared/log-retention.js";
 
@@ -31,6 +24,8 @@ export const LOG_MAX_FILES_PER_DAY = 20;
 
 /** Independently cap total bytes across days, pruning oldest date and sequence first. */
 export const LOG_MAX_TOTAL_BYTES = 200 * 1024 * 1024;
+
+const ROLLOVER_RETRY_INTERVAL_MS = 1_000;
 
 function baseFileName(dateStr: string): string {
   return `ave-${dateStr}.log`;
@@ -89,7 +84,11 @@ interface LogFileInfo {
   size: number;
 }
 
-function parseLogSeq(fileName: string): number {
+export function byLogAge(a: Pick<LogFileInfo, "dateStr" | "seq">, b: Pick<LogFileInfo, "dateStr" | "seq">): number {
+  return a.dateStr === b.dateStr ? a.seq - b.seq : a.dateStr < b.dateStr ? -1 : 1;
+}
+
+export function parseLogSeq(fileName: string): number {
   const m = fileName.match(/^ave-\d{4}-\d{2}-\d{2}\.(\d+)\.log$/);
   return m ? parseInt(m[1], 10) : 0;
 }
@@ -126,8 +125,6 @@ export function capLogTree(
   const deleted: string[] = [];
 
   let files = listLogFiles(dir);
-  const byAge = (a: LogFileInfo, b: LogFileInfo): number =>
-    a.dateStr === b.dateStr ? a.seq - b.seq : a.dateStr < b.dateStr ? -1 : 1;
 
   const remove = (f: LogFileInfo): void => {
     if (opts.keepFile && join(dir, f.name) === opts.keepFile) return;
@@ -147,7 +144,7 @@ export function capLogTree(
   }
   for (const list of byDay.values()) {
     if (list.length <= maxFilesPerDay) continue;
-    list.sort(byAge);
+    list.sort(byLogAge);
     const overflow = list.slice(0, list.length - maxFilesPerDay);
     for (const f of overflow) remove(f);
   }
@@ -155,7 +152,7 @@ export function capLogTree(
   files = listLogFiles(dir).filter((f) => !deleted.includes(f.name));
   let total = files.reduce((s, f) => s + f.size, 0);
   if (total > maxTotalBytes) {
-    files.sort(byAge);
+    files.sort(byLogAge);
     for (const f of files) {
       if (total <= maxTotalBytes) break;
       if (opts.keepFile && join(dir, f.name) === opts.keepFile) continue;
@@ -165,6 +162,51 @@ export function capLogTree(
     }
   }
   return deleted;
+}
+
+async function capLogTreeAfterRoll(dir: string, currentFile: () => string): Promise<void> {
+  const files: LogFileInfo[] = [];
+  const byDay = new Map<string, LogFileInfo[]>();
+  for (const name of await readdir(dir)) {
+    const dateStr = parseLogFileDate(name);
+    if (!dateStr) continue;
+    try {
+      const file = { name, dateStr, seq: parseLogSeq(name), size: (await fsPromises.stat(join(dir, name))).size };
+      const day = byDay.get(dateStr) ?? [];
+      day.push(file);
+      byDay.set(dateStr, day);
+      files.push(file);
+    } catch {
+      // Another process may have removed the file.
+    }
+  }
+
+  const removed = new Set<LogFileInfo>();
+  for (const daily of byDay.values()) {
+    if (daily.length <= LOG_MAX_FILES_PER_DAY) continue;
+    daily.sort(byLogAge);
+    for (const file of daily.slice(0, daily.length - LOG_MAX_FILES_PER_DAY)) {
+      if (await removeInactive(file)) removed.add(file);
+    }
+  }
+
+  const remaining = files.filter((file) => !removed.has(file)).sort(byLogAge);
+  let total = remaining.reduce((sum, file) => sum + file.size, 0);
+  for (const file of remaining) {
+    if (total <= LOG_MAX_TOTAL_BYTES) break;
+    if (await removeInactive(file)) total -= file.size;
+  }
+
+  async function removeInactive(file: LogFileInfo): Promise<boolean> {
+    const path = join(dir, file.name);
+    if (path === currentFile()) return false;
+    try {
+      await unlink(path);
+      return true;
+    } catch {
+      return false;
+    }
+  }
 }
 
 /** Reapply configured retention after settings load, then cap the tree; early boot used the default window. */
@@ -206,17 +248,19 @@ export interface LogFileSinkOptions {
   maxBytes?: number;
 }
 
-export interface LogFileSink {
-  write(chunk: string): void;
+export interface LogFileSink extends Omit<ReturnType<typeof createAsyncLogDestination>, "stream" | "write"> {
+  write(chunk: string, countDrops?: boolean): void;
   destroy(): void;
   readonly currentFile: string;
 }
 
 /** Set private modes during creation; unrecoverable directory failure is handled by boot. */
-export function createLogFileSink(options: LogFileSinkOptions = {}): LogFileSink {
+export function createLogFileSink(options: LogFileSinkOptions = {}, onProgress?: () => void): LogFileSink {
   const dir = options.dir ?? join(aveHome(), "logs");
   const retentionDays = options.retentionDays ?? LOG_RETENTION_DAYS;
-  const maxBytes = options.maxBytes ?? LOG_MAX_BYTES;
+  const maxBytes = Math.min(options.maxBytes ?? LOG_MAX_BYTES, LOG_MAX_TOTAL_BYTES - LOG_MAX_BYTES);
+  // Leave room for one full buffer to drain to the active file on a failed reopen.
+  const hardMaxBytes = maxBytes + LOG_MAX_BYTES;
 
   ensureLogDir(dir);
   pruneOldLogs(dir, retentionDays);
@@ -226,62 +270,99 @@ export function createLogFileSink(options: LogFileSinkOptions = {}): LogFileSink
   let seq = resolveActiveSeq(dir, dateStr, maxBytes);
   let currentFile = join(dir, seqFileName(dateStr, seq));
 
-  /** Seed byte accounting from existing content and count buffered writes in process; disk size lags async flushes. */
   let activeBytes = 0;
+  try { activeBytes = statSync(currentFile).size; } catch { /* New or unavailable file. */ }
+  let closed = false;
+  let nextFile: string | undefined;
+  let retryRollAt: number | undefined;
+  const destination = createAsyncLogDestination({
+    dest: currentFile, sync: false, mode: PRIVATE_FILE_MODE, maxLength: LOG_MAX_BYTES,
+  }, onProgress, (error) => {
+    if (!nextFile || error.syscall !== "open" || error.path !== nextFile) return false;
+    nextFile = undefined;
+    retryRollAt ??= 0;
+    // Settle reopen listeners while the old descriptor is still current.
+    boom.emit("ready");
+    if (!closed) boom.flush();
+    return true;
+  });
+  const { stream: boom } = destination;
 
-  const openBoom = (filePath: string): SonicBoomInstance => {
-    // Set mode during async open, never with a racing chmod; Windows relies on inherited ACLs. Flush buffered output at shutdown.
-    const boom = new SonicBoomCtor({ dest: filePath, mkdir: false, sync: false, mode: PRIVATE_FILE_MODE });
-    // Handle asynchronous error events explicitly; synchronous try/catch cannot catch them and an unhandled event would crash the process.
-    boom.on("error", () => {
-      /* Destination errors must not crash the process or damage console logging. */
-    });
-    return boom;
+  let pruning = false;
+  let pruneRequested = false;
+  const requestCap = (): void => {
+    pruneRequested = true;
+    if (pruning) return;
+    pruning = true;
+    void (async () => {
+      try {
+        while (pruneRequested) {
+          pruneRequested = false;
+          await capLogTreeAfterRoll(dir, () => currentFile);
+        }
+      } finally {
+        pruning = false;
+      }
+    })().catch(() => {});
   };
 
-  const seedActiveBytes = (): void => {
+  const tryRoll = async (): Promise<void> => {
+    if (closed || nextFile || activeBytes < maxBytes) return;
+    if (retryRollAt !== undefined) {
+      const now = performance.now();
+      if (now < retryRollAt) return;
+      retryRollAt = now + ROLLOVER_RETRY_INTERVAL_MS;
+    }
+    const path = join(dir, seqFileName(dateStr, seq + 1));
+    nextFile = path;
     try {
-      activeBytes = existsSync(currentFile) ? statSync(currentFile).size : 0;
+      // On Windows, append-open can succeed on a directory and fail on the first write.
+      if (process.platform === "win32") {
+        const info = await fsPromises.stat(path).catch((error: NodeJS.ErrnoException) => {
+          if (error.code !== "ENOENT") throw error;
+        });
+        if (closed || info?.isDirectory()) {
+          nextFile = undefined;
+          retryRollAt ??= 0;
+          return;
+        }
+      }
+      // Reopen waits for the in-flight write before sending buffered lines to the new file.
+      boom.reopen(path);
     } catch {
-      activeBytes = 0;
+      nextFile = undefined;
+      retryRollAt ??= 0;
     }
   };
-
-  let boom = openBoom(currentFile);
-  seedActiveBytes();
-
-  const roll = (): void => {
+  boom.on("write", (bytes: number) => {
+    activeBytes += bytes;
+    void tryRoll();
+  });
+  boom.on("ready", () => {
+    if (!nextFile) return;
+    currentFile = nextFile;
+    nextFile = undefined;
+    retryRollAt = undefined;
     seq += 1;
-    const next = join(dir, seqFileName(dateStr, seq));
-    const old = boom;
-    currentFile = next;
-    boom = openBoom(next);
     activeBytes = 0;
-    // Make the new destination live before closing the old one to avoid dropped lines.
-    try {
-      old.end();
-    } catch {
-    }
-    capLogTree(dir, { keepFile: currentFile });
-  };
-
+    requestCap();
+  });
   return {
+    flush: destination.flush,
+    get pending() { return destination.pending; },
+    get dropped() { return destination.dropped; },
+    takeDropped: destination.takeDropped,
     get currentFile(): string {
       return currentFile;
     },
-    write(chunk: string): void {
-      try {
-        boom.write(chunk);
-      } catch {
-        // File-write failures must not propagate to log callers.
-        return;
-      }
-      activeBytes += Buffer.byteLength(chunk, "utf-8");
-      if (activeBytes >= maxBytes) {
-        roll();
-      }
+    write(chunk: string, countDrops?: boolean): void {
+      if (closed) return;
+      if (retryRollAt !== undefined) void tryRoll();
+      destination.write(chunk, countDrops, hardMaxBytes - activeBytes);
     },
     destroy(): void {
+      if (closed) return;
+      closed = true;
       try {
         boom.end();
       } catch {

@@ -240,24 +240,18 @@ describe("boot sandbox outcome", () => {
     });
   });
 
-  it("reports the same action and reason to the audit log and to the surface", async () => {
+  it("reports the same action and reason to the structured log and to the surface", async () => {
     setProcessPlatform("win32");
     h.checkDeps.mockResolvedValue({ errors: ["not installed"], warnings: [] });
 
     await initSandboxGate(harness.context(true));
 
-    // Audit and renderer must receive the same terminal outcome.
-    const calls = harness.logSandboxGate.mock.calls;
-    const audited = calls[calls.length - 1]?.[0] as {
-      outcome: string;
-      reason: string;
-      onSignal: string;
-    };
+    const record = [...h.logger.warn.mock.calls, ...h.logger.info.mock.calls]
+      .map(([fields]) => fields as Record<string, unknown>)
+      .find((fields) => fields?.event === "sandbox_gate");
     const surfaced = getSandboxBootOutcome();
     expect(surfaced).not.toBeNull();
-    expect(audited.outcome).toBe(surfaced?.action);
-    expect(audited.reason).toBe(surfaced?.reason);
-    expect(audited.onSignal).toBe(surfaced?.onSignal);
+    expect(record).toMatchObject({ outcome: surfaced?.action, reason: surfaced?.reason, onSignal: surfaced?.onSignal });
   });
 
   it("subscribes the proxy-deny monitor before the sandbox proxy starts, and only when it activates", async () => {

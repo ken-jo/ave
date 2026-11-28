@@ -1,3 +1,4 @@
+import { logPermissionEvent } from "../../lib/permission-log.js";
 import { pickNativeSavePath } from "../../main/desktop-approval-presentation.js";
 // Diagnostics are internal and host-renderer-only; exported logs and bundle content pass through DLP.
 import { ipcMain } from "electron";
@@ -12,9 +13,9 @@ import {
   listCrashDumps,
   type CrashDumpMeta,
 } from "../../audit/diagnostics-bundle.js";
-import { redactForLLM, redactFsPath, scrubSecretsForLLM } from "../../audit/dlp-filter.js";
-import { parseIsoDate } from "./audit.js";
-import { parseLogFileDate } from "../../lib/log-file-sink.js";
+import { redactForLLM, scrubSecretsForLLM } from "../../audit/dlp-filter.js";
+import { utcDateKey } from "../../shared/local-date.js";
+import { byLogAge, parseLogFileDate, parseLogSeq } from "../../lib/log-file-sink.js";
 import { getAveAppVersion } from "../../shared/app-version.js";
 import { aveHome } from "../../shared/ave-home.js";
 import { createLogger } from "../../lib/logger.js";
@@ -38,6 +39,18 @@ const PINO_LEVEL_NAME: Record<number, LogLevelFilter | "trace" | "fatal"> = {
   60: "fatal",
 };
 
+function parseIsoDate(value: unknown, field: "dateFrom" | "dateTo"): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    throw new TypeError(`${field} must be an ISO date (YYYY-MM-DD)`);
+  }
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  if (!Number.isFinite(parsed.getTime()) || utcDateKey(parsed) !== value) {
+    throw new TypeError(`${field} must be a real calendar date`);
+  }
+  return value;
+}
+
 async function crashDumpsDir(): Promise<string> {
   const { app } = await import("electron");
   return resolve(app.getPath("userData"), "crash-dumps");
@@ -46,17 +59,21 @@ async function crashDumpsDir(): Promise<string> {
 // Tail reads redact PII and credentials, loading each needed rotation-bounded file in full.
 async function tailLogs(lines: number, level: LogLevelFilter): Promise<string[]> {
   const dir = join(aveHome(), "logs");
-  let files: string[];
+  let names: string[];
   try {
-    files = readdirSync(dir).filter((f) => parseLogFileDate(f) !== null).sort();
+    names = readdirSync(dir);
   } catch {
     return [];
   }
+  const files = names.flatMap((name) => {
+    const dateStr = parseLogFileDate(name);
+    return dateStr ? [{ name, dateStr, seq: parseLogSeq(name) }] : [];
+  }).sort(byLogAge);
   const collected: string[] = [];
   for (let i = files.length - 1; i >= 0 && collected.length < lines; i--) {
     let raw: string;
     try {
-      raw = await readFile(join(dir, files[i]), "utf-8");
+      raw = await readFile(join(dir, files[i].name), "utf-8");
     } catch {
       continue;
     }
@@ -84,16 +101,16 @@ function lineMatchesLevel(line: string, level: LogLevelFilter): boolean {
 }
 
 export function registerDiagnosticsHandlers(deps: IpcDeps): void {
-  const { auditLogger, settingsService, getMainWindow } = deps;
+  const { settingsService, getMainWindow } = deps;
 
   ipcMain.handle(
     CHANNELS.diagnostics.export,
     async (e, opts?: { dateFrom?: string; dateTo?: string; includeCrashDumps?: boolean }) => {
       if (!validateHostRendererSender(e)) {
-        auditUnauthorized(auditLogger, CHANNELS.diagnostics.export, e);
+        auditUnauthorized(CHANNELS.diagnostics.export);
         return UNAUTHORIZED_FRAME;
       }
-      // Validate day keys before bundle construction; audit-section error isolation would otherwise hide an incomplete export.
+      // Validate day keys before bundle construction.
       const dateFrom = parseIsoDate(opts?.dateFrom, "dateFrom");
       const dateTo = parseIsoDate(opts?.dateTo, "dateTo");
       try {
@@ -104,7 +121,6 @@ export function registerDiagnosticsHandlers(deps: IpcDeps): void {
         const buffer = await buildDiagnosticsBundle({
           windowsSandbox: getWindowsSandboxSubstrate(),
           settings,
-          auditLogger,
           appVersion: getAveAppVersion(),
           crashDumpsDir: await crashDumpsDir(),
           includeCrashDumps,
@@ -127,20 +143,7 @@ export function registerDiagnosticsHandlers(deps: IpcDeps): void {
 
         const { writeFile } = await import("node:fs/promises");
         await writeFile(res.filePath, buffer);
-        // Audit effective options, date range, byte size, and redacted destination without exposing host paths.
-        auditLogger.log({
-          timestamp: new Date().toISOString(),
-          sessionId: "diagnostics-export",
-          type: "diagnostics-export",
-          input: JSON.stringify({
-            includeCrashDumps,
-            dateFrom,
-            dateTo,
-            bytes: buffer.length,
-            path: redactFsPath(res.filePath),
-          }),
-        });
-        await auditLogger.flush();
+        logPermissionEvent("diagnostics_bundle_exported", { bytes: buffer.length, includeCrashDumps });
         return { ok: true as const, path: res.filePath, bytes: buffer.length };
       } catch (err) {
         log.warn({ err }, "diagnostics export failed");
@@ -151,7 +154,7 @@ export function registerDiagnosticsHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.diagnostics.crashList, async (e) => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.diagnostics.crashList, e);
+      auditUnauthorized(CHANNELS.diagnostics.crashList);
       return UNAUTHORIZED_FRAME;
     }
     try {
@@ -167,7 +170,7 @@ export function registerDiagnosticsHandlers(deps: IpcDeps): void {
     CHANNELS.logs.tail,
     async (e, args?: { lines?: number; level?: string }) => {
       if (!validateHostRendererSender(e)) {
-        auditUnauthorized(auditLogger, CHANNELS.logs.tail, e);
+        auditUnauthorized(CHANNELS.logs.tail);
         return UNAUTHORIZED_FRAME;
       }
       try {

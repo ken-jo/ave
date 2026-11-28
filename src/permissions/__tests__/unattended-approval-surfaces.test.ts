@@ -1,3 +1,4 @@
+import { collectPermissionEvents } from "../../__tests__/support/permission-events.js";
 import { expect, it, vi } from "vitest";
 import { makeMockWebContents } from "../../__tests__/test-helpers.js";
 import { AskUserQuestionGate } from "../../main/ask-user-question-gate.js";
@@ -18,8 +19,8 @@ function unattended<T>(run: () => T): T {
 
 async function withLiveGate(run: (gate: ApprovalGate) => Promise<void>): Promise<void> {
   const surface = makeMockWebContents();
-  const audit = { log: vi.fn() };
-  const gate = new ApprovalGate(surface as never, undefined, 25, audit as never);
+  const capture = collectPermissionEvents();
+  const gate = new ApprovalGate(surface as never, undefined, 25);
   const remote = { onPending: vi.fn(), onSettled: vi.fn() };
   const unobserve = gate.observePendingApprovals(remote);
   try {
@@ -27,8 +28,9 @@ async function withLiveGate(run: (gate: ApprovalGate) => Promise<void>): Promise
     expect(surface.send).not.toHaveBeenCalled();
     expect(remote.onPending).not.toHaveBeenCalled();
     expect(gate.pendingCount).toBe(0);
-    expect(audit.log).toHaveBeenCalledWith(expect.objectContaining({ output: expect.stringContaining("[approval:unattended-approval-denied]") }));
+    expect(capture.events).toContainEqual(expect.objectContaining({ event: "approval_response_refused", reasonCode: "unattended-approval-denied" }));
   } finally {
+    capture.restore();
     unobserve();
     gate.disposeAll();
   }

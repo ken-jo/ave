@@ -1,7 +1,6 @@
 import type { OpenJoinIpcResult } from "../../shared/work-board-types.js";
 import type { MemoryMapApi } from '../../shared/memory-map.js';
 import type { SkillMemoryApi } from "../../shared/skill-memory-types.js";
-import type { PermissionAuditIntegrity } from "../../audit/audit-schema.js";
 import type { ScheduleAttachment, ScheduleAttachmentRequest, WorkflowTemplateIpcResult, WorkflowTemplate, WorkflowTemplateRecord, WorkflowTemplateProposal, WorkflowTemplateDraftInput, WorkflowTemplateConfirmInput, WorkflowTemplateConfirmResult } from "../../shared/workflow-template-types.js";
 import type { NotificationToastPayload, NotificationClickPayload } from "../../shared/notification-types.js";
 export type { NotificationToastPayload, NotificationClickPayload } from "../../shared/notification-types.js";
@@ -86,7 +85,6 @@ import type {
   SandboxWindowsStatusInfo,
   SandboxWindowsInstallResult,
 } from "../../shared/sandbox-capability-info.js";
-import type { EgressDenialRow } from "../../shared/egress-denials.js";
 import type { ListedEgressGrant, RevocableEgressGrant } from "../../shared/egress-grant-scopes.js";
 
 // Re-export MCP types for renderer-side consumers (type-only, no main-process runtime)
@@ -970,23 +968,6 @@ export type AvePreloadApi = {
   onRoutineFailed: (handler: (event: { routineId: string; error: string }) => void) => () => void;
   // Overlay IPC bridges
   // ─── Observability + privacy surfaces ─────────────────────────────────
-  // The IPC bridge resolves these to `unknown`; each result's shape is
-  // declared by its one consumer tab (AuditTab, DiagnosticsSection,
-  // PrivacyTab) until it is lifted here. Parameters are the contract.
-  dlp: {
-    getStats: (days: number) => Promise<unknown>;
-  };
-  audit: {
-    search: (filter: {
-      dateFrom?: string;
-      dateTo?: string;
-      type?: string;
-      textSearch?: string;
-      limit?: number;
-      offset?: number;
-    }) => Promise<unknown>;
-    getStats: (lastDays: number) => Promise<unknown>;
-  };
   diagnostics: {
     /** Build a redacted diagnostics ZIP and save via native dialog. */
     export: (opts?: { dateFrom?: string; dateTo?: string; includeCrashDumps?: boolean }) => Promise<unknown>;
@@ -1548,7 +1529,6 @@ export type AvePermissionApi = {
    * newest first, each with the tool call, terminal tab or plugin process
    * that opened it ("unattributed" when no live invocation held its key).
    */
-  egressDenialsRecent: () => Promise<EgressDenialRow[] | IpcErrorResult>;
   /** Read-only: the shell egress grants that outlive a call (conversation, terminal tab, workspace, always). */
   egressGrantsList: () => Promise<
     | { ok: true; grants: ListedEgressGrant[] }
@@ -1600,51 +1580,7 @@ export type AvePermissionApi = {
   judgeSet: (
     patch: Partial<import("../../shared/permission-judge-settings.js").PermissionJudgeSettings>,
   ) => Promise<import("../../shared/permission-judge-settings.js").PermissionJudgeWriteResult>;
-  /** Permission policy — `/permission audit show` — recent permission audit entries. */
-  auditShow: (last: number) => Promise<
-    | (PermissionAuditIntegrity & {
-        ok: true;
-        entries: PermissionAuditEntrySummary[];
-        total: number;
-        summary: { files: number; bytes: number };
-      })
-    | { ok: false; error: string }
-  >;
-  /** Permission policy — `/permission audit verify` — HMAC chain integrity check. */
-  auditVerify: () => Promise<
-    | (PermissionAuditIntegrity & {
-        ok: true;
-        intact: boolean;
-        totalFiles: number;
-        totalEntries: number;
-        firstBrokenFile?: string;
-        perDay: Array<{
-          file: string;
-          totalLines: number;
-          chainOk: boolean;
-          firstBrokenLineIndex?: number;
-          reason?: string;
-          sealMatch: boolean | null;
-        }>;
-      })
-    | { ok: false; error: string }
-  >;
 };
-
-/**
- * Permission policy — minimal audit entry shape surfaced to the renderer's
- * `AuditPanel`. Deny entries include their resolved terminal kind.
- */
-export interface PermissionAuditEntrySummary {
-  ts: string;
-  auditId: string;
-  decision: string;
-  terminalKind?: import("../../audit/audit-schema.js").AuditDenyKind;
-  trustOrigin: string;
-  prevHash: string;
-  /** Anything else from the discriminated union — opaque to the renderer. */
-  [key: string]: unknown;
-}
 
 export type AvePolicyApi = {
   get: () => Promise<{

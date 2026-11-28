@@ -73,7 +73,6 @@ async function register(overrides: Record<string, unknown> = {}) {
   registerWorkApprovalsHandlers({
     workBoardStore,
     routinesStore,
-    auditLogger: { log: vi.fn() },
     getMainWindow: () => win,
     getAppWindows: () => [win],
     ...overrides,

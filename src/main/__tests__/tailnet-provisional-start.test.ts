@@ -2,9 +2,10 @@ import { AsyncLocalStorage, createHook } from "node:async_hooks";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import * as ts from "typescript/unstable/ast";
-import { expect, it, vi } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { parseSourceTexts } from "../../../scripts/lib/ts7-ast.mjs";
 import { setupCommittedAveHome } from "../../__tests__/support/committed-ave-home.js";
+import { watchPermissionEvents } from "../../__tests__/support/permission-events.js";
 import { deferred } from "../../__tests__/support/deferred.js";
 import { DEFAULT_SETTINGS } from "../../data/settings-defaults.js";
 import * as atomicFile from "../../lib/atomic-file.js";
@@ -27,16 +28,20 @@ import { createTailnetWorkDecisions } from "../tailnet-work-decisions.js";
 
 setupCommittedAveHome("tailnet-provisional-start-");
 
+const logCaptures: ReturnType<typeof watchPermissionEvents>[] = [];
+afterEach(() => { for (const capture of logCaptures.splice(0).reverse()) capture.mockRestore(); });
+
 type Harness = Awaited<ReturnType<typeof stageRunHarness>>;
 
 function remoteStart(h: Harness) {
-  const log = vi.fn();
+  const log = vi.fn<(event: Record<string, unknown>) => void>();
+  logCaptures.push(watchPermissionEvents(event => { if (event.event === "remote_work_decision") log(event); }));
   let current = true;
   const routines = new RoutinesStore(join(h.dir, "routines.json"));
   routines.bindTemplateAttachments(h.templates);
   const runtime = createTailnetWorkDecisions({
     workBoardStore: h.board, workBoardEngine: h.engine, workflowTemplateStore: h.templates, routinesStore: routines,
-    settingsService: { get: key => DEFAULT_SETTINGS[key] }, auditLogger: { log }, toolRegistry: new ToolRegistry(),
+    settingsService: { get: key => DEFAULT_SETTINGS[key] }, toolRegistry: new ToolRegistry(),
   });
   if (!runtime) throw new Error("Work decision runtime unavailable");
   return {

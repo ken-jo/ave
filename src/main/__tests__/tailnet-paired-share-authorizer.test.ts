@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MemorySecretStore } from "../../audit/hmac-chain.js";
+import { MemorySecretStore } from "../../lib/protected-secret-store.js";
 import type { TailnetPairingShareAuthority } from "../tailnet-pairing-share-store.js";
 import {
   createTailnetPairedShareAuthorizer,

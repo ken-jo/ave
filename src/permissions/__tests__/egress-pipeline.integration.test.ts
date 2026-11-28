@@ -10,7 +10,7 @@ import { EgressGrantStore } from "../egress-grants.js";
 import type { ShellEgressOwner } from "../egress-invocations.js";
 import { sentApprovalCards } from "../../__tests__/test-helpers.js";
 import { bindRemoteControllerToSession, type RemoteControllerAuthority } from "../../shared/chat-origin.js";
-import type { SandboxEgressDecisionAuditEntry } from "../../audit/sandbox-audit.js";
+import type { SandboxEgressDecisionAuditEntry } from "../../permissions/egress-observation.js";
 import type { EgressGrantScope } from "../../shared/egress-grant-scopes.js";
 
 const directories: string[] = [];
@@ -33,7 +33,7 @@ function fixture(options: { headless?: boolean; forced?: boolean; askEnabled?: b
   } };
   const grants = new EgressGrantStore(join(directory, "egress.json"));
   const wc = { send: vi.fn(), isDestroyed: () => false };
-  const gate = new ApprovalGate(wc as never, undefined, 5_000, { log: vi.fn() } as never);
+  const gate = new ApprovalGate(wc as never, undefined, 5_000);
   const evaluate = vi.fn(createShellNetworkPermissionEvaluator(manager));
   const requester = createApprovalGateEgressRequester(gate, manager);
   const audit = vi.fn<(entry: SandboxEgressDecisionAuditEntry) => void>();

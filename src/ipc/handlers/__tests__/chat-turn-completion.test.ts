@@ -35,7 +35,6 @@ function fixture(markMainActiveResume: () => Promise<void>) {
       runTurn,
     },
     settingsService: { get: () => undefined },
-    auditLogger: { log: vi.fn() },
     memoryManager: { sessions: { markMainActiveResume } },
   } as unknown as IpcDeps;
   const context: ChatSendContext = {

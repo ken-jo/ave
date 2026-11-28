@@ -23,7 +23,7 @@ const log = createLogger("alerts");
 
 /** Keep the uninstall subscription for app lifetime; test hosts may dispose it. */
 export async function setupAlerts(ctx: BootContext): Promise<() => void> {
-  const { settingsService, pluginMarketplace, bootAuditLogger, notificationService } = ctx;
+  const { settingsService, pluginMarketplace, notificationService } = ctx;
   let disposed = false;
   const pendingConfigRetries = new Set<string>();
   // Acquire contended lifecycle locks outside the alert lane; inside it, allow only reentrant or reserved locks.
@@ -108,7 +108,6 @@ export async function setupAlerts(ctx: BootContext): Promise<() => void> {
     },
     notifications: notificationService,
     emit: emitEvent,
-    audit: (entry) => bootAuditLogger.log(entry),
     kindsChanged: () => {
       try {
         liveWindow()?.webContents.send(ALERTS.kindsChanged);

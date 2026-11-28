@@ -22,6 +22,7 @@ import { MemoryMapHost, MemoryMapHostError } from '../../main/memory-map/host-wi
 import { readGraphCatalog, memoryFacets, graphMemoryRevision, isGraphMemory, matchesGraphRecord, memoryMapScopeId, type ReadMemoryMapCatalog } from '../../main/memory-map/catalog.js';
 import { ProviderEmbeddings } from '../../main/memory-map/provider-embeddings-win32.js';
 import { createMemoryProviderEgress } from '../../main/memory-map/provider-egress.js';
+import { logPermissionEvent, permissionLogId } from '../../lib/permission-log.js';
 import { DEFAULT_LOCAL_INFERENCE_WITHOUT_SANDBOX } from '../../shared/memory-embedding-config.js';
 import { SettingsWriteRefusedError } from '../../data/settings-store.js';
 import { getLlmVendorSettings, LLM_VENDORS } from '../../shared/llm-vendor-defaults.js';
@@ -64,12 +65,9 @@ export interface MemoryMapRuntime {
 
 export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapScopeResolver): MemoryMapRuntime {
   const send = createMemoryProviderEgress(deps.singleHopNetworkFetch, MEMORY_EMBEDDING_ALLOWED_DOMAINS, entry => {
-    deps.auditLogger.log({
-      timestamp: new Date().toISOString(),
-      sessionId: 'memory-embeddings',
-      type: 'tool_call',
-      input: entry.allowed ? `host_fetch ${entry.origin} method=${entry.method}` : `host_fetch denied: ${entry.reason}`,
-    });
+    logPermissionEvent('memory_provider_egress', entry.allowed
+      ? { decision: 'allow', origin: entry.origin, method: permissionLogId(entry.method) }
+      : { decision: 'deny', reasonCode: entry.reason }, entry.allowed ? 'info' : 'warn');
   });
   const provider = new ProviderEmbeddings(deps.settingsService, send);
   const storedLocalInferencePreference = () => deps.settingsService.get('memoryEmbedding')?.localInferenceWithoutSandbox

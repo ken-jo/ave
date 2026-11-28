@@ -45,10 +45,8 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "file-reference-too-large": "fileEditDiff.referenceTooLarge",
   "file-reference-while-running": "fileEditDiff.referenceWhileRunning",
   // ── Trust / intent gate ──
-  "invalid-telemetry-level": "auditTab.telemetryInvalidLevel",
-  "invalid-telemetry-endpoint": "auditTab.telemetryInvalidEndpoint",
-  "security-settings-audit-unavailable": "permissionsTab.securityAuditFailed",
-  "security-settings-rollback-failed": "permissionsTab.securityRollbackFailed",
+  "invalid-telemetry-level": "diagnosticsTab.telemetryInvalidLevel",
+  "invalid-telemetry-endpoint": "diagnosticsTab.telemetryInvalidEndpoint",
   "invalid-security-settings": "formatIpcError.invalidInput",
   "security-settings-main-owned": "formatIpcError.userKeyboardRequired",
   "user-keyboard-required": "formatIpcError.userKeyboardRequired",
@@ -97,9 +95,6 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   // ── Permission manager / audit state ──
   "approval-already-resolved": "reasonCodes.approval-already-resolved",
   "no-permission-manager": "formatIpcError.noPermissionManager",
-  "permission-audit-not-ready": "formatIpcError.permissionAuditNotReady",
-  "permission-audit-write-failed": "formatIpcError.permissionAuditWriteFailed",
-  "audit-chain-not-initialized": "formatIpcError.auditChainNotInitialized",
   "rerun-unavailable": "recentlyDenied.unavailable",
   "rerun-failed": "recentlyDenied.error",
   "rerun-in-progress": "recentlyDenied.error",

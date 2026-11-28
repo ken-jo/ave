@@ -1,10 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { llmVendorModelOptions } from "../../../shared/llm-vendor-defaults.js";
 import { JudgeFailure, type JudgeVerdict, type PermissionJudge } from "../judge-contract.js";
 import { JudgeCircuitBreaker } from "../judge-breaker.js";
 import { resolveJudge, type JudgeChainStage, type JudgeEngineDeps, type JudgeGate } from "../judge-engine.js";
 import type { JudgeSettings, JudgeStageSettings } from "../judge-settings.js";
-import { collectingAudit, judgeRecords, judgeRequest, judgeSettings, scriptedStage, type CollectingAudit } from "./judge-request-fixture.js";
+import { collectJudgeEvents, judgeRecords, judgeRequest, judgeSettings, scriptedStage, type JudgeEventCapture } from "./judge-request-fixture.js";
+
+afterEach(() => vi.restoreAllMocks());
 
 const UNDECIDED: JudgeGate = { priorDecision: "undecided", strictMode: false, capabilityGrant: false };
 const PICKER_MODEL = llmVendorModelOptions("claude")[0]!;
@@ -29,11 +31,11 @@ function scripted(id: string, ...answers: Script[]): PermissionJudge & { calls: 
 function chainDeps(
   stages: Array<[JudgeStageSettings, PermissionJudge | null]>,
   settings: Partial<JudgeSettings> = {},
-): JudgeEngineDeps & Pick<CollectingAudit, "entries" | "chained"> {
+): JudgeEngineDeps & Pick<JudgeEventCapture, "events"> {
   const s = judgeSettings({ ...settings, chain: stages.map(([stage]) => stage) });
   const chain: JudgeChainStage[] = stages.map(([stage, judge]) => ({ settings: stage, judge }));
-  const { entries, chained, logger } = collectingAudit();
-  return { settings: s, chain, breaker: new JudgeCircuitBreaker(s.breaker), audit: logger, entries, chained };
+  const { events } = collectJudgeEvents();
+  return { settings: s, chain, breaker: new JudgeCircuitBreaker(s.breaker), events };
 }
 
 const builtinStage = (): JudgeStageSettings => ({ provider: "builtin-llm", id: "llm", model: { vendor: "claude", model: PICKER_MODEL } });
@@ -59,12 +61,12 @@ describe("judge chain — escalation", () => {
     const out = await resolveJudge(UNDECIDED, judgeRequest(), d);
     expect(out).toMatchObject({ decision: "deny", decidedBy: "llm", source: "judge" });
     const stages = judgeRecords(d)[0]!.stages as Array<Record<string, unknown>>;
-    expect(stages.map((s) => [s.id, s.outcome, s.decision])).toEqual([
+    expect(stages.map((s) => [s.stageId, s.outcome, s.decision])).toEqual([
       ["jev", "escalated", "ask"],
       ["llm", "decided", "deny"],
     ]);
-    expect(stages[1]).toMatchObject({ model: `claude/${PICKER_MODEL}`, version: "llm-v1", confidence: null });
-    expect(stages[0]).toMatchObject({ model: null, confidence: 0.99, escalateBelow: 0.8 });
+    expect(stages[1]).toMatchObject({ provider: "builtin-llm", confidence: undefined });
+    expect(stages[0]).toMatchObject({ provider: "external", confidence: 0.99 });
     expect(typeof stages[0]!.latencyMs).toBe("number");
   });
 
@@ -111,7 +113,7 @@ describe("judge chain — failures", () => {
     expect(out).toMatchObject({ decision: "allow", decidedBy: "llm", source: "judge" });
     expect(out.judged && out.fallback).toBeFalsy();
     const stages = judgeRecords(d)[0]!.stages as Array<Record<string, unknown>>;
-    expect(stages[0]).toMatchObject({ id: "jev", outcome: "failed", fallback: "timeout", decision: null });
+    expect(stages[0]).toMatchObject({ stageId: "jev", outcome: "failed", fallback: "timeout", decision: undefined });
   });
 
   it("an unavailable stage (unconfigured model) escalates", async () => {
@@ -149,13 +151,13 @@ describe("judge chain — failures", () => {
   });
 });
 
-describe("judge chain — audit model and deadline", () => {
-  it("a stage without a model records the resolved reviewer model, not a placeholder", async () => {
+describe("judge chain — stage outcomes and deadline", () => {
+  it("records a builtin stage and its outcome", async () => {
     const reviewer = Object.assign(scripted("llm", v("allow")), { model: `claude/${PICKER_MODEL}` });
     const d = chainDeps([[{ provider: "builtin-llm", id: "llm" }, reviewer]]);
     await resolveJudge(UNDECIDED, judgeRequest(), d);
     const stage = (judgeRecords(d)[0]!.stages as Array<Record<string, unknown>>)[0]!;
-    expect(stage.model).toBe(`claude/${PICKER_MODEL}`);
+    expect(stage).toMatchObject({ stageId: "llm", provider: "builtin-llm", outcome: "decided" });
   });
 
   it("exceeding the chain deadline mid-chain is a failure: fallback applies and later stages never run", async () => {
@@ -167,7 +169,7 @@ describe("judge chain — audit model and deadline", () => {
     expect(out).toMatchObject({ judged: true, decision: "deny", source: "fallback", fallback: "timeout" });
     // The engine's own timer fired on the deadline-capped budget: the audit blames the deadline.
     expect(out.judged && out.rationale).toBe("Nobody can approve this request; do not retry.");
-    expect(judgeRecords(d)[0]?.rationale).toMatch(/deadline/);
+    expect(judgeRecords(d)[0]).toMatchObject({ fallback: "timeout" });
     expect(llm.calls).toBe(0);
     const stages = judgeRecords(d)[0]!.stages as Array<Record<string, unknown>>;
     expect(stages.map((s) => s.outcome)).toEqual(["failed", "skipped"]);
@@ -192,10 +194,10 @@ describe("judge chain — audit model and deadline", () => {
     expect(out.judged && out.fallback).toBeFalsy();
     expect(llm.calls).toBe(1);
     const record = judgeRecords(d)[0]!;
-    expect(record.rationale).not.toMatch(/deadline/);
-    expect((record.stages as Array<Record<string, unknown>>).map((s) => [s.id, s.outcome, s.fallback])).toEqual([
+    expect(record).toMatchObject({ decision: "deny" });
+    expect((record.stages as Array<Record<string, unknown>>).map((s) => [s.stageId, s.outcome, s.fallback])).toEqual([
       ["jev", "failed", "timeout"],
-      ["llm", "decided", null],
+      ["llm", "decided", undefined],
     ]);
   });
 });
@@ -234,7 +236,6 @@ describe("judge chain — breaker and shadow", () => {
     const out = await resolveJudge(UNDECIDED, judgeRequest({ lane: "headless" }), d);
     expect(out).toMatchObject({ decision: "deny", applied: false });
     expect(jev.calls + llm.calls).toBe(2);
-    expect(d.chained).toHaveLength(0);
     expect((judgeRecords(d)[0]!.stages as unknown[]).length).toBe(2);
     expect(d.breaker.snapshot("session-root").total).toBe(0);
   });

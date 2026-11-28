@@ -1,14 +1,15 @@
+import * as approvalPersistence from "../../../permissions/approval-persistence-guard.js";
+import { captureInvocationCorrelations, collectPermissionEvents } from "../../../__tests__/support/permission-events.js";
 import { RULE_PROVENANCE } from "../../../permissions/decision-provenance.js";
 import { allowOnceCardAnswer } from "../../../__tests__/support/approval-card-answer.js";
 import { openPendingAnswerCard, type PendingAnswerCard, personAnswerStands, saveStandingAnswerRule } from "../../../permissions/pending-answer-policy.js";
 import { deferred } from "../../../__tests__/support/deferred.js";
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { IpcMainInvokeEvent, WebContents } from "electron";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { withSourceHostResources } from "../../../__tests__/support/source-host-resources.js";
-import { AuditLogger } from "../../../audit/audit-logger.js";
 import { t } from "../../../i18n/runtime.js";
 import { makeSubAgentApprovalAdapter } from "../../../engine/subagent-runner.js";
 import { terminalSessionFixture } from "../../../__tests__/support/terminal-session-fixtures.js";
@@ -98,9 +99,7 @@ function invoke(channel: string, event: IpcMainInvokeEvent, ...args: unknown[]) 
 
 async function subject(mode: "auto" | "default" = "auto") {
   const root = resources.makeTmpDir("ave-approval-owner-");
-  const audit = new AuditLogger(join(root, "audit"));
-  await audit.setupPermissionAuditChain(randomBytes(32).toString("hex"));
-  const auditLog = vi.spyOn(audit, "log");
+  const logs = collectPermissionEvents();
   const windowA = appWindow(101);
   const windowB = appWindow(202);
   const firstCard = deferred<ApprovalRequest>();
@@ -110,7 +109,7 @@ async function subject(mode: "auto" | "default" = "auto") {
   let owner: AppWindow | undefined = windowA;
   const gate = new ApprovalGate(
     (sessionId) => sessionId === SESSION_ID && owner ? owner.webContents as unknown as WebContents : null,
-    undefined, undefined, audit,
+    undefined, undefined,
   );
   let level: RiskVerdict["level"] = "low";
   const complete = vi.fn<LlmReviewerProvider["complete"]>(async () => ({
@@ -126,13 +125,13 @@ async function subject(mode: "auto" | "default" = "auto") {
   });
   manager.setJudge({
     settings: { ...DEFAULT_JUDGE_SETTINGS, chain: [], categories: { ...DEFAULT_JUDGE_SETTINGS.categories }, breaker: { ...DEFAULT_JUDGE_SETTINGS.breaker } },
-    chain: [], breaker: manager.getJudgeBreaker(), audit,
+    chain: [], breaker: manager.getJudgeBreaker(),
   });
   const registry = new ToolRegistry();
   const execute = vi.fn(async () => "wrote");
   registry.register(makeWriteProbeTool(execute));
   const hooks = new ScriptHookManager();
-  const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, hooks, audit);
+  const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, hooks);
   const releaseHolds: Array<() => void> = [];
   const hold = () => {
     const held = deferred<void>();
@@ -153,12 +152,11 @@ async function subject(mode: "auto" | "default" = "auto") {
     gate.disposeAll();
     for (const release of releaseHolds) release();
     await Promise.allSettled(pending);
-    await audit.close();
+    logs.restore();
   });
   const { registerPermissionsHandlers } = await import("../permissions.js");
   registerPermissionsHandlers({
-    conversationLoop: { permissionManager: manager }, approvalGate: gate, auditLogger: audit,
-    toolRegistry: registry, getMainWindow: () => windowA, getAppWindows: () => [windowA, windowB],
+    conversationLoop: { permissionManager: manager }, approvalGate: gate, toolRegistry: registry, getMainWindow: () => windowA, getAppWindows: () => [windowA, windowB],
     getApprovalSentenceSelector: () => selector,
   } as never);
   const executeAll = (...args: Parameters<ToolExecutor["executeAll"]>) => track(executor.executeAll(...args));
@@ -216,7 +214,7 @@ async function subject(mode: "auto" | "default" = "auto") {
     };
     return { request, result: track(requestBoundShellCard(requestGate, request, root, card)) };
   };
-  return { root, audit, auditLog, windowA, windowB, gate, manager, registry, executeAll, execute, complete, selectComplete, pause, start, cards, waitForCard, hold, holdNextPreToolUse, queueCard, setOwner: (next: AppWindow | undefined) => { owner = next; } };
+  return { root, logs, windowA, windowB, gate, manager, registry, executeAll, execute, complete, selectComplete, pause, start, cards, waitForCard, hold, holdNextPreToolUse, queueCard, setOwner: (next: AppWindow | undefined) => { owner = next; } };
 }
 
 describe("live native approval ownership", () => {
@@ -348,7 +346,7 @@ describe("live native approval ownership", () => {
         expect(transition).not.toHaveBeenCalled();
         expect(result?.is_error).toBe(true);
         expect(f.cards(f.windowA)).toEqual([first, card]);
-        expect(f.auditLog.mock.calls.some(([entry]) => entry.output?.startsWith("[approval:answer-stale]"))).toBe(false);
+        expect(f.logs.events.some(({ event }) => event === "approval_answer_stale")).toBe(false);
         expect(issueWriteAuthority).not.toHaveBeenCalled();
         expect(f.write).not.toHaveBeenCalled();
         return;
@@ -365,11 +363,10 @@ describe("live native approval ownership", () => {
         expect(fresh.id).not.toBe(card.id);
         expect(fresh).toMatchObject({ args: { command }, reason: card.reason, allowedChoices: ["allow-once", "deny-once"] });
         expect(fresh.shellRule?.sessionAllowed).not.toBe(true);
-        const stale = f.auditLog.mock.calls.map(([entry]) => entry.output ?? "").filter(output => output.startsWith("[approval:answer-stale]"));
-        expect(stale).toEqual([expect.stringContaining(`[approval:answer-stale] ${card.id} `)]);
-        expect(stale[0]).toMatch(/ choice=allow-once outcome=stale-reasked authority=none question=\[.*,true,null,null,null\] -> \[.*,false,"protected-path: /);
-        const decided = f.auditLog.mock.calls.map(([entry]) => entry.output ?? "").filter(output => output.startsWith(`[approval:decided] ${card.id} `));
-        expect(decided).toEqual([expect.stringContaining(" choice=allow-once ")]);
+        const stale = f.logs.events.filter(({ event }) => event === "approval_answer_stale");
+        expect(stale).toEqual([expect.objectContaining({ requestId: card.id, choice: "allow-once", reasonCode: "stale-reasked" })]);
+        const decided = f.logs.events.filter(({ event, requestId }) => event === "approval_decided" && requestId === card.id);
+        expect(decided).toEqual([expect.objectContaining({ choice: "allow-once" })]);
         expect(invoke(PERMISSIONS.approvalPending, frame)).toEqual([fresh]);
         await invoke(PERMISSIONS.approvalRespond, frame, allowOnceCardAnswer(card));
         expect(invoke(PERMISSIONS.approvalPending, frame)).toEqual([fresh]);
@@ -418,13 +415,12 @@ describe("live native approval ownership", () => {
     await invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowA), { ...allowOnceCardAnswer(card), choice });
     const [result] = await pending;
     expect(transition).not.toHaveBeenCalled();
-    const stale = f.auditLog.mock.calls.map(([entry]) => entry.output ?? "").filter(output => output.startsWith("[approval:answer-stale]"));
+    const stale = f.logs.events.filter(({ event }) => event === "approval_answer_stale");
     if (choice === "allow-once") {
       expect(result).toMatchObject({ is_error: true, content: expect.stringContaining(t("be_executor.answerQuestionChanged")) });
-      expect(stale).toEqual([expect.stringContaining(`[approval:answer-stale] ${card.id} `)]);
-      expect(stale[0]).toMatch(/ choice=allow-once outcome=stale-refused authority=none question=\[.*,true,null,null,null\] -> \[.*,false,"protected-path: /);
-      const decided = f.auditLog.mock.calls.map(([entry]) => entry.output ?? "").filter(output => output.startsWith(`[approval:decided] ${card.id} `));
-      expect(decided).toEqual([expect.stringContaining(" choice=allow-once ")]);
+      expect(stale).toEqual([expect.objectContaining({ requestId: card.id, choice: "allow-once", reasonCode: "stale-refused" })]);
+      const decided = f.logs.events.filter(({ event, requestId }) => event === "approval_decided" && requestId === card.id);
+      expect(decided).toEqual([expect.objectContaining({ choice: "allow-once" })]);
     } else {
       expect(result).toMatchObject({ is_error: true, content: t("be_executor.approvalDeniedByUser", { name: "terminal_run" }) });
       expect(stale).toEqual([]);
@@ -435,7 +431,7 @@ describe("live native approval ownership", () => {
     expect(grant).not.toHaveBeenCalled();
   });
 
-  it.each(["before save", "during audit", "unchanged"] as const)("checks the terminal floor card's directory when it is %s", async scenario => {
+  it.each(["before save", "after staging", "unchanged"] as const)("checks the terminal floor card's directory when it is %s", async scenario => {
     const f = await terminalFloorSubject();
     const { cwd, write } = f;
     const originalCwd = captureShellWorkingDirectoryIdentity(cwd);
@@ -450,16 +446,6 @@ describe("live native approval ownership", () => {
       mkdirSync(cwd);
       expect(captureShellWorkingDirectoryIdentity(cwd)?.ino).not.toBe(originalCwd?.ino);
     };
-    const auditReached = deferred<void>();
-    const auditRelease = f.hold();
-    const append = f.audit.append.bind(f.audit);
-    const audit = vi.spyOn(f.audit, "append").mockImplementation(async entry => {
-      if (entry.output?.startsWith("[approval:remembered]")) {
-        auditReached.resolve();
-        if (scenario === "during audit") await auditRelease.promise;
-      }
-      await append(entry);
-    });
     if (scenario === "before save") replaceCwd();
     const grant = vi.spyOn(f.manager, "addFloorSessionGrant");
     const saved = await f.recordTerminalWaiver(card);
@@ -472,17 +458,13 @@ describe("live native approval ownership", () => {
       expect(f.cards(f.windowA)).toEqual([card]);
       return;
     }
-    if (scenario === "during audit") {
-      // The waiver is written once the answer stands: a directory replaced during that write's audit refuses the call.
+    if (scenario === "after staging") {
       expect(saved).toEqual({ ok: true });
-      const answered = invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowA), allowOnceCardAnswer(card));
-      await auditReached.promise;
       replaceCwd();
-      auditRelease.resolve();
-      await answered;
+      await invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowA), allowOnceCardAnswer(card));
     } else {
       expect.soft(saved).toEqual({ ok: false, error: "project-scope-changed" });
-      expect.soft(audit.mock.calls.some(([entry]) => entry.output?.startsWith("[approval:remembered]"))).toBe(false);
+      expect.soft(f.logs.events.some(({ event }) => event === "approval_remembered")).toBe(false);
       expect.soft(f.windowA.webContents.send).toHaveBeenCalledWith(IPC_APPROVAL_SETTLED, { requestId: card.id });
       expect.soft(f.gate.getRequestSnapshot(card.id)).toBeNull();
       // An authenticated late answer cannot revive the settled card.
@@ -563,29 +545,20 @@ describe("live native approval ownership", () => {
     }
   });
 
-  it.each([false, true])("requires a durable audit row before persisting a card rule (audit closed: %s)", async (closed) => {
+  it.each([false, true])("persists the card rule with a broken log sink (%s)", async (broken) => {
     const f = await subject("default");
     vi.stubEnv("AVE_HOME", f.root);
     const { request } = f.queueCard({ toolName: "bash", toolCategory: "shell", args: { command: "printf ready" } });
     await f.waitForCard();
-    const before = f.manager.getPolicyEpoch();
-    if (closed) await f.audit.close();
+    if (broken) vi.spyOn(console, "log").mockImplementation(() => { throw new Error("sink unavailable"); });
     const response = await invoke(PERMISSIONS.userApprovalRecord, frameEvent(f.windowA), {
       requestId: request.id, args: JSON.stringify(request.args), decision: "allow", scope: "persistent", verdictAtApproval: "low",
       rule: { action: "allow", scope: "always" }, intent: { inputOrigin: "user-keyboard", userActivation: true },
     });
     const file = join(f.root, "permissions.json");
-    if (closed) {
-      expect(response).toMatchObject({ ok: false, error: "rule-save-failed" });
-      expect(f.manager.getPolicyEpoch()).toBe(before);
-      expect(existsSync(file)).toBe(false);
-    } else {
-      expect(response).toEqual({ ok: true });
-      expect(readFileSync(file, "utf8")).toContain("Bash(printf ready)");
-    }
-    await f.audit.flush();
-    const rows = (await f.audit.search({ limit: 100 })).entries.filter((row) => row.output?.startsWith("[approval:remembered] store=rules"));
-    expect(rows).toHaveLength(closed ? 0 : 1);
+    expect(response).toEqual({ ok: true });
+    expect(readFileSync(file, "utf8")).toContain("Bash(printf ready)");
+    expect(f.logs.events.filter(({ event }) => event === "approval_remembered")).toHaveLength(broken ? 0 : 1);
   });
 
   it.each(["session", "project"] as const)("accepts only the exact policy delta for a %s card rule", async (scope) => {
@@ -723,13 +696,7 @@ describe("live native approval ownership", () => {
       expect(projectRulesLocation(f.root, cwd)).toEqual(innerStore);
     } else if (!duringSave) {
       changeScope();
-    } else if (scope === "session") {
-      const append = f.audit.append.bind(f.audit);
-      vi.spyOn(f.audit, "append").mockImplementationOnce(async (...args) => {
-        await append(...args);
-        changeScope();
-      });
-    } else {
+    } else if (scope !== "session") {
       const read = homeTrust.readAveHomeInput;
       const saveFile = scope === "always" ? userStore : innerStore.filePath;
       const spy = vi.spyOn(homeTrust, "readAveHomeInput").mockImplementation(async (...args) => {
@@ -756,6 +723,13 @@ describe("live native approval ownership", () => {
     if (duringSave) {
       // The rule is written once the answer stands: a scope that changes during that write refuses the call and saves nothing.
       expect.soft(response).toEqual({ ok: true });
+      if (scope === "session") {
+        const refresh = approvalPersistence.refreshApprovalPersistence;
+        vi.spyOn(approvalPersistence, "refreshApprovalPersistence").mockImplementationOnce(async (guard) => {
+          await refresh(guard);
+          changeScope();
+        });
+      }
       invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowA), allowOnceCardAnswer(card));
       expect((await running)[0]).toMatchObject({ is_error: true, content: expect.stringContaining("project-scope-changed") });
     } else {
@@ -933,8 +907,7 @@ describe("live native approval ownership", () => {
     const action = scenario.startsWith("always deny") ? "deny" : "allow";
     const scope = scenario.startsWith("session") ? "session" : "always";
     const persist = vi.spyOn(f.manager, "addRulePersist");
-    const append = vi.spyOn(f.audit, "append");
-    const rows = () => append.mock.calls.filter(([entry]) => entry.output?.startsWith("[approval:remembered]"));
+    const rows = () => f.logs.events.filter(({ event }) => event === "approval_remembered");
     expect(await invoke(PERMISSIONS.userApprovalRecord, frameEvent(f.windowA), {
       requestId: card.id, args: JSON.stringify(card.args), decision: action, scope: scope === "session" ? "session" : "persistent",
       verdictAtApproval: f.gate.getRequestSnapshot(card.id)?.verdictAtApproval,
@@ -1258,9 +1231,7 @@ describe("live native approval ownership", () => {
     expect(f.execute).not.toHaveBeenCalled();
     expect(f.manager.getJudgeBreaker().snapshot(SESSION_ID)).toEqual(breakerBefore);
     expect(f.manager.isAutomatedApprovalPaused(SESSION_ID)).toBe(lane !== "ordinary default");
-    expect(f.auditLog).toHaveBeenCalledWith(expect.objectContaining({
-      type: "approval", sessionId: SESSION_ID, output: expect.stringContaining("approval:surface-owner-required"),
-    }));
+    expect(f.logs.events).toContainEqual(expect.objectContaining({ event: "approval_response_rejected", sessionId: SESSION_ID, reasonCode: "surface-owner-required" }));
     expect(invoke(PERMISSIONS.approvalPending, frameEvent(f.windowB))).toEqual([]);
     expect(invoke(PERMISSIONS.approvalPending, frameEvent(f.windowA))).toEqual([card]);
     invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowA), allowOnceCardAnswer(card));
@@ -1325,7 +1296,7 @@ describe("live native approval ownership", () => {
     expect(f.gate.pendingCount).toBe(1);
     expect(f.execute).not.toHaveBeenCalled();
     expect(f.manager.isAutomatedApprovalPaused(SESSION_ID)).toBe(true);
-    expect(f.auditLog.mock.calls.filter(([entry]) => entry.sessionId === "ipc-guard")).toHaveLength(2);
+    expect(f.logs.events.filter(({ event }) => event === "ipc_sender_refused")).toHaveLength(2);
     f.windowA.isDestroyed.mockReturnValue(false);
     f.windowA.webContents.isDestroyed.mockReturnValue(false);
     invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowA), allowOnceCardAnswer(card));
@@ -1350,20 +1321,15 @@ describe("live native approval ownership", () => {
     expect(f.manager.isAutomatedApprovalPaused(SESSION_ID)).toBe(true);
   });
 
-  it("audits a host denial before closing the fixture with a card still being prepared", async () => {
+  it("logs a host denial before closing the fixture with a card still being prepared", async () => {
     const f = await subject("default");
     vi.stubEnv("AVE_HOME", f.root);
     const bash = new BashTool();
     const execute = vi.spyOn(bash, "execute").mockResolvedValue({ output: "unexpected execution", isError: false });
     f.registry.register(bash);
-    const askReached = deferred<void>();
-    const releaseAsk = f.hold();
-    const appendEntry = f.audit.appendPermissionAuditEntry.bind(f.audit);
-    const append = vi.spyOn(f.audit, "appendPermissionAuditEntry").mockImplementationOnce(async (entry) => {
-      askReached.resolve();
-      await releaseAsk.promise;
-      return appendEntry(entry);
-    });
+    const held = f.holdNextPreToolUse();
+    const correlations = await captureInvocationCorrelations();
+    onTestFinished(correlations.restore);
     const running = f.executeAll([{
       id: "host-approval-during-cleanup", name: "bash",
       input: { command: "printf approval", executionMode: "host", justification: "Check approval cleanup" },
@@ -1373,19 +1339,21 @@ describe("live native approval ownership", () => {
     });
     let closing: Promise<void>;
     try {
-      await askReached.promise;
+      await held.reached;
       closing = closeFixtures();
     } finally {
-      releaseAsk.resolve();
+      held.release();
     }
     await closing;
 
     expect(await running).toMatchObject([{ is_error: true }]);
     expect(f.cards(f.windowA)).toEqual([]);
     expect(execute).not.toHaveBeenCalled();
-    expect(await Promise.all(append.mock.results.map(({ value }) => value))).toEqual([
-      expect.objectContaining({ decision: "ask", tool: "bash" }),
-      expect.objectContaining({ decision: "deny", tool: "bash" }),
+    const correlationId = correlations.get("host-approval-during-cleanup");
+    expect(correlationId).toEqual(expect.any(String));
+    expect(f.logs.events.filter((entry) => entry.correlationId === correlationId && entry.event === "permission_decision")).toEqual([
+      expect.objectContaining({ event: "permission_decision", decision: "ask", tool: "bash" }),
+      expect.objectContaining({ event: "permission_decision", decision: "deny", tool: "bash" }),
     ]);
   });
 });

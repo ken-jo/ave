@@ -700,7 +700,7 @@ export function registerGitMarketplaceHandlers(
   const handle = <T>(channel: string, run: (service: GitMarketplacePort, args: unknown[]) => T | Promise<T>) => {
     ipcMain.handle(channel, async (event: IpcMainInvokeEvent, ...args: unknown[]): Promise<GitMarketplaceResult<T>> => {
       if (!validateHostRendererSender(event)) {
-        auditUnauthorized(deps.auditLogger, channel, event);
+        auditUnauthorized(channel);
         return UNAUTHORIZED;
       }
       try {
@@ -767,7 +767,7 @@ export function registerGitMarketplaceHandlers(
   const handleHeld = <T>(channel: string, run: () => T) => {
     ipcMain.handle(channel, (event: IpcMainInvokeEvent): GitMarketplaceResult<T> => {
       if (!validateHostRendererSender(event)) {
-        auditUnauthorized(deps.auditLogger, channel, event);
+        auditUnauthorized(channel);
         return UNAUTHORIZED;
       }
       return { ok: true, value: scrubMarketplaceStrings(run()) };
@@ -778,7 +778,7 @@ export function registerGitMarketplaceHandlers(
   // Keep native folder picks in main; the renderer receives only scrubbed labels and opaque picks.
   ipcMain.handle(channels.sourcesPickFolder, async (event: IpcMainInvokeEvent): Promise<GitMarketplaceResult<FolderPickView | null>> => {
     if (!validateHostRendererSender(event)) {
-      auditUnauthorized(deps.auditLogger, channels.sourcesPickFolder, event);
+      auditUnauthorized(channels.sourcesPickFolder);
       return UNAUTHORIZED;
     }
     try {
@@ -802,7 +802,7 @@ export function registerGitMarketplaceHandlers(
   const handleScheduler = <T>(channel: string, run: (scheduler: MarketplaceBackground, args: unknown[]) => Promise<T>) => {
     ipcMain.handle(channel, async (event: IpcMainInvokeEvent, ...args: unknown[]): Promise<GitMarketplaceResult<T>> => {
       if (!validateHostRendererSender(event)) {
-        auditUnauthorized(deps.auditLogger, channel, event);
+        auditUnauthorized(channel);
         return UNAUTHORIZED;
       }
       if (!background) return { ok: false, code: "unavailable", message: "update checks have not started" };
@@ -821,7 +821,7 @@ export function registerGitMarketplaceHandlers(
 
   ipcMain.handle(CHANNELS.bootstrap.retry, async (event: IpcMainInvokeEvent) => {
     if (!validateHostRendererSender(event)) {
-      auditUnauthorized(deps.auditLogger, CHANNELS.bootstrap.retry, event);
+      auditUnauthorized(CHANNELS.bootstrap.retry);
       return UNAUTHORIZED_FRAME;
     }
     if (!background) return { ok: false, error: "the marketplace boot pass has not started" } as const;

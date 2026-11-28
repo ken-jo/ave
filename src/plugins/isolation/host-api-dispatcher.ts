@@ -19,7 +19,6 @@ import {
   runUnattributedEffectRequest,
   sameEffectAuthority,
 } from "../../permissions/effect-enforcement.js";
-import type { AuditLogger } from "../../audit/audit-logger.js";
 import { pathEffectClass } from "../../permissions/effect-kind.js";
 import { createEffectLedger, currentEffectLedger, runWithEffectLedger } from "../../permissions/effect-ledger.js";
 import { emitEffectShadowLog } from "../../permissions/reviewer/risk-shadow-log.js";
@@ -1359,7 +1358,6 @@ export interface HostApiDispatcherOptions {
   readonly reportUnknownField: (report: UnknownFieldReport) => void;
   /** Host-owned, coalesced diagnostics. The callback must not include caller payloads. */
   readonly reportBudgetAudit?: (entry: HostApiBudgetAudit) => void;
-  readonly effectAudit?: Pick<AuditLogger, "logShadow">;
   readonly table?: Record<HostApiPath, HostApiPathHandler>;
   /** Connections without invocation tracking must refuse tokens rather than fabricate authority. */
   readonly invocations?: HostInvocationTable;
@@ -1527,11 +1525,11 @@ export class HostApiDispatcher {
       return await runWithEffectLedger(ledger, invoke);
     } finally {
       const summary = ledger.summary();
-      if (this.options.effectAudit && summary.effects.length > 0) {
+      if (summary.effects.length > 0) {
         emitEffectShadowLog({
           hostApiPath: path, source: "plugin", pluginId: this.options.pluginId,
           hostObservable: true, hostObservedEffect: summary,
-        }, this.options.effectAudit);
+        });
       }
     }
   }

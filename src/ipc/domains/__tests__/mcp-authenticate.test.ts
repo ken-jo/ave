@@ -1,4 +1,5 @@
-import { describe, expect, it, vi } from "vitest";
+import { collectPermissionEvents } from "../../../__tests__/support/permission-events.js";
+import { describe, expect, it, vi, onTestFinished } from "vitest";
 import { CHANNELS, isPublicChannel } from "../../../contract/app-contract.js";
 import { makeAppIpcInvoker } from "./test-helpers.js";
 import { MAX_SERVER_ID_LEN } from "../../../shared/mcp-app-partition.js";
@@ -17,7 +18,7 @@ const invoke = makeAppIpcInvoker(handlers);
 async function setup() {
   handlers.clear();
   const authenticate = vi.fn(async (_id: string): Promise<unknown> => ({ connected: true }));
-  const auditLogger = { log: vi.fn() };
+
   const { registerPluginsHandlers } = await import("../plugins.js");
   registerPluginsHandlers({
     pluginRuntime: {
@@ -27,22 +28,23 @@ async function setup() {
     toolRegistry: { size: 0, findByName: vi.fn() },
     getPluginToolInvoker: () => vi.fn(),
     settingsService: { get: vi.fn(() => ({})) },
-    auditLogger,
     pluginMarketplace: { list: vi.fn(async () => []) },
     getMainWindow: vi.fn(() => null),
     getAppWindows: vi.fn(() => []),
   } as never);
-  return { authenticate, auditLogger };
+  return { authenticate };
 }
 
 describe("remote authentication IPC", () => {
   it("is internal and rejects unauthorized frames before calling the manager", async () => {
-    const { authenticate, auditLogger } = await setup();
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
+    const { authenticate } = await setup();
     expect(isPublicChannel(CHANNELS.mcp.authenticate)).toBe(false);
     const result = await handlers.get(CHANNELS.mcp.authenticate)!({ senderFrame: { url: "https://untrusted.test" } }, "remote-a");
     expect(result).toEqual(UNAUTHORIZED_FRAME);
     expect(authenticate).not.toHaveBeenCalled();
-    expect(auditLogger.log).toHaveBeenCalled();
+    expect(capture.events).toContainEqual({ event: "ipc_sender_refused", channel: CHANNELS.mcp.authenticate });
   });
 
   it.each([undefined, null, {}, "", "../other", "server\nsecret", "s".repeat(MAX_SERVER_ID_LEN + 1), "bundled:not-json", 'bundled:["other","a","b"]'])("rejects malformed server ids before authentication: %j", async (id) => {

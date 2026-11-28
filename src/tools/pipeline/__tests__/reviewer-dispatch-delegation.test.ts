@@ -1,10 +1,12 @@
+import { onTestFinished } from "vitest";
+import { collectPermissionEvents } from "../../../__tests__/support/permission-events.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { join } from "node:path";
 import { sanitizeAllowedDirectories } from "../../../permissions/allowed-directories.js";
 import { PermissionTestResources } from "../../../permissions/__tests__/test-resources.js";
 import { buildPermissionEvaluationContext } from "../../../permissions/evaluation-context.js";
 import { JudgeContractError, JudgeFailure, type JudgeDecision, type JudgeFailureKind, type PermissionJudge } from "../../../permissions/judge/judge-contract.js";
-import { collectingAudit, judgeSettings, scriptedStage } from "../../../permissions/judge/__tests__/judge-request-fixture.js";
+import { judgeSettings, scriptedStage } from "../../../permissions/judge/__tests__/judge-request-fixture.js";
 import { PermissionManager, type PermissionCheckResult } from "../../../permissions/permission-manager.js";
 import { makeRecentlyDeniedStore } from "../../../__tests__/support/recently-denied.js";
 import { RuleBasedRiskClassifier, type RiskClassifier } from "../../../permissions/reviewer/risk-classifier.js";
@@ -23,7 +25,8 @@ function subject(judge?: PermissionJudge | null, classifier: RiskClassifier = ne
   const root = resources.makeTmpDir("ave-reviewer-delegation-");
   const manager = new PermissionManager(join(root, "permissions.json"));
   const queue = makeRecentlyDeniedStore(join(root, "recently-denied.json"));
-  const audit = collectingAudit();
+  const capture = collectPermissionEvents();
+  onTestFinished(capture.restore);
   manager.setMode("auto");
 
   manager.setReviewer({ classifier, cache: resources.makeVerdictCache(join(root, "cache.jsonl")), recentlyDenied: queue });
@@ -31,9 +34,9 @@ function subject(judge?: PermissionJudge | null, classifier: RiskClassifier = ne
   const settings = judgeSettings({ chain: judge === undefined ? [] : [stage] });
   manager.setJudge({
     settings, chain: judge === undefined ? [] : [{ settings: stage, judge }],
-    breaker: manager.getJudgeBreaker(), audit: audit.logger,
+    breaker: manager.getJudgeBreaker(),
   });
-  return { root, manager, queue, audit };
+  return { root, manager, queue, events: capture.events };
 }
 
 type Subject = ReturnType<typeof subject>;
@@ -80,9 +83,7 @@ describe("reviewer dispatch consumes chain decisions", () => {
       const reviewedRequest = vi.mocked(judge.judge).mock.calls[0]?.[0];
       expect(reviewedRequest).toBeDefined();
       expect(result.reviewer?.verdict).toEqual(reviewedRequest?.ruleVerdict);
-      expect(current.audit.chained).toEqual([expect.objectContaining({
-        decision: "judge", judgeRecord: expect.objectContaining({ decision, source: "judge" }),
-      })]);
+      expect(current.events).toContainEqual(expect.objectContaining({ event: "permission_judge", decision, source: "judge" }));
       expect((await current.queue.list())).toHaveLength(0);
       if (lane === "headless" && decision === "deny") {
         expect(result.reason).toContain("do not retry");
@@ -98,9 +99,7 @@ describe("reviewer dispatch consumes chain decisions", () => {
       const result = await dispatch(current, lane);
       expect(result).toMatchObject({ decision: lane === "headless" ? "deny" : "ask" });
       expect(result.forceModal).toBeUndefined();
-      expect(current.audit.chained).toEqual([expect.objectContaining({
-        judgeRecord: expect.objectContaining({ fallback: kind, source: "fallback" }),
-      })]);
+      expect(current.events).toContainEqual(expect.objectContaining({ event: "permission_judge", fallback: kind, source: "fallback" }));
       expect((await current.queue.list())).toHaveLength(0);
       expect(current.manager.getJudgeBreaker().snapshot(SESSION_ID)).toEqual({ consecutive: 0, total: 0, open: false });
     });

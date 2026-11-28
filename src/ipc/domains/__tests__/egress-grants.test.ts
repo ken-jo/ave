@@ -1,6 +1,6 @@
 import { PermissionManager } from "../../../permissions/permission-manager.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PERMISSIONS } from "../../../shared/ipc-channels.js";
@@ -9,7 +9,7 @@ import { ApprovalGate, type ApprovalRequest } from "../../../permissions/approva
 import { createEgressAskRuntimeCallback } from "../../../permissions/egress-runtime.js";
 import { openEgressInvocation } from "../../../permissions/egress-invocations.js";
 import { setProcessPlatform } from "../../../__tests__/support/process-platform.js";
-import { flushSandboxAudit } from "../../../audit/sandbox-audit-sink.js";
+import { collectPermissionEvents } from "../../../__tests__/support/permission-events.js";
 
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
 vi.mock("electron", () => ({ ipcMain: { handle: vi.fn((channel: string, handler: (...args: unknown[]) => unknown) => handlers.set(channel, handler)) } }));
@@ -25,11 +25,12 @@ describe("domain grant management boundary", () => {
     vi.stubEnv("AVE_HOME", home);
     setProcessPlatform("linux");
     const wc = { send: vi.fn(), isDestroyed: () => false };
-    const auditLogger = { log: vi.fn() };
-    const gate = new ApprovalGate(wc as never, undefined, 5_000, auditLogger as never);
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
+    const gate = new ApprovalGate(wc as never, undefined, 5_000);
     const permissionManager = new PermissionManager(join(home, "permissions.json"));
     permissionManager.setMode("strict");
-    registerPermissionsHandlers({ conversationLoop: { permissionManager }, approvalGate: gate, auditLogger, settingsService: { get: () => undefined } } as never);
+    registerPermissionsHandlers({ conversationLoop: { permissionManager }, approvalGate: gate, settingsService: { get: () => undefined } } as never);
     const ask = createEgressAskRuntimeCallback({ approvalGate: gate, permissionManager, shellAskEnabled: () => true });
     const owner = { kind: "shell" as const, toolName: "bash" as const, toolUseId: undefined, context: { sessionId: "domain-session", workspaceRoot: home, approvalSurface: "interactive" as const } };
     const first = openEgressInvocation(owner);
@@ -59,18 +60,15 @@ describe("domain grant management boundary", () => {
       const next = sentApprovalCards<ApprovalRequest>(wc)[1]!;
       gate.resolveFromDesktopRenderer(next.id, { requestId: next.id, choice: "deny-once", nonce: next.nonce, hmac: next.hmac }, wc as never);
       expect(await afterRevoke).toEqual({ allow: false, reason: "denied by the user" });
-      expect(auditLogger.log).toHaveBeenCalledWith(expect.objectContaining({ output: expect.stringContaining("[egress-grant:revoke]") }));
+      expect(capture.events).toContainEqual(expect.objectContaining({ event: "egress_grant_revoked", scope: "always", removed: true }));
     } finally {
       first.release();
       second.release();
-      await flushSandboxAudit();
     }
-    const auditDir = join(home, "audit");
-    const rows = readdirSync(auditDir).filter(file => file.endsWith(".sandbox.jsonl"))
-      .flatMap(file => readFileSync(join(auditDir, file), "utf8").trim().split("\n").map(line => JSON.parse(line)));
-    expect(rows).toEqual(expect.arrayContaining([
-      expect.objectContaining({ entryKind: "egress-decision", decision: "allow", scope: "always", destination }),
-      expect.objectContaining({ entryKind: "egress-decision", decision: "deny", reason: "denied by the user", destination }),
+    expect(capture.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ event: "sandbox_egress_decision", decision: "allow", scope: "always" }),
+      expect.objectContaining({ event: "sandbox_egress_decision", decision: "deny" }),
     ]));
+    expect(JSON.stringify(capture.events)).not.toContain(destination.host);
   });
 });

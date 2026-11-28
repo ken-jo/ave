@@ -1,11 +1,11 @@
+import { collectPermissionEvents } from "../../__tests__/support/permission-events.js";
 // Release services must have no side effects until the user opts in.
-import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
+import { afterEach, beforeEach, describe, it, expect, vi, onTestFinished } from "vitest";
 import { setAppRelaunchRequested } from "../app-relaunch-state.js";
 import { createRequire } from "node:module";
 import { relaunchDesktopHost } from "../../boot/desktop-relaunch.js";
 import type { BrowserWindow, IpcMainInvokeEvent } from "electron";
 
-import type { AuditEntry, AuditLogger } from "../../audit/audit-logger.js";
 import { createAutoUpdater, type AutoUpdaterDeps, type UpdaterLike } from "../auto-updater.js";
 import { startCrashReporter } from "../crash-reporter.js";
 import { TelemetryService } from "../telemetry.js";
@@ -65,18 +65,6 @@ function fakeUpdater() {
   };
 }
 
-function fakeAuditLogger() {
-  const entries: AuditEntry[] = [];
-  return {
-    entries,
-    logger: {
-      log: (entry: AuditEntry) => {
-        entries.push(entry);
-      },
-    } as AuditLogger,
-  };
-}
-
 function createTestAutoUpdater(
   mainWindow: BrowserWindow,
   updater: UpdaterLike,
@@ -92,7 +80,6 @@ function createTestAutoUpdater(
     canSelfInstall: () => true,
     openExternal: () => {},
     ...deps,
-    auditLogger: deps.auditLogger ?? fakeAuditLogger().logger,
   });
 }
 
@@ -304,7 +291,6 @@ describe("auto-updater", () => {
       client: { platform: "linux", arch: "x64" },
       getWindows: () => windows,
       getDialogParent: () => windows.at(-1) ?? null,
-      auditLogger: fakeAuditLogger().logger,
       isEnabled: () => true,
       updaterFactory: () => u,
       canSelfInstall: () => true,
@@ -613,10 +599,12 @@ describe("auto-updater", () => {
   });
 
   it("install IPC rejects plugin shell senders and audits the attempt", async () => {
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
     const fw = fakeWindow();
     const u = fakeUpdater();
-    const audit = fakeAuditLogger();
-    const svc = createTestAutoUpdater(fw.win, u, { auditLogger: audit.logger, confirmInstallForTest: async () => true });
+
+    const svc = createTestAutoUpdater(fw.win, u, { confirmInstallForTest: async () => true });
     await svc.triggerCheck();
     u.emit("update-downloaded", { version: "3.0.0" });
 
@@ -624,16 +612,16 @@ describe("auto-updater", () => {
 
     expect(result).toEqual({ ok: false, reason: "unauthorized-frame" });
     expect(u.installs).toBe(0);
-    expect(audit.entries).toHaveLength(1);
-    expect(audit.entries[0]?.input).toContain("ave:update:install-now");
-    expect(audit.entries[0]?.input).toContain("ave-mcp-app://");
+    expect(capture.events).toContainEqual({ event: "ipc_sender_refused", channel: "ave:update:install-now" });
   });
 
   it("download IPC rejects missing sender frames before mutating updater state", async () => {
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
     const fw = fakeWindow();
     const u = fakeUpdater();
-    const audit = fakeAuditLogger();
-    const svc = createTestAutoUpdater(fw.win, u, { auditLogger: audit.logger });
+
+    const svc = createTestAutoUpdater(fw.win, u, {  });
     await svc.triggerCheck();
     u.emit("update-available", { version: "3.0.0" });
 
@@ -641,8 +629,7 @@ describe("auto-updater", () => {
 
     expect(result).toEqual({ ok: false, reason: "unauthorized-frame" });
     expect(u.downloads).toBe(0);
-    expect(audit.entries).toHaveLength(1);
-    expect(audit.entries[0]?.input).toContain("ave:update:download-now");
+    expect(capture.events).toContainEqual({ event: "ipc_sender_refused", channel: "ave:update:download-now" });
   });
 
   it("install IPC owns native confirmation and does not install when canceled", async () => {

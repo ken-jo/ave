@@ -145,7 +145,7 @@ export interface AuthorizationStageContext {
     reason: string,
     input: Record<string, unknown>,
     blockedPermission?: PermissionCheckResult,
-    hookChain?: import("../audit/audit-schema.js").HookResult[],
+    hookChain?: import("./pipeline/permission-decision.js").HookResult[],
   ) => Promise<ToolResult>;
   sessionId: string | undefined;
   startTime: number;

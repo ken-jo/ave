@@ -43,7 +43,7 @@ describe("Trigger 4: ApprovalGate fires `approval` on requestAndWait entry", () 
   ] as const)("describes %s and its conversation without policy diagnostics", async (toolName, toolCategory, path, action) => {
     setLocale("ko");
     const svc = makeFakeNotificationService();
-    const gate = new ApprovalGate(makeMockWebContents() as never, undefined, 60_000, undefined, svc);
+    const gate = new ApprovalGate(makeMockWebContents() as never, undefined, 60_000, svc);
     gate.setConversationTitleResolver((sessionId) => resolveConversationTitle({
       sessionId, messages: [{ role: "user", content: "그래 두개 진행해보자" }],
     }, t));
@@ -62,7 +62,7 @@ describe("Trigger 4: ApprovalGate fires `approval` on requestAndWait entry", () 
   it.each(["ko", "en"] as const)("names a staged request's origin apart from its conversation title in %s", async (locale) => {
     setLocale(locale);
     const svc = makeFakeNotificationService();
-    const gate = new ApprovalGate(makeMockWebContents() as never, undefined, 60_000, undefined, svc);
+    const gate = new ApprovalGate(makeMockWebContents() as never, undefined, 60_000, svc);
     gate.setConversationTitleResolver(() => "egress-probe");
     const waiting = gate.requestAndWait({
       id: "staged-notice", category: "tool", toolName: "read_file", toolCategory: "read", args: { path: "README.md" },
@@ -79,7 +79,7 @@ describe("Trigger 4: ApprovalGate fires `approval` on requestAndWait entry", () 
 
   it("retains the conversation in the bounded notification body for a long action", async () => {
     const svc = makeFakeNotificationService();
-    const gate = new ApprovalGate(makeMockWebContents() as never, undefined, 60_000, undefined, svc);
+    const gate = new ApprovalGate(makeMockWebContents() as never, undefined, 60_000, svc);
     gate.setConversationTitleResolver(() => "그래 두개 진행해보자");
     const waiting = gate.requestAndWait({
       id: "bounded-notice", category: "tool", toolName: "write_file", toolCategory: "write",
@@ -95,7 +95,7 @@ describe("Trigger 4: ApprovalGate fires `approval` on requestAndWait entry", () 
   it.each(["ko", "en"] as const)("keeps the action verb around a long filename in %s", async (locale) => {
     setLocale(locale);
     const svc = makeFakeNotificationService();
-    const gate = new ApprovalGate(makeMockWebContents() as never, undefined, 60_000, undefined, svc);
+    const gate = new ApprovalGate(makeMockWebContents() as never, undefined, 60_000, svc);
     gate.setConversationTitleResolver(() => "T".repeat(30));
     const waiting = gate.requestAndWait({
       id: "long-filename", category: "tool", toolName: "write_file", toolCategory: "write",
@@ -117,7 +117,6 @@ describe("Trigger 4: ApprovalGate fires `approval` on requestAndWait entry", () 
       wc as never,
       undefined,
       60_000,
-      undefined,
       svc,
     );
     void gate.requestAndWait({

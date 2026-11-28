@@ -1,5 +1,5 @@
-// The audit secret store quarantines only on Electron's exact decrypt-failure message and fails open on its exact transient
-// message (src/audit/hmac-chain.ts). Fail when the installed Electron no longer ships either string, before an upgrade turns
+// The protected secret store quarantines only on Electron's exact decrypt-failure message and fails open on its exact transient
+// message (src/lib/protected-secret-store.ts). Fail when the installed Electron no longer ships either string, before an upgrade turns
 // every permanent failure into a loud open failure or a transient one into an unexplained rethrow.
 import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -8,13 +8,13 @@ import process from "node:process";
 import { pathToFileURL } from "node:url";
 
 const ROOT = process.cwd();
-const SOURCE = "src/audit/hmac-chain.ts";
+const SOURCE = "src/lib/protected-secret-store.ts";
 const MESSAGE_NAMES = ["ELECTRON_DECRYPT_FAILED_MESSAGE", "ELECTRON_DECRYPT_TEMPORARILY_UNAVAILABLE_MESSAGE"];
 
 export function readExpectedMessages(root = ROOT) {
   const text = readFileSync(join(root, SOURCE), "utf-8");
   return MESSAGE_NAMES.map((name) => {
-    const match = new RegExp(`export const ${name} = "([^"]+)";`).exec(text);
+    const match = new RegExp(`^(?:export )?const ${name} = "([^"]+)";`, "m").exec(text);
     if (match === null) throw new Error(`${SOURCE} no longer declares ${name} as a plain string`);
     return { name, message: match[1] };
   });

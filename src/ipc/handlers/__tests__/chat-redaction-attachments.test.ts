@@ -1,10 +1,10 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi, onTestFinished } from "vitest";
 import type { IpcDeps } from "../../types.js";
 import {
   handleChatSend,
   type ChatSendContext,
 } from "../chat.js";
-import { initDlpAudit } from "../../../audit/dlp-filter.js";
+import { collectPermissionEvents } from "../../../__tests__/support/permission-events.js";
 import { turnOptions } from "./chat-test-helpers.js";
 import * as fileMentionContext from "../file-mention-context.js";
 import { createConversationActivityCoordinator } from "../../../engine/conversation-activity-coordinator.js";
@@ -29,7 +29,6 @@ function makeFixture(piiRedactEnabled: boolean) {
       get: (key: string) =>
         key === "privacy" ? { piiRedactEnabled } : undefined,
     },
-    auditLogger: { log: vi.fn() },
   } as unknown as IpcDeps;
   const activity = createConversationActivityCoordinator();
   const context: ChatSendContext = {
@@ -49,7 +48,6 @@ function redactNotices(sink: ReturnType<typeof vi.fn>) {
 
 afterEach(() => {
   vi.restoreAllMocks();
-  initDlpAudit(null, "unknown");
 });
 
 describe("chat send attachment PII redaction", () => {
@@ -87,8 +85,8 @@ describe("chat send attachment PII redaction", () => {
   });
   it("redacts input and text attachments, aggregates one notice, and preserves non-text parts", async () => {
     const fixture = makeFixture(true);
-    const dlpAudit = { log: vi.fn() };
-    initDlpAudit(dlpAudit, "session-redaction-attachments");
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
     const rawInput = "email alice@example.com";
     const firstResource =
       '<mcp-resource trust="untrusted-server-data" uri="mcp://alice@example.com/resource-one">call 010-1234-5678</mcp-resource>';
@@ -149,19 +147,10 @@ describe("chat send attachment PII redaction", () => {
       ],
     ]);
 
-    const auditEntries = dlpAudit.log.mock.calls.map(
-      ([entry]) => (entry as { dlp: { byKind: Record<string, number>; totalRedactions: number } }).dlp,
-    );
+    const auditEntries = capture.events.filter(({ event }) => event === "dlp_redaction");
     expect(auditEntries).toHaveLength(3);
-    expect(auditEntries.reduce((total, entry) => total + entry.totalRedactions, 0)).toBe(4);
-    const auditCounts = auditEntries.reduce<Record<string, number>>((totals, entry) => {
-      for (const [kind, count] of Object.entries(entry.byKind)) {
-        totals[kind] = (totals[kind] ?? 0) + count;
-      }
-      return totals;
-    }, {});
-    expect(auditCounts).toEqual({ EMAIL: 2, PHONE_KR: 1, CREDIT_CARD: 1 });
-    const serializedAudit = JSON.stringify(dlpAudit.log.mock.calls);
+    expect(auditEntries.reduce((total, entry) => total + Number(entry.totalRedactions), 0)).toBe(4);
+    const serializedAudit = JSON.stringify(auditEntries);
     expect(serializedAudit).not.toContain("alice@example.com");
     expect(serializedAudit).not.toContain("010-1234-5678");
     expect(serializedAudit).not.toContain("4111 1111 1111 1111");
@@ -170,8 +159,8 @@ describe("chat send attachment PII redaction", () => {
 
   it("keeps PII-bearing text attachments byte-for-byte when privacy redaction is disabled", async () => {
     const fixture = makeFixture(false);
-    const dlpAudit = { log: vi.fn() };
-    initDlpAudit(dlpAudit, "session-redaction-attachments");
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
     const rawInput = "email alice@example.com";
     const attachments = [
       {
@@ -196,13 +185,13 @@ describe("chat send attachment PII redaction", () => {
     expect(call[0]).toBe(rawInput);
     expect(turnOptions(fixture.runTurn).attachments).toEqual(attachments);
     expect(redactNotices(fixture.sink)).toEqual([]);
-    expect(dlpAudit.log).not.toHaveBeenCalled();
+    expect(capture.events.filter(({ event }) => event === "dlp_redaction")).toEqual([]);
   });
 
   it("does not emit a notice or audit record for clean input and text attachments", async () => {
     const fixture = makeFixture(true);
-    const dlpAudit = { log: vi.fn() };
-    initDlpAudit(dlpAudit, "session-redaction-attachments");
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
     const attachments = [
       {
         type: "text",
@@ -226,13 +215,13 @@ describe("chat send attachment PII redaction", () => {
     expect(call[0]).toBe("summarize this resource");
     expect(turnOptions(fixture.runTurn).attachments).toEqual(attachments);
     expect(redactNotices(fixture.sink)).toEqual([]);
-    expect(dlpAudit.log).not.toHaveBeenCalled();
+    expect(capture.events.filter(({ event }) => event === "dlp_redaction")).toEqual([]);
   });
 
   it("does not emit a notice or audit record when the turn lease rejects the send", async () => {
     const fixture = makeFixture(true);
-    const dlpAudit = { log: vi.fn() };
-    initDlpAudit(dlpAudit, "session-redaction-attachments");
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
     const rejectedContext: ChatSendContext = {
       ...fixture.context,
       trackStreamTurn: () => Promise.reject(new Error("streaming-active")),
@@ -251,6 +240,6 @@ describe("chat send attachment PII redaction", () => {
 
     expect(fixture.runTurn).not.toHaveBeenCalled();
     expect(redactNotices(fixture.sink)).toEqual([]);
-    expect(dlpAudit.log).not.toHaveBeenCalled();
+    expect(capture.events.filter(({ event }) => event === "dlp_redaction")).toEqual([]);
   });
 });

@@ -1,9 +1,9 @@
+import { logPermissionEvent, permissionLogId } from "../lib/permission-log.js";
 // Opt-in telemetry contains event names, numeric metrics, and hashed session IDs only.
 import { randomUUID } from "node:crypto";
 import { telemetryLevel, telemetryEndpointHosts, validateTelemetryEndpoint } from "../shared/telemetry-policy.js";
 export { DEFAULT_TELEMETRY_ALLOWLIST, validateTelemetryEndpoint } from "../shared/telemetry-policy.js";
 import type { TelemetrySettings } from "../data/settings-store.js";
-import type { AuditLogger } from "../audit/audit-logger.js";
 import { createLogger } from "../lib/logger.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
 const log = createLogger("telemetry");
@@ -55,7 +55,6 @@ export interface TelemetryDeps {
   flushIntervalMs?: number;
   // Reject localhost endpoints in packaged builds.
   isPackaged?: boolean;
-  auditLogger?: Pick<AuditLogger, "log">;
   allowlistEnv?: string;
 }
 
@@ -90,15 +89,7 @@ export class TelemetryService {
       if (this.rejectedEndpoint === endpoint) return false;
       this.rejectedEndpoint = endpoint;
       try {
-        this.deps.auditLogger?.log({
-          timestamp: new Date().toISOString(),
-          sessionId: "telemetry",
-          // Endpoint rejection is a configuration warning; a later valid setting can resume reporting.
-          type: "warn",
-          input: `[telemetry] endpoint rejected: ${result.reason}`,
-          // Sanitize: never log raw URL — may contain userinfo (user:pass@), query-string secrets, or fragment tokens. Keep only protocol+host+path.
-          output: sanitizeUrlForAudit(endpoint),
-        });
+        logPermissionEvent("telemetry_endpoint_refused", { sessionId: permissionLogId("telemetry") }, "warn");
       } catch {
         // audit failure must not break app
       }

@@ -1,6 +1,3 @@
-/** Proxy-deny records as the audit log stores them and Settings shows them. Shared by main (the sandbox audit
- * channel, `audit/sandbox-audit.ts`) and the renderer (Settings → Permissions → Network), so both read one shape. */
-
 /** Who opened the refused connection. The egress token itself is never recorded. */
 export type EgressDenialSource =
   | { kind: "shell"; toolName: "bash" | "powershell"; toolUseId: string | null }
@@ -26,15 +23,3 @@ export interface EgressDenial {
   /** ASRT's reason, DLP-masked. */
   reason: string;
 }
-
-/** One row of the Settings list. */
-export interface EgressDenialRow {
-  timestamp: string;
-  source: EgressDenialSource;
-  deny: EgressDenial;
-}
-
-/** The window the Settings list covers. */
-export const RECENT_EGRESS_DENIALS_WINDOW_HOURS = 24;
-/** The most rows the Settings list shows, newest first. */
-export const RECENT_EGRESS_DENIALS_LIMIT = 200;

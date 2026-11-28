@@ -19,9 +19,9 @@ type TelemetryPatch = Partial<NonNullable<AppSettings["telemetry"]>>;
 export function TelemetrySection() {
   const { t } = useTranslation();
   useSettingsControls([
-    { id: "telemetry.level", section: "audit-telemetry", label: t("auditTab.telemetryLevelLabel") },
-    { id: "telemetry.endpoint", section: "audit-telemetry", label: t("auditTab.telemetryEndpointLabel") },
-    { id: "telemetry.crashReportEndpoint", section: "audit-telemetry", label: t("auditTab.telemetryCrashEndpointLabel") },
+    { id: "telemetry.level", section: "diagnostics-telemetry", label: t("diagnosticsTab.telemetryLevelLabel") },
+    { id: "telemetry.endpoint", section: "diagnostics-telemetry", label: t("diagnosticsTab.telemetryEndpointLabel") },
+    { id: "telemetry.crashReportEndpoint", section: "diagnostics-telemetry", label: t("diagnosticsTab.telemetryCrashEndpointLabel") },
   ]);
   const api = getApi();
   const [loaded, setLoaded] = useState(false);
@@ -49,7 +49,7 @@ export function TelemetrySection() {
     let alive = true;
     void api.telemetryAllowedHosts().then((hosts) => {
       if (alive) { setAllowedHosts(hosts); setHostsLoaded(true); }
-    }).catch(() => { if (alive) setError(t("auditTab.telemetryLoadFailed")); });
+    }).catch(() => { if (alive) setError(t("diagnosticsTab.telemetryLoadFailed")); });
     return () => { alive = false; };
   }, [api, t]);
 
@@ -70,13 +70,13 @@ export function TelemetrySection() {
       }
       applySnapshot(result);
     } catch {
-      setError(t("auditTab.telemetrySaveFailed"));
+      setError(t("diagnosticsTab.telemetrySaveFailed"));
     } finally { setSaving(false); }
   }, [api, applySnapshot, t]);
 
   const commitEndpoint = useCallback((key: "endpoint" | "crashReportEndpoint", next: string) => {
     if (next !== "" && !validateTelemetryEndpoint(next, { isPackaged: false, allowedHosts }).valid) {
-      setError(t("auditTab.telemetryInvalidEndpoint"));
+      setError(t("diagnosticsTab.telemetryInvalidEndpoint"));
       return;
     }
     void persist({ [key]: next });
@@ -86,31 +86,31 @@ export function TelemetrySection() {
     && crashReportEndpoint !== (bootSettings.bootCrashReportEndpoint ?? "");
 
   return (
-    <SettingsSection data-settings-section="audit-telemetry" title={t("auditTab.telemetrySectionTitle")} description={t("auditTab.telemetrySectionDesc")}>
+    <SettingsSection data-settings-section="diagnostics-telemetry" title={t("diagnosticsTab.telemetrySectionTitle")} description={t("diagnosticsTab.telemetrySectionDesc")}>
       <div data-setting-row="telemetry.level">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <label className="min-w-0 text-sm font-medium" htmlFor="telemetry-level">{t("auditTab.telemetryLevelLabel")}</label>
+        <label className="min-w-0 text-sm font-medium" htmlFor="telemetry-level">{t("diagnosticsTab.telemetryLevelLabel")}</label>
         <NativeSelect data-setting-id="telemetry.level" id="telemetry-level" data-testid="telemetry-level" value={level} disabled={!loaded || saving} onChange={(event) => {
           const next = event.target.value;
           if (isTelemetryLevel(next) && next !== level) void persist({ level: next, ...telemetryLevelFlags(next), telemetryPromptAnswered: true });
         }}>
-          {TELEMETRY_LEVELS.map((value) => <NativeSelectOption key={value} value={value}>{t(`auditTab.telemetryLevel.${value}`)}</NativeSelectOption>)}
+          {TELEMETRY_LEVELS.map((value) => <NativeSelectOption key={value} value={value}>{t(`diagnosticsTab.telemetryLevel.${value}`)}</NativeSelectOption>)}
         </NativeSelect>
       </div>
-      <p className="mt-2 text-xs text-muted-foreground" data-testid="telemetry-enabled-help">{t("auditTab.telemetryEnabledHelp")}</p>
-      <p className="mt-2 text-xs text-muted-foreground" data-testid="telemetry-level-help">{t(`auditTab.telemetryLevelHelp.${level}`)}</p>
-      {legacyCrashDisabled ? <div className="mt-2 space-y-2" data-testid="telemetry-legacy-consent"><p className="text-xs text-muted-foreground">{t("auditTab.telemetryLegacyConsent")}</p><Button type="button" size="sm" disabled={saving} onClick={() => void persist({ level, ...telemetryLevelFlags(level), telemetryPromptAnswered: true })}>{t("auditTab.telemetryConfirmLevel")}</Button></div> : null}
+      <p className="mt-2 text-xs text-muted-foreground" data-testid="telemetry-enabled-help">{t("diagnosticsTab.telemetryEnabledHelp")}</p>
+      <p className="mt-2 text-xs text-muted-foreground" data-testid="telemetry-level-help">{t(`diagnosticsTab.telemetryLevelHelp.${level}`)}</p>
+      {legacyCrashDisabled ? <div className="mt-2 space-y-2" data-testid="telemetry-legacy-consent"><p className="text-xs text-muted-foreground">{t("diagnosticsTab.telemetryLegacyConsent")}</p><Button type="button" size="sm" disabled={saving} onClick={() => void persist({ level, ...telemetryLevelFlags(level), telemetryPromptAnswered: true })}>{t("diagnosticsTab.telemetryConfirmLevel")}</Button></div> : null}
       </div>
       {error ? <p role="alert" className="mt-2 text-xs text-destructive">{error}</p> : null}
-      <div data-setting-id="telemetry.endpoint"><SettingsTextField id="telemetry-endpoint" label={t("auditTab.telemetryEndpointLabel")} help={t("auditTab.telemetryEndpointHelp")} value={endpoint} onCommit={(next) => commitEndpoint("endpoint", next)} disabled={!loaded || !hostsLoaded || saving} placeholder="https://" className="mt-4">
-        <p className="text-xs text-muted-foreground" data-testid="telemetry-allowed-hosts">{allowedHosts.length > 0 ? t("auditTab.telemetryAllowedHosts", { hosts: allowedHosts.join(", ") }) : t("auditTab.telemetryNoAllowedHosts")}</p>
+      <div data-setting-id="telemetry.endpoint"><SettingsTextField id="telemetry-endpoint" label={t("diagnosticsTab.telemetryEndpointLabel")} help={t("diagnosticsTab.telemetryEndpointHelp")} value={endpoint} onCommit={(next) => commitEndpoint("endpoint", next)} disabled={!loaded || !hostsLoaded || saving} placeholder="https://" className="mt-4">
+        <p className="text-xs text-muted-foreground" data-testid="telemetry-allowed-hosts">{allowedHosts.length > 0 ? t("diagnosticsTab.telemetryAllowedHosts", { hosts: allowedHosts.join(", ") }) : t("diagnosticsTab.telemetryNoAllowedHosts")}</p>
       </SettingsTextField></div>
-      <div data-setting-id="telemetry.crashReportEndpoint"><SettingsTextField id="telemetry-crash-endpoint" label={t("auditTab.telemetryCrashEndpointLabel")} help={t("auditTab.telemetryCrashEndpointHelp")} value={crashReportEndpoint} onCommit={(next) => commitEndpoint("crashReportEndpoint", next)} disabled={!loaded || !hostsLoaded || saving} placeholder="https://" className="mt-4">
+      <div data-setting-id="telemetry.crashReportEndpoint"><SettingsTextField id="telemetry-crash-endpoint" label={t("diagnosticsTab.telemetryCrashEndpointLabel")} help={t("diagnosticsTab.telemetryCrashEndpointHelp")} value={crashReportEndpoint} onCommit={(next) => commitEndpoint("crashReportEndpoint", next)} disabled={!loaded || !hostsLoaded || saving} placeholder="https://" className="mt-4">
         <RestartRequiredChip pending={crashEndpointPending} />
       </SettingsTextField></div>
       {bootReadError ? <p role="alert" className="mt-2 text-xs text-destructive">{t("settingsRestart.readFailed")}</p> : null}
       <RestartRequiredRow pending={crashEndpointPending} />
-      <p className="mt-2 text-xs text-muted-foreground" data-testid="telemetry-crash-reporting-help">{t("auditTab.telemetryCrashReportingHelp")}</p>
+      <p className="mt-2 text-xs text-muted-foreground" data-testid="telemetry-crash-reporting-help">{t("diagnosticsTab.telemetryCrashReportingHelp")}</p>
     </SettingsSection>
   );
 }

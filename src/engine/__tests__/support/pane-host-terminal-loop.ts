@@ -166,7 +166,6 @@ export async function createPaneHostTerminalLoop(
     parentLoop: loop,
     mailbox,
     settingsService: { get: () => ({ subAgentAutonomousWake: false }) } as never,
-    auditLogger: { log: () => {} } as never,
     resolveChildAddress: async () => ({ parentSessionId: paneSession(), childSessionId: "sub-worker", childTitle: "worker" }),
   });
   return { loop, typed, asked, delivered };

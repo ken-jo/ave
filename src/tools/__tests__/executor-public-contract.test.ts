@@ -31,12 +31,12 @@ type PublicExecutorContracts = [
 describe("ToolExecutor public barrel", () => {
   it("preserves the runtime exports while public contract types remain importable", () => {
     expect(Object.keys(executorModule).sort()).toEqual([
-      "RATIONALE_TERMINAL_AUDIT_UNKNOWN_RESULT",
+      "RATIONALE_TERMINAL_STATE_UNKNOWN_RESULT",
       "ToolExecutor",
     ]);
     expect(executorModule.ToolExecutor).toBeTypeOf("function");
-    expect(executorModule.RATIONALE_TERMINAL_AUDIT_UNKNOWN_RESULT).toContain(
-      "terminal audit",
+    expect(executorModule.RATIONALE_TERMINAL_STATE_UNKNOWN_RESULT).toContain(
+      "terminal execution state",
     );
     expectTypeOf<PublicExecutorContracts>().toBeArray();
   });

@@ -10,8 +10,8 @@ const TRANSIENT = "safeStorage.decryptStringAsync is temporarily unavailable. Pl
 
 function fixtureRoot(binaryText) {
   const root = mkdtempSync(join(tmpdir(), "safestorage-messages-"));
-  mkdirSync(join(root, "src/audit"), { recursive: true });
-  writeFileSync(join(root, "src/audit/hmac-chain.ts"),
+  mkdirSync(join(root, "src/lib"), { recursive: true });
+  writeFileSync(join(root, "src/lib/protected-secret-store.ts"),
     `export const ELECTRON_DECRYPT_FAILED_MESSAGE = "${FAILED}";\nexport const ELECTRON_DECRYPT_TEMPORARILY_UNAVAILABLE_MESSAGE = "${TRANSIENT}";\n`);
   if (binaryText !== null) {
     mkdirSync(join(root, "node_modules/electron/dist"), { recursive: true });
@@ -57,7 +57,7 @@ test("fails closed when no Electron binary is installed", () => {
   }
 });
 
-test("reads the messages this tree's audit store matches on", () => {
+test("reads the messages this tree's protected store matches on", () => {
   const messages = readExpectedMessages().map(({ message }) => message);
   assert.deepEqual(messages, [FAILED, TRANSIENT]);
 });

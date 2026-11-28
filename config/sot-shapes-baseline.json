@@ -3,11 +3,9 @@
   "shapes": {
     "error-message": {},
     "fs-rename": {
-      "src/audit/hmac-chain.ts": 1,
       "src/boot/steps/watcher-telemetry-collector.ts": 1,
       "src/hooks/hook-discovery.ts": 1,
       "src/hooks/hook-trust-commands.ts": 1,
-      "src/main/audit-service.ts": 1,
       "src/memory/memory-manager.ts": 2,
       "src/plugins/installed-entry-fs.ts": 1,
       "src/plugins/marketplace-update-recovery.ts": 2,

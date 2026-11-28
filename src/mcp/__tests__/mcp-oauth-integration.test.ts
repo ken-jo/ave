@@ -252,7 +252,7 @@ async function createManager(fixture: WireFixture) {
   }) as typeof fetch;
   let browserOpens = 0;
   const manager = new McpManager(new McpGovernance(policyPath), registry, networkFetch, configPath,
-    undefined, undefined, undefined, secrets, {
+    undefined, undefined, secrets, {
       secrets,
       redirectCatchers: new AuthRedirectCatchers(),
       openAuthorizationUrl: async (url) => {

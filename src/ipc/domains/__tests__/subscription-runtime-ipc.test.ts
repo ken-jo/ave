@@ -172,7 +172,6 @@ function makeDeps() {
     conversationLoop: { refreshProvider: vi.fn(), abortCurrentTurn: vi.fn() },
     sideChatConversationLoop: { refreshProvider: vi.fn(), abortCurrentTurn: vi.fn() },
     paneChatLoops: { all: () => [paneLoop] },
-    auditLogger: { log: vi.fn() },
     getAppWindows: vi.fn<() => TestAppWindow[]>(() => []),
     refreshActiveLlmWildcard: vi.fn(),
     rewireReviewerAgent: vi.fn(),

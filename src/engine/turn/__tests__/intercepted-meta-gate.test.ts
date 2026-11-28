@@ -10,7 +10,6 @@ function gateSelf(
 ) {
   return {
     deps: { approvalGate: { requestAndWait } },
-    auditLogger: { log: vi.fn() },
     currentAbortController,
   } as unknown as LoopContext;
 }

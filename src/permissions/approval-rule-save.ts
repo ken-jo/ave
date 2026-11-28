@@ -36,11 +36,11 @@ type SavedRule = Extract<ApprovalRuleSaveResult, { ok: true }>;
 type RefusedRule = Extract<ApprovalRuleSaveResult, { ok: false }>;
 
 /** A card rule that passed every check its request allows. `persist` writes it; with `checkOnly` it stops after the currency
- * checks, before the audit row and the write. */
+ * checks, before the write. */
 export interface ApprovalCardRulePlan {
   readonly ok: true;
   readonly saved: SavedRule;
-  persist(authority?: ApprovalPersistenceGuard, beforePersist?: (saved: SavedRule) => Promise<void>, checkOnly?: boolean): Promise<ApprovalRuleSaveResult>;
+  persist(authority?: ApprovalPersistenceGuard, checkOnly?: boolean): Promise<ApprovalRuleSaveResult>;
 }
 
 const fail = (error: string, message?: string): RefusedRule =>
@@ -121,10 +121,9 @@ export async function saveApprovalCardRule(
   answer: { readonly decision: unknown; readonly scope: unknown; readonly displayedVerdictAtApproval: unknown },
   permissionManager: PermissionManager | undefined,
   authority?: ApprovalPersistenceGuard,
-  beforePersist?: (saved: SavedRule) => Promise<void>,
 ): Promise<ApprovalRuleSaveResult> {
   const plan = planApprovalCardRule(snapshot, rule, answer, permissionManager);
-  return plan.ok ? plan.persist(authority, beforePersist) : plan;
+  return plan.ok ? plan.persist(authority) : plan;
 }
 
 export function planApprovalCardRule(
@@ -162,11 +161,10 @@ export function planApprovalCardRule(
       }
     };
     const saved = { ok: true, action: "allow", scope: "session", pattern: floorGrant.code, edited: false } as const;
-    return { ok: true, saved, persist: async (authority, beforePersist, checkOnly) => {
+    return { ok: true, saved, persist: async (authority, checkOnly) => {
       try {
         await refreshApprovalPersistence(authority);
         assertFloorGrantCurrent();
-        if (!checkOnly) await beforePersist?.(saved);
         await refreshApprovalPersistence(authority);
         assertApprovalPersistenceCurrent(authority);
         assertFloorGrantCurrent();
@@ -214,10 +212,9 @@ export function planApprovalCardRule(
   const saved = { ok: true, action, scope, pattern, edited: edited !== undefined, ...(warning === undefined ? {} : { warning }) } as const;
   if (scope === "session" && snapshot.sessionId === undefined) return fail("missing-session", "This request has no conversation session");
   if (scope === "project" && target.context.projectCwd === undefined) return fail("scope-not-offered", "This request has no project");
-  return { ok: true, saved, persist: async (authority, beforePersist, checkOnly) => {
+  return { ok: true, saved, persist: async (authority, checkOnly) => {
     try {
       await refreshApprovalPersistence(authority);
-      if (!checkOnly) await beforePersist?.(saved);
       if (checkOnly) return withLocalityDecision(() => {
         assertApprovalPersistenceCurrent(authority);
         // The write binds a project rule to its issued root; the check asks the same of the directory as it is now.

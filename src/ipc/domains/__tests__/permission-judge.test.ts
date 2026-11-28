@@ -1,3 +1,4 @@
+import { collectPermissionEvents } from "../../../__tests__/support/permission-events.js";
 import { useConfigurationOwner } from "../../../__tests__/support/configuration-owner.js";
 
 useConfigurationOwner();
@@ -6,7 +7,7 @@ import { permissionSettingsPath } from "../../../permissions/permission-settings
 import { writePermissionSettingsFixture } from "../../../__tests__/support/permission-settings-fixture.js";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, onTestFinished } from "vitest";
 import { foreignFrameEvent, hostFrameEvent, useTempDirs } from "../../../__tests__/test-helpers.js";
 import { PERMISSIONS } from "../../../shared/ipc-channels.js";
 import type { IpcDeps } from "../../types.js";
@@ -49,7 +50,6 @@ beforeEach(() => {
       get: () => ({ vendors: { "openai-compatible": { model: "team/local", baseUrl: "http://localhost:9000/v1" } } }),
       getSecret: () => null,
     },
-    auditLogger: { log: vi.fn() },
     rewireReviewerAgent: vi.fn(),
     getMainWindow: () => null,
   } as unknown as IpcDeps;
@@ -62,10 +62,12 @@ afterEach(() => {
 
 describe("judge settings host boundary", () => {
   it.each([PERMISSIONS.judgeGet, PERMISSIONS.judgeSet])("refuses foreign and plugin senders on %s", async (channel) => {
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
     for (const url of ["https://untrusted.example/", "ave-mcp-app://s-66697874757265/proxy.html?t=fixture"]) {
       expect(await handlers.get(channel)!(foreignFrameEvent(url), { intent, settings: { chain: [] } })).toEqual({ ok: false, error: "unauthorized-frame" });
     }
-    expect(deps.auditLogger.log).toHaveBeenCalledTimes(2);
+    expect(capture.events.filter((event) => event.event === "ipc_sender_refused" && event.channel === channel)).toHaveLength(2);
     expect(deps.rewireReviewerAgent).not.toHaveBeenCalled();
   });
 

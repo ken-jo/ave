@@ -2470,8 +2470,8 @@ describe("installer smoke and packaging discipline", () => {
     expect(contributing).not.toContain("Markdown-only pushes");
   });
 
-  it("declares sonic-boom as a runtime dependency (log-file-sink imports it unbundled)", () => {
-    // src/lib/log-file-sink.ts adds a top-level import from "sonic-boom" that
+  it("declares sonic-boom as a runtime dependency of the unbundled log destination", () => {
+    // src/lib/async-log-destination.ts has a top-level import from "sonic-boom" that
     // the packaged main process resolves directly from app.asar (unbundled
     // runtime code). The repository AGENTS.md contract requires it in
     // `dependencies`, NOT `devDependencies` — otherwise electron-builder prunes
@@ -2487,8 +2487,8 @@ describe("installer smoke and packaging discipline", () => {
 
     // And the import is actually present in the unbundled runtime source, so
     // this guard tracks a real import rather than an orphaned dependency.
-    const sinkSource = readRepoFile("src/lib/log-file-sink.ts");
-    expect(sinkSource).toContain('from "sonic-boom"');
+    const destinationSource = readRepoFile("src/lib/async-log-destination.ts");
+    expect(destinationSource).toContain('from "sonic-boom"');
   });
 
   it("keeps fast preview installer mode separate from size-optimized release artifacts", () => {

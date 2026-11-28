@@ -173,7 +173,6 @@ async function setup() {
     releaseChatGroupLoop: vi.fn(),
     getSubAgentRunner: () => runner,
     settingsService: { get: (key: string) => key === "llm" ? fakeLlmSettings() : {} },
-    auditLogger: { log: vi.fn() },
     getMainWindow: () => ownerWindow,
   } as unknown as IpcDeps;
   registerChatHandlers(deps);

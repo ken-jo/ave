@@ -40,7 +40,7 @@ const TAB_SOURCES: Record<SettingsTab, readonly string[]> = {
   ],
   roles: ["tabs/RolesTab.tsx"],
   usage: ["components/UsageDashboard.tsx", "components/WorkspaceStatsSection.tsx"],
-  audit: ["tabs/AuditTab.tsx", "tabs/DiagnosticsSection.tsx", "tabs/TelemetrySection.tsx"],
+  diagnostics: ["tabs/DiagnosticsTab.tsx", "tabs/DiagnosticsSection.tsx", "tabs/TelemetrySection.tsx"],
   mcp: ["tabs/McpTab.tsx"],
   "plugin-config": [
     "tabs/PluginConfigTab.tsx",

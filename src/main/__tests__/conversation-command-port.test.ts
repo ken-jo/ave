@@ -33,7 +33,6 @@ function makeFixture(
       runTurn,
     },
     settingsService: { get: () => ({ piiRedactEnabled: false }) },
-    auditLogger: { log: vi.fn() },
     memoryManager: {
       sessions: {
         markMainActiveFresh,

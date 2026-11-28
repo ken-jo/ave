@@ -1,3 +1,4 @@
+import { trackPermissionEvents } from "../../__tests__/support/permission-events.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { PostTurnHookChain } from "../post-turn-hook-chain.js";
@@ -6,6 +7,7 @@ import type { MemoryManager } from "../../memory/memory-manager.js";
 import type { SettingsService } from "../../data/settings-store.js";
 import { fakeLlmSettings } from "../../shared/__tests__/fake-llm-settings.js";
 import { EMPTY_ASSISTANT_RESPONSE_TEXT } from "../../lib/chat-stream-state.js";
+import { activeModelCatalog, installModelCatalog } from "../../shared/model-catalog/active.js";
 
 function createMessages(): GenericMessage[] {
   // Use more than preserveRecentMessages=12 messages so compaction actually runs.
@@ -379,26 +381,22 @@ describe("PostTurnHookChain", () => {
     expect(scheduleFallbackDrain).not.toHaveBeenCalled();
   });
 
-  describe("audit route emission", () => {
-    function makeChain(opts: {
-      autoCompact: boolean;
-      logTurn: ReturnType<typeof vi.fn>;
-    }) {
-      const auditLogger = {
-        logTurn: opts.logTurn,
-      } as unknown as import("../../audit/audit-logger.js").AuditLogger;
+  describe("turn completion logging", () => {
+    const permissionEvents = trackPermissionEvents();
+    const completion = () => permissionEvents().filter((entry) => entry.event === "post_turn_hook_finished");
+    function makeChain() {
+
       const settingsService = {
         get: vi.fn((key: string) => {
           if (key === "llm") return fakeLlmSettings({ model: "gpt-5.4-mini" });
-          return { systemPrompt: "", autoCompact: opts.autoCompact };
+          return { systemPrompt: "", autoCompact: false };
         }),
       } as unknown as SettingsService;
-      return new PostTurnHookChain({ auditLogger, settingsService });
+      return new PostTurnHookChain({ settingsService });
     }
 
     it("emits `${provider}/${model}` for llm-route turns", async () => {
-      const logTurn = vi.fn();
-      const chain = makeChain({ autoCompact: false, logTurn });
+      const chain = makeChain();
 
       await chain.run({
         sessionId: "session-llm",
@@ -410,16 +408,11 @@ describe("PostTurnHookChain", () => {
         route: "llm",
       });
 
-      // Audit routes use provider/model so usage parsing can attribute cost; assert the shape rather than a specific provider.
-      expect(logTurn).toHaveBeenCalledOnce();
-      const call = logTurn.mock.calls[0]![0] as { route: string };
-      expect(call.route).toMatch(/^[a-z][\w-]*\/[\w.-]+$/);
-      expect(call.route).not.toBe("llm");
+      expect(completion()).toEqual([expect.objectContaining({ route: expect.stringMatching(/^[a-z][\w-]*\/[\w.-]+$/) })]);
     });
 
     it("emits the bare classification for non-llm routes", async () => {
-      const logTurn = vi.fn();
-      const chain = makeChain({ autoCompact: false, logTurn });
+      const chain = makeChain();
 
       await chain.run({
         sessionId: "session-skill",
@@ -430,13 +423,11 @@ describe("PostTurnHookChain", () => {
         route: "command",
       });
 
-      const call = logTurn.mock.calls[0]![0] as { route: string };
-      expect(call.route).toBe("command");
+      expect(completion()).toEqual([expect.objectContaining({ route: "command" })]);
     });
 
     it("emits serving provider/model for token-bearing skill routes", async () => {
-      const logTurn = vi.fn();
-      const chain = makeChain({ autoCompact: false, logTurn });
+      const chain = makeChain();
 
       await chain.run({
         sessionId: "session-skill-llm",
@@ -450,83 +441,11 @@ describe("PostTurnHookChain", () => {
         vendorModel: "gpt-5.4-mini",
       });
 
-      const call = logTurn.mock.calls[0]![0] as { route: string };
-      expect(call.route).toBe("openai/gpt-5.4-mini");
-    });
-
-    it("persists per-model usage breakdown for mixed fallback rounds", async () => {
-      const logTurn = vi.fn();
-      const chain = makeChain({ autoCompact: false, logTurn });
-
-      await chain.run({
-        sessionId: "session-mixed-fallback",
-        messages: createMessages(),
-        input: "여러 라운드",
-        output: "완료",
-        toolCalls: [],
-        route: "llm",
-        tokenUsage: {
-          inputTokens: 1_700_000,
-          outputTokens: 100_000,
-          cacheReadTokens: 500_000,
-          cacheWriteTokens: 200_000,
-        },
-        usageByModel: [
-          {
-            vendorProvider: "claude",
-            vendorModel: "claude-sonnet-4-6",
-            tokenUsage: {
-              inputTokens: 1_700_000,
-              outputTokens: 100_000,
-              cacheReadTokens: 500_000,
-              cacheWriteTokens: 200_000,
-            },
-          },
-          {
-            vendorProvider: "openai",
-            vendorModel: "gpt-5.4-mini",
-            tokenUsage: { inputTokens: 10_000, outputTokens: 1_000 },
-          },
-        ],
-        vendorProvider: "openai",
-        vendorModel: "gpt-5.4-mini",
-      });
-
-      const call = logTurn.mock.calls[0]![0] as {
-        usageByModel: Array<{
-          vendorProvider: string;
-          vendorModel: string;
-          tokenUsage: {
-            inputTokens: number;
-            outputTokens: number;
-            cacheReadTokens?: number;
-            cacheWriteTokens?: number;
-          };
-        }>;
-      };
-      expect(call.usageByModel).toEqual([
-        {
-          vendorProvider: "claude",
-          vendorModel: "claude-sonnet-4-6",
-          tokenUsage: {
-            inputTokens: 1_000_000,
-            outputTokens: 100_000,
-            cacheReadTokens: 500_000,
-            cacheWriteTokens: 200_000,
-          },
-        },
-        {
-          vendorProvider: "openai",
-          vendorModel: "gpt-5.4-mini",
-          tokenUsage: { inputTokens: 10_000, outputTokens: 1_000 },
-        },
-      ]);
+      expect(completion()).toEqual([expect.objectContaining({ route: "openai/gpt-5.4-mini" })]);
     });
 
     it("prefers ctx.vendorProvider/vendorModel snapshot over current settings", async () => {
-      // Audit must use the model snapshot captured at runTurn entry, even when settings change mid-flight.
-      const logTurn = vi.fn();
-      const chain = makeChain({ autoCompact: false, logTurn });
+      const chain = makeChain();
 
       await chain.run({
         sessionId: "session-snapshot",
@@ -537,75 +456,84 @@ describe("PostTurnHookChain", () => {
         tokenUsage: { inputTokens: 100, outputTokens: 50 },
         route: "llm",
         vendorProvider: "claude",
-        vendorModel: "claude-3-5-sonnet-20241022",
-      });
-
-      const call = logTurn.mock.calls[0]![0] as { route: string };
-      expect(call.route).toBe("claude/claude-3-5-sonnet-20241022");
-    });
-
-    it("normalizes Claude AI SDK total input to fresh input before audit logging", async () => {
-      const logTurn = vi.fn();
-      const chain = makeChain({ autoCompact: false, logTurn });
-
-      await chain.run({
-        sessionId: "session-claude-cache",
-        messages: createMessages(),
-        input: "캐시 사용량 확인",
-        output: "확인했습니다",
-        toolCalls: [],
-        tokenUsage: {
-          inputTokens: 1_700_000,
-          outputTokens: 100_000,
-          cacheReadTokens: 500_000,
-          cacheWriteTokens: 200_000,
-        },
-        route: "llm",
-        vendorProvider: "claude",
         vendorModel: "claude-sonnet-4-6",
       });
 
-      expect(logTurn).toHaveBeenCalledOnce();
-      const call = logTurn.mock.calls[0]![0] as {
-        tokenUsage: {
-          inputTokens: number;
-          outputTokens: number;
-          cacheReadTokens?: number;
-          cacheWriteTokens?: number;
-        };
-      };
-      expect(call.tokenUsage).toEqual({
-        inputTokens: 1_000_000,
-        outputTokens: 100_000,
-        cacheReadTokens: 500_000,
-        cacheWriteTokens: 200_000,
-      });
+      expect(completion()).toEqual([expect.objectContaining({ route: "claude/claude-sonnet-4-6" })]);
     });
 
-    it("logs cleaned output when stream markers are present", async () => {
-      const logTurn = vi.fn();
-      const auditLogger = {
-        logTurn,
-      } as unknown as import("../../audit/audit-logger.js").AuditLogger;
+    it.each([
+      ["a credential-shaped identifier", `sk-${"a".repeat(48)}`],
+      ["an ordinary identifier", "example-active-only-model"],
+    ])("logs only the route for %s found only in the active catalog", async (_label, model) => {
+      const catalog = activeModelCatalog();
+      const provider = catalog.providers.openai;
+      installModelCatalog({
+        ...catalog,
+        providers: {
+          ...catalog.providers,
+          openai: { models: { ...provider.models, [model]: { ...provider.models["gpt-5.4-mini"], id: model } } },
+        },
+      });
+      try {
+        await makeChain().run({
+          sessionId: "session-redacted-route",
+          messages: createMessages(),
+          input: "Ask a question",
+          output: "Answer",
+          toolCalls: [],
+          route: "llm",
+          tokenUsage: { inputTokens: 1, outputTokens: 1 },
+          vendorProvider: "openai",
+          vendorModel: model,
+        });
+
+        expect(completion()).toEqual([expect.objectContaining({ route: "llm" })]);
+        expect(JSON.stringify(permissionEvents())).not.toContain(model);
+      } finally {
+        installModelCatalog(catalog);
+      }
+    });
+
+    it("omits a free-form model identifier from a token-bearing custom route", async () => {
+      const model = "N4v7Q2mP9xL3sT6kR8wC5hJ2dF7uV4zB";
+      await makeChain().run({
+        sessionId: "session-custom-route",
+        messages: createMessages(),
+        input: "Ask a question",
+        output: "Answer",
+        toolCalls: [],
+        route: "llm",
+        tokenUsage: { inputTokens: 1, outputTokens: 1 },
+        vendorProvider: "openai-compatible",
+        vendorModel: model,
+      });
+
+      expect(JSON.stringify(permissionEvents())).not.toContain(model);
+      expect(completion()).toEqual([expect.objectContaining({ route: "llm" })]);
+    });
+
+    it("persists cleaned output without logging conversation text", async () => {
+
       const settingsService = {
         get: vi.fn((key: string) => {
           if (key === "llm") return fakeLlmSettings();
           return { systemPrompt: "", autoCompact: false };
         }),
       } as unknown as SettingsService;
-      const chain = new PostTurnHookChain({ auditLogger, settingsService });
+      const chain = new PostTurnHookChain({ settingsService });
 
-      await chain.run({
-        sessionId: "session-audit-cleaned",
-        messages: createMessages(),
+      const result = await chain.run({
+        sessionId: "session-cleaned",
+        messages: [{ role: "assistant", content: "정리 완료입니다.<title>제목</title>" }],
         input: "정리",
-        output: "정리 완료입니다.<title>감사 로그 테스트 제목</title>",
+        output: "정리 완료입니다.<title>제목</title>",
         toolCalls: [],
         route: "chat",
       });
 
-      const call = logTurn.mock.calls[0]![0] as { output: string };
-      expect(call.output).toBe("정리 완료입니다.");
+      expect(result.messagesForPersistence.at(-1)?.content).toBe("정리 완료입니다.");
+      expect(completion()).toEqual([{ event: "post_turn_hook_finished", sessionId: "session-cleaned", route: "chat" }]);
     });
   });
 });

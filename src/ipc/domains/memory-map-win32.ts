@@ -32,7 +32,7 @@ export function registerWindowsMemoryMapHandlers(deps: IpcDeps, resolveScope: Me
   function handle<T>(channel: string, schema: z.ZodType<T>, action: (current: MemoryMapRuntime, value: T, event: IpcMainInvokeEvent,
     onAdmission: (assertLive: () => void) => void, admission: RequestAdmission) => unknown) {
     ipcMain.handle(channel, async (event, raw: unknown, ...extra: unknown[]) => {
-      if (!validateHostRendererSender(event)) { auditUnauthorized(deps.auditLogger, channel, event); return UNAUTHORIZED_FRAME; }
+      if (!validateHostRendererSender(event)) { auditUnauthorized(channel); return UNAUTHORIZED_FRAME; }
       const parsed = schema.safeParse(raw);
       if (!parsed.success || extra.length) return { ok: false, error: 'invalid-input' };
       const scope = channel === CHANNELS.memoryMap.retrieve || channel === CHANNELS.memoryMap.build
@@ -43,7 +43,7 @@ export function registerWindowsMemoryMapHandlers(deps: IpcDeps, resolveScope: Me
       if (original?.ok === false) return projectDenied;
       const assertSender = () => {
         if (!validateHostRendererSender(event)) {
-          auditUnauthorized(deps.auditLogger, channel, event);
+          auditUnauthorized(channel);
           throw new MemoryMapHostError('unauthorized-frame');
         }
       };

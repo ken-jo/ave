@@ -76,7 +76,6 @@ function makeDeps(seed: GenericMessage[]) {
         pruneCheckpointsDiscardedByRewind: vi.fn(async () => undefined),
       },
     } as any,
-    auditLogger: { log: vi.fn() } as any,
     getMainWindow: vi.fn(() => null),
   };
 }

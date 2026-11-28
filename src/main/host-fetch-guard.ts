@@ -1,5 +1,6 @@
 // Every host fetch passes URL validation, HTTPS policy, manifest allowlisting, and DNS-aware SSRF checks. Private-network approval and literal loopback
 // declarations are independent grants; neither implies the other.
+import { METHODS } from "node:http";
 import { isLoopbackHost, urlHostMatchesAllowList } from "./host-allow-list.js";
 import {
   validateHttpUrl,
@@ -216,7 +217,7 @@ export interface HostFetchHopOptions {
   // Recheck synchronous authority immediately before transport and again after any deferred body preparation at handoff.
   assertSendAllowed?: () => void;
   // Audit sink for an allowed hop (hop >= 1; the caller logged hop 0).
-  auditHop?: (line: string) => void;
+  auditHop?: (hop: { method: string; effect: Effect; hop: number }) => void;
   // Audit sink for a denied hop — same shape the caller uses for hop 0.
   auditDeny?: (reason: HostFetchDenyReason | "redirect-cap", detail: string) => void;
   // The response body can fail after this function has returned to its caller.
@@ -330,8 +331,12 @@ export async function runHostFetchHops(options: HostFetchHopOptions): Promise<Re
         assertHopAllowed();
         credentialUse?.assertLive("before-send");
         handedOff = true;
+        if (hop > 0) {
+          auditHop?.({ method: METHODS.includes(method) ? method : "OTHER", effect: methodEffect(method), hop });
+        }
       };
-      assertHopAllowed();
+      if (handoffTransport) assertHopAllowed();
+      else beforeSend();
       response = handoffTransport
         ? await handoffTransport.sendWithHandoff(url.toString(), transportInit, beforeSend)
         : await transport(url.toString(), transportInit);
@@ -415,7 +420,6 @@ export async function runHostFetchHops(options: HostFetchHopOptions): Promise<Re
     // — whose prior `cookie` was just dropped — receives only what the vault scopes to the new origin (empty ⇒ header stays removed).
     await applyInjectedCookie(url);
     credentialUse?.assertLive("after-await");
-    auditHop?.(`host_fetch ${url.origin} method=${method} effect=${decision.effect} hop=${hop + 1}`);
   }
   } catch (error) {
     credentialUse?.finish();

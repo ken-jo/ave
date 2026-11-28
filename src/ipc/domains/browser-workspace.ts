@@ -27,7 +27,7 @@ export function registerBrowserWorkspaceHandlers(deps: IpcDeps, service: Browser
   function register<K extends keyof BrowserWorkspaceRequests>(operation: K, execute: (windowId: number, request: BrowserWorkspaceRequests[K]) => unknown | Promise<unknown>): void {
     const channel = CHANNELS.browserWorkspace[operation];
     ipcMain.handle(channel, async (event: IpcMainInvokeEvent, payload: unknown): Promise<BrowserWorkspaceResult<unknown>> => {
-      if (!validateHostRendererSender(event)) { auditUnauthorized(deps.auditLogger, channel, event); return { ok: false, error: "unauthorized-frame" }; }
+      if (!validateHostRendererSender(event)) { auditUnauthorized(channel); return { ok: false, error: "unauthorized-frame" }; }
       const window = mainWindowForContents(event.sender);
       if (!window || window.isDestroyed()) return { ok: false, error: "unauthorized-frame" };
       const request = parseBrowserWorkspaceRequest(operation, payload);

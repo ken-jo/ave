@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 import type { BrowserWindow, WebContents } from "electron";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, onTestFinished } from "vitest";
+import { collectPermissionEvents } from "../../__tests__/support/permission-events.js";
 import { withoutTestApprovalCardPresenters } from "../../__tests__/vitest-approval-presentation.js";
 import { approvalSurfaceResolver } from "../../boot/approval-surface.js";
 import { ApprovalGate, IPC_APPROVAL_REQUEST, IPC_APPROVAL_SETTLED, isHostApprovalRejectedDecision, type ApprovalRequest } from "../../permissions/approval-gate.js";
@@ -31,8 +32,7 @@ function fixture() {
   registerMainWindow(first.window, "primary");
   registerMainWindow(second.window, "secondary");
   markMainWindowFocused(first.window);
-  const audit = { log: vi.fn() };
-  const gate = new ApprovalGate(approvalSurfaceResolver(), undefined, undefined, audit as never);
+  const gate = new ApprovalGate(approvalSurfaceResolver(), undefined, undefined);
   gates.push(gate);
   const pending = gate.requestAndWait({ id: "panel-request", category: "tool", toolName: "panel_status", toolCategory: "write",
     source: "plugin", sourcePluginId: "sample-panel", args: {}, reason: "Panel request", createdAt: Date.now() });
@@ -40,7 +40,7 @@ function fixture() {
     const card = first.cards()[0];
     return gate.resolveFromDesktopRenderer(card.id, { requestId: card.id, choice: "allow-once", nonce: card.nonce, hmac: card.hmac }, owner);
   };
-  return { first, second, gate, pending, answer, audit };
+  return { first, second, gate, pending, answer };
 }
 
 describe("main-window lifecycle for unattributed approvals", () => {
@@ -97,17 +97,17 @@ describe("main-window lifecycle for unattributed approvals", () => {
   });
 
   it("audits an unattended handoff when the card presenter is uninstalled", async () => {
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
     const h = fixture();
     expect(h.first.cards()).toHaveLength(1);
     markMainWindowFocused(h.second.window);
     await withoutTestApprovalCardPresenters(async () => {
       turnExtensionPolicyContext.run({ unattendedStage: true, allowExternalHooks: false }, () => unregisterMainWindow(h.first.window));
-      expect(h.audit.log).toHaveBeenCalledWith(expect.objectContaining({
-        output: expect.stringContaining("[approval:unattended-approval-denied] panel-request"),
+      expect(capture.events).toContainEqual(expect.objectContaining({
+        event: "approval_response_refused", requestId: "panel-request", reasonCode: "unattended-approval-denied",
       }));
-      expect(h.audit.log).not.toHaveBeenCalledWith(expect.objectContaining({
-        output: expect.stringContaining("[approval:send-failed]"),
-      }));
+      expect(capture.events.some(({ event }) => event === "approval_send_failed")).toBe(false);
       await expect(h.pending).resolves.toMatchObject({ choice: "deny-once", reasonCode: "unattended-approval-denied" });
       expect(h.gate.pendingCount).toBe(0);
       expect(h.second.cards()).toEqual([]);

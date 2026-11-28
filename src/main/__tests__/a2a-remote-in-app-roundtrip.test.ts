@@ -304,7 +304,6 @@ async function startReceiver(state: {
     },
     agentProfileStore: { list: async () => [profile] },
     getSubAgentRunner: () => state.runner,
-    auditLogger: { log: (entry: { input: string }) => { audits.push(entry.input); } },
   } as unknown as AppServices;
   const started = await maybeStartRemoteA2AReceiverServer({
     services,

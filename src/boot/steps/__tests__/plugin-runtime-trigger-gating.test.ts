@@ -27,7 +27,6 @@ function evaluate(overrides: EvalOverrides = {}) {
     capabilities: overrides.capabilities ?? OVERLAY_CAPS,
     dedupe: overrides.dedupe ?? new TriggerConversationDedupe(),
     rateLimiter: overrides.rateLimiter ?? new TriggerConversationRateLimiter(),
-    auditLogger: { log: vi.fn() },
     now: () => NOW,
   });
 }

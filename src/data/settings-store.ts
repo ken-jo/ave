@@ -461,14 +461,6 @@ export interface A2ARemoteSettings {
   receiverMaxKeysPerGeneration: number;
 }
 
-/** §14.2 Audit log rotation + retention settings. - auditRotationMaxBytes: rotate when file exceeds
- * this size (default 10 MB) - auditRetentionDays: delete archives older than this many days (default 30) */
-export interface AuditSettings {
-  /** Rotate active .jsonl when it exceeds this size in bytes. Default: 10_485_760 (10 MB). */
-  auditRotationMaxBytes: number;
-  /** Delete .jsonl.*.gz archives older than this many days. Default: 30. */
-  auditRetentionDays: number;
-}
 
 /** Experimental feature flags; UI-toggleable, persisted to settings.json. Defaults are defined per flag in
  * settings-defaults.ts. Safe to add fields without migration; missing keys are treated as false at load time. */
@@ -541,7 +533,6 @@ export interface AppSettings {
   privacy: PrivacySettings;
   updates: UpdateSettings;
   telemetry: TelemetrySettings;
-  audit: AuditSettings;
   /** Where the sandbox egress proxy sends allowed connections next. Main-owned: written only through the permissions `upstreamProxySet`
    * channel (host renderer only) via `set`, never through `patch()`, and left out of the renderer snapshot. See `src/shared/upstream-proxy.ts`. */
   upstreamProxy: UpstreamProxySettings;
@@ -1206,9 +1197,6 @@ export class SettingsService {
         nextTelemetry.level = telemetryLevel({ enabled: nextTelemetry.enabled, crashReportingEnabled: nextTelemetry.crashReportingEnabled });
       }
       this.settings.telemetry = nextTelemetry;
-    }
-    if (partial.audit) {
-      this.settings.audit = { ...this.settings.audit, ...partial.audit };
     }
     if (partial.diagnostics) {
       // Field-level validation (mirrors `system`/`features`): an invalid includeCrashDumps or out-of-range logRetentionDays is coerced/dropped so a
@@ -1902,7 +1890,6 @@ export class SettingsService {
         privacy: normalizePrivacy(parsed.privacy),
         updates: { ...DEFAULT_SETTINGS.updates, ...parsed.updates },
         telemetry: normalizeTelemetry(parsed.telemetry),
-        audit: { ...DEFAULT_SETTINGS.audit, ...parsed.audit },
         upstreamProxy: normalizeUpstreamProxy(parsed.upstreamProxy),
         diagnostics: normalizeDiagnostics(parsed.diagnostics),
         appearance,

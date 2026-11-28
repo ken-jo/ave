@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createTmpDirTracker } from "../../__tests__/support/tmp-dir-teardown.js";
-import { MemorySecretStore } from "../../audit/hmac-chain.js";
+import { MemorySecretStore } from "../../lib/protected-secret-store.js";
 import { createConversationSurfaceRuntime } from "../../engine/conversation-surface-runtime.js";
 import { createPlatformConversationEventSink } from "../../engine/conversation-platform-protocol.js";
 import type { ConversationCommandPort } from "../conversation-command-port.js";

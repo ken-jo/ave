@@ -1,3 +1,4 @@
+import { collectPermissionEvents } from "../../../__tests__/support/permission-events.js";
 import { useConfigurationOwner } from "../../../__tests__/support/configuration-owner.js";
 
 useConfigurationOwner();
@@ -7,7 +8,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { AuditLogger } from "../../../audit/audit-logger.js";
 import { arrivalBeforeCompletion } from "../../../__tests__/support/arrival-before-completion.js";
 import { deferred } from "../../../__tests__/support/deferred.js";
 import { bindRemoteControllerToSession } from "../../../shared/chat-origin.js";
@@ -43,7 +43,6 @@ import { setFixtureOwner } from "../../../__tests__/support/fixture-owner.js";
 
 const prunePathGrantsUnderRoot = vi.fn(async () => []);
 const workspaceDeps = {
-  auditLogger: { log: vi.fn() },
   pluginRuntime: { retireSandboxGrantsOutsideCeiling: vi.fn(async () => []) },
   getMainWindow: () => null,
   memoryManager: {
@@ -90,7 +89,6 @@ function makeSubAgentShapedLoop(gate: ApprovalGate, executeSpy: (input: unknown)
     toolRegistry: registry,
     permissionManager: new PermissionManager(join(homeRoot, "permissions.json")),
     approvalGate: gate,
-    auditLogger: audit,
   }));
 }
 
@@ -107,7 +105,7 @@ async function firstApprovalPayload<T>(wc: ReturnType<typeof makeMockWebContents
 let homeRoot: string;
 let home: string;
 let grantRoot: string;
-let audit: AuditLogger;
+let logs: ReturnType<typeof collectPermissionEvents>;
 
 beforeEach(async () => {
   homeRoot = mkdtempSync(join(tmpdir(), "ave-wsroot-authority-home-"));
@@ -117,16 +115,17 @@ beforeEach(async () => {
   vi.stubEnv("AVE_HOME", home);
   grantRoot = mkdtempSync(join(tmpdir(), "ave-wsroot-authority-grant-"));
   writeFileSync(join(grantRoot, "notes.md"), "content\n");
-  audit = new AuditLogger(join(homeRoot, "audit"));
-  await audit.setupPermissionAuditChain("aa".repeat(32));
+  logs = collectPermissionEvents();
+
   prunePathGrantsUnderRoot.mockReset().mockResolvedValue([]);
   registerWorkspaceHandlers(workspaceDeps);
 });
 
 afterEach(async () => {
+  logs.restore();
   setWorkspaceRootLifecycle(undefined);
   vi.unstubAllEnvs();
-  await audit.close();
+
   await cleanupTmpDir(homeRoot);
   await cleanupTmpDir(grantRoot);
 });
@@ -172,31 +171,21 @@ function persistedRoots() {
   return readPermissionSettings().permissions.additionalDirectories.map(dir => caseFoldForMatch(canonicalizePathForMatch(dir)));
 }
 
-function holdGrantAudit(lifetime: "always" | "degraded-to-turn") {
-  const arrived = deferred<void>();
-  const release = deferred<void>();
-  const append = audit.appendPermissionAuditEntry.bind(audit);
-  const entries = vi.spyOn(audit, "appendPermissionAuditEntry").mockImplementation(async entry => {
-    if ("grantLifetime" in entry && entry.grantLifetime === lifetime) {
-      arrived.resolve();
-      await release.promise;
-    }
-    return append(entry);
-  });
-  return { arrived, release, entries };
-}
-
-function expectRemoteDenial(entries: ReturnType<typeof holdGrantAudit>["entries"], reason: string, trustOrigin: "tailnet-surface" | "user-keyboard" = "tailnet-surface") {
-  const denials = entries.mock.calls.map(([entry]) => entry).filter(entry => entry.decision === "deny");
-  expect(denials).toEqual([expect.objectContaining({
-    decision: "deny", trustOrigin, tool: "write_file",
-    denyReasons: [expect.objectContaining({ reason })],
-  })]);
+function expectRemoteDenial(trustOrigin: "tailnet-surface" | "user-keyboard" = "tailnet-surface") {
+  expect(logs.events.filter((event) => event.event === "permission_decision" && event.decision === "deny")).toEqual([
+    expect.objectContaining({ trustOrigin, tool: "write_file" }),
+  ]);
 }
 
 describe("workspace-root lifecycle authority", () => {
-  it.each(["revoke", "abort"] as const)("refuses a durable directory grant after %s during its audit", async interruption => {
-    const { arrived, release, entries } = holdGrantAudit("always");
+  it.each(["revoke", "abort"] as const)("refuses a durable directory grant after %s during workspace cleanup", async interruption => {
+    const arrived = deferred<void>();
+    const release = deferred<void>();
+    prunePathGrantsUnderRoot.mockImplementationOnce(async () => {
+      arrived.resolve();
+      await release.promise;
+      return [];
+    });
     const call = startDirectoryApproval();
     const waiting = arrivalBeforeCompletion(arrived.promise, call.result);
     try {
@@ -210,7 +199,7 @@ describe("workspace-root lifecycle authority", () => {
     expect((await call.result)[0].is_error).toBe(true);
     expect(persistedRoots()).toEqual([]);
     expect(call.execute).not.toHaveBeenCalled();
-    expectRemoteDenial(entries, interruption === "revoke" ? "remote-controller-revoked" : "user aborted turn");
+    expectRemoteDenial();
   });
 
   it("refuses a durable directory grant revoked during cleanup under the workspace-root lock", async () => {
@@ -221,7 +210,6 @@ describe("workspace-root lifecycle authority", () => {
       await release.promise;
       return [];
     });
-    const entries = vi.spyOn(audit, "appendPermissionAuditEntry");
     const call = startDirectoryApproval();
     const waiting = arrivalBeforeCompletion(arrived.promise, call.result);
     try {
@@ -234,11 +222,10 @@ describe("workspace-root lifecycle authority", () => {
     expect((await call.result)[0].is_error).toBe(true);
     expect(persistedRoots()).toEqual([]);
     expect(call.execute).not.toHaveBeenCalled();
-    expectRemoteDenial(entries, "remote-controller-revoked");
+    expectRemoteDenial();
   });
 
   it("keeps a desk denial accepted before controller revocation", async () => {
-    const entries = vi.spyOn(audit, "appendPermissionAuditEntry");
     const call = startDirectoryApproval();
     const arrived = deferred<void>();
     const release = deferred<void>();
@@ -260,11 +247,10 @@ describe("workspace-root lifecycle authority", () => {
     expect((await call.result)[0].is_error).toBe(true);
     expect(persistedRoots()).toEqual([]);
     expect(call.execute).not.toHaveBeenCalled();
-    expectRemoteDenial(entries, "This write requires approval.", "user-keyboard");
+    expectRemoteDenial("user-keyboard");
   });
 
   it.each(["desk first", "stop first"] as const)("records the terminal directory denial with %s", async order => {
-    const entries = vi.spyOn(audit, "appendPermissionAuditEntry");
     const call = startDirectoryApproval();
     const arrived = deferred<void>();
     const release = deferred<void>();
@@ -294,38 +280,28 @@ describe("workspace-root lifecycle authority", () => {
     expect((await call.result)[0].is_error).toBe(true);
     expect(persistedRoots()).toEqual([]);
     expect(call.execute).not.toHaveBeenCalled();
-    if (order === "desk first") expectRemoteDenial(entries, "This write requires approval.", "user-keyboard");
-    else expectRemoteDenial(entries, "user aborted turn");
+    if (order === "desk first") expectRemoteDenial("user-keyboard");
+    else expectRemoteDenial();
   });
 
   it("records one cancellation when Stop and owner-window close precede the card", async () => {
-    const arrived = deferred<void>();
-    const release = deferred<void>();
-    const append = audit.appendPermissionAuditEntry.bind(audit);
-    const entries = vi.spyOn(audit, "appendPermissionAuditEntry").mockImplementation(async entry => {
-      if (entry.decision === "ask") {
-        arrived.resolve();
-        await release.promise;
-      }
-      return append(entry);
-    });
     const call = startDirectoryApproval();
-    try {
-      await arrivalBeforeCompletion(arrived.promise, call.result);
-      call.abort.abort();
-      call.wc.isDestroyed.mockReturnValue(true);
-    } finally {
-      release.resolve();
-    }
+    const log = vi.spyOn(console, "log").mockImplementation((message, data) => {
+      if (message === "[permissions] permission_decision" && data?.decision === "ask") {
+        call.abort.abort();
+        call.wc.isDestroyed.mockReturnValue(true);
+      }
+      if (typeof data?.event === "string") logs.events.push(data);
+    });
+    try { await call.result; } finally { log.mockRestore(); }
     expect((await call.result)[0].is_error).toBe(true);
     expect(call.wc.send).not.toHaveBeenCalled();
     expect(call.execute).not.toHaveBeenCalled();
     expect(persistedRoots()).toEqual([]);
-    expectRemoteDenial(entries, "user aborted turn");
+    expectRemoteDenial();
   });
 
   it("refuses the root if the fresh owner observation at the settings write fails", async () => {
-    const entries = vi.spyOn(audit, "appendPermissionAuditEntry");
     const call = startDirectoryApproval();
     prunePathGrantsUnderRoot.mockImplementationOnce(async () => {
       call.refreshController.mockResolvedValueOnce(false);
@@ -335,12 +311,20 @@ describe("workspace-root lifecycle authority", () => {
     expect((await call.result)[0].is_error).toBe(true);
     expect(persistedRoots()).toEqual([]);
     expect(call.execute).not.toHaveBeenCalled();
-    expectRemoteDenial(entries, "remote-controller-revoked");
+    expectRemoteDenial();
   });
 
-  it("refuses to propagate a session grant to the turn after revocation during the fallback audit", async () => {
-    const { arrived, release, entries } = holdGrantAudit("degraded-to-turn");
+  it("refuses to propagate a session grant to the turn after revocation after the desk answers", async () => {
     const call = startDirectoryApproval();
+    const arrived = deferred<void>();
+    const release = deferred<void>();
+    const request = call.gate.requestAndWait.bind(call.gate);
+    vi.spyOn(call.gate, "requestAndWait").mockImplementationOnce(async (input) => {
+      const decision = await request(input);
+      arrived.resolve();
+      await release.promise;
+      return decision;
+    });
     const waiting = arrivalBeforeCompletion(arrived.promise, call.result);
     try {
       await call.answer("allow-session");
@@ -353,7 +337,7 @@ describe("workspace-root lifecycle authority", () => {
     expect(call.onTurnDirectoryGrant).not.toHaveBeenCalled();
     expect(persistedRoots()).toEqual([]);
     expect(call.execute).not.toHaveBeenCalled();
-    expectRemoteDenial(entries, "remote-controller-revoked");
+    expectRemoteDenial();
   });
 
   it.each([false, true])("persists an Allow Always directory grant while authorized (remote=%s)", async (remote) => {

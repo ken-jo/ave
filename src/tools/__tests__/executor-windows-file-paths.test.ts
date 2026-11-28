@@ -79,7 +79,6 @@ vi.mock("../../workload/runtime.js", async original => ({ ...await original<type
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, win32 } from "node:path";
-import { AuditLogger } from "../../audit/audit-logger.js";
 import { t } from "../../i18n/index.js";
 import { setWindowsDriveQueryForTest } from "../../shared/windows-drive-locality.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
@@ -100,7 +99,6 @@ const OUTSIDE = String.raw`D:\Fixture\Outside-Target.txt`;
 const LINKED_ROOT = String.raw`D:\Fixture\Linked-Root`;
 const LOCAL_DRIVE = String.raw`\Device\HarddiskVolume1`;
 let root: string;
-let audit: AuditLogger;
 let manager: PermissionManager;
 let requests: ApprovalRequestInput[];
 
@@ -111,7 +109,6 @@ beforeEach(() => {
   setWindowsDriveQueryForTest(() => LOCAL_DRIVE);
   root = mkdtempSync(join(tmpdir(), "ave-windows-file-paths-"));
   vi.stubEnv("AVE_HOME", join(root, "profile"));
-  audit = new AuditLogger(join(root, "audit"));
   manager = new PermissionManager(join(root, "permissions.json"));
   manager.setMode("default");
   requests = [];
@@ -134,7 +131,7 @@ afterEach(async () => {
   filesystem.active = false;
   filesystem.brokerActive = false;
   setProcessPlatform(ORIGINAL_PLATFORM);
-  await audit.close();
+
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
   rmSync(root, { recursive: true, force: true });
@@ -145,7 +142,7 @@ async function run(tool: Tool, input: Record<string, unknown>, cwd = PROJECT, ad
   const registry = new ToolRegistry();
   registry.register(tool);
   const gate = { requestAndWait: answeringRequestAndWait(async (request: ApprovalRequestInput) => { requests.push(request); return { requestId: request.id, choice: "deny-once" }; }) };
-  const executor = new ToolExecutor(registry, undefined, manager, undefined, gate as never, undefined, audit);
+  const executor = new ToolExecutor(registry, undefined, manager, undefined, gate as never, undefined);
   const [result] = await executor.executeAll([{ id: "windows-file-target", name: tool.name, input }], {
     executionCwd: cwd, sessionId: "windows-file-target", permissionContext: {
       trustOrigin: "user-keyboard", additionalDirectories,
@@ -359,18 +356,12 @@ describe("sealed file targets up to their effects", () => {
     const execute = vi.spyOn(tool, "execute");
     const registry = new ToolRegistry();
     registry.register(tool);
-    let answered = false;
     const gate = { requestAndWait: answeringRequestAndWait(async (request: ApprovalRequestInput) => {
       requests.push(request);
-      answered = true;
+      if (!lifecycle) drift();
       return { requestId: request.id, choice };
     }) };
-    const ready = audit.isPermissionAuditChainReady.bind(audit);
-    vi.spyOn(audit, "isPermissionAuditChainReady").mockImplementation(() => {
-      if (answered && !lifecycle) { answered = false; drift(); }
-      return ready();
-    });
-    const executor = new ToolExecutor(registry, undefined, manager, undefined, gate as never, undefined, audit, undefined, lifecycle ? () => lifecycle as never : undefined);
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, gate as never, undefined, undefined, lifecycle ? () => lifecycle as never : undefined);
     const onTurnDirectoryGrant = vi.fn();
     const onSessionDirectoryGrant = vi.fn();
     const [result] = await executor.executeAll([{ id: "sealed-grant", name: tool.name, input: { path: OUTSIDE, content: "changed" } }], {
@@ -379,17 +370,17 @@ describe("sealed file targets up to their effects", () => {
     return { result, execute, grants: [...onTurnDirectoryGrant.mock.calls, ...onSessionDirectoryGrant.mock.calls] };
   }
 
-  it.each(["allow-once", "allow-session"] as const)("commits no %s folder grant when the target changes during its audit", async (choice) => {
+  it.each(["allow-once", "allow-session"] as const)("commits no %s folder grant when the target changes while approval is pending", async (choice) => {
     const { result, execute, grants } = await runAnswered(choice, () => entry(OUTSIDE, false, INSIDE));
     expect(requests).toHaveLength(1);
-    expect(result).toMatchObject({ is_error: true, content: expect.stringContaining(t("be_executor.fileTargetChanged")) });
+    expect(result).toMatchObject({ is_error: true, content: "Permission recheck failed during approval." });
     expect(grants).toEqual([]);
     expect(execute).not.toHaveBeenCalled();
   });
 
   it("refuses a same-name replacement before granting or entering the file effect", async () => {
     const { result, execute, grants } = await runAnswered("allow-once", () => entry(OUTSIDE, false));
-    expect(result).toMatchObject({ is_error: true, content: expect.stringContaining(t("be_executor.fileTargetChanged")) });
+    expect(result).toMatchObject({ is_error: true, content: "Permission recheck failed during approval." });
     expect(grants).toEqual([]);
     expect(execute).not.toHaveBeenCalled();
   });

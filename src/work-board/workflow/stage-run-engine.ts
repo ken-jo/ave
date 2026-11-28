@@ -1,3 +1,5 @@
+import { logPermissionEvent, permissionLogId } from "../../lib/permission-log.js";
+import { RUN_ID_PATTERN } from "../work-decision-input.js";
 /** Runs a template run's stages: one serial event queue per item, the pure reducer for every state change, and the only spawn site of a
  * stage child. Each child's tool calls still enter the ordinary permission tree; nothing here decides a permission. */
 import { randomUUID } from "node:crypto";
@@ -110,7 +112,6 @@ export interface StageRunEngineDeps {
   holdItem: (itemId: number) => void;
   releaseItem: (itemId: number) => void;
   /** Record a run that the run authority ended. */
-  audit?: (e: { itemId: number; runId: string; event: "work-run:authority-refused"; code: string; tool?: EnvelopeToolRef }) => void;
   _observeDetachedWorkForTest?: (work: () => Promise<unknown>, kind?: "launch") => void;
 }
 
@@ -828,7 +829,11 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       : runStatus === "error" && message !== undefined && RUN_FILE_REFUSALS.has(message) ? { reasonCode: message }
       : runStatus === "cancelled" && !settled ? { reasonCode: "run-end-unconfirmed" } : {};
     if (byAuthority && state.refused) {
-      deps.audit?.({ itemId: state.itemId, runId: state.runId, event: "work-run:authority-refused", code: state.refused.code, ...(state.refused.tool ? { tool: state.refused.tool } : {}) });
+      logPermissionEvent("workflow_authority_refused", {
+        itemId: state.itemId,
+        runId: RUN_ID_PATTERN.test(state.runId) ? state.runId : undefined,
+        reasonCode: permissionLogId(state.refused.code),
+      }, "warn");
     }
     const phase = runStatus === "completed" ? "done" : runStatus;
     // Every cancelled end names its cause: the authority's code, or the stop or the row's removal.

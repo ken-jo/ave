@@ -26,7 +26,7 @@ function terminal(tabId = TAB, sessionId?: string): EgressInvocation {
 
 function runtime() {
   const wc = { send: vi.fn(), isDestroyed: () => false };
-  const gate = new ApprovalGate(wc as never, undefined, 5_000, { log: vi.fn() } as never);
+  const gate = new ApprovalGate(wc as never, undefined, 5_000);
   const permissionManager = new PermissionManager(join(tmpdir(), `terminal-egress-policy-${randomUUID()}.json`));
   permissionManager.setMode("strict");
   const callback = createEgressAskRuntimeCallback({ permissionManager, approvalGate: gate, shellAskEnabled: () => true });

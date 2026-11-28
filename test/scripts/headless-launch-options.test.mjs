@@ -3,9 +3,6 @@ import test from "node:test";
 import {
   HEADLESS_FORBIDDEN_INHERITED_ENV,
   headlessLaunchArgs,
-  isPermissionAuditProofArg,
-  isPermissionAuditSelfTestArg,
-  permissionAuditProofFailureCode,
   prepareHeadlessLaunchEnv,
 } from "../../scripts/lib/headless-launch-options.mjs";
 
@@ -33,10 +30,6 @@ test("routes supported native command forms with their values intact", () => {
     ["--exec", "hello"], ["--exec=hello"],
     ["--set-secret", "llm.apiKey.openai"], ["--set-secret=llm.apiKey.openai"],
     ["--serve"], ["--runtime-check"], ["--exec=hello", "--exec-keep-alive"],
-    ["--verify-permission-audit=" + "a".repeat(64)],
-    ["--verify-permission-audit"],
-    ["--verify-permission-audit=" + "b".repeat(64), "--user-data-dir=/tmp/ave-proof"],
-    ["--create-permission-audit-self-test=" + "c".repeat(64)],
     ["--exec=hello", "--exec-operator-attestation=/run/ave/attestation.json"],
     ["--exec-operator-attestation=/run/ave/attestation.json"],
     [
@@ -50,23 +43,7 @@ test("routes supported native command forms with their values intact", () => {
   }
 });
 
-test("reserves malformed permission audit self-test forms", () => {
-  assert.equal(isPermissionAuditSelfTestArg("--create-permission-audit-self-test"), true);
-  assert.equal(isPermissionAuditSelfTestArg("--create-permission-audit-self-test=BAD"), true);
-  assert.deepEqual(headlessLaunchArgs(["--create-permission-audit-self-test=BAD"]), ["--create-permission-audit-self-test=BAD"]);
-});
-
-test("reserves malformed proof forms and exposes only stable failure codes", () => {
-  assert.equal(isPermissionAuditProofArg("--verify-permission-audit"), true);
-  assert.equal(isPermissionAuditProofArg("--verify-permission-audit=BAD"), true);
-  assert.equal(isPermissionAuditProofArg("--verify-permission-auditor"), true);
-  assert.deepEqual(headlessLaunchArgs(["--verify-permission-auditor"]), ["--verify-permission-auditor"]);
-  assert.equal(permissionAuditProofFailureCode(false), "permission-audit-proof:invalid-arguments");
-  assert.equal(permissionAuditProofFailureCode(true), "permission-audit-proof:verification-failed");
-});
-
-test("keeps ordinary desktop options and orphaned exec modifiers on the desktop route", () => {
-  for (const args of [[], ["--version"], ["--exec-keep-alive"], ["--execution=hello"], ["--serve-other"]]) {
-    assert.equal(headlessLaunchArgs(args), null);
-  }
+test("retired verification flags do not select a native command", () => {
+  assert.equal(headlessLaunchArgs(["--verify-permission-audit=old"]), null);
+  assert.equal(headlessLaunchArgs(["--create-permission-audit-self-test=old"]), null);
 });

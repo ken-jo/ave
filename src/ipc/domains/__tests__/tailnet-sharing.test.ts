@@ -57,7 +57,6 @@ async function setup(options: { owner?: ReturnType<typeof ownerFixture>; include
   const send = vi.fn();
   const { registerTailnetSharingHandlers } = await import("../tailnet-sharing.js");
   registerTailnetSharingHandlers({
-    auditLogger: { log: vi.fn() },
     tailnetSharingOwnerService: f.owner,
     getMainWindow: () => options.includeWindow
       ? { isDestroyed: () => false, webContents: { send } }
@@ -74,7 +73,6 @@ async function setupDisabled() {
   vi.clearAllMocks();
   const { registerTailnetSharingHandlers } = await import("../tailnet-sharing.js");
   registerTailnetSharingHandlers({
-    auditLogger: { log: vi.fn() },
     getMainWindow: () => null,
   } as never);
 }

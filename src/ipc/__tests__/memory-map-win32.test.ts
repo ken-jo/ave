@@ -5,7 +5,7 @@ import type { ClientRequest, IncomingMessage } from 'node:http';
 import type { RequestOptions } from 'node:https';
 import { Readable } from 'node:stream';
 import { promises as dns, type LookupAddress, type LookupAllOptions } from 'node:dns';
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest';
 import { TOOL_TIMEOUT_POLICY } from '../../shared/tool-timeout-policy.js';
 import { deferred } from '../../__tests__/support/deferred.js';
 import type { IpcMainInvokeEvent } from 'electron';
@@ -16,6 +16,7 @@ import { CHANNELS } from '../../contract/app-contract.js';
 import { graphMemoryRevision, type ReadMemoryMapCatalog } from '../../main/memory-map/catalog.js';
 import { MemoryMapHostError } from '../../main/memory-map/errors.js';
 import { MODEL_FILES, modelFileUrl } from '../../main/memory-map/model-manifest.js';
+import { collectPermissionEvents } from '../../__tests__/support/permission-events.js';
 import type { MemoryWorkerRunner } from '../../main/memory-map/worker-client-win32.js';
 import { BuildRegistry, type BuildOwner, type MemoryWorkerExit } from '../../main/memory-map/build-registry-win32.js';
 const state = vi.hoisted(() => ({
@@ -31,7 +32,7 @@ const state = vi.hoisted(() => ({
   startWorker: undefined as MemoryWorkerRunner | undefined,
   runWorker: vi.fn(),
   refreshAdmission: vi.fn<() => Promise<{ areSwitchesAvailable: () => boolean }>>(),
-  dialog: vi.fn(async () => ({ canceled: true, filePaths: [] as string[] })), audit: vi.fn(), localConfined: true, releaseGateOpen: false,
+  dialog: vi.fn(async () => ({ canceled: true, filePaths: [] as string[] })), localConfined: true, releaseGateOpen: false,
 }));
 vi.mock('node:https', async importOriginal => ({ ...await importOriginal<typeof import('node:https')>(), request: state.artifactRequest }));
 vi.mock('electron', () => ({ ipcMain: { handle: (channel: string, handler: never) => state.handles.set(channel, handler) }, dialog: { showOpenDialog: state.dialog } }));
@@ -70,7 +71,7 @@ beforeEach(() => {
   state.runWorker.mockReset();
   state.refreshAdmission.mockReset().mockImplementation(async () => ({ areSwitchesAvailable: () => state.releaseGateOpen }));
   state.status.mockReset().mockResolvedValue({ status: 'unconfigured' });
-  registerWindowsMemoryMapHandlers({ auditLogger: { log: state.audit }, settingsService: { get: () => undefined, set: vi.fn(), hasStoredSecret: vi.fn(async () => false) } } as unknown as IpcDeps,
+  registerWindowsMemoryMapHandlers({ settingsService: { get: () => undefined, set: vi.fn(), hasStoredSecret: vi.fn(async () => false) } } as unknown as IpcDeps,
     raw => (raw as { projectRoot?: string } | undefined)?.projectRoot === '/denied' ? { ok: false, error: 'project-not-allowed' } : { ok: true, options: {} });
 });
 afterEach(() => { Object.defineProperty(process, 'platform', originalPlatform); });
@@ -338,7 +339,7 @@ describe('memory map host boundary', () => {
     let live = true;
     const senderFrame = { url: 'file:///app/index.html' };
     const event = { ...hostEvent, senderFrame } as unknown as IpcMainInvokeEvent;
-    registerWindowsMemoryMapHandlers({ auditLogger: { log: state.audit }, settingsService: { get: () => undefined } } as unknown as IpcDeps,
+    registerWindowsMemoryMapHandlers({ settingsService: { get: () => undefined } } as unknown as IpcDeps,
       () => ({ ok: true, options: { projectRoot: live ? '/example/first' : '/example/replacement' } }));
     if (change === 'sender') {
       state.build.mockImplementationOnce(async () => {
@@ -359,7 +360,6 @@ describe('memory map host boundary', () => {
     const firstWrite = deferred<void>();
     const set = vi.fn(async () => {}).mockImplementationOnce(() => firstWrite.promise);
     registerWindowsMemoryMapHandlers({
-      auditLogger: { log: state.audit },
       settingsService: { get: () => undefined, hasStoredSecret: async () => false, set },
     } as unknown as IpcDeps, () => ({ ok: true, options: {} }));
     state.releaseGateOpen = true;
@@ -382,7 +382,6 @@ describe('memory map host boundary', () => {
     let config: WindowsMemoryEmbeddingConfig = { source: 'local', localModelPath };
     const set = vi.fn(async (_key: string, value: WindowsMemoryEmbeddingConfig) => { config = value; });
     registerWindowsMemoryMapHandlers({
-      auditLogger: { log: state.audit },
       settingsService: { get: (key: string) => key === 'memoryEmbedding' ? config : undefined, hasStoredSecret: async () => false, set },
     } as unknown as IpcDeps, () => ({ ok: true, options: {} }));
     state.localConfined = false;
@@ -429,7 +428,6 @@ describe('memory map host boundary', () => {
   it('takes a fresh decision before validating a configured model path', async () => {
     const config: WindowsMemoryEmbeddingConfig = { source: 'local', localModelPath: '/example/model' };
     registerWindowsMemoryMapHandlers({
-      auditLogger: { log: state.audit },
       settingsService: { get: (key: string) => key === 'memoryEmbedding' ? config : undefined, set: vi.fn() },
     } as unknown as IpcDeps, () => ({ ok: true, options: {} }));
     state.localConfined = false;
@@ -463,7 +461,6 @@ describe('memory map host boundary', () => {
     let config: WindowsMemoryEmbeddingConfig = { source: 'local', localInferenceWithoutSandbox: true };
     const set = vi.fn(async (_key: string, value: WindowsMemoryEmbeddingConfig) => { config = value; });
     registerWindowsMemoryMapHandlers({
-      auditLogger: { log: state.audit },
       settingsService: { get: (key: string) => key === 'memoryEmbedding' ? config : undefined, set, hasStoredSecret: async () => false },
     } as unknown as IpcDeps, () => ({ ok: true, options: {} }));
     state.localConfined = false;
@@ -502,7 +499,6 @@ describe('memory map host boundary', () => {
     let config: WindowsMemoryEmbeddingConfig = { source: 'local', localModelPath };
     const set = vi.fn(async (_key: string, value: WindowsMemoryEmbeddingConfig) => { config = value; });
     registerWindowsMemoryMapHandlers({
-      auditLogger: { log: state.audit },
       settingsService: {
         get: (key: string) => key === 'memoryEmbedding' ? config : undefined,
         hasStoredSecret: async (name: string) => name === 'llm.apiKey.openai',
@@ -536,7 +532,6 @@ describe('memory map host boundary', () => {
     const options = { projectRoot: 'D:/workspace/example' };
     let authorized = true;
     const readSource = registerWindowsMemoryMapHandlers({
-      auditLogger: { log: state.audit },
       settingsService: { get: () => undefined },
       memoryManager: { readMemoryPanelCatalog, readManagedMemoryAt },
     } as unknown as IpcDeps, () => authorized ? { ok: true, options } : { ok: false, error: 'project-not-allowed' });
@@ -554,7 +549,7 @@ describe('memory map host boundary', () => {
   it('persists only host-versioned consent and clears it when returning to local', async () => {
     let config: unknown;
     const set = vi.fn(async (_key: string, value: unknown) => { config = value; });
-    registerWindowsMemoryMapHandlers({ auditLogger: { log: state.audit }, settingsService: {
+    registerWindowsMemoryMapHandlers({ settingsService: {
       get: (key: string) => key === 'memoryEmbedding' ? config : key === 'llm' ? {} : {}, set,
       hasStoredSecret: async (key: string) => key === 'llm.apiKey.openai',
     } } as unknown as IpcDeps, () => ({ ok: true, options: {} }));
@@ -571,7 +566,7 @@ describe('memory map host boundary', () => {
     let config: unknown; let release!: () => void; let started!: () => void;
     const waiting = new Promise<void>(resolve => { release = resolve; }); const entered = new Promise<void>(resolve => { started = resolve; });
     const set = vi.fn(async (_key: string, value: { source: string }) => { if (value.source === 'provider') { started(); await waiting; } config = value; });
-    registerWindowsMemoryMapHandlers({ auditLogger: { log: state.audit }, settingsService: { get: (key: string) => key === 'memoryEmbedding' ? config : {}, set, hasStoredSecret: async (key: string) => key === 'llm.apiKey.openai' } } as unknown as IpcDeps, () => ({ ok: true, options: {} }));
+    registerWindowsMemoryMapHandlers({ settingsService: { get: (key: string) => key === 'memoryEmbedding' ? config : {}, set, hasStoredSecret: async (key: string) => key === 'llm.apiKey.openai' } } as unknown as IpcDeps, () => ({ ok: true, options: {} }));
     const old = invoke('settingsSet', { source: 'provider', providerId: 'openai', modelId: 'text-embedding-3-small', endpointId: await providerEndpointId(), consent: true }); await entered;
     const local = invoke('settingsSet', { source: 'local' }); release();
     expect(await old).toEqual({ ok: false, error: 'request-stale' }); expect(await local).toMatchObject({ ok: true });
@@ -586,7 +581,7 @@ describe('memory map host boundary', () => {
     const entered = new Promise<void>(resolve => { started = resolve; });
     const set = vi.fn();
     const transport = vi.fn();
-    registerWindowsMemoryMapHandlers({ auditLogger: { log: state.audit }, singleHopNetworkFetch: transport, settingsService: {
+    registerWindowsMemoryMapHandlers({ singleHopNetworkFetch: transport, settingsService: {
       get: (key: string) => key === 'llm' ? { vendors: { openai: { baseUrl } } } : undefined,
       set,
       hasStoredSecret: async (name: string) => {
@@ -609,7 +604,6 @@ describe('memory map host boundary', () => {
     const set = vi.fn();
     const transport = vi.fn();
     registerWindowsMemoryMapHandlers({
-      auditLogger: { log: state.audit },
       singleHopNetworkFetch: transport,
       settingsService: {
         get: (key: string) => key === 'llm' ? {
@@ -635,8 +629,14 @@ describe('memory map host boundary', () => {
   });
   it.each(Object.keys(CHANNELS.memoryMap).filter(key => !['progress','modelProgress'].includes(key)) as (keyof typeof CHANNELS.memoryMap)[])('rejects an untrusted frame before parsing %s', async key => {
     const event = { ...hostEvent, senderFrame: { url: 'ave-mcp-app://isolated/index.html' } } as unknown as IpcMainInvokeEvent;
+    const logs = collectPermissionEvents();
+    onTestFinished(logs.restore);
     expect(await invoke(key, { invalid: true }, event)).toEqual({ ok: false, error: 'unauthorized-frame' });
-    expect(state.audit).toHaveBeenCalledOnce(); expect(state.download).not.toHaveBeenCalled(); expect(state.build).not.toHaveBeenCalled();
+    expect(logs.events.filter(({ event }) => event === 'ipc_sender_refused')).toEqual([
+      expect.objectContaining({ channel: CHANNELS.memoryMap[key] }),
+    ]);
+    expect(state.download).not.toHaveBeenCalled();
+    expect(state.build).not.toHaveBeenCalled();
   });
   it('validates strict payloads and rejects unauthorized projects before catalog access', async () => {
     expect(await invokeBuild({ projectRoot: '/denied' })).toEqual({ ok: false, error: 'project-not-allowed' });

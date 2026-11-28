@@ -1,7 +1,7 @@
 import { unavailableSecretEncryption } from "../../__tests__/support/host-runtime.js";
 import { answeredApprovalDecision } from "../../__tests__/support/answering-approval-gate.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { MemorySecretStore } from "../../audit/hmac-chain.js";
+import { MemorySecretStore } from "../../lib/protected-secret-store.js";
 import type { ConversationSurfaceRuntime } from "../../engine/conversation-surface-runtime.js";
 import type { SharedConversationProjectionStore } from "../../engine/shared-conversation-projection.js";
 import type { ConversationCommandPort } from "../conversation-command-port.js";

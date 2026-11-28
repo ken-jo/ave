@@ -19,8 +19,6 @@ import { BashTool } from "../../tools/shell-tools.js";
 import { userPermissionContext } from "../../tools/__tests__/tool-context-fixture.js";
 import { VerdictCache } from "../reviewer/verdict-cache.js";
 import { makeRecentlyDeniedStore } from "../../__tests__/support/recently-denied.js";
-import { AuditLogger } from "../../audit/audit-logger.js";
-import { flushSandboxAudit } from "../../audit/sandbox-audit-sink.js";
 import { buildIssuedHostShellExecutionPlan as buildHostShellExecutionPlan } from "../../__tests__/support/issued-host-shell-plan.js";
 import { mxcShellCapability, windowsProxyOnlyCapability } from "../../boot/steps/windows-sandbox-plan.js";
 import { definitelyTraversesPowerShellRecursively, mayTraversePowerShellRecursively } from "../rules/powershell-exfiltration.js";
@@ -33,9 +31,6 @@ withSourceHostResources();
 let root: string;
 let dir: string;
 let manager: PermissionManager;
-// Audit writes are queued, not awaited, by the code under test; teardown must
-// drain them before removing the directory they write into.
-const auditLoggers: AuditLogger[] = [];
 beforeEach(() => {
   root = realpathSync(mkdtempSync(join(tmpdir(), "shell-sandbox-rules-")));
   dir = join(root, "project");
@@ -53,8 +48,6 @@ beforeEach(() => {
   if (process.platform === "darwin" || process.platform === "linux") setContainerShellSubstrate(process.platform, { state: "available" });
 });
 afterEach(async () => {
-  await Promise.all(auditLoggers.splice(0).map((logger) => logger.close()));
-  await flushSandboxAudit();
   __resetSessionStoreForTest();
   __resetActiveSandboxCapabilityForTest();
   __resetSandboxRequestedAtBootForTest();
@@ -409,9 +402,7 @@ function executorWithDock(options: {
   });
   const nativeWebContents = { isDestroyed: () => false, send };
   gate = new ApprovalGate(nativeWebContents as never);
-  const auditLogger = new AuditLogger();
-  auditLoggers.push(auditLogger);
-  const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, undefined, auditLogger);
+  const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, undefined);
   const executionMode = options.executionMode ?? "host";
   const input = executionMode === "host"
     ? { command: "printf ready", executionMode, justification: "Read the host environment" }

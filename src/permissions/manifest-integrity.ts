@@ -1,7 +1,8 @@
+import { logPermissionEvent, permissionLogId } from "../lib/permission-log.js";
 // Write attempts through a read-only filesystem proxy throw, audit and disable the plugin before later dispatch (docs/architecture/permission-policy-design.md). Direct filesystem imports bypass this partial guard; it is not process isolation.
-import type { AuditLogger } from "../audit/audit-logger.js";
+
 import { createLogger } from "../lib/logger.js";
-import { randomUUID } from "node:crypto";
+
 
 const log = createLogger("manifest-integrity");
 
@@ -157,39 +158,13 @@ export class ManifestIntegrityState {
 // Process-wide singleton.
 export const manifestIntegrityState = new ManifestIntegrityState();
 
-// Wire an audit logger to record every violation. Idempotent — subsequent calls replace the prior subscription. Returns disposer.
-export function bindManifestIntegrityAudit(
-  audit: AuditLogger,
+export function bindManifestIntegrityLogging(
   state: ManifestIntegrityState = manifestIntegrityState,
 ): () => void {
-  return state.onViolation(async (pluginId, toolName, attemptedMethod) => {
-    try {
-      audit.log({
-        timestamp: new Date().toISOString(),
-        sessionId: "manifest-integrity",
-        type: "error",
-        input: JSON.stringify({
-          kind: "manifest_integrity_violation",
-          pluginId,
-          toolName,
-          attempted: attemptedMethod,
-        }),
-      });
-    } catch (err) {
-      log.warn(
-        "manifest-integrity audit write failed: %s",
-        (err as Error).message,
-      );
-      throw err;
-    }
-    await audit.appendPermissionAuditEntry({
-      ts: new Date().toISOString(),
-      auditId: randomUUID(),
-      trustOrigin: "plugin-emitted",
-      decision: "manifest_violation",
-      pluginId,
-      toolName,
-      attemptedOperation: attemptedMethod,
-    });
+  return state.onViolation((pluginId, toolName, attemptedMethod) => {
+    logPermissionEvent("manifest_integrity_violation", {
+      pluginId: permissionLogId(pluginId), tool: permissionLogId(toolName),
+      operation: permissionLogId(attemptedMethod), trustOrigin: "plugin-emitted",
+    }, "warn");
   });
 }

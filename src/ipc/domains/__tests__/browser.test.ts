@@ -48,12 +48,12 @@ function invoke(channel: string, event: IpcMainInvokeEvent, payload: unknown): u
   return fn(event, payload);
 }
 
-const auditLogger = { log: vi.fn() };
+
 
 beforeEach(() => {
   handlers.clear();
   browserTabRegistry.__reset();
-  registerBrowserHandlers({ auditLogger } as never);
+  registerBrowserHandlers({  } as never);
 });
 
 afterEach(() => {

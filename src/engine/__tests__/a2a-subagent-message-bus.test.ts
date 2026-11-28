@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi, onTestFinished } from "vitest";
+import { collectPermissionEvents } from "../../__tests__/support/permission-events.js";
 import {
   A2A_ROLE_AGENT,
   A2A_ROLE_USER,
@@ -16,6 +17,13 @@ import {
   type ParentMailboxEntry,
 } from "../subagent-message-mailbox.js";
 
+let events: ReturnType<typeof collectPermissionEvents>["events"];
+beforeEach(() => {
+  const capture = collectPermissionEvents();
+  onTestFinished(capture.restore);
+  events = capture.events;
+});
+
 function makeMessage(overrides: Partial<A2AMessage> = {}): A2AMessage {
   return {
     messageId: "message-1",
@@ -30,7 +38,7 @@ function makeMessage(overrides: Partial<A2AMessage> = {}): A2AMessage {
 describe("A2ASubAgentMessageBus security boundary", () => {
   let entries: ParentMailboxEntry[];
   let enqueue: ReturnType<typeof vi.fn>;
-  let audit: ReturnType<typeof vi.fn>;
+
   let bus: A2ASubAgentMessageBus;
 
   beforeEach(() => {
@@ -57,7 +65,7 @@ describe("A2ASubAgentMessageBus security boundary", () => {
       hasActiveTurn: () => false,
       queueGuidanceWithDisposition: vi.fn(() => "queued"),
     } as unknown as ConversationLoop;
-    audit = vi.fn();
+
     const address: ResolvedSubAgentAddress = {
       parentSessionId: "parent-session",
       childSessionId: "sub-child",
@@ -69,7 +77,6 @@ describe("A2ASubAgentMessageBus security boundary", () => {
       settingsService: {
         get: () => ({ subAgentAutonomousWake: false }),
       } as never,
-      auditLogger: { log: audit } as never,
       resolveChildAddress: vi.fn(async () => address),
     });
   });
@@ -95,11 +102,10 @@ describe("A2ASubAgentMessageBus security boundary", () => {
       reason: "invalid-message",
     });
     expect(enqueue).not.toHaveBeenCalled();
-    const auditEntry = audit.mock.calls.at(-1)?.[0] as { input: string };
-    expect(auditEntry.input).not.toContain("\n");
-    expect(auditEntry.input).not.toContain("\r");
-    expect(auditEntry.input).toContain("message=invalid");
-    expect(auditEntry.input).not.toContain("ghp_");
+    const event = events.at(-1);
+    expect(event).toMatchObject({ event: "subagent_message_delivery", operation: "delivery", outcome: "dropped", reasonCode: "invalid-message" });
+    expect(event).not.toHaveProperty("messageId");
+    expect(JSON.stringify(event)).not.toMatch(/ghp_|forged-label/);
   });
 
   it.each([
@@ -137,7 +143,6 @@ describe("A2ASubAgentMessageBus security boundary", () => {
       settingsService: {
         get: () => ({ subAgentAutonomousWake: false }),
       } as never,
-      auditLogger: { log: audit } as never,
       resolveChildAddress: async () => ({
         parentSessionId: "parent-session",
         childSessionId: "sub-child",
@@ -184,8 +189,8 @@ describe("A2ASubAgentMessageBus security boundary", () => {
       reason: "invalid-message",
     });
     expect(enqueue).not.toHaveBeenCalled();
-    expect(audit).toHaveBeenCalledWith(expect.objectContaining({
-      input: expect.stringContaining("dropped:invalid-message"),
+    expect(events).toContainEqual(expect.objectContaining({
+      operation: "delivery", outcome: "dropped", reasonCode: "invalid-message",
     }));
   });
 
@@ -233,8 +238,8 @@ describe("A2ASubAgentMessageBus security boundary", () => {
 
     await expect(fixture.bus.peekParentMailbox("parent-session")).resolves.toEqual([]);
     await expect(fixture.mailbox.peek("parent-session")).resolves.toEqual([]);
-    expect(fixture.audit).toHaveBeenCalledWith(expect.objectContaining({
-      input: expect.stringContaining("dropped:unknown-child"),
+    expect(events).toContainEqual(expect.objectContaining({
+      operation: "delivery", outcome: "dropped", reasonCode: "unknown-child",
     }));
   });
 
@@ -282,8 +287,8 @@ describe("A2ASubAgentMessageBus security boundary", () => {
 
     await expect(fixture.bus.peekParentMailbox("parent-session")).resolves.toEqual([]);
     await expect(fixture.mailbox.peek("parent-session")).resolves.toEqual([]);
-    expect(fixture.audit).toHaveBeenCalledWith(expect.objectContaining({
-      input: expect.stringContaining("dropped:cross-origin"),
+    expect(events).toContainEqual(expect.objectContaining({
+      operation: "delivery", outcome: "dropped", reasonCode: "cross-origin",
     }));
   });
 
@@ -302,8 +307,8 @@ describe("A2ASubAgentMessageBus security boundary", () => {
 
     await expect(fixture.bus.peekParentMailbox("parent-session")).resolves.toEqual([]);
     await expect(fixture.mailbox.peek("parent-session")).resolves.toEqual([]);
-    expect(fixture.audit).toHaveBeenCalledWith(expect.objectContaining({
-      input: expect.stringContaining("dropped:invalid-message"),
+    expect(events).toContainEqual(expect.objectContaining({
+      operation: "delivery", outcome: "dropped", reasonCode: "invalid-message",
     }));
   });
 
@@ -319,8 +324,8 @@ describe("A2ASubAgentMessageBus security boundary", () => {
     await expect(fixture.mailbox.peek("parent-session")).resolves.toMatchObject([
       { id: "message-resolver-failed" },
     ]);
-    expect(fixture.audit).toHaveBeenCalledWith(expect.objectContaining({
-      input: expect.stringContaining("dropped:storage-failed"),
+    expect(events).toContainEqual(expect.objectContaining({
+      operation: "delivery", outcome: "dropped", reasonCode: "storage-failed",
     }));
   });
 
@@ -332,7 +337,7 @@ describe("A2ASubAgentMessageBus security boundary", () => {
     });
     namespace.rejectNextWrite();
     const mailbox = new SubAgentMessageMailbox(namespace.handle);
-    const audit = vi.fn();
+
     const localBus = new A2ASubAgentMessageBus({
       parentLoop: {
         getSessionId: () => "parent-session",
@@ -342,7 +347,6 @@ describe("A2ASubAgentMessageBus security boundary", () => {
       settingsService: {
         get: () => ({ subAgentAutonomousWake: false }),
       } as never,
-      auditLogger: { log: audit } as never,
       resolveChildAddress: async () => null,
     });
 
@@ -350,8 +354,8 @@ describe("A2ASubAgentMessageBus security boundary", () => {
     await expect(mailbox.peek("parent-session")).resolves.toMatchObject([
       { id: "message-reject-ack-failed" },
     ]);
-    expect(audit).toHaveBeenCalledWith(expect.objectContaining({
-      input: expect.stringContaining("drop-ack-failed"),
+    expect(events).toContainEqual(expect.objectContaining({
+      operation: "delivery", outcome: "drop-ack-failed",
     }));
   });
 
@@ -381,7 +385,7 @@ describe("A2ASubAgentMessageBus security boundary", () => {
     namespace.setStored({ version: 1, entries: [valid, rejected] });
     namespace.rejectNextWrite();
     const mailbox = new SubAgentMessageMailbox(namespace.handle);
-    const audit = vi.fn();
+
     const localBus = new A2ASubAgentMessageBus({
       parentLoop: {
         getSessionId: () => "parent-session",
@@ -391,7 +395,6 @@ describe("A2ASubAgentMessageBus security boundary", () => {
       settingsService: {
         get: () => ({ subAgentAutonomousWake: false }),
       } as never,
-      auditLogger: { log: audit } as never,
       resolveChildAddress: async () => ({
         parentSessionId: "parent-session",
         childSessionId: "sub-child",
@@ -402,8 +405,8 @@ describe("A2ASubAgentMessageBus security boundary", () => {
     await expect(localBus.peekParentMailbox("parent-session")).resolves.toEqual([]);
     const stored = namespace.getStored() as { entries: ParentMailboxEntry[] };
     expect(stored.entries).toEqual([valid, rejected]);
-    expect(audit).toHaveBeenCalledWith(expect.objectContaining({
-      input: expect.stringContaining("drop-ack-failed"),
+    expect(events).toContainEqual(expect.objectContaining({
+      operation: "delivery", outcome: "drop-ack-failed",
     }));
   });
 
@@ -416,7 +419,7 @@ describe("A2ASubAgentMessageBus security boundary", () => {
       "forged",
     );
     const acknowledge = vi.fn(async () => 0);
-    const audit = vi.fn();
+
     const localBus = new A2ASubAgentMessageBus({
       parentLoop: {
         getSessionId: () => "parent-session",
@@ -430,7 +433,6 @@ describe("A2ASubAgentMessageBus security boundary", () => {
       settingsService: {
         get: () => ({ subAgentAutonomousWake: false }),
       } as never,
-      auditLogger: { log: audit } as never,
       resolveChildAddress: async () => ({
         parentSessionId: "parent-session",
         childSessionId: "sub-child",
@@ -440,8 +442,8 @@ describe("A2ASubAgentMessageBus security boundary", () => {
 
     await expect(localBus.peekParentMailbox("parent-session")).resolves.toEqual([]);
     expect(acknowledge).toHaveBeenCalledWith("parent-session", ["partial-rejected"]);
-    expect(audit).toHaveBeenCalledWith(expect.objectContaining({
-      input: expect.stringContaining("drop-ack-failed"),
+    expect(events).toContainEqual(expect.objectContaining({
+      operation: "delivery", outcome: "drop-ack-failed",
     }));
   });
   it("quarantines every persisted copy of a duplicate storage id before acceptance", async () => {
@@ -473,9 +475,7 @@ describe("A2ASubAgentMessageBus security boundary", () => {
     await expect(fixture.bus.peekParentMailbox("parent-session")).resolves.toEqual([survivor]);
     const stored = fixture.namespace.getStored() as { entries: ParentMailboxEntry[] };
     expect(stored.entries).toEqual([survivor]);
-    const invalidAudits = fixture.audit.mock.calls.filter(
-      ([entry]) => (entry as { input: string }).input.includes("dropped:invalid-message"),
-    );
+    const invalidAudits = events.filter(({ outcome, reasonCode }) => outcome === "dropped" && reasonCode === "invalid-message");
     expect(invalidAudits).toHaveLength(2);
   });
 
@@ -510,11 +510,11 @@ describe("A2ASubAgentMessageBus security boundary", () => {
     const stored = fixture.namespace.getStored() as { entries: ParentMailboxEntry[] };
     expect(stored.entries).toEqual([first, second, survivor]);
     expect(resolveChildAddress).not.toHaveBeenCalled();
-    expect(fixture.audit).not.toHaveBeenCalledWith(expect.objectContaining({
-      input: expect.stringContaining("dropped:invalid-message"),
+    expect(events).not.toContainEqual(expect.objectContaining({
+      operation: "delivery", outcome: "dropped", reasonCode: "invalid-message",
     }));
-    expect(fixture.audit).toHaveBeenCalledWith(expect.objectContaining({
-      input: expect.stringContaining("drop-cleanup-failed"),
+    expect(events).toContainEqual(expect.objectContaining({
+      operation: "delivery", outcome: "drop-cleanup-failed",
     }));
   });
 
@@ -542,8 +542,8 @@ describe("A2ASubAgentMessageBus security boundary", () => {
     await expect(fixture.bus.peekParentMailbox("parent-session")).resolves.toEqual([first]);
     const stored = fixture.namespace.getStored() as { entries: ParentMailboxEntry[] };
     expect(stored.entries).toEqual([first]);
-    expect(fixture.audit).toHaveBeenCalledWith(expect.objectContaining({
-      input: expect.stringContaining("dropped:invalid-message"),
+    expect(events).toContainEqual(expect.objectContaining({
+      operation: "delivery", outcome: "dropped", reasonCode: "invalid-message",
     }));
   });
 
@@ -572,8 +572,8 @@ describe("A2ASubAgentMessageBus security boundary", () => {
     await expect(fixture.bus.peekParentMailbox("parent-session")).resolves.toEqual([]);
     const stored = fixture.namespace.getStored() as { entries: ParentMailboxEntry[] };
     expect(stored.entries).toEqual([first, replay]);
-    expect(fixture.audit).toHaveBeenCalledWith(expect.objectContaining({
-      input: expect.stringContaining("drop-cleanup-failed"),
+    expect(events).toContainEqual(expect.objectContaining({
+      operation: "delivery", outcome: "drop-cleanup-failed",
     }));
   });
 
@@ -600,22 +600,14 @@ describe("A2ASubAgentMessageBus security boundary", () => {
     fixture.namespace.rejectNextWrite();
 
     await expect(fixture.bus.peekParentMailbox("parent-session")).resolves.toEqual([]);
-    expect(fixture.audit.mock.calls.filter(
-      ([entry]) => (entry as { input: string }).input.includes("dropped:invalid-message"),
-    )).toHaveLength(0);
-    expect(fixture.audit.mock.calls.filter(
-      ([entry]) => (entry as { input: string }).input.includes("drop-cleanup-failed"),
-    )).toHaveLength(1);
+    expect(events.filter(({ outcome, reasonCode }) => outcome === "dropped" && reasonCode === "invalid-message")).toHaveLength(0);
+    expect(events.filter(({ outcome }) => outcome === "drop-cleanup-failed")).toHaveLength(1);
 
     await expect(fixture.bus.peekParentMailbox("parent-session")).resolves.toEqual([first]);
     expect(fixture.namespace.getReadCount()).toBe(2);
     expect(fixture.namespace.getWriteCount()).toBe(2);
-    expect(fixture.audit.mock.calls.filter(
-      ([entry]) => (entry as { input: string }).input.includes("dropped:invalid-message"),
-    )).toHaveLength(1);
-    expect(fixture.audit.mock.calls.filter(
-      ([entry]) => (entry as { input: string }).input.includes("drop-cleanup-failed"),
-    )).toHaveLength(1);
+    expect(events.filter(({ outcome, reasonCode }) => outcome === "dropped" && reasonCode === "invalid-message")).toHaveLength(1);
+    expect(events.filter(({ outcome }) => outcome === "drop-cleanup-failed")).toHaveLength(1);
   });
   it("audits a persisted parent and Message context mismatch as cross-origin", async () => {
     const wrongContext = makeCanonicalMailboxEntry("wrong-context", "context mismatch");
@@ -627,8 +619,8 @@ describe("A2ASubAgentMessageBus security boundary", () => {
     }));
 
     await expect(fixture.bus.peekParentMailbox("parent-session")).resolves.toEqual([]);
-    expect(fixture.audit).toHaveBeenCalledWith(expect.objectContaining({
-      input: expect.stringContaining("dropped:cross-origin"),
+    expect(events).toContainEqual(expect.objectContaining({
+      operation: "delivery", outcome: "dropped", reasonCode: "cross-origin",
     }));
   });
 
@@ -645,14 +637,11 @@ describe("A2ASubAgentMessageBus security boundary", () => {
     }));
 
     await expect(fixture.bus.peekParentMailbox("parent-session")).resolves.toEqual([]);
-    const invalidAudits = fixture.audit.mock.calls.filter(
-      ([entry]) => (entry as { input: string }).input.includes("dropped:invalid-message"),
-    );
+    const invalidAudits = events.filter(({ outcome, reasonCode }) => outcome === "dropped" && reasonCode === "invalid-message");
     expect(invalidAudits).toHaveLength(2);
-    for (const [entry] of invalidAudits) {
-      expect((entry as { input: string }).input).not.toContain(secret);
-      expect((entry as { input: string }).input).not.toContain("forged persisted guidance");
-    }
+    const diagnosticLog = JSON.stringify(invalidAudits);
+    expect(diagnosticLog).not.toContain(secret);
+    expect(diagnosticLog).not.toContain("forged persisted guidance");
   });
 
   it("retains a mixed persisted mailbox and injects none when invalid cleanup fails", async () => {
@@ -669,8 +658,8 @@ describe("A2ASubAgentMessageBus security boundary", () => {
     await expect(fixture.bus.peekParentMailbox("parent-session")).resolves.toEqual([]);
     const stored = fixture.namespace.getStored() as { entries: ParentMailboxEntry[] };
     expect(stored.entries).toEqual([valid, invalid]);
-    expect(fixture.audit).toHaveBeenCalledWith(expect.objectContaining({
-      input: expect.stringContaining("drop-cleanup-failed"),
+    expect(events).toContainEqual(expect.objectContaining({
+      operation: "delivery", outcome: "drop-cleanup-failed",
     }));
   });
 
@@ -684,8 +673,8 @@ describe("A2ASubAgentMessageBus security boundary", () => {
     }));
 
     await expect(fixture.bus.peekParentMailbox("parent-session")).resolves.toHaveLength(16);
-    expect(fixture.audit).toHaveBeenCalledWith(expect.objectContaining({
-      input: expect.stringContaining("dropped:budget-exhausted"),
+    expect(events).toContainEqual(expect.objectContaining({
+      operation: "delivery", outcome: "dropped", reasonCode: "budget-exhausted",
     }));
   });
 
@@ -702,8 +691,8 @@ describe("A2ASubAgentMessageBus security boundary", () => {
     }));
 
     await expect(fixture.bus.peekParentMailbox("parent-session")).resolves.toHaveLength(2);
-    expect(fixture.audit).toHaveBeenCalledWith(expect.objectContaining({
-      input: expect.stringContaining("dropped:budget-exhausted"),
+    expect(events).toContainEqual(expect.objectContaining({
+      operation: "delivery", outcome: "dropped", reasonCode: "budget-exhausted",
     }));
   });
 
@@ -723,8 +712,8 @@ describe("A2ASubAgentMessageBus security boundary", () => {
     await expect(fixture.bus.peekParentMailbox("tracked-parent-100")).resolves.toEqual([]);
     const stored = fixture.namespace.getStored() as { entries: ParentMailboxEntry[] };
     expect(stored.entries).toHaveLength(100);
-    expect(fixture.audit).toHaveBeenCalledWith(expect.objectContaining({
-      input: expect.stringContaining("dropped:budget-exhausted"),
+    expect(events).toContainEqual(expect.objectContaining({
+      operation: "delivery", outcome: "dropped", reasonCode: "budget-exhausted",
     }));
   });
   it("audits a metadata-only oversized persisted envelope as budget-exhausted", async () => {
@@ -737,11 +726,10 @@ describe("A2ASubAgentMessageBus security boundary", () => {
     }));
 
     await expect(fixture.bus.peekParentMailbox("parent-session")).resolves.toEqual([]);
-    expect(fixture.audit).toHaveBeenCalledWith(expect.objectContaining({
-      input: expect.stringContaining("dropped:budget-exhausted"),
+    expect(events).toContainEqual(expect.objectContaining({
+      operation: "delivery", outcome: "dropped", reasonCode: "budget-exhausted",
     }));
-    const auditInput = (fixture.audit.mock.calls[0]?.[0] as { input: string }).input;
-    expect(auditInput).not.toContain("x".repeat(100));
+    expect(JSON.stringify(events)).not.toContain("x".repeat(100));
   });
 
   it("audits every attributed parent before durable cleanup erases diagnostics", async () => {
@@ -768,26 +756,24 @@ describe("A2ASubAgentMessageBus security boundary", () => {
     );
 
     await expect(fixture.bus.peekParentMailbox("parent-a")).resolves.toEqual([]);
-    const auditEntries = fixture.audit.mock.calls.map(
-      ([entry]) => entry as { sessionId: string; input: string },
-    );
+    const auditEntries = events.filter(({ event }) => event === "subagent_message_delivery");
     expect(auditEntries).toEqual(expect.arrayContaining([
       expect.objectContaining({
         sessionId: "parent-a",
-        input: expect.stringContaining("message=a-diagnostic"),
+        messageId: "a-diagnostic",
       }),
       expect.objectContaining({
         sessionId: "parent-b",
-        input: expect.stringContaining("message=b-diagnostic"),
+        messageId: "b-diagnostic",
       }),
     ]));
     expect(auditEntries.every(
-      (entry) => !(entry.sessionId === "parent-a" && entry.input.includes("message=b-diagnostic")),
+      (entry) => !(entry.sessionId === "parent-a" && entry.messageId === "b-diagnostic"),
     )).toBe(true);
     expect(auditEntries.every(
-      (entry) => !(entry.sessionId === "parent-b" && entry.input.includes("message=a-diagnostic")),
+      (entry) => !(entry.sessionId === "parent-b" && entry.messageId === "a-diagnostic"),
     )).toBe(true);
-    expect(auditEntries.every((entry) => !entry.input.includes(secret))).toBe(true);
+    expect(JSON.stringify(auditEntries)).not.toContain(secret);
     const stored = fixture.namespace.getStored() as { entries: ParentMailboxEntry[] };
     expect(stored.entries).toEqual([]);
 
@@ -801,7 +787,6 @@ describe("A2ASubAgentMessageBus security boundary", () => {
       settingsService: {
         get: () => ({ subAgentAutonomousWake: false }),
       } as never,
-      auditLogger: { log: restartedAudit } as never,
       resolveChildAddress: async (parentSessionId) => ({
         parentSessionId,
         childSessionId: "sub-child",
@@ -819,15 +804,14 @@ describe("A2ASubAgentMessageBus security boundary", () => {
       parentLoop: { getSessionId: () => "parent-session", hasActiveTurn: () => false } as unknown as ConversationLoop,
       mailbox: { enqueue, peek: async () => [], acknowledge: async () => 0 } as unknown as SubAgentMessageMailbox,
       settingsService: { get: () => ({ subAgentAutonomousWake: false }) } as never,
-      auditLogger: { log: audit } as never,
       resolveChildAddress: async () => resolved,
     });
     await expect(localBus.deliverToParent({
       parentSessionId: "parent-session", childSessionId: "sub-child", message: makeMessage(),
     })).resolves.toMatchObject({ ok: false, disposition: "dropped", reason });
     expect(enqueue).not.toHaveBeenCalled();
-    expect(audit).toHaveBeenCalledWith(expect.objectContaining({
-      input: expect.stringContaining("dropped:" + reason),
+    expect(events).toContainEqual(expect.objectContaining({
+      operation: "delivery", outcome: "dropped", reasonCode: reason,
     }));
   });
 
@@ -845,7 +829,6 @@ describe("A2ASubAgentMessageBus security boundary", () => {
       settingsService: {
         get: () => ({ subAgentAutonomousWake: false }),
       } as never,
-      auditLogger: { log: audit } as never,
       resolveChildAddress: async () => ({
         parentSessionId: "parent-session",
         childSessionId: "sub-other",
@@ -863,8 +846,8 @@ describe("A2ASubAgentMessageBus security boundary", () => {
       reason: "invalid-message",
     });
     expect(enqueue).not.toHaveBeenCalled();
-    expect(audit).toHaveBeenCalledWith(expect.objectContaining({
-      input: expect.stringContaining("dropped:invalid-message"),
+    expect(events).toContainEqual(expect.objectContaining({
+      operation: "delivery", outcome: "dropped", reasonCode: "invalid-message",
     }));
   });
   it("fails closed and audits when mailbox bounds are exhausted", async () => {
@@ -876,7 +859,6 @@ describe("A2ASubAgentMessageBus security boundary", () => {
         acknowledge: async () => 0,
       } as unknown as SubAgentMessageMailbox,
       settingsService: { get: () => ({ subAgentAutonomousWake: false }) } as never,
-      auditLogger: { log: audit } as never,
       resolveChildAddress: async () => ({
         parentSessionId: "parent-session", childSessionId: "sub-child", childTitle: "worker",
       }),
@@ -884,8 +866,8 @@ describe("A2ASubAgentMessageBus security boundary", () => {
     await expect(localBus.deliverToParent({
       parentSessionId: "parent-session", childSessionId: "sub-child", message: makeMessage(),
     })).resolves.toMatchObject({ ok: false, disposition: "dropped", reason: "budget-exhausted" });
-    expect(audit).toHaveBeenCalledWith(expect.objectContaining({
-      input: expect.stringContaining("dropped:budget-exhausted"),
+    expect(events).toContainEqual(expect.objectContaining({
+      operation: "delivery", outcome: "dropped", reasonCode: "budget-exhausted",
     }));
   });
 
@@ -924,7 +906,6 @@ describe("A2ASubAgentMessageBus security boundary", () => {
       } as unknown as ConversationLoop,
       mailbox,
       settingsService: { get: () => ({ subAgentAutonomousWake: false }) } as never,
-      auditLogger: { log: audit } as never,
       resolveChildAddress: async () => ({
         parentSessionId: "parent-session", childSessionId: "sub-child", childTitle: "worker",
       }),
@@ -952,9 +933,8 @@ describe("A2ASubAgentMessageBus security boundary", () => {
       message: makeMessage({ parts: [{ text: "   " }] }),
     })).resolves.toMatchObject({ ok: true });
 
-    expect(audit).toHaveBeenCalledWith(expect.objectContaining({
-      type: "warn",
-      input: expect.stringContaining("empty-body-fallback"),
+    expect(console.warn).toHaveBeenCalledWith("[permissions] subagent_message_delivery", expect.objectContaining({
+      operation: "delivery", outcome: "empty-body-fallback",
     }));
     const body = (entries[0]?.formattedText ?? "").split("\n").slice(1).join("\n");
     expect(body.trim().length).toBeGreaterThan(0);
@@ -967,8 +947,8 @@ describe("A2ASubAgentMessageBus security boundary", () => {
       message: makeMessage(),
     })).resolves.toMatchObject({ ok: true });
 
-    expect(audit).not.toHaveBeenCalledWith(expect.objectContaining({
-      input: expect.stringContaining("empty-body-fallback"),
+    expect(events).not.toContainEqual(expect.objectContaining({
+      operation: "delivery", outcome: "empty-body-fallback",
     }));
   });
 
@@ -993,7 +973,6 @@ describe("A2ASubAgentMessageBus security boundary", () => {
       } as unknown as ConversationLoop,
       mailbox: { enqueue, peek: async () => entries, acknowledge } as unknown as SubAgentMessageMailbox,
       settingsService: { get: () => ({ subAgentAutonomousWake: false }) } as never,
-      auditLogger: { log: audit } as never,
       resolveChildAddress: async () => ({
         parentSessionId: "parent-session", childSessionId: "sub-child", childTitle: "worker",
       }),
@@ -1004,8 +983,8 @@ describe("A2ASubAgentMessageBus security boundary", () => {
     dispositionCallbacks?.onDropped?.("turn-ended");
     expect(entries).toHaveLength(1);
     expect(acknowledge).not.toHaveBeenCalled();
-    expect(audit).toHaveBeenCalledWith(expect.objectContaining({
-      input: expect.stringContaining("deferred:turn-ended"),
+    expect(events).toContainEqual(expect.objectContaining({
+      operation: "delivery", outcome: "deferred", reasonCode: "turn-ended",
     }));
   });
 
@@ -1015,7 +994,6 @@ describe("A2ASubAgentMessageBus security boundary", () => {
       parentLoop: { getSessionId: () => "parent-session", hasActiveTurn: () => false } as unknown as ConversationLoop,
       mailbox: { enqueue, peek: async () => entries, acknowledge: async () => 0 } as unknown as SubAgentMessageMailbox,
       settingsService: { get: () => ({ subAgentAutonomousWake: true }) } as never,
-      auditLogger: { log: audit } as never,
       resolveChildAddress: async () => ({
         parentSessionId: "parent-session", childSessionId: "sub-child", childTitle: "worker",
       }),
@@ -1052,7 +1030,6 @@ describe("A2ASubAgentMessageBus security boundary", () => {
       } as unknown as ConversationLoop,
       mailbox: { enqueue, peek, acknowledge: async () => 0 } as unknown as SubAgentMessageMailbox,
       settingsService: { get: () => ({ subAgentAutonomousWake: true }) } as never,
-      auditLogger: { log: audit } as never,
       resolveChildAddress: async () => ({
         parentSessionId: "parent-session",
         childSessionId: "sub-child",
@@ -1086,7 +1063,6 @@ describe("A2ASubAgentMessageBus security boundary", () => {
       } as unknown as ConversationLoop,
       mailbox: { enqueue, peek: async () => entries, acknowledge: async () => 0 } as unknown as SubAgentMessageMailbox,
       settingsService: { get: () => ({ subAgentAutonomousWake: false }) } as never,
-      auditLogger: { log: audit } as never,
       resolveChildAddress: async () => ({
         parentSessionId: "parent-session",
         childSessionId: "sub-child",
@@ -1140,7 +1116,6 @@ describe("A2ASubAgentMessageBus security boundary", () => {
       } as unknown as ConversationLoop,
       mailbox: { enqueue, peek, acknowledge: async () => 0 } as unknown as SubAgentMessageMailbox,
       settingsService: { get: () => ({ subAgentAutonomousWake: true }) } as never,
-      auditLogger: { log: audit } as never,
       resolveChildAddress: async () => ({
         parentSessionId: "parent-session",
         childSessionId: "sub-child",
@@ -1186,7 +1161,6 @@ describe("A2ASubAgentMessageBus security boundary", () => {
       } as unknown as ConversationLoop,
       mailbox: { enqueue, peek: async () => entries, acknowledge: async () => 0 } as unknown as SubAgentMessageMailbox,
       settingsService: { get: () => ({ subAgentAutonomousWake: false }) } as never,
-      auditLogger: { log: audit } as never,
       resolveChildAddress: async () => ({
         parentSessionId: "parent-session",
         childSessionId: "sub-child",
@@ -1221,7 +1195,6 @@ describe("A2ASubAgentMessageBus security boundary", () => {
         acknowledge: async () => 0,
       } as unknown as SubAgentMessageMailbox,
       settingsService: { get: () => ({ subAgentAutonomousWake: true }) } as never,
-      auditLogger: { log: audit } as never,
       resolveChildAddress: async () => ({
         parentSessionId: "parent-session", childSessionId: "sub-child", childTitle: "worker",
       }),
@@ -1279,7 +1252,6 @@ describe("A2ASubAgentMessageBus security boundary", () => {
         acknowledge: async () => 0,
       } as unknown as SubAgentMessageMailbox,
       settingsService: { get: () => ({ subAgentAutonomousWake: true }) } as never,
-      auditLogger: { log: audit } as never,
       resolveChildAddress: async () => ({
         parentSessionId: "parent-session", childSessionId: "sub-child", childTitle: "worker",
       }),
@@ -1317,7 +1289,6 @@ describe("A2ASubAgentMessageBus security boundary", () => {
       settingsService: {
         get: () => ({ subAgentAutonomousWake: false }),
       } as never,
-      auditLogger: { log: audit } as never,
       resolveChildAddress: async () => ({
         parentSessionId: "parent-session",
         childSessionId: "sub-child",
@@ -1342,8 +1313,8 @@ describe("A2ASubAgentMessageBus security boundary", () => {
     });
 
     await expect(mailbox.peek("parent-session")).resolves.toHaveLength(1);
-    expect(audit).toHaveBeenCalledWith(expect.objectContaining({
-      input: expect.stringContaining("dropped:duplicate-message"),
+    expect(events).toContainEqual(expect.objectContaining({
+      operation: "delivery", outcome: "dropped", reasonCode: "duplicate-message",
     }));
   });
   it("bounds the full serialized envelope, not only rendered Part text", async () => {
@@ -1359,8 +1330,8 @@ describe("A2ASubAgentMessageBus security boundary", () => {
       reason: "message-too-long",
     });
     expect(enqueue).not.toHaveBeenCalled();
-    expect(audit).toHaveBeenCalledWith(expect.objectContaining({
-      input: expect.stringContaining("dropped:message-too-long"),
+    expect(events).toContainEqual(expect.objectContaining({
+      operation: "delivery", outcome: "dropped", reasonCode: "message-too-long",
     }));
   });
 
@@ -1465,7 +1436,7 @@ function createPersistedBusFixture(
   const namespace = createInMemoryNamespace();
   namespace.setStored({ version: 1, entries: persistedEntries });
   const mailbox = new SubAgentMessageMailbox(namespace.handle);
-  const audit = vi.fn();
+
   const bus = new A2ASubAgentMessageBus({
     parentLoop: {
       getSessionId: () => "parent-session",
@@ -1475,11 +1446,10 @@ function createPersistedBusFixture(
     settingsService: {
       get: () => ({ subAgentAutonomousWake: false }),
     } as never,
-    auditLogger: { log: audit } as never,
     resolveChildAddress,
     releaseEphemeralChildAddress,
   });
-  return { audit, bus, mailbox, namespace };
+  return { bus, mailbox, namespace };
 }
 
 describe("SubAgentMessageMailbox durability and bounds", () => {

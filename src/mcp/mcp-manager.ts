@@ -1,3 +1,4 @@
+import { logPermissionEvent, permissionLogId } from "../lib/permission-log.js";
 import { assertInstalledMcpFilesIntact } from "../marketplace/app/mcp-installer.js";
 import { mkdir, unlink } from "node:fs/promises";
 import { join } from "node:path";
@@ -24,7 +25,6 @@ import type { McpSkill } from "./mcp-skills.js";
 import { McpOAuthError, McpOAuthSession, tryMcpOAuthCredentialKey, type McpOAuthDependencies, type McpOAuthSecrets } from "./mcp-oauth.js";
 import { ToolRegistry, type PreparedMcpRegistryReplacement } from "../tools/registry.js";
 import type { Tool } from "../tools/base.js";
-import type { AuditLogger } from "../audit/audit-logger.js";
 import type { McpInputRequestResolver } from "./mcp-client.js";
 import { withFileLock } from "../lib/with-file-lock.js";
 import { writeFileAtomicAtPath } from "../main/storage/feature-namespace.js";
@@ -223,8 +223,6 @@ export class McpManager {
     private readonly toolRegistry: ToolRegistry,
     private readonly networkFetch: typeof fetch,
     configPath?: string,
-    private readonly auditLogger?: AuditLogger,
-    /** Bind elicitation approval per server; without a resolver, input_required fails closed. */
     private readonly inputResolverFactory?: (serverId: string) => McpInputRequestResolver,
     /** Emit once for permanent retirement, never reconnect; consumers disable cards and clear partitions. */
     private readonly onServerDisconnected?: (serverId: string) => void,
@@ -562,16 +560,7 @@ export class McpManager {
         this.toolRegistry.unregisterByMcp(config.id);
         throw new Error("MCP authentication required");
       }
-      this.auditLogger?.log({
-        timestamp: new Date().toISOString(),
-        sessionId: "mcp-manager",
-        type: "mcp_connect",
-        input: JSON.stringify({ serverId: config.id, transport: config.transport }),
-        output: JSON.stringify({
-          status: client.getState().status,
-          registeredTools: client.getState().registeredTools,
-        }),
-      });
+      logPermissionEvent("mcp_server_connected", { sessionId: permissionLogId("mcp-manager"), serverId: permissionLogId(config.id) });
       // Connected: whatever waited for this server id is answered.
       if (this.unconfinedStarts.delete(config.id)) dropExtensionStart(mcpStdioStartKey(config.id));
     } catch (err) {
@@ -585,13 +574,7 @@ export class McpManager {
           // Only the config that was refused is retried: a removed server is not reconnected from here.
           retry: async () => { if (this.unconfinedStarts.get(config.id) === config) await this.connectServer(config); } });
       }
-      this.auditLogger?.log({
-        timestamp: new Date().toISOString(),
-        sessionId: "mcp-manager",
-        type: "mcp_connect",
-        input: JSON.stringify({ serverId: config.id, transport: config.transport }),
-        output: errorMessage(err),
-      });
+      logPermissionEvent("mcp_server_connect_failed", { sessionId: permissionLogId("mcp-manager"), serverId: permissionLogId(config.id) }, "warn");
       throw err;
     }
   }
@@ -1305,12 +1288,7 @@ export class McpManager {
     this.bundledOwners.delete(serverId);
     this.bundledStableIds.delete(serverId);
     this.governance.unregisterRuntimeApproval?.(serverId);
-    this.auditLogger?.log({
-      timestamp: new Date().toISOString(),
-      sessionId: "mcp-manager",
-      type: "kill_switch",
-      input: JSON.stringify({ serverId }),
-    });
+    logPermissionEvent("mcp_kill_switch", { sessionId: permissionLogId("mcp-manager"), serverId: permissionLogId(serverId) });
 
     this.onServerDisconnected?.(serverId);
 
@@ -1596,9 +1574,7 @@ export class McpManager {
           if (approvedFingerprint !== userServerFingerprint(found)) throw new Error("mcp-trust-stale: Server configuration changed; review it again");
           const validation = this.governance.validateUserConfig(found);
           if (!validation.valid) throw new Error("mcp-policy-refused: Server trust is refused by policy");
-          if (!this.auditLogger) throw new Error("MCP server trust requires a durable audit logger");
-          await this.auditLogger.append({ timestamp: new Date().toISOString(), sessionId: "mcp-manager", type: "approval",
-            input: JSON.stringify({ action: "mcp_server_trust_requested", serverId, fingerprint: approvedFingerprint }) });
+          logPermissionEvent("mcp_server_trust_requested", { serverId: permissionLogId(serverId) });
           await this.commitServerMutation(undefined, new Map([[userServerTrustSecretId(serverId), approvedFingerprint]]));
         }
         return found;
@@ -1812,25 +1788,13 @@ export class McpManager {
 
     try {
       await this.connectServer(updatedConfig, { force: true });
-      this.auditLogger?.log({
-        timestamp: new Date().toISOString(),
-        sessionId: "mcp-manager",
-        type: "mcp_apikey_set",
-        input: JSON.stringify({ serverId: id }),
-        output: "connected",
-      });
+      logPermissionEvent("mcp_api_key_set", { sessionId: permissionLogId("mcp-manager"), serverId: permissionLogId(id) });
       return { connected: true };
     } catch (err) {
       const rawMsg = errorMessage(err);
       const warning = scrubSecrets(rawMsg);
       log.warn(`Connection after API key set failed (${id}): %s`, warning);
-      this.auditLogger?.log({
-        timestamp: new Date().toISOString(),
-        sessionId: "mcp-manager",
-        type: "mcp_apikey_set",
-        input: JSON.stringify({ serverId: id }),
-        output: "warning",
-      });
+      logPermissionEvent("mcp_api_key_write_failed", { sessionId: permissionLogId("mcp-manager"), serverId: permissionLogId(id) }, "warn");
       return { connected: false, warning };
     }
   }
@@ -1841,9 +1805,7 @@ export class McpManager {
         const existing = await this.loadConfigForWrite();
         const config = existing.find((server) => server.id === serverId);
         if (config?.auth !== "api-key") throw new Error("mcp-api-key-not-configured: Server does not use API key authentication");
-        if (!this.auditLogger) throw new Error("MCP credential changes require a durable audit logger");
-        await this.auditLogger.append({ timestamp: new Date().toISOString(), sessionId: "mcp-manager", type: "approval",
-          input: JSON.stringify({ action: "mcp_apikey_clear_requested", serverId }) });
+        logPermissionEvent("mcp_api_key_clear_requested", { serverId: permissionLogId(serverId) });
         await this.commitServerMutation(existing, new Map([[serverApiKeySecretId(serverId), null]]));
       });
       await this.killSwitch(serverId);
@@ -1857,11 +1819,10 @@ export class McpManager {
       const declarations = source?.list().filter((entry) => entry.packageName === packageRef.name && entry.serverName === serverName);
       const declaration = declarations?.[0];
       if (declarations?.length !== 1 || declaration?.auth !== "api-key") throw new Error("Bundled server has no API key declaration");
-      if (!this.bundledSecrets || !this.auditLogger) throw new Error("MCP credential changes require encrypted storage and a durable audit logger");
+      if (!this.bundledSecrets) throw new Error("MCP credential changes require encrypted storage");
       const key = bundledCredentialKey(packageRef, serverName);
       const previous = await this.bundledSecrets.getSecret(key);
-      await this.auditLogger.append({ timestamp: new Date().toISOString(), sessionId: "mcp-manager", type: "approval",
-        input: JSON.stringify({ action: "mcp_apikey_clear_requested", serverId: bundledConfigId(packageRef, serverName) }) });
+      logPermissionEvent("mcp_api_key_clear_requested", { serverId: permissionLogId(bundledConfigId(packageRef, serverName)) });
       try { await this.bundledSecrets.deleteSecret(key); }
       catch (error) {
         try {

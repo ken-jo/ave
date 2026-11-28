@@ -1,3 +1,4 @@
+import { logPermissionEvent, permissionLogId } from "../../lib/permission-log.js";
 /** Construct workflow stores, register builtin tools, and late-bind the sub-agent runner. */
 import { setRunSessionParentResolver } from "../../permissions/run-grants.js";
 import { SessionTasksStore } from "../../main/session-tasks-store.js";
@@ -239,14 +240,7 @@ export async function setupWorkflowStores(
               waitDisclosure: waitForHostTerminalDisclosure,
             },
             auditMismatch: (mismatch) => {
-              ctx.bootAuditLogger.log({
-                timestamp: new Date().toISOString(),
-                sessionId: mismatch.sessionId ?? "unknown",
-                type: "warn",
-                // Digests, not text: a command can hold secrets.
-                output: `terminal_run: terminal ${mismatch.tabId} ran a different command from the one approved `
-                  + `(approved sha256 ${mismatch.approvedSha256}, ran sha256 ${mismatch.ranSha256})`,
-              });
+              logPermissionEvent("workflow_transcript_mismatch", { sessionId: permissionLogId(mismatch.sessionId ?? "unknown") }, "warn");
             },
           },
           browser: {

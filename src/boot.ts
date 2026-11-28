@@ -1,3 +1,4 @@
+import { logPermissionEvent, permissionLogId, permissionLogReasonCode } from "./lib/permission-log.js";
 import type { MainWindow } from "./main/main-window-host.js";
 import { readPluginRegistry, vouchedInstalledPluginIds } from "./plugins/registry.js";
 import { requireDesktopHost, type BootHost } from "./boot/host-runtime.js";
@@ -23,7 +24,7 @@ import { configureHostResources, getConfiguredHostResources } from "./main/host-
  *
  *   steps/network-fetch-setup     Electron fetch surface (net + private + plugin
  *                                 egress chooser + SSRF-guarded LLM fetch).
- *   steps/audit-notification      shared AuditLogger + NotificationService +
+ *   steps/notifications            NotificationService +
  *                                 plugin auth-partition tracker seeding.
  *   steps/terminal-scrollback-setup  the run's one sweep of closed terminal
  *                                 tabs' kept output, then the store.
@@ -101,7 +102,7 @@ import {
 import { assertBootContextReady, createBootContext } from "./boot/context.js";
 import { assembleAppServices } from "./boot/assemble-services.js";
 import { setupNetworkFetch } from "./boot/steps/network-fetch-setup.js";
-import { setupAuditAndNotification } from "./boot/steps/audit-notification.js";
+import { setupNotifications } from "./boot/steps/notifications.js";
 import { notifyHomeBoundaryRepairs, notifyHomeConfigurationPreserved, notifyHomeTrustPending } from "./boot/steps/home-privacy-notice.js";
 import { setupTerminalScrollback } from "./boot/steps/terminal-scrollback-setup.js";
 import { setupWorkBoard } from "./boot/steps/work-board-setup.js";
@@ -294,7 +295,6 @@ export async function bootstrap(
     pythonPath,
     pythonRuntime,
     bashAstValidator,
-    auditService,
     settingsService,
     memoryManager,
     memoryUsageLog,
@@ -305,27 +305,25 @@ export async function bootstrap(
   ctx.pythonPath = pythonPath;
   ctx.pythonRuntime = pythonRuntime;
   ctx.bashAstValidator = bashAstValidator;
-  ctx.auditService = auditService;
   ctx.settingsService = settingsService;
   ctx.memoryManager = memoryManager;
   ctx.memoryCaptureService = memoryCaptureService;
   ctx.memorySaveNotices = memorySaveNotices;
   ctx.toolRegistry = toolRegistry;
 
-  // Shared AuditLogger + NotificationService + plugin auth-partition seeding.
-  await setupAuditAndNotification(ctx);
-  recordBootPhase("audit-notifications");
+  // Notification service and plugin authentication partitions.
+  await setupNotifications(ctx);
+  recordBootPhase("notifications");
   notifyHomeBoundaryRepairs(homePrivacy, ctx);
   notifyHomeConfigurationPreserved(configurationDiagnostics, ctx);
   notifyHomeTrustPending(homeTrust, ctx);
   // With the layout as settings loaded it, before any window can save another.
   setupTerminalScrollback(ctx);
 
-  // Construct the audited approval gate before services bind effect permissions.
+  // Construct the approval gate before services bind effect permissions.
   const approvalGate = await createApprovalGate(
     // Resolve the current conversation owner on delivery, listing and response.
     mainWindow === null ? null : approvalSurfaceResolver(undefined, () => host.desktop?.getAppWindows() ?? []),
-    ctx.bootAuditLogger,
     ctx.notificationService,
 
   );
@@ -335,31 +333,16 @@ export async function bootstrap(
     approvalGate,
     {
       onConcurrent: () =>
-        ctx.bootAuditLogger.log({
-          timestamp: new Date().toISOString(),
-          sessionId: "a2a-remote",
-          type: "warn",
-          input: "a2a-remote:approval-concurrent-denied",
-        }),
+        logPermissionEvent("remote_approval_concurrent_denied", { sessionId: permissionLogId("a2a-remote") }, "warn"),
       onError: () =>
-        ctx.bootAuditLogger.log({
-          timestamp: new Date().toISOString(),
-          sessionId: "a2a-remote",
-          type: "warn",
-          input: "a2a-remote:approval-error-denied",
-        }),
+        logPermissionEvent("remote_approval_error_denied", { sessionId: permissionLogId("a2a-remote") }, "warn"),
     },
     { allowOnceOnly: true },
   );
   if (!remoteA2AAgentActionApprover)
     throw new Error("a2a-remote-approval-unavailable");
   const auditRemoteA2A = (code: string) =>
-    ctx.bootAuditLogger.log({
-      timestamp: new Date().toISOString(),
-      sessionId: "a2a-remote",
-      type: "warn",
-      input: `a2a-remote:${code}`,
-    });
+    logPermissionEvent("remote_agent_runtime_warning", { reasonCode: permissionLogReasonCode(code) }, "warn");
   // Read once, and handed to the runtime rather than re-read by it, so what
   // the status channel later compares against is exactly what this run used.
   const remoteA2ABootGates = snapshotA2ARemoteGates(settingsService);
@@ -418,13 +401,7 @@ export async function bootstrap(
           removals.cleaned.length,
           removals.unresolved.length,
         );
-        ctx.bootAuditLogger.log({
-          timestamp: new Date().toISOString(),
-          sessionId: "boot",
-          type: removals.unresolved.length > 0 ? "warn" : "info",
-          input: "plugin-removal-recovery",
-          output: JSON.stringify(removals),
-        });
+        logPermissionEvent("plugin_removal_recovery", { sessionId: permissionLogId("boot") });
       }
       if (pendingRecoverySkipped) {
         log.warn(
@@ -439,13 +416,7 @@ export async function bootstrap(
         );
       }
       if (unresolved.length > 0) {
-        ctx.bootAuditLogger.log({
-          timestamp: new Date().toISOString(),
-          sessionId: "boot",
-          type: "warn",
-          input: "plugin-update-recovery-unresolved",
-          output: JSON.stringify(unresolved),
-        });
+        logPermissionEvent("plugin_update_recovery_unresolved", { sessionId: permissionLogId("boot") }, "warn");
       }
     })
     .catch((err) => {
@@ -453,13 +424,7 @@ export async function bootstrap(
         "boot: plugin migration/recovery failed (pending rows remain hidden): %s",
         (err as Error).message,
       );
-      ctx.bootAuditLogger.log({
-        timestamp: new Date().toISOString(),
-        sessionId: "boot",
-        type: "warn",
-        input: "plugin-migration-recovery-failed",
-        output: (err as Error).message,
-      });
+      logPermissionEvent("plugin_migration_recovery_failed", { sessionId: permissionLogId("boot") }, "warn");
     });
   // Agent plugins' data directories are tombstoned the same way at runtime.
   await sweepOrphanUninstallDirs(agentPluginDataRoot())
@@ -468,17 +433,11 @@ export async function bootstrap(
   // confined process can run, and plugin start (below) begins that phase
   // (lib/confined-process-phase.ts).
   await sweepOrphanUninstallDirs(sweeperPluginPaths.pluginsRoot, {
-    auditFailures: (failures) => {
+    auditFailures: (_failures) => {
       // Surface persistent rm failures (typically antivirus / corp endpoint
       // protection holding handles past process death) into the audit log
       // so operators see them beyond the info-level summary line.
-      ctx.bootAuditLogger.log({
-        timestamp: new Date().toISOString(),
-        sessionId: "boot",
-        type: "warn",
-        input: `plugin-tombstone-sweep-failed root=${sweeperPluginPaths.pluginsRoot}`,
-        output: JSON.stringify(failures),
-      });
+      logPermissionEvent("plugin_tombstone_sweep_failed", { sessionId: permissionLogId("boot") }, "warn");
     },
   })
     .then(({ swept, failed }) => {
@@ -508,27 +467,13 @@ export async function bootstrap(
   // Plugins' HostApi storage moved out of `data/` into the host-only
   // `storage/` beside it. A root whose state predates that gets its storage
   // view copied over once, here, before any confined process can run.
-  const PLUGIN_HOST_STORAGE_AUDIT_SKIPPED_MAX = 50;
   await migratePluginHostStorage(sweeperPluginPaths.pluginsRoot)
     .then(({ migrated, skipped, failed }) => {
       if (migrated.length > 0 || skipped.length > 0) {
         log.info("boot: plugin host storage migration migrated=%d skipped=%d", migrated.length, skipped.length);
       }
       if (failed.length > 0 || skipped.length > 0) {
-        ctx.bootAuditLogger.log({
-          timestamp: new Date().toISOString(),
-          sessionId: "boot",
-          type: failed.length > 0 ? "warn" : "info",
-          input: "plugin-host-storage-migration",
-          // Bounded: a data/ holding a node_modules or a venv skips thousands
-          // of links, and one audit record should not carry them all.
-          output: JSON.stringify({
-            migrated,
-            failed,
-            skippedCount: skipped.length,
-            skipped: skipped.slice(0, PLUGIN_HOST_STORAGE_AUDIT_SKIPPED_MAX),
-          }),
-        });
+        logPermissionEvent("plugin_host_storage_cleanup", { sessionId: permissionLogId("boot") });
       }
     })
     .catch((err) => {
@@ -549,13 +494,7 @@ export async function bootstrap(
         );
       }
       if (failed.length > 0) {
-        ctx.bootAuditLogger.log({
-          timestamp: new Date().toISOString(),
-          sessionId: "boot",
-          type: "warn",
-          input: "diff-cache-sweep-failed",
-          output: JSON.stringify(failed),
-        });
+        logPermissionEvent("diff_cache_sweep_failed", { sessionId: permissionLogId("boot") }, "warn");
       }
     })
     .catch((err) => {
@@ -574,7 +513,6 @@ export async function bootstrap(
     appVersion: getAveAppVersion(),
     home: aveHome(),
     pluginRegistryPath: resolvePluginPaths().registryPath,
-    bootAuditLogger: ctx.bootAuditLogger,
   });
 
   // PermissionManager is built BEFORE initPluginRuntime
@@ -613,7 +551,6 @@ export async function bootstrap(
   // metadata is detached before the interactive loop is created.
   const rootReconciliation = await reconcileWorkspaceRoots({
     source: "boot",
-    auditLogger: ctx.bootAuditLogger,
     permissionManager,
     beforeRemove: async (runtimeRoot, context) => {
       const pruneOptions = { preserveRoots: context.preserveRoots };
@@ -667,7 +604,6 @@ export async function bootstrap(
     toolRegistry,
     pythonPath,
     pythonRuntime,
-    bootAuditLogger: ctx.bootAuditLogger,
     mainWindow,
     networkFetch: ctx.singleHopNetworkFetch,
     getMainWindow,
@@ -747,13 +683,7 @@ export async function bootstrap(
       }),
     });
   if (unresolvedUninstallCleanups.length > 0) {
-    ctx.bootAuditLogger.log({
-      timestamp: new Date().toISOString(),
-      sessionId: "boot",
-      type: "warn",
-      input: "plugin-uninstall-cleanup-unresolved",
-      output: JSON.stringify(unresolvedUninstallCleanups),
-    });
+    logPermissionEvent("plugin_uninstall_cleanup_unresolved", { sessionId: permissionLogId("boot") }, "warn");
   }
 
   // §4.5.9: SystemPromptBuilder.
@@ -799,23 +729,15 @@ export async function bootstrap(
   configureChatGptPlanRuntime({
     secrets: settingsService,
     networkFetch: host.networkFetch,
-    onEvent: (event) => {
+    onEvent: (_event) => {
       try {
-        ctx.bootAuditLogger.log({
-          timestamp: new Date().toISOString(),
-          sessionId: "subscription-runtime",
-          type: event.failure ? "warn" : "info",
-          // Codes only: the session event carries no token, URL or account detail.
-          input: JSON.stringify({ provider: "chatgpt-plan", event: event.event, ...(event.failure ? { failure: event.failure } : {}) }),
-        });
+        logPermissionEvent("subscription_runtime", { sessionId: permissionLogId("subscription-runtime"), provider: permissionLogId("chatgpt-plan") });
       } catch {
         // Auditing never changes a session outcome.
       }
     },
   });
-  const subscriptionBindings = createSubscriptionChatLoopBindings({
-    auditLogger: ctx.bootAuditLogger,
-  });
+  const subscriptionBindings = createSubscriptionChatLoopBindings();
   ctx.subscriptionProviderFactory = subscriptionBindings.subscriptionProviderFactory;
   ctx.isSubscriptionConnected = subscriptionBindings.isSubscriptionConnected;
 
@@ -963,7 +885,6 @@ export async function bootstrap(
   const { telemetry, pluginTelemetry, autoUpdaterStop } = wireReleasePrep({
     mainWindow,
     settingsService,
-    bootAuditLogger: ctx.bootAuditLogger,
     networkFetch: ctx.singleHopNetworkFetch,
     tracing: ctx.tracing,
     serviceClient,

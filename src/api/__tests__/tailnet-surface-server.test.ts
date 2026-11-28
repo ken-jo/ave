@@ -49,6 +49,7 @@ import { maybeStartTailnetObserverServer, resetTailnetObserverServerForTests, st
 import type { TailnetPairedSharingRuntime } from "../../main/tailnet-paired-sharing-runtime.js";
 import type { ConversationSurfaceRuntime } from "../../engine/conversation-surface-runtime.js";
 import { createTailnetWorkDecisions } from "../../main/tailnet-work-decisions.js";
+import { watchPermissionEvents } from "../../__tests__/support/permission-events.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import { itemDigestOf } from "../../main/work-board-store.js";
 import { stageOf } from "../../work-board/workflow/__tests__/stage-fixtures.js";
@@ -65,7 +66,10 @@ let servers: TailnetSurfaceServer[] = [];
 let stores: ReturnType<typeof createSharedConversationProjectionStore>[] = [];
 let receiptDirs: string[] = [];
 
+const logCaptures: ReturnType<typeof watchPermissionEvents>[] = [];
+
 afterEach(async () => {
+  for (const capture of logCaptures.splice(0).reverse()) capture.mockRestore();
   const active = servers;
   servers = [];
   await Promise.all(active.map((server) => server.close()));
@@ -2242,10 +2246,11 @@ async function pairedWorkFixture(h: Awaited<ReturnType<typeof stageRunHarness>>,
   const sharing = pairedSharing({ observe: true, control: true });
   const routines = new RoutinesStore(join(h.dir, "routines.json"));
   routines.bindTemplateAttachments(h.templates);
-  const log = vi.fn();
+  const log = vi.fn<(event: Record<string, unknown>) => void>();
+  logCaptures.push(watchPermissionEvents(event => { if (event.event === "remote_work_decision") log(event); }));
   const runtime = createTailnetWorkDecisions({
     workBoardStore: h.board, workBoardEngine: h.engine, workflowTemplateStore: h.templates, routinesStore: routines,
-    settingsService: { get: key => DEFAULT_SETTINGS[key] }, auditLogger: { log }, toolRegistry: new ToolRegistry(), approvalGate,
+    settingsService: { get: key => DEFAULT_SETTINGS[key] }, toolRegistry: new ToolRegistry(), approvalGate,
   });
   if (!runtime) throw new Error("Work decision runtime unavailable");
   const list = vi.fn(runtime.list);

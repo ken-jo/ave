@@ -1,5 +1,6 @@
+import { collectPermissionEvents } from "../../../__tests__/support/permission-events.js";
 // Use real upgrade markers so eligibility follows the seeder's grammar.
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, onTestFinished } from "vitest";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, existsSync, lstatSync, statSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -52,17 +53,16 @@ async function setup(options: {
   memoryManager.load();
   const memoryReviewer = stubReviewer(options.reviewerAnswer);
   const agentsDocMergeService = new AgentsDocMergeService({ memoryManager, memoryReviewer });
-  const auditLogger = { log: vi.fn() };
+
 
   registerHomeDocsHandlers({
-    auditLogger,
     memoryManager,
     settingsService: { get: () => ({ keepLatest: options.keepLatest ?? false }) },
     ...(options.withMergeService === false ? {} : { agentsDocMergeService }),
     getMainWindow: () => null,
   } as never);
 
-  return { memoryManager, memoryReviewer, auditLogger, agentsDocMergeService };
+  return { memoryManager, memoryReviewer, agentsDocMergeService };
 }
 
 beforeEach(() => {
@@ -188,17 +188,14 @@ describe("home-docs — applying a packaged version", () => {
   });
 
   it("audits the apply", async () => {
-    const { auditLogger } = await setup({ agentsMd: "mine\n" });
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
+    await setup({ agentsMd: "mine\n" });
     writeFileSync(join(home, "AGENTS.md.new"), "packaged v2\n");
 
     await invokeAppIpcHandler(handlers, CHANNELS.homeDocs.packagedApply, "AGENTS.md.new");
 
-    const entry = auditLogger.log.mock.calls[0][0] as { type: string; input: string };
-    expect(entry.type).toBe("info");
-    expect(JSON.parse(entry.input)).toMatchObject({
-      action: "apply-packaged",
-      markerPath: "AGENTS.md.new",
-    });
+    expect(capture.events).toContainEqual({ event: "home_docs_action", sessionId: "home-docs" });
   });
 });
 

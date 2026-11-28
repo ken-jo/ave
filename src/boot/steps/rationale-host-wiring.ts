@@ -1,12 +1,12 @@
+import { randomBytes } from "node:crypto";
+import { lstat } from "node:fs/promises";
 import { join } from "node:path";
-import {
-  DurableRationaleAuditAdapter,
-  type DurableRationaleAuditAdapterOptions,
-  type RationaleAuditSink,
-} from "../../audit/rationale-audit-adapter.js";
-import { createLogger } from "../../lib/logger.js";
+import { isMissingPathError } from "../../lib/atomic-file.js";
+import { logPermissionEvent } from "../../lib/permission-log.js";
+import { SafeStorageSecretStore } from "../../lib/protected-secret-store.js";
+import { withFileLock } from "../../lib/with-file-lock.js";
+import { openFeatureNamespace } from "../../main/storage/feature-namespace.js";
 import { getSandboxGeneration } from "../../permissions/sandbox-capability.js";
-import { aveHome } from "../../shared/ave-home.js";
 import { FOREGROUND_RATIONALE_PRODUCTION_ENABLED } from "../../tools/pipeline/rationale-control.js";
 import {
   RationaleHostService,
@@ -16,25 +16,19 @@ import {
   DurableHostInvocationStartCasStore,
   type DurableHostInvocationStartCasStoreOptions,
   type InvocationCrashRecoveryResult,
-  type RecoveryInvocationAuditSink,
 } from "../../tools/pipeline/rationale-invocation-journal.js";
 import type { HostInvocationStartCas } from "../../tools/pipeline/rationale-ticket-lifecycle.js";
 import type { BootContext } from "../context.js";
 
-const log = createLogger("ave");
+const namespace = openFeatureNamespace("rationale-execution");
+const EXECUTION_KEY_NAME = "invocation-execution.key";
 
 interface RecoverableInvocationStartCas extends HostInvocationStartCas {
-  recoverAfterCrash(input: {
-    persistAudit: RecoveryInvocationAuditSink;
-    now?: number;
-  }): Promise<InvocationCrashRecoveryResult>;
+  recoverAfterCrash(): Promise<InvocationCrashRecoveryResult>;
 }
 
 export interface RationaleHostWiringOverrides {
   readonly productionEnabled?: boolean;
-  readonly createAuditSink?: (
-    options: DurableRationaleAuditAdapterOptions,
-  ) => RationaleAuditSink;
   readonly createInvocationJournal?: (
     options: DurableHostInvocationStartCasStoreOptions,
   ) => RecoverableInvocationStartCas;
@@ -43,7 +37,43 @@ export interface RationaleHostWiringOverrides {
   ) => RationaleHostService;
 }
 
-/** Publish guarded authority only after audit preflight and recovery; resolve the reviewer at invocation. */
+async function checkDirectory(path: string): Promise<void> {
+  try {
+    const entry = await lstat(path);
+    if (!entry.isDirectory() || entry.isSymbolicLink()) {
+      throw new Error("Execution state requires a plain directory");
+    }
+  } catch (error) {
+    if (!isMissingPathError(error)) throw error;
+  }
+}
+
+async function openExecutionState(
+  encryption: BootContext["host"]["encryption"],
+): Promise<DurableHostInvocationStartCasStoreOptions> {
+  await checkDirectory(namespace.dir);
+  await checkDirectory(join(namespace.dir, "keys"));
+  const keyDir = await namespace.childDir("keys");
+  await checkDirectory(keyDir);
+  const filePath = join(namespace.dir, "invocations.json");
+  return withFileLock(filePath, async () => {
+    const checkpointStore = await SafeStorageSecretStore.open(encryption, keyDir, "reject");
+    let executionKey = checkpointStore.read(EXECUTION_KEY_NAME, 128);
+    if (executionKey === null) {
+      const existing = await lstat(filePath).catch((error: unknown) => {
+        if (!isMissingPathError(error)) throw error;
+        return null;
+      });
+      if (existing) throw new Error("Invocation execution key is missing");
+      executionKey = randomBytes(32).toString("hex");
+      checkpointStore.write(EXECUTION_KEY_NAME, executionKey);
+    }
+    if (!/^[0-9a-f]{64}$/.test(executionKey)) throw new Error("Invalid invocation execution key");
+    return { filePath, executionKey, checkpointStore };
+  }, { createTarget: false });
+}
+
+/** Publish execution authority after recovery and resolve the reviewer at invocation. */
 export async function wireRationaleHost(
   ctx: BootContext,
   overrides: RationaleHostWiringOverrides = {},
@@ -53,43 +83,12 @@ export async function wireRationaleHost(
     overrides.productionEnabled ?? FOREGROUND_RATIONALE_PRODUCTION_ENABLED;
 
   try {
-    const auditSecret = ctx.bootAuditLogger.getPermissionAuditSecret();
-    const sealStore = ctx.bootAuditLogger.getPermissionAuditSealStore();
-    if (auditSecret === null || sealStore === null) {
-      throw new Error("rationale audit authority is unavailable");
-    }
-
-    const auditOptions: DurableRationaleAuditAdapterOptions = {
-      auditDir: ctx.bootAuditLogger.getAuditDir(),
-      auditSecret,
-      sealStore,
-    };
-    const auditSink =
-      overrides.createAuditSink?.(auditOptions) ??
-      new DurableRationaleAuditAdapter(auditOptions);
-
-    const journalOptions: DurableHostInvocationStartCasStoreOptions = {
-      filePath: join(aveHome(), "rationale", "invocation-journal-v1.json"),
-      auditSecret,
-      sealStore,
-    };
+    const journalOptions = await openExecutionState(ctx.host.encryption);
     const invocationStartCas =
       overrides.createInvocationJournal?.(journalOptions) ??
       new DurableHostInvocationStartCasStore(journalOptions);
 
-    if (productionEnabled) {
-      auditSink.assertWritable();
-      const crashRecovery = await invocationStartCas.recoverAfterCrash({
-        persistAudit: (sessionId, record) => {
-          auditSink.appendInvocation(sessionId, record);
-        },
-      });
-      log.info(
-        "boot: invocation journal recovered %d unknown-after-crash, delivered %d audit records",
-        crashRecovery.recovered,
-        crashRecovery.delivered,
-      );
-    }
+    if (productionEnabled) await invocationStartCas.recoverAfterCrash();
 
     const serviceOptions: RationaleHostServiceOptions = {
       approvalGate: ctx.approvalGate,
@@ -99,19 +98,12 @@ export async function wireRationaleHost(
       getRegistryGeneration: () => ctx.toolRegistry.getGeneration(),
       getSandboxGeneration,
       invocationStartCas,
-      auditSink,
     };
-    const service =
+    ctx.rationaleHostService =
       overrides.createHostService?.(serviceOptions) ??
       new RationaleHostService(serviceOptions);
-
-    // Publish only fully recovered services.
-    ctx.rationaleHostService = service;
   } catch {
-    // Hide raw errors and paths; unavailable authority retains legacy batching and sandbox gaps force prompting.
     ctx.rationaleHostService = undefined;
-    log.warn(
-      "boot: foreground rationale authority unavailable; force-prompt one-shot sandbox permit fallback remains active",
-    );
+    logPermissionEvent("rationale_unavailable", { reasonCode: "execution-state-unavailable" }, "warn");
   }
 }

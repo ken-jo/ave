@@ -1,9 +1,8 @@
+import { trackInvocationCorrelations, collectPermissionEvents } from "../../__tests__/support/permission-events.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { AuditLogger } from "../../audit/audit-logger.js";
-import type { PermissionAuditEntryInput } from "../../audit/audit-schema.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { makeMockWebContents } from "../../__tests__/test-helpers.js";
 import { getLocale, setLocale, type Locale } from "../../i18n/index.js";
@@ -20,12 +19,14 @@ import { ToolRegistry } from "../registry.js";
 import { makeWriteProbeTool } from "./approval-memory-test-fixtures.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
 
+const invocationCorrelationId = trackInvocationCorrelations();
+
 describe("tool approval expiration attribution", () => {
   let root: string;
   let workspace: string;
   let previousHome: string | undefined;
   let previousLocale: Locale;
-  let audit: AuditLogger;
+  let logs: ReturnType<typeof collectPermissionEvents>;
   let gate: ApprovalGate | undefined;
 
   beforeEach(async () => {
@@ -36,15 +37,16 @@ describe("tool approval expiration attribution", () => {
     process.env.AVE_HOME = join(root, "host-home");
     previousLocale = getLocale();
     setLocale("en");
-    audit = new AuditLogger(join(root, "audit"));
-    await audit.setupPermissionAuditChain("synthetic-approval-expiry-audit-secret");
+    logs = collectPermissionEvents();
+
   });
 
   afterEach(async () => {
+    logs.restore();
     gate?.disposeAll();
     gate = undefined;
     vi.useRealTimers();
-    await audit.close();
+
     setLocale(previousLocale);
     if (previousHome === undefined) delete process.env.AVE_HOME;
     else process.env.AVE_HOME = previousHome;
@@ -63,10 +65,9 @@ describe("tool approval expiration attribution", () => {
       if (channel === IPC_APPROVAL_REQUEST) resolveSent(request);
     });
     // Use real host-issued approval provenance; advance only wall time.
-    gate = new ApprovalGate(wc as never, undefined, undefined, audit);
-    const logger = vi.spyOn(audit, "log");
+    gate = new ApprovalGate(wc as never, undefined, undefined);
     const executor = new ToolExecutor(
-      registry, undefined, manager, undefined, gate, undefined, audit,
+      registry, undefined, manager, undefined, gate, undefined,
     );
     const result = executor.executeAll([
       {
@@ -80,13 +81,11 @@ describe("tool approval expiration attribution", () => {
       ...(signal ? { abortSignal: signal } : {}),
       permissionContext: userPermissionContext({ additionalDirectories: [workspace] }),
     });
-    return { execute, sent, result, logger };
+    return { execute, sent, result };
   }
 
-  function permissions(): PermissionAuditEntryInput[] {
-    return readFileSync(audit.getPermissionAuditLogFile(), "utf8")
-      .trim().split("\n").filter(Boolean)
-      .map((line) => JSON.parse(line) as PermissionAuditEntryInput);
+  function permissions() {
+    return logs.events.filter((event) => event.event === "permission_decision" && event.correlationId === invocationCorrelationId("approval-expiry-call"));
   }
 
   it.each([
@@ -122,14 +121,10 @@ describe("tool approval expiration attribution", () => {
     const denied = permissions().find((entry) => entry.decision === "deny");
     expect(denied).toMatchObject({
       decision: "deny",
-      denyReasons: [{ source: "approval-gate", reason: "approval request expired" }],
       // No one answered: the host ended the approval.
       trustOrigin: "unknown",
     });
-    expect(run.logger.mock.calls.some(([entry]) => entry.output?.includes("[approval:timeout]"))).toBe(true);
-    expect(run.logger.mock.calls.some(([entry]) => entry.toolCalls?.some((call) =>
-      call.permissionDecision === "deny" && call.permissionReason === "approval request expired",
-    ))).toBe(true);
+    expect(logs.events).toContainEqual(expect.objectContaining({ event: "approval_timeout", requestId: request.id }));
     expect(existsSync(join(root, "permissions.json"))).toBe(false);
   });
 
@@ -145,7 +140,6 @@ describe("tool approval expiration attribution", () => {
     expect(result.content).not.toMatch(/user denied|사용자가.*거부/);
     expect(run.execute).not.toHaveBeenCalled();
     expect(permissions().find((entry) => entry.decision === "deny")).toMatchObject({
-      denyReasons: [{ source: "approval-gate", reason: "approval rejected by host" }],
       trustOrigin: "unknown",
     });
   });
@@ -191,7 +185,7 @@ describe("tool approval expiration attribution", () => {
     expect(result.is_error).toBe(true);
     expect(run.execute).not.toHaveBeenCalled();
     expect(permissions().filter((entry) => entry.decision === "deny")).toEqual([expect.objectContaining({
-      denyReasons: [expect.objectContaining({ reason: "host-shutdown" })],
+      terminationReason: "host-shutdown",
       trustOrigin: "unknown",
     })]);
   });
@@ -217,6 +211,13 @@ describe("tool approval expiration attribution", () => {
     const [result] = await run.result;
     expect(result.is_error).toBe(true);
     expect(result.content).toMatch(/cancel/i);
+    expect(result.tool_use_id).toBe("approval-expiry-call");
+    const decisions = logs.events.filter((entry) => entry.event === "permission_decision" && entry.tool === "write_probe");
+    expect(decisions).toEqual([
+      expect.objectContaining({ decision: "ask", correlationId: expect.stringMatching(/^[a-f0-9]{32}$/) }),
+      expect.objectContaining({ decision: "deny", terminalKind: "cancelled", correlationId: decisions[0]?.correlationId }),
+    ]);
+    expect(JSON.stringify(decisions)).not.toContain(result.tool_use_id);
     expect(result.content).not.toContain("Approval expired");
     expect(run.execute).not.toHaveBeenCalled();
     expect(gate?.pendingCount).toBe(0);

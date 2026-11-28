@@ -5,11 +5,10 @@ import { readFileSync } from "node:fs";
 import { mkdtemp, mkdir, realpath, rm, writeFile } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 import { makeRecentlyDeniedStore } from "../../__tests__/support/recently-denied.js";
-import { AuditLogger } from "../../audit/audit-logger.js";
 import { decidePermission, type PermissionDecisionRequest } from "../../permissions/decision-pipeline.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { createSensitivePathCheck } from "../../permissions/sensitive-paths.js";
@@ -94,7 +93,6 @@ let project: string;
 let home: string;
 let settings: string;
 let gitConfig: string;
-let audit: AuditLogger;
 let cache: VerdictCache;
 let registry: ToolRegistry;
 const key = (path: string) => path.replaceAll("\\", "/").toLowerCase();
@@ -115,16 +113,14 @@ beforeAll(async () => {
   __resetSessionStoreForTest();
   __resetActiveSandboxCapabilityForTest();
   __resetSandboxRequestedAtBootForTest();
-  audit = new AuditLogger(join(root, "audit"));
   cache = new VerdictCache(join(root, "review-cache.jsonl"));
   registry = new ToolRegistry();
   for (const tool of [new ReadFileTool(), new ListFilesTool(), new GlobFilesTool(), new GrepFilesTool(), new WriteFileTool(), new EditFileTool()]) registry.register(tool);
 });
 // Each case drains its own audit rows, so the backlog never builds up across the whole matrix.
-afterEach(() => audit.flush());
 afterAll(async () => {
   await cache.flush();
-  await audit.close();
+
   vi.unstubAllEnvs();
   setWindowsDriveQueryForTest();
   await rm(root, { recursive: true, force: true });
@@ -157,7 +153,7 @@ async function runTool(mode: Mode, name: string, input: Record<string, unknown>,
   const manager = managerFor(mode);
   manager.setBlockReadsOutsideWorkingDirectories(fenceReads);
   const gate = { requestAndWait: answeringRequestAndWait(() => ({ choice: "deny-once" })) };
-  const executor = new ToolExecutor(registry, undefined, manager, undefined, gate as never, undefined, audit);
+  const executor = new ToolExecutor(registry, undefined, manager, undefined, gate as never, undefined);
   const tool = registry.findByName(name);
   if (tool === undefined) throw new Error(`unregistered tool ${name}`);
   const execute = vi.spyOn(tool, "execute").mockResolvedValue({ output: "stubbed", isError: false });

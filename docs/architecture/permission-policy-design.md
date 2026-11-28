@@ -47,7 +47,7 @@ On Windows, the shared reader also verifies administrative ownership and DACLs
 on the file and its parent using pinned, non-following handles. The
 [architecture contract](architecture.md#tool-governance) describes that trust
 boundary. Untrusted input follows the invalid-file path; Settings displays the
-path and sanitized cause, and audit records the failure.
+path and sanitized cause, and the app logger records the failure category.
 An invalid user file cannot supply grants or bypass admission denial.
 Administrative edit locking remains separate from tool admission.
 
@@ -80,7 +80,7 @@ Command-text upload and exfiltration signals, including credential-carrying URLs
 
 Plugin-provided MCP tools follow the same MCP row as every other MCP tool: `readOnlyHint` allows; other tools use first-use approval with per-tool memory, or the reviewer in auto. There is no server-specific mode override.
 
-Argument rewriting finishes before authorization. User script `PreToolUse` runs before any target approval and can only block; an allow result means no objection. Exact effect identity, cancellation, audit integrity, manifest capabilities, SSRF and execution-time path checks remain enforced after a permission result.
+Argument rewriting finishes before authorization. User script `PreToolUse` runs before any target approval and can only block; an allow result means no objection. Exact effect identity, cancellation, manifest capabilities, SSRF and execution-time path checks remain enforced after a permission result. Permission events are emitted as best-effort structured application logs.
 
 Shell analysis below supplies evidence. Historical L2/L6, exact-only host-shell and human-only unproven dispositions are superseded by the decision tree; static proof does not itself grant authority.
 
@@ -2936,8 +2936,7 @@ the in-memory capability and all leases; attested-process termination changes
 the observed process identity and makes the next acquire fail. These lifecycle
 events and the signed expiry are the v1 revocation boundaries.
 The grant-minting acquire runs after asynchronous PreToolUse hooks, plugin
-admission, rate checks, and audit-readiness checks. The handler receives the
-grant at the final effect boundary, with no intervening await that could make
+admission, and rate checks. The handler receives the grant at the final effect boundary, with no intervening await that could make
 the observed confinement stale before dispatch.
 
 The execution router consumes this capability only for builtin shell work in
@@ -2950,33 +2949,6 @@ that need a bounded artifact mount or a different capability set require a
 separately specified profile/version and cannot weaken v1 by convention.
 The benchmark Docker `main` process therefore uses the separate broker contract
 below rather than presenting itself as this attested process.
-
-### Terminal permission-audit proof
-
-The native runtime exposes one internal pre-boot command,
-`--verify-permission-audit=<challenge>`, for a stopped host. The 64-lowercase-
-hex challenge binds a public `ave-permission-audit-proof/v1` receipt to its
-collector. The verifier requires explicit absolute `AVE_HOME` and protected
-`AVE_SECRET_KEY_FILE` inputs, opens the existing encrypted audit HMAC secret
-read-only, and never creates, repairs, or replaces audit authority.
-
-Every permission-audit-looking directory entry must have the canonical
-`YYYY-MM-DD.permission-audit.jsonl` name. The verifier stable-opens each
-owner-only 0600 regular single-link file, verifies its complete HMAC chain and
-the separately stored daily seal for every nonempty file, and rejects directory
-or file changes during the read. Success writes exactly one public JSON receipt
-with basename/date/SHA-256/byte/entry metadata. Secret material, stored seals,
-paths, rows, and entry fields never cross this boundary. `AuditLogger.close()`
-stops new permission appends and drains the accepted append tail before this
-proof may freeze the files.
-
-The packaged launcher removes the inherited Node preload/module-search and
-Node/Electron process-role variables named by
-`ave-headless-launch-environment/v1` before starting the runtime. The native
-dispatcher reserves bare, malformed, and duplicate proof forms, so none can
-fall through into normal host boot. Failure output is one stable public error
-code (`invalid-arguments` before verification or `verification-failed` after
-it starts); raw filesystem and decryption errors remain inside the process.
 
 ### Host-native workload broker
 
@@ -3050,7 +3022,7 @@ The [decision tree](permission-decision-tree.md) owns reviewer eligibility and o
 
 Reviewer configuration accepts only `llm` and `disabled`. Disabled means unavailable, never a synthetic LOW verdict: reviewer-bound requests in auto use a normal card, and without a human they deny with no-retry guidance. Choosing disabled during fault repair grants no execution authority. A persisted unsupported reviewer mode reports `reviewer-mode-invalid` without rewriting the file or discarding valid directories and unrelated settings. Automatic review remains unavailable; a placeholder value is not a selected reviewer mode or an execution grant. Permissions settings shows the fault and lets the user explicitly choose `llm` or `disabled` with one action. Explicit recovery changes only the reviewer setting. If reconnecting then fails, that explicit supported choice remains saved, the UI reloads the actual setting and keeps the reconnect error visible, and automatic review remains unavailable until the runtime reconnects. Existing valid settings still use the normal rollback behavior on refresh failure. There is no silent migration or extra tool-approval step for this settings repair. The judge settings and transport contract remains in the [judge design](../design/permissions-always-allow-and-judge.md#p2-judge-slot). Configuration and shadow observations cannot override this permission contract. Shadow stages do not grant authority or count breaker denials. Explicit model selections do not silently switch providers; unset reviewer selection follows the active chat model. Invalid settings writes fail before persistence and valid writes preserve unrelated settings, with compare-and-swap rollback on refresh failure. The judge subtree remains user-only configuration under the protected-path floor.
 
-Review requires a host-created invocation identity and conversation/task identity. The host supplies normalized input and host policy facts; external projections are DLP-redacted. Tool results are not review instructions. Audit records the redacted request, final outcome, model, invocation identity, reason and fallback. Review cannot persist a rule. Required audit failures remain terminal.
+Review requires a host-created invocation identity and conversation/task identity. The host supplies normalized input and host policy facts; external projections are DLP-redacted. Tool results are not review instructions. The app logger records the final outcome, invocation identity and fallback category. Review cannot persist a rule.
 
 The breaker counts one denial per request after its model choice resolves, rather than counting both the first and repeated HIGH assessments. Errors, aborted assessments and shadow observations do not count: three consecutive denials or twenty total denials send subsequent reviewer-bound requests in that turn to normal human cards. In headless execution those human fallbacks deny. Rule allows, remembered grants, ordinary reads, sandbox-auto and checkpoint-backed project writes retain their earlier pipeline outcomes. An allowed assessment resets only the consecutive count. Human consent does not reopen reviewer automation during that turn; a fresh turn resets the breaker. Parent/child identity, settings refresh and shadow observation must not reset or double-count the active turn.
 
@@ -3080,7 +3052,7 @@ Only a registered application window's exact main frame can answer its currently
 
 The host verifies native human consent once for the exact request. Rules and remembered approvals are not fresh human consent. Losing an owner never approves a card; owner-away waiting follows the setting above. A forced other-principal request requires that request’s human approval.
 
-Immediately before handler entry, a synchronous gate rechecks cancellation, required audit integrity, active-turn breaker state and plugin/remote authority. Returning from a card or renewed route admission re-enters that gate. Permission-request hooks remain cancellable and cannot grant authority. Reviewed or managed input replacements restart complete preparation and permission classification; sealed paths that cannot safely restart deny the replacement. The [hook runtime design](hook-runtime-expansion-design.md#65-input-mutation-and-permission-re-entry) owns the bounded re-entry contract. Execution retains its existing ceilings and current effect identity.
+Immediately before handler entry, a synchronous gate rechecks cancellation, active-turn breaker state and plugin/remote authority for the exact effect. Returning from a card or renewed route admission re-enters that gate. Permission-request hooks remain cancellable and cannot grant authority. Reviewed or managed input replacements restart complete preparation and permission classification; sealed paths that cannot safely restart deny the replacement. The [hook runtime design](hook-runtime-expansion-design.md#65-input-mutation-and-permission-re-entry) owns the bounded re-entry contract. Execution retains its existing ceilings and current effect identity.
 
 ## Reviewer Failure
 
@@ -3102,7 +3074,7 @@ returns malformed output, the host fails closed:
 
 - foreground calls ask the user with explicit reviewer-unavailable context;
 - headless calls deny only after review falls back to a human card, with no-retry guidance;
-- audit records include the reviewer failure path.
+- structured reviewer events identify the failure category.
 
 A windowless host reports `authorization-required` only after a completed
 policy outcome actually needs human consent. Missing reviewer wiring, timeout,
@@ -3166,17 +3138,12 @@ final explicitness requirements and denial behavior.
 
 ## Audit Requirements
 
-Audit records should include:
-
-- tool name and source;
-- category and permission mode;
-- trust origin;
-- project identity when available;
-- decision and decision reason;
-- reviewer verdict or reviewer failure state;
-- recently denied summaries and manual rerun availability.
-
-Audit records must not contain raw secrets or unnecessary private payload data.
+Permission events use the structured application logger. Tool decisions
+record allowlisted fields such as tool, source, category, trust origin,
+decision, reviewer risk, and denial source where applicable. Correlation IDs
+link events from the same invocation. Keep secrets and private payloads out
+of these records. Delivery is best effort. Boot and permission decisions
+proceed independently of log delivery.
 
 ## Test Coverage
 

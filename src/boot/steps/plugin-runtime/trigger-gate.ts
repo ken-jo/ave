@@ -1,5 +1,5 @@
+import { logPermissionEvent, permissionLogId } from "../../../lib/permission-log.js";
 /** Share the gate’s rate, dedupe, and denial state across HostApi instances. */
-import type { AuditEntry } from "../../../audit/audit-logger.js";
 import type {
   ConversationTriggerResult,
   ConversationTriggerSpec,
@@ -184,7 +184,6 @@ export interface EvaluateTriggerSpecInput {
     declared: readonly string[];
     ledger: Pick<SuggestionLedger, "isLimited" | "record">;
   };
-  auditLogger: { log(entry: AuditEntry): void };
   now?: () => number;
 }
 
@@ -207,7 +206,6 @@ export function evaluateTriggerSpec(
     capabilities,
     dedupe,
     rateLimiter,
-    auditLogger,
   } = input;
   const denyAuditThrottle = input.denyAuditThrottle;
   const now = input.now ?? Date.now;
@@ -226,14 +224,7 @@ export function evaluateTriggerSpec(
     }
     const suppressed = denyAuditThrottle?.drainSuppressed(pluginId, reasonKey) ?? 0;
     try {
-      auditLogger.log({
-        timestamp: new Date(now()).toISOString(),
-        sessionId: "plugin",
-        type: "error",
-        input:
-          `[plugin:${pluginId}] trigger_conversation_denied ${reasonInput}` +
-          (suppressed > 0 ? ` (+${suppressed} suppressed)` : ""),
-      });
+      logPermissionEvent("plugin_conversation_trigger_denied", { pluginId: permissionLogId(pluginId), reasonCode: reasonKey, suppressed }, "warn");
     } catch { /* audit must not break host */ }
   };
 
@@ -304,30 +295,10 @@ export function evaluateTriggerSpec(
   rateLimiter.record(pluginId, now());
   suggestions?.ledger.record(pluginId, source, now());
 
-  // Context-key names can carry PII; audit only strict identifiers and count the rest.
-  let contextSuffix = "";
-  if (spec?.context) {
-    const KEY_SHAPE = /^[a-zA-Z_][a-zA-Z0-9_]{0,32}$/;
-    const allKeys = Object.keys(spec.context);
-    const okKeys = allKeys.filter((k) => KEY_SHAPE.test(k));
-    const badCount = allKeys.length - okKeys.length;
-    const parts: string[] = [];
-    if (okKeys.length > 0) parts.push(`contextKeys=${okKeys.slice(0, 8).join(",")}`);
-    if (badCount > 0) parts.push(`contextKeysOmitted=${badCount}`);
-    if (parts.length > 0) contextSuffix = ` ${parts.join(" ")}`;
-  }
-  try {
-    auditLogger.log({
-      timestamp: new Date(now()).toISOString(),
-      sessionId: "plugin",
-      type: "tool_call",
-      input:
-        `[plugin:${pluginId}] trigger_conversation source=${source} ` +
-        `visibility=${visibility} priority=${priority}` +
-        (dedupeKey ? ` dedupeKey=${dedupeKey}` : "") +
-        contextSuffix,
-    });
-  } catch { /* audit must not break host */ }
+  logPermissionEvent("plugin_conversation_triggered", {
+    pluginId: permissionLogId(pluginId),
+    contextKeyCount: Object.keys(spec?.context ?? {}).length,
+  });
 
   return {
     kind: "allow",

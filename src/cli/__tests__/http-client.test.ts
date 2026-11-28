@@ -228,11 +228,6 @@ describe("permission:set-mode over the real transport (approval-mediated externa
         },
       },
       approvalGate: { requestAndWait: answeringRequestAndWait(() => ({ requestId: "x", choice: "allow-once" })) },
-      auditLogger: {
-        isPermissionAuditChainReady: () => true,
-        appendPermissionAuditEntry: async () => undefined,
-        log: vi.fn(),
-      },
       getMainWindow: () => ({ isDestroyed: () => false, webContents: { isDestroyed: () => false, send: () => {} } }),
     } as unknown as IpcDeps;
   }

@@ -1,5 +1,6 @@
+import { collectPermissionEvents } from "../../../__tests__/support/permission-events.js";
 import { cleanupAfterClosing } from "../../../__tests__/support/fixture-cleanup.js";
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, onTestFinished } from "vitest";
 import { mkdtemp, realpath, rm, writeFile, unlink } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
@@ -9,7 +10,7 @@ import { PermissionManager } from "../../../permissions/permission-manager.js";
 import { ToolRegistry } from "../../../tools/registry.js";
 import { ReadFileTool } from "../../../tools/file-tools.js";
 import { HookRunner } from "../../../hooks/hook-runner.js";
-import { AuditLogger } from "../../../audit/audit-logger.js";
+
 import * as checkpoints from "../../../memory/code-checkpoints.js";
 import { fileReadKey, lookupFileRead, recordFileRead } from "../../../tools/file-read-state.js";
 import { FILE_MENTION_REFERENCE_POLICY, formatFileMentionReference, type FileMentionReference } from "../../../shared/file-mention-reference.js";
@@ -53,14 +54,13 @@ beforeEach(async () => {
   const registry = new ToolRegistry(); registry.register(readTool);
   loop = new ConversationLoop(makeConversationLoopDeps({
     toolRegistry: registry, permissionManager: permissions, hookRunner: hooks,
-    auditLogger: new AuditLogger(),
     approvalSurface: "interactive", getDefaultProject: () => ({ projectRoot: root, projectName: "reference workspace" }),
   }));
   loop.history.append({ role: "user", content: "Change source", meta: { messageId: "latest" } });
 });
 afterEach(async () => {
   vi.restoreAllMocks();
-  await cleanupAfterClosing([() => loop.auditLogger.close()], [
+  await cleanupAfterClosing([], [
     () => { vi.unstubAllEnvs(); },
     () => rm(root, { recursive: true, force: true }),
   ]);
@@ -106,11 +106,12 @@ describe("host file mention context", () => {
   });
 
   it.each(["user-keyboard", "queue-auto"] as const)("authorizes %s through the canonical executor and uses checkpoint text", async (origin) => {
+    const logs = collectPermissionEvents();
+    onTestFinished(logs.restore);
     const reference = await capture();
     const input = `Explain ${marker(reference)}`;
     const execute = vi.spyOn(loop.toolExecutor, "executeAll");
     const read = vi.spyOn(readTool, "execute");
-    const audit = vi.spyOn(loop.auditLogger, "log");
     const expanded = await expandFileMentionContext(loop, input, origin);
     expect(expanded.displayText).toBe(input);
     expect(expanded.input.startsWith(`${input}\n\n`)).toBe(true);
@@ -121,8 +122,7 @@ describe("host file mention context", () => {
       permissionContext: expect.objectContaining({ trustOrigin: origin, approvalSurface: "interactive", getAdditionalDirectories: expect.any(Function) }),
     }));
     expect(read).toHaveBeenCalledOnce();
-    expect(audit).toHaveBeenCalledWith(expect.objectContaining({ type: "tool_call", sessionId: loop.getSessionId(),
-      toolCalls: [expect.objectContaining({ name: "read_file", isError: false, permissionDecision: "allow" })] }));
+    expect(logs.events).toContainEqual(expect.objectContaining({ event: "permission_decision", tool: "read_file", decision: "allow" }));
     expect(expanded.input.slice(input.length)).not.toContain(root);
     expect(lookupFileRead(loop.getSessionId(), await fileReadKey(join(root, reference.path)))?.sha256).toMatch(/^[a-f0-9]{64}$/);
   });

@@ -313,7 +313,6 @@ export async function handlePermissionCommand(
     callbacks?: TurnCallbacks,
   ): Promise<string> {
     const {
-      dispatchPermissionAuditCommand,
       dispatchPermissionDirCommand,
       dispatchPermissionHooksCommand,
       dispatchPermissionReviewerCommandWithRewire,
@@ -370,33 +369,6 @@ export async function handlePermissionCommand(
         ...("notice" in result && result.notice !== undefined ? [t("be_conversationLoop.permissionReviewerHomeFolderRefused")] : []),
       ].join("\n");
     }
-    if (outcome.kind === "audit") {
-      const auditLogger = self.deps.auditLogger;
-      if (!auditLogger) return t("be_conversationLoop.permissionAuditNoLogger");
-      const result = dispatchPermissionAuditCommand(outcome.cmd, {
-        auditDir: auditLogger.getAuditDir(),
-        secret: auditLogger.getPermissionAuditSecret(),
-        sealStore: auditLogger.getPermissionAuditSealStore() ?? undefined,
-      });
-      if (!result.ok) return t("be_conversationLoop.permissionAuditError", { error: result.error });
-      const integrityWarning = result.invalidTerminalKinds === undefined
-        ? []
-        : [t("auditPanel.integrityInvalidTerminalKinds", { count: result.invalidTerminalKinds })];
-      if (result.verb === "verify") {
-        return [
-          `Audit verify: ${result.intact ? "intact" : "broken"}`,
-          `files=${result.totalFiles}`,
-          `entries=${result.totalEntries}`,
-          ...(result.firstBrokenFile ? [`firstBrokenFile=${result.firstBrokenFile}`] : []),
-          ...integrityWarning,
-        ].join("\n");
-      }
-      return [
-        t("be_conversationLoop.permissionAuditRecent", { count: result.entries.length }),
-        ...integrityWarning,
-        ...result.entries.map((entry) => JSON.stringify(entry)),
-      ].join("\n");
-    }
     if (outcome.kind === "mode") {
       const pm = self.deps.permissionManager;
       if (!pm) return t("be_conversationLoop.permissionModeNoManager");
@@ -404,7 +376,6 @@ export async function handlePermissionCommand(
       const result = await applyPermissionModeCommand(outcome.cmd, {
         permissionManager: pm,
         approvalGate: self.deps.approvalGate,
-        auditLogger: self.deps.auditLogger,
         rewireReviewerAgent: self.deps.rewireReviewerAgent,
         approvalBypass: {
           source: "builtin-slash",

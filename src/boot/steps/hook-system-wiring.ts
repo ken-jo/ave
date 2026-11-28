@@ -1,3 +1,4 @@
+import { logPermissionEvent } from "../../lib/permission-log.js";
 /** Hook trust contract: docs/architecture/permission-policy-design.md, Layer 6. */
 import { ScriptHookManager } from "../../hooks/script-hook-manager.js";
 import {
@@ -7,8 +8,7 @@ import {
 } from "../../hooks/hook-trust-prompt.js";
 import { HOOKS_CONFIG_FILENAME } from "../../hooks/hook-config-trust.js";
 import { createLogger } from "../../lib/logger.js";
-import type { AuditLogger } from "../../audit/audit-logger.js";
-import { randomUUID } from "node:crypto";
+
 import type { HookCommandAuthorizer } from "../../hooks/hook-command-policy.js";
 import { collectHookMatcherDiagnostics } from "../../hooks/hook-matcher-diagnostics.js";
 import type { NotificationService } from "../../main/notification-service.js";
@@ -31,7 +31,6 @@ export interface WireHookSystemDeps {
   disabledDir?: string;
   /** Tests may inject trust decisions; production quarantines all new or changed hooks. */
   promptDispatcher?: TrustPromptDispatcher;
-  auditLogger?: Pick<AuditLogger, "log" | "isPermissionAuditChainReady" | "appendPermissionAuditEntry">;
 }
 
 export interface HookSystemBootResult {
@@ -86,48 +85,15 @@ export async function wireHookSystem(
     trust.trustedConfigEntries.length,
     trust.disabledHooks.length,
   );
-  await emitHookQuarantineAudit(trust, deps.auditLogger);
+  emitHookQuarantines(trust);
   return { manager, trust, policy };
 }
 
-async function emitHookQuarantineAudit(
-  trust: RunHookTrustResult,
-  auditLogger?: Pick<AuditLogger, "log" | "isPermissionAuditChainReady" | "appendPermissionAuditEntry">,
-): Promise<void> {
-  if (!auditLogger || trust.disabledHooks.length === 0) return;
+function emitHookQuarantines(trust: RunHookTrustResult): void {
   const disabled = new Set(trust.disabledHooks.map((hook) => hook.fileName));
   for (const entry of trust.diff) {
     if (entry.state !== "new" && entry.state !== "changed") continue;
     if (!disabled.has(entry.hook.fileName)) continue;
-    auditLogger.log({
-      timestamp: new Date().toISOString(),
-      sessionId: "boot",
-      type: "warn",
-      input: JSON.stringify({
-        kind: "hook.quarantined",
-        fileName: entry.hook.fileName,
-        hookType: entry.hook.hookType,
-        sha256: entry.hook.sha256,
-        state: entry.state,
-        previousSha256: entry.previousSha256,
-      }),
-      output: "Hook quarantined during boot trust workflow",
-      toolCalls: [{ name: "hook_trust_boot", isError: false, trust: "high" }],
-    });
-    if (auditLogger.isPermissionAuditChainReady()) {
-      await auditLogger.appendPermissionAuditEntry({
-        decision: "deny",
-        auditId: randomUUID(),
-        ts: new Date().toISOString(),
-        trustOrigin: "unknown",
-        tool: "hook_trust_boot",
-        source: "builtin",
-        category: "meta",
-        denyReasons: [{
-          reason: `hook.quarantined:${entry.hook.fileName}:${entry.state}`,
-          source: "hook-trust-workflow",
-        }],
-      });
-    }
+    logPermissionEvent("hook_quarantined", { hookType: entry.hook.hookType, state: entry.state }, "warn");
   }
 }

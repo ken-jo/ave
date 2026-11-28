@@ -13,7 +13,7 @@ const inheritedSessions: string[] = [];
 afterEach(async () => {
   for (const loop of loops.splice(0)) {
     updateApprovalSurface({ kind: "release", sessionId: loop.sessionId });
-    await loop.auditLogger.close();
+
   }
   for (const sessionId of inheritedSessions.splice(0)) updateApprovalSurface({ kind: "release", sessionId });
 });

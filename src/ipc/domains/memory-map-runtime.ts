@@ -1,3 +1,4 @@
+import { logPermissionEvent, permissionLogId } from "../../lib/permission-log.js";
 import { pickNativeFiles } from "../../main/desktop-approval-presentation.js";
 import type { IpcMainInvokeEvent } from 'electron';
 import { watch } from 'node:fs';
@@ -52,12 +53,11 @@ export interface MemoryMapRuntime {
 
 export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapScopeResolver): MemoryMapRuntime {
   const send = createMemoryProviderEgress(deps.singleHopNetworkFetch, MEMORY_EMBEDDING_ALLOWED_DOMAINS, entry => {
-    deps.auditLogger.log({
-      timestamp: new Date().toISOString(),
-      sessionId: 'memory-embeddings',
-      type: 'tool_call',
-      input: entry.allowed ? `host_fetch ${entry.origin} method=${entry.method}` : `host_fetch denied: ${entry.reason}`,
-    });
+    logPermissionEvent("memory_embeddings_network_decision", {
+      sessionId: permissionLogId('memory-embeddings'),
+      decision: entry.allowed ? 'allow' : 'deny',
+      ...(!entry.allowed ? { reasonCode: entry.reason } : {}),
+    }, entry.allowed ? 'info' : 'warn');
   });
   const provider = new ProviderEmbeddings(deps.settingsService, send);
   let settingsGeneration = 0;

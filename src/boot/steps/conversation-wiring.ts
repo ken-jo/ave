@@ -1,3 +1,4 @@
+import { logPermissionEvent, permissionLogId } from "../../lib/permission-log.js";
 /** Wire loop-dependent services late; retain the event-bridge disposer for refresh and shutdown. */
 import { openOAuthLogin, type OpenOAuthLogin } from "../../main/oauth-login.js";
 import { createRoutineEngine } from "../routine.js";
@@ -56,7 +57,6 @@ import type { SubscriptionConnectionReader } from "../../engine/turn/active-chat
 import { validateExternalUrl } from "../../shared/external-url.js";
 import type { LLMProvider } from "../../engine/llm/types.js";
 import type { SubscriptionChatRuntimeSelection, SubscriptionRuntimeId } from "../../shared/subscription-runtime.js";
-import type { AuditLogger } from "../../audit/audit-logger.js";
 import type { BootContext } from "../context.js";
 import type { ConversationLoop } from "../../engine/conversation-loop.js";
 import { captureRationalePolicyEpoch, captureRationalePolicySnapshot } from "../../tools/pipeline/rationale-policy-epoch.js";
@@ -89,9 +89,7 @@ export interface SubscriptionChatLoopBindings {
 }
 
 /** Accept normalized settings only; the shared runtime owns credentials and transport. */
-export function createSubscriptionChatLoopBindings(input: {
-  readonly auditLogger: Pick<AuditLogger, "log">;
-}): SubscriptionChatLoopBindings {
+export function createSubscriptionChatLoopBindings(): SubscriptionChatLoopBindings {
   const openAuthorizationUrl: OpenOAuthLogin = async (url, options) => {
     const validated = validateExternalUrl(url);
     if (!validated.ok) {
@@ -100,24 +98,13 @@ export function createSubscriptionChatLoopBindings(input: {
     await openOAuthLogin(validated.url, options);
   };
   const audit: SubscriptionRuntimeAuditSink = (event) => {
-    const requestKind = typeof event.requestKind === "string"
-      && /^[a-z-]{1,80}$/.test(event.requestKind)
-      ? event.requestKind
+    const requestKind = typeof event.requestKind === "string" && /^[a-z-]{1,80}$/.test(event.requestKind)
+      ? permissionLogId(event.requestKind)
       : undefined;
-    try {
-      input.auditLogger.log({
-        timestamp: new Date().toISOString(),
-        sessionId: "subscription-runtime",
-        type: "warn",
-        input: JSON.stringify({
-          provider: event.provider,
-          outcome: event.outcome,
-          ...(requestKind ? { requestKind } : {}),
-        }),
-      });
-    } catch {
-      // Audit availability must not make the provider usable or unusable.
-    }
+    logPermissionEvent("subscription_runtime_warning", {
+      sessionId: "subscription-runtime", provider: permissionLogId(event.provider),
+      outcome: permissionLogId(event.outcome), requestKind,
+    }, "warn");
   };
   return Object.freeze({
     isSubscriptionConnected: async (provider: SubscriptionRuntimeId) => {
@@ -214,7 +201,6 @@ export async function wireConversation(
     pluginRuntime,
     pluginOperationGrants,
     pluginOperationIdentityProvider,
-    bootAuditLogger,
     llmFetch,
     singleHopNetworkFetch,
     idleScheduler,
@@ -266,7 +252,6 @@ export async function wireConversation(
     pluginRuntime,
     pluginOperationGrants,
     pluginOperationIdentityProvider,
-    auditLogger: bootAuditLogger,
     llmFetch,
     networkFetch: singleHopNetworkFetch,
     subscriptionProviderFactory,
@@ -297,7 +282,6 @@ export async function wireConversation(
     idleScheduler,
     settingsService,
     memoryCaptureService,
-    auditLogger: bootAuditLogger,
   });
 
   let conversationLoop!: ConversationLoop;
@@ -341,7 +325,6 @@ export async function wireConversation(
     skillMemory,
     isSkillName,
     notificationService,
-    auditLogger: bootAuditLogger,
     rewireReviewerAgent,
     llmFetch,
     networkFetch: singleHopNetworkFetch,
@@ -379,7 +362,6 @@ export async function wireConversation(
     pluginRuntime,
     pluginOperationGrants,
     pluginOperationIdentityProvider,
-    auditLogger: bootAuditLogger,
     llmFetch,
     networkFetch: singleHopNetworkFetch,
     sideChatMemoryManager,
@@ -457,7 +439,6 @@ export async function wireConversation(
     const { postTurnHookChain: groupPostTurnHookChain } = createPostTurnHookChain({
       memoryManager,
       settingsService,
-      ...(bootAuditLogger ? { auditLogger: bootAuditLogger } : {}),
     });
     groupLoop = createConversationLoop({
       settingsService,
@@ -484,7 +465,6 @@ export async function wireConversation(
       skillMemory,
       isSkillName,
       notificationService,
-      auditLogger: bootAuditLogger,
       rewireReviewerAgent,
       llmFetch,
       networkFetch: singleHopNetworkFetch,
@@ -528,7 +508,7 @@ export async function wireConversation(
     await initialSkillMemorySetting;
   }
   memoryCaptureService.setMemoryReviewer(memoryReviewer);
-  lateBinding.pluginCallLlmRef.fn = createCallLlmForPlugin(conversationLoop, bootAuditLogger,
+  lateBinding.pluginCallLlmRef.fn = createCallLlmForPlugin(conversationLoop,
   );
   log.info("boot: plugin callLlm ready (rate-limited)");
 
@@ -565,7 +545,6 @@ export async function wireConversation(
     parentLoop: conversationLoop,
     mailbox: subAgentMessageMailbox,
     settingsService,
-    auditLogger: bootAuditLogger,
     resolveChildAddress: async (parentSessionId, childSessionId, messageId) => {
       const runner = subAgentRunnerRef.fn;
       return runner
@@ -595,7 +574,6 @@ export async function wireConversation(
   const agentMessageBus = new A2AAgentMessageBus({
     parentBus: subAgentMessageBus,
     mailbox: agentMessageMailbox,
-    auditLogger: bootAuditLogger,
     isOriginActive: (originSessionId) =>
       subAgentRunnerRef.fn?.isSubAgentOriginActive(originSessionId) ?? true,
     resolveSender: async (senderChildSessionId) => {
@@ -631,7 +609,6 @@ export async function wireConversation(
       scriptHookManager,
       pluginOperationGrants,
       pluginOperationIdentityProvider,
-      auditLogger: bootAuditLogger,
       getAdditionalDirectories: () => readPermissionSettings().permissions.additionalDirectories,
       ...(conversationLoop.deps?.isDefaultProjectRoot
         ? { isDefaultProjectRoot: conversationLoop.deps.isDefaultProjectRoot }
@@ -699,12 +676,6 @@ export async function wireConversation(
           { itemId, change: "updated", changedAt: new Date().toISOString() } satisfies WorkItemChangedEventPayload, { logger: log });
         fanOutToAllWindows(windows, WORK_APPROVALS.changed, undefined, { logger: log });
       },
-      audit: ({ itemId, ...detail }) => bootAuditLogger?.log({
-        timestamp: new Date().toISOString(),
-        sessionId: `work-board:${itemId}`,
-        type: "approval",
-        output: JSON.stringify(detail),
-      }),
     },
   });
   // Template runs after a restart: rows are shown as the run file says and unsettled runs are taken over. Nothing starts here.

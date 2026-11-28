@@ -84,6 +84,12 @@ import {
   isShellSandboxRequestedAtBoot,
 } from "../../permissions/sandbox-capability.js";
 
+function sandboxGateEvents() {
+  return [...h.logger.info.mock.calls, ...h.logger.warn.mock.calls]
+    .map(([record]) => record)
+    .filter((record) => record?.event === "sandbox_gate");
+}
+
 const ORIGINAL_PLATFORM = process.platform;
 
 let harness: SandboxBootHarness;
@@ -128,7 +134,9 @@ it.each(["linux", "darwin"] as const)("decides the %s sandbox gate as soon as th
     queueMicrotask(() => queueMicrotask(() => { order.push("queued update"); }));
     return Promise.resolve({ errors: ["missing sandbox dependency"], warnings: [] });
   });
-  harness.logSandboxGate.mockImplementationOnce(() => { order.push("gate decision"); });
+  h.logger.warn.mockImplementation((record) => {
+    if (record?.event === "sandbox_gate") order.push("gate decision");
+  });
 
   await initSandboxGate(harness.context(true));
 
@@ -143,12 +151,12 @@ describe("initSandboxGate — Linux ASRT runtime probe failures", () => {
 
     await expect(initSandboxGate(harness.context(true))).resolves.toBeUndefined();
 
-    expect(harness.logSandboxGate).toHaveBeenCalledWith({
+    expect(sandboxGateEvents()).toContainEqual(expect.objectContaining({
       platform: "linux",
       onSignal: "default-settings",
       outcome: "degrade",
       reason: "degrade-linux-runtime-probe-failed",
-    });
+    }));
     expect(detectSandboxCapability()).toMatchObject({ kind: "none", platform: "linux" });
     expect(isShellSandboxRequestedAtBoot()).toBe(true);
     const plan = getHostShellExecutionPlan();
@@ -185,21 +193,17 @@ describe("initSandboxGate — Linux ASRT runtime probe failures", () => {
 
     await expect(initSandboxGate(harness.context(false))).rejects.toBe(probeError);
 
-    expect(harness.logSandboxGate).toHaveBeenCalledWith({
+    expect(sandboxGateEvents()).toContainEqual(expect.objectContaining({
       platform: "linux",
       onSignal: "explicit-env",
       outcome: "abort",
       reason: "abort-linux-runtime-probe-failed",
-    });
-    expect(harness.flush).toHaveBeenCalledOnce();
-    expect(harness.logSandboxGate.mock.invocationCallOrder[0]).toBeLessThan(
-      harness.flush.mock.invocationCallOrder[0],
-    );
+    }));
     expect(detectSandboxCapability()).toMatchObject({ kind: "none", platform: "linux" });
     expect(isShellSandboxRequestedAtBoot()).toBe(true);
   });
 
-  it("drains the dependency-abort audit before rejecting explicit opt-in", async () => {
+  it("logs the dependency abort and rejects explicit opt-in", async () => {
     h.checkDeps.mockResolvedValue({ errors: ["missing bwrap"], warnings: [] });
     vi.stubEnv("AVE_SANDBOX_ENABLED", "1");
 
@@ -207,16 +211,12 @@ describe("initSandboxGate — Linux ASRT runtime probe failures", () => {
       /dependencies are missing/,
     );
 
-    expect(harness.logSandboxGate).toHaveBeenCalledWith({
+    expect(sandboxGateEvents()).toContainEqual(expect.objectContaining({
       platform: "linux",
       onSignal: "explicit-env",
       outcome: "abort",
       reason: expect.stringContaining("abort"),
-    });
-    expect(harness.flush).toHaveBeenCalledOnce();
-    expect(harness.logSandboxGate.mock.invocationCallOrder[0]).toBeLessThan(
-      harness.flush.mock.invocationCallOrder[0],
-    );
+    }));
   });
 
   it("names the missing Linux packages when explicit shell activation aborts", async () => {
@@ -229,12 +229,12 @@ describe("initSandboxGate — Linux ASRT runtime probe failures", () => {
       "Missing: bubblewrap (bwrap) not installed; socat not installed",
     );
 
-    expect(harness.logSandboxGate).toHaveBeenCalledExactlyOnceWith({
+    expect(sandboxGateEvents()).toEqual([expect.objectContaining({
       platform: "linux",
       onSignal: "explicit-env",
       outcome: "abort",
       reason: "abort-explicit-cannot-activate",
-    });
+    })]);
     expect(getSandboxBootOutcome()).toMatchObject({ action: "abort", dependencyErrors: errors });
     expect(h.detectLinuxShell).not.toHaveBeenCalled();
     expect(h.initialize).not.toHaveBeenCalled();
@@ -250,12 +250,12 @@ describe("initSandboxGate — Linux ASRT runtime probe failures", () => {
 
     expect(h.checkDeps).toHaveBeenCalledExactlyOnceWith();
     expect(h.detectLinuxShell).toHaveBeenCalledAfter(h.checkDeps);
-    expect(harness.logSandboxGate).toHaveBeenCalledExactlyOnceWith({
+    expect(sandboxGateEvents()).toEqual([expect.objectContaining({
       platform: "linux",
       onSignal: "explicit-env",
       outcome: "abort",
       reason: "abort-linux-runtime-probe-failed",
-    });
+    })]);
     expect(getSandboxBootOutcome()).toMatchObject({ action: "abort", causes: ["linux-runtime-probe-failed"] });
     expect(h.initialize).not.toHaveBeenCalled();
   });
@@ -272,8 +272,8 @@ describe("macOS container shell probe failure", () => {
       expect(h.initialize).not.toHaveBeenCalled();
       expect(detectSandboxCapability()).toMatchObject({ kind: "none" });
       expect(getSandboxBootOutcome()).toMatchObject({ action: "abort", onSignal: "explicit-env" });
-      expect(harness.logSandboxGate).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ outcome: "abort" }));
-      expect(harness.flush).toHaveBeenCalledOnce();
+      expect(sandboxGateEvents()).toEqual([expect.objectContaining({ outcome: "abort" })]);
+
     },
   );
 
@@ -295,7 +295,9 @@ it("records missing Linux shell tools even when the legacy dependency gate degra
   h.checkDeps.mockResolvedValue({ errors: ["missing bwrap"], warnings: [] });
   h.detectLinuxShell.mockResolvedValue({ state: "unavailable", reason: "tools-missing", detail: ["bwrap", "slirp4netns"] });
   await expect(initSandboxGate(harness.context(true))).resolves.toBeUndefined();
-  expect(h.detectLinuxShell).toHaveBeenCalledAfter(harness.logSandboxGate);
+  const gateIndex = h.logger.warn.mock.calls.findIndex(([record]) => record?.event === "sandbox_gate");
+  expect(gateIndex).toBeGreaterThanOrEqual(0);
+  expect(h.detectLinuxShell.mock.invocationCallOrder[0]).toBeGreaterThan(h.logger.warn.mock.invocationCallOrder[gateIndex]);
   expect(h.initialize).not.toHaveBeenCalled();
   expect(getContainerShellInfo()).toMatchObject({ state: "unavailable", reason: "tools-missing", detail: ["bwrap", "slirp4netns"] });
   expect(getHostShellExecutionPlan()).toMatchObject({ mode: "plain", substrate: "none", requiresExplicitUserApproval: true });
@@ -315,7 +317,7 @@ describe("macOS sandbox runtime probe failure", () => {
     const plan = getHostShellExecutionPlan();
     expect(plan).toMatchObject({ platform: "darwin", mode: "plain", fallbackReason: "requested-sandbox-unavailable", requiresExplicitUserApproval: true });
     expect(requiresUnsandboxedShellAsk(plan)).toBe(true);
-    expect(harness.logSandboxGate).toHaveBeenCalledWith(expect.objectContaining({
+    expect(sandboxGateEvents()).toContainEqual(expect.objectContaining({
       platform: "darwin", outcome: explicit ? "abort" : "degrade",
       reason: explicit ? "abort-macos-runtime-probe-failed" : "degrade-macos-runtime-probe-failed",
     }));
@@ -379,7 +381,7 @@ describe("initSandboxGate — shell sandbox and plugin-worker confinement scopes
     expect(h.initialize).not.toHaveBeenCalled();
     expect(isShellSandboxRequestedAtBoot()).toBe(false);
     expect(isPluginWorkerConfinementRequestedAtBoot()).toBe(false);
-    expect(harness.logSandboxGate).toHaveBeenCalledWith(expect.objectContaining({ outcome: "skip" }));
+    expect(sandboxGateEvents()).toContainEqual(expect.objectContaining({ outcome: "skip" }));
   });
 
   it("AVE_SANDBOX_ENABLED=1 forces the shell scope only, and warns that extension processes are unconfined", async () => {
@@ -409,7 +411,7 @@ describe("initSandboxGate — shell sandbox and plugin-worker confinement scopes
     );
     expect(isPluginWorkerConfinementRequestedAtBoot()).toBe(true);
     expect(isShellSandboxRequestedAtBoot()).toBe(false);
-    expect(harness.logSandboxGate).toHaveBeenCalledWith(expect.objectContaining({
+    expect(sandboxGateEvents()).toContainEqual(expect.objectContaining({
       onSignal: "explicit-env",
       outcome: "abort",
     }));

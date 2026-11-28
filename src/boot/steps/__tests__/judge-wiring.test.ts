@@ -8,7 +8,7 @@ import { unusedNetworkFetch } from "../../../__tests__/support/network-fetch-stu
 import type { LLMProvider } from "../../../engine/llm/types.js";
 import { BuiltinLlmJudge } from "../../../permissions/judge/builtin-llm-judge.js";
 import { resolveJudge } from "../../../permissions/judge/judge-engine.js";
-import { collectingAudit, judgeRequest, judgeSettings } from "../../../permissions/judge/__tests__/judge-request-fixture.js";
+import { collectJudgeEvents, judgeRecords, judgeRequest, judgeSettings } from "../../../permissions/judge/__tests__/judge-request-fixture.js";
 import { PermissionManager } from "../../../permissions/permission-manager.js";
 import { readPermissionSettings } from "../../../permissions/permission-settings-store.js";
 import { createRootSessionResolver } from "../../../permissions/root-session-resolver.js";
@@ -49,7 +49,7 @@ describe("judge boot wiring", () => {
     const engine = wireJudgeAgent({
       permissionManager, reviewer: reviewer(permissionManager), settings, settingsUnreadable,
       providerForModel: () => null, networkFetch: unusedNetworkFetch,
-      audit: collectingAudit().logger, resolveRootSessionId: (id) => id,
+      resolveRootSessionId: (id) => id,
     });
     expect(engine.settings).toBe(settings);
     expect(engine.chain).toEqual([]);
@@ -64,7 +64,7 @@ describe("judge boot wiring", () => {
     const engine = wireJudgeAgent({
       permissionManager, reviewer: reviewer(permissionManager), settings, chainRejected,
       providerForModel: () => null, networkFetch: unusedNetworkFetch,
-      audit: collectingAudit().logger, resolveRootSessionId: (id) => id,
+      resolveRootSessionId: (id) => id,
     });
     expect(engine.settings).toBe(settings);
     expect(engine.chain).toEqual([]);
@@ -82,7 +82,7 @@ describe("judge boot wiring", () => {
       settings: judgeSettings({ chain: [{ id: "builtin", provider: "builtin-llm" }] }),
       providerForModel,
       networkFetch: unusedNetworkFetch,
-      audit: collectingAudit().logger,
+
       resolveRootSessionId: (id) => id,
     });
     expect(engine.chain[0]?.judge).toBeInstanceOf(BuiltinLlmJudge);
@@ -107,7 +107,7 @@ describe("judge boot wiring", () => {
     const deps = {
       permissionManager, reviewer: result,
       settings: judgeSettings({ chain: [{ id: "selected", provider: "builtin-llm", model }] }),
-      providerForModel, networkFetch: unusedNetworkFetch, audit: collectingAudit().logger,
+      providerForModel, networkFetch: unusedNetworkFetch,
       selectedModelCacheScope: () => ({ provider: model.vendor, baseUrl: "https://selected.example/v1" }),
       resolveRootSessionId: (id: string) => id,
     };
@@ -127,7 +127,7 @@ describe("judge boot wiring", () => {
   it("retains breaker state across rewires and resolves sibling children to one counter", async () => {
     const permissionManager = new PermissionManager(join(directory, "permissions.json"));
     const result = reviewer(permissionManager);
-    const audit = collectingAudit();
+    const audit = collectJudgeEvents();
     const root = "11111111-1111-4111-8111-111111111111";
     const first = "sub-11111111-22222222-2222-4222-8222-222222222222";
     const second = "sub-11111111-33333333-3333-4333-8333-333333333333";
@@ -136,7 +136,7 @@ describe("judge boot wiring", () => {
     const deps = {
       permissionManager, reviewer: result,
       settings: judgeSettings(),
-      providerForModel: () => null, networkFetch, audit: audit.logger, resolveRootSessionId,
+      providerForModel: () => null, networkFetch, resolveRootSessionId,
     };
     const engine = wireJudgeAgent(deps);
     const gate = { priorDecision: "undecided" as const, strictMode: false, capabilityGrant: false };
@@ -147,7 +147,7 @@ describe("judge boot wiring", () => {
     await resolveJudge(gate, judgeRequest({ sessionId: resolveRootSessionId(first) }), rewired);
     expect(rewired.breaker.snapshot(root)).toEqual({ consecutive: 3, total: 3, open: true });
     expect(networkFetch).toHaveBeenCalledTimes(3);
-    expect(audit.chained).toHaveLength(3);
+    expect(judgeRecords(audit)).toHaveLength(3);
   });
 
   it("records the exact default subscription model identity", () => {
@@ -159,7 +159,7 @@ describe("judge boot wiring", () => {
       permissionManager, reviewer: result,
       settings: judgeSettings({ chain: [{ id: "builtin", provider: "builtin-llm" }] }),
       providerForModel: () => null, networkFetch: unusedNetworkFetch,
-      audit: collectingAudit().logger, resolveRootSessionId: (id) => id,
+      resolveRootSessionId: (id) => id,
     });
     expect(engine.chain[0]?.judge?.model).toBe("subscription:codex/default-model");
   });

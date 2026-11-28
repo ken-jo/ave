@@ -6,12 +6,13 @@ import { join } from "node:path";
 import { EventEmitter } from "node:events";
 import type { WebContents } from "electron";
 import { expect, it, vi } from "vitest";
+import { collectPermissionEvents } from "../../__tests__/support/permission-events.js";
 import { deferred } from "../../__tests__/support/deferred.js";
 import { within } from "../../__tests__/support/signal-wait.js";
 import { unusedNetworkFetch } from "../../__tests__/support/network-fetch-stubs.js";
 import { makeMockWebContents } from "../../__tests__/test-helpers.js";
 import { governedWorkflowOutput } from "../../boot/steps/workflow-output-invocation.js";
-import { AuditLogger } from "../../audit/audit-logger.js";
+
 import { makeConversationLoopSettings } from "../../engine/__tests__/conversation-loop-test-helpers.js";
 import { makeSubagentLoopDeps, patchLoopProvider } from "../../engine/__tests__/support/subagent-loop-fixtures.js";
 import { PARENT_ALL_TOOL_SCOPE, exactToolScope, SubAgentRunner } from "../../engine/subagent-runner.js";
@@ -119,7 +120,7 @@ async function withRunner(body: (fixture: {
   permissionManager.setMode("strict");
   const runner = new SubAgentRunner({
     parentDeps: makeSubagentLoopDeps(registry, { approvalGate: gate, permissionManager, settingsService: makeConversationLoopSettings(false),
-      auditLogger: new AuditLogger(), networkFetch: unusedNetworkFetch }),
+      networkFetch: unusedNetworkFetch }),
     toolRegistry: registry, subAgentMemoryManager: new MemoryManager({ aveDir: join(h.dir, "children") }),
   });
   try { await body({ runner, registry, cwd: h.dir, tools, approval: approval.promise, gate, execute }); }
@@ -210,7 +211,7 @@ async function withOutputExecutor(
     hooks: RequestedOutputHooks;
     surface: WebContents;
     gate: ApprovalGate;
-    audit: AuditLogger;
+    permissionEvents: ReturnType<typeof collectPermissionEvents>["events"];
     shown: Promise<ApprovalRequest>;
     nextApproval: () => Promise<ApprovalRequest>;
     /** The run authority each output execution was handed. */
@@ -246,8 +247,7 @@ async function withOutputExecutor(
     }
     if (channel === IPC_APPROVAL_SETTLED && "requestId" in request) settled.resolve(request.requestId);
   });
-  const audit = new AuditLogger(join(h.dir, "audit"));
-  const gate = new ApprovalGate(sessionId => approvalSurfaceRegistry.resolve(sessionId), undefined, undefined, audit);
+  const gate = new ApprovalGate(sessionId => approvalSurfaceRegistry.resolve(sessionId));
   const registry = new ToolRegistry();
   const handler = vi.fn(async (_name: string, _input: Record<string, unknown>) => {
     events.push("handler");
@@ -279,9 +279,8 @@ async function withOutputExecutor(
       acquireExact: async () => ({ generation: { state: { runtime: { instance: { handlers: {} } } } }, release: vi.fn() }),
       runWithLease: async (_lease: unknown, invoke: () => Promise<unknown>) => invoke(),
     };
-    await audit.setupPermissionAuditChain("a".repeat(64));
-    const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, new ScriptHookManager(), audit,
-      undefined, undefined, undefined, () => generationAccess as never, (_tool, sessionId) => ({
+
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, new ScriptHookManager(), undefined, undefined, undefined, () => generationAccess as never, (_tool, sessionId) => ({
         ownerVersion: "1.0.0", generationId, appSessionId: sessionId ?? "test-session",
         accountScopeHash: "sample-account-scope", accountHash: "sample-account", appGrantRequired: false,
       }));
@@ -297,13 +296,18 @@ async function withOutputExecutor(
       } }) : dispatch(calls, options);
     });
     hooks = createRequestedOutputHooks(createHostGit(), governedWorkflowOutput(registry, executor, gate), DEFAULT_WORKSPACE);
-    await body({ h, hooks, surface, gate, audit, shown: nextCard.promise, nextApproval: () => nextCard.promise, authorities,
-      settled: settled.promise, events, handler, executor, registry });
+    const capture = collectPermissionEvents();
+    try {
+      await body({ h, hooks, surface, gate, permissionEvents: capture.events, shown: nextCard.promise, nextApproval: () => nextCard.promise, authorities,
+        settled: settled.promise, events, handler, executor, registry });
+    } finally {
+      capture.restore();
+    }
   } finally {
     gate.disposeAll();
     await h.drainRunWork();
     await plugin?.dispose();
-    await audit.close();
+
     await h.cleanup();
   }
 }
@@ -327,7 +331,7 @@ function outputPhoneController(): TailnetControllerAuthority {
 it.each(["desktop", "phone"] as const)("lets the %s win a shared output card once across paired pages", winningSurface => withOutputExecutor({
   args: plainArgs,
 }, async fixture => {
-  const { gate, handler, audit } = fixture;
+  const { gate, handler, permissionEvents } = fixture;
   const releaseIdentity = deferred<boolean>();
   const phone = outputPhonePage("first-page", { isCurrent: () => true, refreshCurrent: () => releaseIdentity.promise });
   const other = outputPhonePage("second-page");
@@ -361,11 +365,11 @@ it.each(["desktop", "phone"] as const)("lets the %s win a shared output card onc
   expect(gate.hasRecentRequestedOutputResolution(card.id)).toBe(true);
   expect(gate.listRequestedOutputCards(other)).toEqual([{ requestId: card.id, resolvedBy: winningSurface === "phone" ? "tailnet-surface" : "desk" }]);
   await expect(gate.answerRequestedOutputCard(second.handle, "allow-once", other)).resolves.toBe("approval-already-resolved");
-  await audit.flush();
-  const entries = (await audit.search({ limit: 100 })).entries.filter(row => row.output?.startsWith(`[approval:decided] ${card.id}`));
+  const entries = permissionEvents.filter(row => row.event === "approval_decided" && row.requestId === card.id);
   expect(entries).toHaveLength(1);
-  expect(entries[0].output).toContain(`answeredBy=${winningSurface === "phone" ? "tailnet-surface" : "desk"}`);
-  expect(entries[0].output).not.toContain(exactArgs.body);
+  expect(entries[0]).toMatchObject({ answeredBy: winningSurface === "phone" ? "tailnet-surface" : "desk" });
+  expect(JSON.stringify(entries[0])).not.toContain(JSON.stringify(exactArgs.body).slice(1, -1));
+  expect(JSON.stringify(entries[0])).not.toContain(phone.login);
 }));
 
 it("requires a fresh one-shot phone card when retrying a refused output", () => withOutputExecutor({ args: plainArgs }, async fixture => {

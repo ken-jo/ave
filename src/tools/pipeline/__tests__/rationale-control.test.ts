@@ -134,7 +134,6 @@ describe("foreground rationale contract", () => {
       "reviewer-reevaluation-cache-isolation",
       "current-action-identity-revalidation",
       "ordered-security-suffix-resume",
-      "invocation-lifecycle-audit",
       "host-invocation-start-cas",
       "bounded-modal-ui",
     ]);

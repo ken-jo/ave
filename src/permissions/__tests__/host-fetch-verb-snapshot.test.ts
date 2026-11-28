@@ -150,7 +150,6 @@ async function buildRealHostApi(): Promise<{
       replacePluginTools: vi.fn(),
     } as never,
     pythonPath: undefined,
-    bootAuditLogger: { log: vi.fn() } as never,
     mainWindow: {} as never,
     networkFetch: networkFetch as never,
     openAuthWindowService: vi.fn(),

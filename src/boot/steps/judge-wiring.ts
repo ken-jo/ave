@@ -1,4 +1,3 @@
-import type { AuditLogger } from "../../audit/audit-logger.js";
 import type { LLMProvider } from "../../engine/llm/types.js";
 import { createJudgeChain } from "../../permissions/judge/create-judge.js";
 import type { JudgeFetch } from "../../permissions/judge/external-judge.js";
@@ -19,7 +18,6 @@ interface WireJudgeDeps {
   providerForModel: (model: JudgeModelRef) => LLMProvider | null;
   selectedModelCacheScope?: (model: JudgeModelRef) => Record<string, unknown>;
   networkFetch: JudgeFetch;
-  audit: Pick<AuditLogger, "logShadow" | "appendPermissionAuditEntry">;
   resolveRootSessionId: (sessionId: string) => string;
 }
 
@@ -54,7 +52,6 @@ export function wireJudgeAgent(deps: WireJudgeDeps): JudgeEngineDeps {
     ...(deps.chainRejected === true ? { chainRejected: true } : {}),
     ...(deps.settingsUnreadable === true ? { settingsUnreadable: true } : {}),
     breaker: deps.permissionManager.getJudgeBreaker(settings.breaker),
-    audit: deps.audit,
   };
   deps.permissionManager.setJudge(engine, deps.resolveRootSessionId);
   return engine;

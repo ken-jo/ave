@@ -1,3 +1,4 @@
+import { trackPermissionEvents } from "../../../__tests__/support/permission-events.js";
 // Folder view main-side contract: widened listDir entries and the user-gesture open-in-default-app channel.
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
@@ -59,10 +60,9 @@ import {
 import { CHANNELS } from "../../../contract/app-contract.js";
 
 const appWindows: Array<{ isDestroyed: () => boolean; webContents: unknown }> = [];
-const auditLog = vi.fn();
+const permissionEvents = trackPermissionEvents();
 const editorCommand = { value: "" };
 const deps = {
-  auditLogger: { log: auditLog },
   settingsService: { get: (section: string) => (section === "documents" ? { openMode: "direct", editorCommand: editorCommand.value } : undefined) },
   pluginRuntime: { retireSandboxGrantsOutsideCeiling: vi.fn(async () => []) },
   getMainWindow: () => appWindows[0] ?? null,
@@ -242,7 +242,6 @@ beforeEach(() => {
   appWindows.length = 0;
   openPathMock.mockClear();
   openPathMock.mockResolvedValue("");
-  auditLog.mockClear();
   editorCommand.value = "";
 });
 
@@ -757,15 +756,13 @@ describe("workspace.listDir folder-view entries", () => {
 });
 
 describe("workspace.openPath", () => {
-  it("opens a regular in-project file with the default app and audits an opaque reference", async () => {
+  it("opens a regular in-project file with the default app and logs the outcome without paths", async () => {
     const target = join(root, "settlement.sqlite");
     expect(await openPath({ projectRoot: root, path: target, intent: GESTURE })).toEqual({ ok: true });
     expect(openPathMock).toHaveBeenCalledWith(target);
-    const entry = auditLog.mock.calls.map(([value]) => value as { input?: string }).find((value) =>
-      value.input?.includes(CHANNELS.workspace.openPath));
-    expect(entry?.input).toBeDefined();
-    expect(entry!.input).not.toContain(root);
-    expect(entry!.input).toContain("\"ok\":true");
+    const entry = permissionEvents().find((value) => value.event === "workspace_root_action" && value.channel === CHANNELS.workspace.openPath);
+    expect(JSON.stringify(entry)).not.toContain(root);
+    expect(entry).toMatchObject({ outcome: "ok" });
   });
 
   it("opens a large presentation document for the person and refuses a confirmed key", async () => {
@@ -1186,17 +1183,15 @@ describe("workspace.openInEditor", () => {
     };
   }
 
-  it("starts the configured command with the file and the line as whole arguments, and audits an opaque reference", async () => {
+  it("starts the configured command with the file and the line as whole arguments, and logs the outcome without paths", async () => {
     const target = join(root, "src", "index.ts");
     const editor = recordingEditor("--goto {file}:{line}");
     expect(await openInEditor({ projectRoot: root, path: target, line: 7, intent: GESTURE })).toEqual({ ok: true });
     expect(await editor.started()).toEqual(["--goto", `${target}:7`]);
     expect(openPathMock).not.toHaveBeenCalled();
-    const entry = auditLog.mock.calls.map(([value]) => value as { input?: string }).find((value) =>
-      value.input?.includes(CHANNELS.workspace.openInEditor));
-    expect(entry?.input).toBeDefined();
-    expect(entry?.input).not.toContain(root);
-    expect(entry?.input).toContain("\"ok\":true");
+    const entry = permissionEvents().find((value) => value.event === "workspace_root_action" && value.channel === CHANNELS.workspace.openInEditor);
+    expect(JSON.stringify(entry)).not.toContain(root);
+    expect(entry).toMatchObject({ outcome: "ok" });
   });
 
   it("keeps a path with blanks, a quote and shell characters inside one argument, and uses line 1 when none is given", async () => {
@@ -1250,9 +1245,8 @@ describe("workspace.openInEditor", () => {
     editorCommand.value = `"${join(outside, "no-such-editor")}" {file}`;
     expect(await openInEditor({ projectRoot: root, path: join(root, "src", "index.ts"), intent: GESTURE }))
       .toEqual({ ok: false, error: "launch-failed" });
-    const entry = auditLog.mock.calls.map(([value]) => value as { input?: string }).find((value) =>
-      value.input?.includes(CHANNELS.workspace.openInEditor));
-    expect(entry?.input).toContain("\"error\":\"open-failed\"");
+    const entry = permissionEvents().find((value) => value.event === "workspace_root_action" && value.channel === CHANNELS.workspace.openInEditor);
+    expect(entry).toMatchObject({ outcome: "failed", reasonCode: "open-failed" });
   });
 
   it("refuses everything the default-app open refuses before the hand-off, and starts nothing", async ({ skip }) => {
@@ -1413,14 +1407,12 @@ describe("workspace.readForEdit and workspace.saveEdit", () => {
     }
   });
 
-  it("audits a save with opaque references and its outcome", async () => {
+  it("logs the save outcome without the file path", async () => {
     writeFileSync(target, "start\n");
     const baseHash = await opened();
-    auditLog.mockClear();
     expect((await saveEdit({ projectRoot: root, path: target, baseHash, text: "mine\n", intent: GESTURE })).ok).toBe(true);
-    const entry = auditLog.mock.calls.map(([value]) => value as { input?: string }).find((value) =>
-      value.input?.includes(CHANNELS.workspace.saveEdit));
-    expect(entry?.input).toContain('"ok":true');
-    expect(entry?.input).not.toContain(target);
+    const entry = permissionEvents().find((value) => value.event === "workspace_root_action" && value.channel === CHANNELS.workspace.saveEdit);
+    expect(entry).toMatchObject({ outcome: "ok" });
+    expect(JSON.stringify(entry)).not.toContain(target);
   });
 });

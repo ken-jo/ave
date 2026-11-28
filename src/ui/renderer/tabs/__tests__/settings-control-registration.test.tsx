@@ -106,7 +106,7 @@ describe("rendered settings control registration", () => {
     await waitFor(() => expect(view.container.querySelector(actionSelector)).toBeNull());
   });
 
-  it("registers every chat control and marks the statistics period as a transient query", async () => {
+  it("registers every chat control", async () => {
     const settings = structuredClone(DEFAULT_SETTINGS);
     settings.privacy.piiRedactEnabled = true;
     const view = setup(settings, "chat");
@@ -116,7 +116,6 @@ describe("rendered settings control registration", () => {
       expect(view.container.querySelector(`[data-setting-id="${id}"]:not([data-setting-registered])`), id).toBeTruthy();
       expect(view.container.querySelector(`[data-setting-registered="true"][data-setting-id="${id}"]`), id).toBeTruthy();
     }
-    expect(view.container.querySelector('select[data-settings-transient="statistics-period"]')).toBeTruthy();
   });
 
   it("resets a modified theme mode through its canonical path and updates the rendered choice", async () => {

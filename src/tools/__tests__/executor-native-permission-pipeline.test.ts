@@ -1,3 +1,4 @@
+import { trackInvocationCorrelations, collectPermissionEvents } from "../../__tests__/support/permission-events.js";
 import { useConfigurationOwner } from "../../__tests__/support/configuration-owner.js";
 useConfigurationOwner();
 import { HookRunner } from "../../hooks/hook-runner.js";
@@ -16,8 +17,6 @@ import { mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from "node
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AuditLogger } from "../../audit/audit-logger.js";
-import { terminalDenyKindOf } from "../../audit/audit-schema.js";
 import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 import { makeRecentlyDeniedStore } from "../../__tests__/support/recently-denied.js";
 import { ScriptHookManager } from "../../hooks/script-hook-manager.js";
@@ -43,6 +42,8 @@ import { approvalIdentityFor } from "../pipeline/display-mask.js";
 import { ToolRegistry } from "../registry.js";
 import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 
+const invocationCorrelationId = trackInvocationCorrelations();
+
 // win32 yields separator-folded canonicals ("c:/users/..."); compare against the same fold, never the raw backslash spelling.
 const directoryIdentity = (path: string | undefined): string | undefined =>
   path === undefined ? undefined : canonicalForMatch(modelShellPath(path, { dialect: "bash" }).nativePath ?? path);
@@ -52,7 +53,7 @@ const resources = new PermissionTestResources();
 let root: string;
 let project: string;
 let sessionId: string;
-let audit: AuditLogger;
+let logs: ReturnType<typeof collectPermissionEvents>;
 let manager: PermissionManager;
 let registry: ToolRegistry;
 let requests: ApprovalRequestInput[];
@@ -73,7 +74,7 @@ beforeEach(async () => {
   __resetSandboxRequestedAtBootForTest();
   // A container shell published by an earlier test must not carry over; each test that confines shells publishes it.
   if (process.platform === "darwin" || process.platform === "linux") setContainerShellSubstrate(process.platform, { state: "unavailable", reason: "shell-start-failed" });
-  audit = new AuditLogger(join(root, "audit"));
+  logs = collectPermissionEvents();
   manager = new PermissionManager(join(root, "permissions.json"));
   registry = new ToolRegistry();
   readTool = new ReadFileTool();
@@ -82,9 +83,10 @@ beforeEach(async () => {
   requests = [];
 });
 afterEach(async () => {
+  logs.restore();
   restoreKeyInspection();
   await resources.cleanup();
-  await audit.close();
+
   __resetSessionStoreForTest();
   __resetActiveSandboxCapabilityForTest();
   __resetSandboxRequestedAtBootForTest();
@@ -98,7 +100,7 @@ function executor(hooks?: ScriptHookManager, choice: "allow-once" | "deny-once" 
     requests.push(request);
     return { requestId: request.id, choice };
   }) };
-  return new ToolExecutor(registry, undefined, manager, undefined, gate as never, hooks, audit);
+  return new ToolExecutor(registry, undefined, manager, undefined, gate as never, hooks);
 }
 function run(executor: ToolExecutor, name: string, input: Record<string, unknown>, options: { onDirectoryGrant?: (directory: string) => void; additionalDirectories?: string[]; headless?: boolean; executionCwd?: string } = {}) {
   return executor.executeAll([{ id: randomUUID(), name, input }], {
@@ -127,7 +129,7 @@ function reviewer() {
 
 describe("native invocation permission evidence", () => {
   it.each(["scope", "scope-before-stop", "stop-before-scope"] as const)("cancels a directory card with the first settlement (%s)", async (order) => {
-    await audit.setupPermissionAuditChain("aa".repeat(32));
+
     manager.setMode("default");
     const turn = new AbortController();
     const grant = vi.fn();
@@ -143,31 +145,25 @@ describe("native invocation permission evidence", () => {
         if (order === "scope-before-stop") turn.abort();
       });
     } } as never);
-    const subject = new ToolExecutor(registry, undefined, manager, undefined, gate, undefined, audit);
+    const subject = new ToolExecutor(registry, undefined, manager, undefined, gate, undefined);
     const path = join(root, "cancelled-folder.txt");
-    const rows = vi.spyOn(audit, "log");
     const [result] = await subject.executeAll([
       { id: "cancelled-folder", name: "write_file", input: { path, content: "do not write" } },
     ], { sessionId, executionCwd: project, abortSignal: turn.signal,
       permissionContext: { trustOrigin: "user-keyboard", additionalDirectories: [], onTurnDirectoryGrant: grant } });
     expect(cardSeen).toHaveBeenCalledExactlyOnceWith("out-of-allowed-dir");
     expect(turn.signal.aborted).toBe(order !== "scope");
-    const reason = order === "stop-before-scope" ? /user aborted turn/i : /project-scope-changed/;
     expect.soft(result.is_error).toBe(true);
     if (order === "stop-before-scope") expect.soft(result.content).not.toContain("project-scope-changed");
     else expect.soft(result.content).toContain("project-scope-changed");
-    const terminal = (await readFile(audit.getPermissionAuditLogFile(), "utf8")).trim().split("\n").map(line => JSON.parse(line)).at(-1);
-    expect.soft(terminal).toMatchObject({ toolUseId: "cancelled-folder", decision: "deny", terminalKind: "cancelled",
-      trustOrigin: order === "stop-before-scope" ? "user-keyboard" : "unknown",
-      denyReasons: [expect.objectContaining({ reason: expect.stringMatching(reason) })] });
-    expect(rows).toHaveBeenCalledWith(expect.objectContaining({ type: "tool_call",
-      toolCalls: [expect.objectContaining({ permissionDecision: "cancelled", permissionReason: expect.stringMatching(reason) })] }));
+    const terminal = logs.events.findLast((row) => row.event === "permission_decision" && row.correlationId === invocationCorrelationId("cancelled-folder"));
+    expect(terminal).toMatchObject({ decision: "deny", terminalKind: "cancelled", trustOrigin: order === "stop-before-scope" ? "user-keyboard" : "unknown" });
     expect(grant).not.toHaveBeenCalled();
     expect(execute).not.toHaveBeenCalled();
   });
 
   it("offers a session folder grant that covers siblings only in that session", async () => {
-    await audit.setupPermissionAuditChain("aa".repeat(32));
+
     manager.setMode("default");
     const outside = join(root, "outside");
     await mkdir(outside);
@@ -182,7 +178,7 @@ describe("native invocation permission evidence", () => {
       expect(scopes.map(scope => scope.choice)).toContain("allow-session");
       return { requestId: request.id, choice: "allow-session" };
     }) };
-    const subject = new ToolExecutor(registry, undefined, manager, undefined, gate as never, undefined, audit, undefined,
+    const subject = new ToolExecutor(registry, undefined, manager, undefined, gate as never, undefined, undefined,
       () => ({ allowDirectory, denyDirectory: async () => [] }));
     const permissionContext = { trustOrigin: "llm-tool-arg" as const, additionalDirectories: [],
       getAdditionalDirectories: () => directories, onSessionDirectoryGrant: (directory: string) => { directories.push(directory); } };
@@ -202,39 +198,18 @@ describe("native invocation permission evidence", () => {
     expect(denied.is_error).toBe(true);
     expect(await readFile(siblingPath, "utf8")).toBe("session");
   });
-  it("does not persist a folder rule when its grant audit fails", async () => {
-    await audit.setupPermissionAuditChain("aa".repeat(32));
-    const outside = join(root, "outside");
-    await mkdir(outside);
-    const append = audit.appendPermissionAuditEntry.bind(audit);
-    vi.spyOn(audit, "appendPermissionAuditEntry").mockImplementation(entry => {
-      if ("grantLifetime" in entry) return Promise.reject(new Error("grant audit append failed"));
-      return append(entry);
-    });
-    const allowDirectory = vi.fn(async (directory: string) => [directory]);
-    const gate = { requestAndWait: answeringRequestAndWait(async (request: ApprovalRequestInput) => ({ requestId: request.id, choice: "allow-always" })) };
-    const subject = new ToolExecutor(registry, undefined, manager, undefined, gate as never, undefined, audit, undefined,
-      () => ({ allowDirectory, denyDirectory: async () => [] }));
-    const execute = vi.spyOn(writeTool, "execute");
-    await expect(run(subject, "write_file", { path: join(outside, "result.txt"), content: "must not write" }))
-      .rejects.toThrow("grant audit append failed");
-    expect(allowDirectory).not.toHaveBeenCalled();
-    expect(execute).not.toHaveBeenCalled();
-  });
-  it("persists no folder rule when quit aborts the invocation during its grant audit", async () => {
-    await audit.setupPermissionAuditChain("aa".repeat(32));
+
+  it("persists no folder rule when quit aborts the invocation while its answer settles", async () => {
+
     const outside = join(root, "outside");
     await mkdir(outside);
     const turn = new AbortController();
-    const append = audit.appendPermissionAuditEntry.bind(audit);
-    vi.spyOn(audit, "appendPermissionAuditEntry").mockImplementation(async entry => {
-      const row = await append(entry);
-      if ("grantLifetime" in entry && entry.grantLifetime === "always") turn.abort(new HostExitAbortError());
-      return row;
-    });
     const allowDirectory = vi.fn(async (directory: string) => [directory]);
-    const gate = { requestAndWait: answeringRequestAndWait(async (request: ApprovalRequestInput) => ({ requestId: request.id, choice: "allow-always" })) };
-    const subject = new ToolExecutor(registry, undefined, manager, undefined, gate as never, undefined, audit, undefined,
+    const gate = { requestAndWait: answeringRequestAndWait(async (request: ApprovalRequestInput) => {
+      turn.abort(new HostExitAbortError());
+      return { requestId: request.id, choice: "allow-always" };
+    }) };
+    const subject = new ToolExecutor(registry, undefined, manager, undefined, gate as never, undefined, undefined,
       () => ({ allowDirectory, denyDirectory: async () => [] }));
     const execute = vi.spyOn(writeTool, "execute");
     const [result] = await subject.executeAll([{ id: randomUUID(), name: "write_file", input: { path: join(outside, "result.txt"), content: "must not write" } }], {
@@ -244,11 +219,11 @@ describe("native invocation permission evidence", () => {
     expect(result.is_error).toBe(true);
     expect(allowDirectory).not.toHaveBeenCalled();
     expect(execute).not.toHaveBeenCalled();
-    const rows = (await readFile(audit.getPermissionAuditLogFile(), "utf8")).trim().split("\n").map(line => JSON.parse(line));
-    expect(rows.at(-1)).toMatchObject({ tool: "write_file", decision: "deny", denyReasons: [{ reason: "host-shutdown" }] });
+    const rows = logs.events;
+    expect(rows).toContainEqual(expect.objectContaining({ event: "permission_decision", tool: "write_file", decision: "deny", terminalKind: "cancelled" }));
   });
-  it.each(["allow-once", "allow-session", "allow-always"] as const)("persists the directory grant audit before executing an outside write with %s", async (choice) => {
-    await audit.setupPermissionAuditChain("aa".repeat(32));
+  it.each(["allow-once", "allow-session", "allow-always"] as const)("logs the approved directory grant for an outside write with %s", async (choice) => {
+
     const outside = join(root, "outside");
     await mkdir(outside);
     const path = join(outside, "result.txt");
@@ -260,41 +235,24 @@ describe("native invocation permission evidence", () => {
       allowDirectory: async (directory: string) => [directory],
       denyDirectory: async () => { throw new Error("No directory removal was requested"); },
     };
-    const subject = new ToolExecutor(registry, undefined, manager, undefined, gate as never, undefined, audit, undefined, () => lifecycle);
+    const subject = new ToolExecutor(registry, undefined, manager, undefined, gate as never, undefined, undefined, () => lifecycle);
     const execute = vi.spyOn(writeTool, "execute");
     const [result] = await subject.executeAll([{ id: randomUUID(), name: "write_file", input: { path, content: "approved write" } }], {
       sessionId, executionCwd: project,
       permissionContext: { trustOrigin: "llm-tool-arg", additionalDirectories: [], onTurnDirectoryGrant: vi.fn(), onSessionDirectoryGrant: vi.fn() },
     });
-    expect(result.content).not.toContain("permission audit append is already in progress");
     expect(result.is_error, result.content).not.toBe(true);
     expect(execute).toHaveBeenCalledTimes(1);
     expect(await readFile(path, "utf8")).toBe("approved write");
     expect(requests).toHaveLength(1);
     expect(requests[0].kind).toBe("out-of-allowed-dir");
-    const rows = (await readFile(audit.getPermissionAuditLogFile(), "utf8")).trim().split("\n").map(line => JSON.parse(line));
+    const rows = logs.events;
     expect(rows.find(row => row.grantLifetime !== undefined)).toMatchObject({
       tool: "write_file", decision: "allow", grantLifetime: choice === "allow-once" ? "turn" : choice === "allow-session" ? "session" : "always",
     });
   });
 
-  it("does not execute an approved outside write when its grant audit append fails", async () => {
-    await audit.setupPermissionAuditChain("aa".repeat(32));
-    const outside = join(root, "outside");
-    await mkdir(outside);
-    const path = join(outside, "result.txt");
-    const append = audit.appendPermissionAuditEntry.bind(audit);
-    vi.spyOn(audit, "appendPermissionAuditEntry").mockImplementation(entry => {
-      if ("grantLifetime" in entry && entry.grantLifetime !== undefined) return Promise.reject(new Error("grant audit append failed"));
-      return append(entry);
-    });
-    const execute = vi.spyOn(writeTool, "execute");
-    await expect(run(executor(undefined, "allow-once"), "write_file", { path, content: "must not write" }, {
-      onDirectoryGrant: vi.fn(),
-    })).rejects.toThrow("grant audit append failed");
-    expect(execute).not.toHaveBeenCalled();
-    await expect(readFile(path, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
-  });
+
 
   it.each([false, true])("uses the prepared child environment for a deterministic write target, sandboxed=%s", async (sandboxed) => {
     manager.setMode("allow");
@@ -994,7 +952,7 @@ describe("native invocation permission evidence", () => {
   });
 
   it("ends a rationale card the Stop ends with the host's cancelled row and no PermissionDenied", async () => {
-    await audit.setupPermissionAuditChain("aa".repeat(32));
+
     manager.setMode("auto");
     const classify = vi.fn(() => ({ level: "high" as const, reason: "The outside change needs explicit grounds" }));
     setReviewerForTest(manager, { classifier: { classify }, cache: resources.makeVerdictCache(join(root, "outside-stop-cache.jsonl")), recentlyDenied: makeRecentlyDeniedStore(join(root, "outside-stop-denied.jsonl")) });
@@ -1008,16 +966,16 @@ describe("native invocation permission evidence", () => {
       permissionContext: { trustOrigin: "llm-tool-arg", additionalDirectories: [] } });
     expect(outcome.outcome).toBe("rationale-required");
     turn.abort();
-    const rows = async () => (await readFile(audit.getPermissionAuditLogFile(), "utf8")).trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>)
-      .filter((row) => row.toolUseId === "outside-stop" && row.decision !== "ask");
+    const rows = async () => logs.events
+      .filter((row) => row.correlationId === invocationCorrelationId("outside-stop") && row.decision !== "ask");
     await vi.waitFor(async () => expect(await rows()).toHaveLength(1));
     await new Promise<void>((done) => setImmediate(done));
-    expect(await rows()).toEqual([expect.objectContaining({ decision: "deny", terminalKind: "cancelled", denyReasons: [expect.objectContaining({ reason: "user aborted turn" })] })]);
+    expect(await rows()).toEqual([expect.objectContaining({ decision: "deny", terminalKind: "cancelled" })]);
     expect(lifecycle.mock.calls.filter(([event]) => event === "PermissionDenied")).toEqual([]);
   });
 
   it("cancels a rationale folder hook when only the coordinator signal stops", async () => {
-    await audit.setupPermissionAuditChain("aa".repeat(32));
+
     manager.setMode("auto");
     const classify = vi.fn(() => ({ level: "high" as const, reason: "The outside change needs explicit grounds" }));
     setReviewerForTest(manager, { classifier: { classify }, cache: resources.makeVerdictCache(join(root, "coordinator-cache.jsonl")), recentlyDenied: makeRecentlyDeniedStore(join(root, "coordinator-denied.jsonl")) });
@@ -1040,11 +998,9 @@ describe("native invocation permission evidence", () => {
     await expect(callback({ requestId: "coordinator-stop-card", abortSignal: coordinator.signal })).rejects.toMatchObject({ reason: "Hook execution cancelled" });
     expect(turn.signal.aborted).toBe(false);
     expect(coordinator.signal.aborted).toBe(true);
-    const rows = (await readFile(audit.getPermissionAuditLogFile(), "utf8")).trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>)
-      .filter((row) => row.toolUseId === "coordinator-stop" && row.decision !== "ask");
-    expect(rows).toEqual([expect.objectContaining({ decision: "deny", terminalKind: "cancelled", denyReasons: [
-      expect.objectContaining({ reason: "user aborted turn" }), expect.objectContaining({ reason: "Hook execution cancelled" }),
-    ] })]);
+    const rows = logs.events
+      .filter((row) => row.correlationId === invocationCorrelationId("coordinator-stop") && row.decision !== "ask");
+    expect(rows).toEqual([expect.objectContaining({ decision: "deny", terminalKind: "cancelled" })]);
     expect(lifecycle.mock.calls.filter(([event]) => event === "PermissionDenied")).toEqual([]);
   });
 
@@ -1056,7 +1012,7 @@ describe("native invocation permission evidence", () => {
     ["deny-then-turn-stop", "denied"],
     ["scope-then-turn-stop", "cancelled"],
   ] as const)("records one %s rationale decision as %s", async (source, kind) => {
-    await audit.setupPermissionAuditChain("aa".repeat(32));
+
     manager.setMode("auto");
     setReviewerForTest(manager, {
       classifier: { classify: () => ({ level: "high", reason: "The outside change needs explicit grounds" }) },
@@ -1071,18 +1027,17 @@ describe("native invocation permission evidence", () => {
     const coordinator = new RationaleHostCoordinator({
       requestAnchor: createTestRequestAnchor({ sessionId }), userRoleTexts: ["Perform the requested operation."],
       rationaleProvenance: { startedFromUserKeyboard: true, taint: "none" },
-      ticketStore: new InProcessRationaleTicketStore({ onAudit: () => {} }),
+      ticketStore: new InProcessRationaleTicketStore(),
       rationaleScopeReviewer: new LlmRationaleScopeReviewer({ complete: vi.fn() }, "fixture-reviewer"),
       approvalGate: gate, getRationalePolicyEpoch: () => manager.getPolicyEpoch(),
       getRegistryGeneration: () => registry.getGeneration(), getSandboxGeneration: () => "fixture-sandbox",
       anchorRoundCas: new InMemoryHostAnchorRoundCasStore(), hostInvocationStartCas: new InMemoryHostInvocationStartCasStore(),
-      onInvocationAudit: () => {}, onProjectionAudit: () => {},
     });
     const hooks = new ScriptHookManager();
     const lifecycle = vi.spyOn(hooks, "runLifecycleEvent");
     const turn = new AbortController();
     const coordinatorStop = new AbortController();
-    const realExecutor = new ToolExecutor(registry, undefined, manager, undefined, gate, hooks, audit);
+    const realExecutor = new ToolExecutor(registry, undefined, manager, undefined, gate, hooks);
     const outcome = await realExecutor.executeConversationBatch([
       { id: "rationale-history", name: "write_file", input: { path: join(root, "outside.txt"), content: "await authority" } },
     ], { executionCwd: project, sessionId, rationaleRuntime: coordinator, abortSignal: turn.signal,
@@ -1125,26 +1080,17 @@ describe("native invocation permission evidence", () => {
         }
       }
     }
-    const readRows = async () => (await readFile(audit.getPermissionAuditLogFile(), "utf8")).trim().split("\n")
-      .map((line) => JSON.parse(line) as { toolUseId: string; decision: string; terminalKind: string; denyReasons: Array<{ reason: string; source: string }> })
-      .filter((row) => row.toolUseId === "rationale-history" && row.decision !== "ask");
+    const readRows = async () => logs.events
+      .filter((row) => row.correlationId === invocationCorrelationId("rationale-history") && row.decision !== "ask");
     await vi.waitFor(async () => expect(await readRows()).toHaveLength(1));
-    await audit.close();
+
     const rows = await readRows();
     expect(rows).toEqual([expect.objectContaining({
       decision: "deny",
       terminalKind: kind,
       ...(settledDenialReason !== undefined ? { trustOrigin: "user-keyboard" } : {}),
-      denyReasons: [expect.objectContaining({ reason: settledDenialReason ?? (source === "headless"
-        ? "Nobody can approve this request; do not retry."
-        : source === "scope-then-turn-stop" ? "approval cancelled: project-scope-changed"
-          : "The permission request was stopped; the action was not executed.") })],
     })]);
-    const [row] = rows;
-    if (row === undefined) throw new Error("Expected a terminal audit row");
-    if (source === "headless" || source === "retired") {
-      expect(terminalDenyKindOf({ denyReasons: row.denyReasons })).toBe(kind);
-    } else {
+    if (source !== "headless" && source !== "retired") {
       expect(lifecycle.mock.calls.filter(([event]) => event === "PermissionDenied")).toHaveLength(settledDenialReason === undefined ? 0 : 1);
     }
   });
@@ -1172,19 +1118,18 @@ describe("native invocation permission evidence", () => {
     const coordinator = new RationaleHostCoordinator({
       requestAnchor: createTestRequestAnchor({ sessionId }), userRoleTexts: ["Perform the requested operation."],
       rationaleProvenance: { startedFromUserKeyboard: true, taint: "none" },
-      ticketStore: new InProcessRationaleTicketStore({ onAudit: () => {} }),
+      ticketStore: new InProcessRationaleTicketStore(),
       rationaleScopeReviewer: new LlmRationaleScopeReviewer({ complete: scopeComplete }, "fixture-reviewer"),
       approvalGate: gate, getRationalePolicyEpoch: () => policy().epoch, getRationalePolicySnapshot: policy,
       getRegistryGeneration: () => registry.getGeneration(), getSandboxGeneration: () => "fixture-sandbox",
       anchorRoundCas: new InMemoryHostAnchorRoundCasStore(), hostInvocationStartCas: new InMemoryHostInvocationStartCasStore(),
-      onInvocationAudit: () => {}, onProjectionAudit: () => {},
       onReviewerChoiceResolved: (session, request, decision) => manager.resolveReviewerChoice(session, request, decision),
     });
     const lifecycle = { allowDirectory: async (directory: string) => {
       try { directories = await addAllowedDirectoryPersist(directory, join(root, "folder-settings.json")); return directories; }
       catch (error) { directorySaveFailure = error instanceof Error ? error.message : String(error); throw error; }
     }, denyDirectory: async () => { throw new Error("No directory removal was requested"); } };
-    const realExecutor = new ToolExecutor(registry, hookRunner, manager, undefined, gate, hooks, audit, undefined, () => lifecycle);
+    const realExecutor = new ToolExecutor(registry, hookRunner, manager, undefined, gate, hooks, undefined, () => lifecycle);
     const execute = vi.spyOn(writeTool, "execute");
     const options = { sessionId, executionCwd: project, permissionContext: { trustOrigin: "llm-tool-arg" as const, ownerUnattended: change === "late-owner", additionalDirectories: [], getAdditionalDirectories: () => directories,
       onSessionDirectoryGrant: (directory: string) => { directories = [...new Set([...directories, directory])]; } } };

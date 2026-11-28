@@ -58,8 +58,7 @@ describe("wireReviewerAndPermissions subscription runtime", () => {
           } : {},
           getSecret,
         },
-        llmFetch: vi.fn(), getMainWindow: () => null, bootAuditLogger: { log: vi.fn() },
-        subscriptionProviderFactory: vi.fn(),
+        llmFetch: vi.fn(), getMainWindow: () => null, subscriptionProviderFactory: vi.fn(),
       };
       await wireReviewerAndPermissions(context as never);
       const options = wireReviewerAgent.mock.calls[0]?.[0] as unknown as {
@@ -134,7 +133,6 @@ describe("wireReviewerAndPermissions subscription runtime", () => {
         settingsService,
         llmFetch: vi.fn(),
         getMainWindow: () => null,
-        bootAuditLogger: { log: vi.fn() },
         subscriptionProviderFactory,
       };
 
@@ -191,7 +189,7 @@ it.each([false, true])("blocks existing reviewer authority before a production c
     });
     const context = { host: createBootHostFixture(), toolRegistry: { setDenyRules: vi.fn() }, permissionManager: manager,
       approvalGate: { setOwnerAwayAutoSkipMinutes: vi.fn() }, settingsService: { onChanged: vi.fn(), get: settingsGet, getSecret: vi.fn() },
-      llmFetch: vi.fn(), singleHopNetworkFetch: vi.fn(), getMainWindow: () => null, bootAuditLogger: { log: vi.fn() }, subscriptionProviderFactory: vi.fn(),
+      llmFetch: vi.fn(), singleHopNetworkFetch: vi.fn(), getMainWindow: () => null, subscriptionProviderFactory: vi.fn(),
       rewireReviewerAgent: undefined as (() => Promise<void>) | undefined };
     await wireReviewerAndPermissions(context as never);
     const rewire = context.rewireReviewerAgent;
@@ -209,10 +207,10 @@ it.each([false, true])("blocks existing reviewer authority before a production c
     expect((await dispatch(false)).review.outcome).toBe("cache");
     const oldJudge = vi.fn(async () => ({ decision: "allow" as const, rationale: "Previously healthy custom judge" }));
     if (custom) {
-      const { judgeSettings, scriptedStage, collectingAudit } = await import("../../../permissions/judge/__tests__/judge-request-fixture.js");
+      const { judgeSettings, scriptedStage } = await import("../../../permissions/judge/__tests__/judge-request-fixture.js");
       const stage = scriptedStage("old-provider");
       manager.setJudge({ settings: judgeSettings({ chain: [stage], categories: { shell: true, write: true, network: true } }), chain: [{ settings: stage, judge: { id: "old-provider", version: "fixture", judge: oldJudge } }],
-        breaker: manager.getJudgeBreaker(), audit: collectingAudit().logger });
+        breaker: manager.getJudgeBreaker(), });
       expect((await dispatch(false)).result.decision).toBe("allow");
       expect(oldJudge).toHaveBeenCalledOnce();
       oldJudge.mockClear();
@@ -790,7 +788,7 @@ it.each(["explicit reviewer", "independent active chain"])("keeps warmed %s auth
   await withLiveReviewer("api", async ({ manager, dispatch, registerRouteSelection }) => {
     if (!explicitReviewer) {
       const { BuiltinLlmJudge } = await import("../../../permissions/judge/builtin-llm-judge.js");
-      const { judgeSettings, collectingAudit } = await import("../../../permissions/judge/__tests__/judge-request-fixture.js");
+      const { judgeSettings } = await import("../../../permissions/judge/__tests__/judge-request-fixture.js");
       const stage = { id: "independent", provider: "builtin-llm", model: { vendor: "openai", model: "fixture-independent" } } as const;
       manager.setJudge({
         settings: judgeSettings({ chain: [stage], categories: { shell: true, network: true, write: true } }),
@@ -800,7 +798,7 @@ it.each(["explicit reviewer", "independent active chain"])("keeps warmed %s auth
             return { ruleVerdict: verdict, finalVerdict: verdict, llmVerdict: verdict, outcome: "fresh" };
           },
         }, stage.model.model) }],
-        breaker: manager.getJudgeBreaker(), audit: collectingAudit().logger,
+        breaker: manager.getJudgeBreaker(),
       });
     }
     const refreshStarted = deferred<void>();
@@ -901,7 +899,7 @@ it("preserves cache hits for an explicit independent model", async () => {
   await withLiveReviewer("grok-build", async ({ seedVerdict, manager, reply, dispatch }) => {
     await seedVerdict(true);
     const { BuiltinLlmJudge } = await import("../../../permissions/judge/builtin-llm-judge.js");
-    const { judgeSettings, collectingAudit } = await import("../../../permissions/judge/__tests__/judge-request-fixture.js");
+    const { judgeSettings } = await import("../../../permissions/judge/__tests__/judge-request-fixture.js");
     const stage = { id: "independent", provider: "builtin-llm", model: { vendor: "openai", model: "fixture-independent" } } as const;
     const classifyWithTrace = vi.fn(async () => {
       const verdict = { level: "low", reason: "Independent verdict" } as const;
@@ -910,7 +908,7 @@ it("preserves cache hits for an explicit independent model", async () => {
     manager.setJudge({
       settings: judgeSettings({ chain: [stage], categories: { shell: true, network: true, write: true } }),
       chain: [{ settings: stage, judge: new BuiltinLlmJudge({ classifyWithTrace }, stage.model.model) }],
-      breaker: manager.getJudgeBreaker(), audit: collectingAudit().logger,
+      breaker: manager.getJudgeBreaker(),
     });
     reply.mockClear();
     reply.mockImplementation(() => { throw new Error("subscription-chat-unavailable"); });
@@ -927,13 +925,13 @@ it("preserves cache hits for an explicit independent model", async () => {
 it("does not replay the authoritative subscription baseline in shadow mode", async () => {
   await withLiveReviewer("grok-build", async ({ seedVerdict, manager, reply, dispatch, loseAuth }) => {
     await seedVerdict(true);
-    const { judgeSettings, scriptedStage, collectingAudit } = await import("../../../permissions/judge/__tests__/judge-request-fixture.js");
+    const { judgeSettings, scriptedStage } = await import("../../../permissions/judge/__tests__/judge-request-fixture.js");
     const stage = scriptedStage("observer");
     const judge = vi.fn(async () => ({ decision: "allow" as const, rationale: "Shadow observation" }));
     manager.setJudge({
       settings: judgeSettings({ chain: [stage], mode: "shadow", categories: { shell: true, network: true, write: true } }),
       chain: [{ settings: stage, judge: { id: "observer", version: "fixture", judge } }],
-      breaker: manager.getJudgeBreaker(), audit: collectingAudit().logger,
+      breaker: manager.getJudgeBreaker(),
     });
 
     await loseAuth();

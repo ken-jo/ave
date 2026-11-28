@@ -1,4 +1,4 @@
-import type { AuditLogger } from "../audit/audit-logger.js";
+import { logPermissionEvent, permissionLogId } from "../lib/permission-log.js";
 import type { ScheduleAttachmentRequest } from "../shared/workflow-template-types.js";
 import { attachmentScopeMatches, requireTemplate } from "../work-board/template-graph.js";
 import { WorkDecisionAuthorityError } from "../work-board/work-decision-authority.js";
@@ -12,7 +12,6 @@ export async function attachWorkflowSchedule(
   routines: RoutinesStore,
   request: ScheduleAttachmentRequest,
   mintProof: () => HostDecisionProof,
-  audit: Pick<AuditLogger, "log">,
 ) {
   const { templateId, version, graphHash, expectedScope } = request;
   const record = await store.get(templateId);
@@ -44,9 +43,7 @@ export async function attachWorkflowSchedule(
       if (created) {
         try { await remove(); }
         catch {
-          audit.log({ timestamp: proof.decidedAt, sessionId: `work-board:${templateId}`, type: "approval", output: JSON.stringify({
-            event: "template_schedule_cleanup_failed", scheduleId: id, auditId: proof.auditId,
-          }) });
+          logPermissionEvent("template_schedule_cleanup_failed", { sessionId: permissionLogId(`work-board:${templateId}`) }, "warn");
         }
       }
       throw error;

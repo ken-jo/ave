@@ -53,9 +53,7 @@ import {
 import { PERMISSION_REVIEWER_FRAMEWORK } from "../../../shared/permission-reviewer-framework.js";
 import { RecentlyDeniedPanel } from "../components/permissions/RecentlyDeniedPanel.js";
 import { isOwnerAwayAutoSkipMinutes, OWNER_AWAY_AUTO_SKIP_MAX_MINUTES } from "../../../shared/owner-away-permission.js";
-import { AuditPanel } from "../components/permissions/AuditPanel.js";
 import { PermissionJudgeContent } from "../components/permissions/PermissionJudgeContent.js";
-import { EgressDenialsList } from "../components/permissions/EgressDenialsList.js";
 import { EgressGrantsList } from "../components/permissions/EgressGrantsList.js";
 import { UpstreamProxySettings } from "../components/permissions/UpstreamProxySettings.js";
 import { HomeContentReview } from "../components/permissions/HomeContentReview.js";
@@ -616,7 +614,6 @@ export function PermissionsTab({
   } | null>(null);
   const [quarantinedHooks, setQuarantinedHooks] = useState<HookTrustRow[]>([]);
   const [hookTrustRows, setHookTrustRows] = useState<HookTrustRow[]>([]);
-  const [auditOpen, setAuditOpen] = useState(false);
   const [userApprovals, setUserApprovals] = useState<Array<{
     key: string;
     decision?: "allow" | "deny";
@@ -1915,7 +1912,6 @@ export function PermissionsTab({
           description={t("permissionsTab.networkDescription")}
         >
           <EgressGrantsList />
-          <EgressDenialsList />
         </SettingsSection>
 
         {/* ── Section C: Rule Editor ── */}
@@ -2151,24 +2147,6 @@ export function PermissionsTab({
           )}
         </SettingsSection>
 
-        {/* ── Audit Log ── */}
-        <SettingsSection
-          data-settings-section="permissions-audit-log"
-          title={t("permissionsTab.auditLogTitle")}
-          description={t("permissionsTab.auditLogDescription")}
-          actions={auditOpen ? undefined : (
-            <Button size="sm" variant="outline" className="h-8 px-3 text-body-sm" onClick={() => setAuditOpen(true)}>
-              {t("permissionsTab.auditLogOpenButton")}
-            </Button>
-          )}
-        >
-          <p className="text-dense text-muted-foreground">{t("permissionsTab.auditLogHelp")}</p>
-          {/* The log opens INSIDE this section, so it takes the pane's own
-              width and pushes the sections below it down. A panel fixed to the
-              window edge would cover the tiles beside this one and the title
-              bar, and its 480px would not fit a tile at the width floor. */}
-          <AuditPanel open={auditOpen} onClose={() => setAuditOpen(false)} />
-        </SettingsSection>
 
       </div>
     </div>

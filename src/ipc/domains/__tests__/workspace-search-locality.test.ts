@@ -97,7 +97,7 @@ describe.runIf(process.platform === "win32")("workspace folder search judged onc
     mkdirSync(join(fixture.cwd, "src"));
     fixture.query = query;
     setWindowsDriveQueryForTest(query);
-    registerWorkspaceHandlers({ auditLogger: { log: vi.fn() } } as never);
+    registerWorkspaceHandlers({  } as never);
   });
 
   afterAll(async () => {

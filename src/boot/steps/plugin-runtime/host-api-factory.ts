@@ -1,3 +1,4 @@
+import { logPermissionEvent, permissionLogId } from "../../../lib/permission-log.js";
 import type { BaseWindow } from "electron";
 import { PluginDeviceAuth } from "../../../main/plugin-device-auth.js";
 import type { MainWindow } from "../../../main/main-window-host.js";
@@ -19,12 +20,11 @@ import type {
 } from "../../../plugins/public-contract.js";
 import { FloatingDock } from "../../../main/floating-dock.js";
 import { onLocaleChange } from "../../../i18n/index.js";
-import { CREDENTIAL_HEADERS, evaluateHostFetch, runHostFetchHops, type HostFetchTransport } from "../../../main/host-fetch-guard.js";
+import { CREDENTIAL_HEADERS, evaluateHostFetch, runHostFetchHops, type HostFetchDenyReason, type HostFetchTransport } from "../../../main/host-fetch-guard.js";
 import {
   partitionCookieHeaderForUrl,
   partitionCookiesForUrl,
 } from "../../../main/auth-partition-cookie-jar.js";
-import type { AuditLogger } from "../../../audit/audit-logger.js";
 import type { PluginRuntime } from "../../../plugins/runtime.js";
 import { instrumentEffectsByPath } from "../../../permissions/hostapi-effect-recorder.js";
 import { enforceMutatingEffects, gateMutatingEffect, snapshotEffectArguments, assertSnapshotableRequestBody, currentEffectGateContext } from "../../../permissions/effect-enforcement.js";
@@ -208,7 +208,6 @@ export interface CreateHostApiFactoryDeps {
   /** Re-read the registry into `getRegistryEntry` when the file changed since the last read. */
   refreshRegistryEntryCacheIfChanged: () => Promise<void>;
   settingsService: SettingsService;
-  bootAuditLogger: AuditLogger;
   leaseDenialAudit?: LeaseDenialAudit;
   _onCredentialIssuanceStageForTest?: (stage: CredentialIssuanceStage) => Promise<void> | void;
   /** Reuse runtime audit transport so host and webview storage refusals share one record shape. */
@@ -267,7 +266,6 @@ export function createHostApiFactory(
     getRegistryEntry,
     refreshRegistryEntryCacheIfChanged,
     settingsService,
-    bootAuditLogger,
     pluginRuntimeAuditLog,
     networkFetch,
     mainWindow,
@@ -289,7 +287,7 @@ export function createHostApiFactory(
     settingsService,
     (pluginId) => permissionManager?.getPluginRevokeEpoch(pluginId) ?? 0,
   );
-  const leaseDenialAudit = deps.leaseDenialAudit ?? new LeaseDenialAudit(bootAuditLogger);
+  const leaseDenialAudit = deps.leaseDenialAudit ?? new LeaseDenialAudit();
 
   /** Resolve the current window on every send; null means no desktop surface. */
   const liveMainWindow = (): MainWindow | null => getMainWindow ? getMainWindow() : mainWindow;
@@ -676,7 +674,6 @@ export function createHostApiFactory(
             manifest,
             manifestSha256,
             settingsService,
-            auditLogger: bootAuditLogger,
             readRegistryEntry,
             grantEvidence: hostSecretGrantEvidence,
             ...(deps._onCredentialIssuanceStageForTest
@@ -754,18 +751,6 @@ export function createHostApiFactory(
       },
       getSecret: async (key) => {
         // Both secret APIs use runSecretGate; this closure owns only its result shape and audit accounting.
-        // Cap audit keys at 64 characters to prevent oversized denial records.
-        const auditKey = key.slice(0, 64);
-        const audit = (type: "info" | "warn", line: string): void => {
-          try {
-            bootAuditLogger.log({
-              timestamp: new Date().toISOString(),
-              sessionId: "plugin",
-              type,
-              input: `[plugin:${pluginId}] ${line}`,
-            });
-          } catch { /* audit must not break host */ }
-        };
         // Trust the host registry entry, never writable plugin.json claims.
         const outcome = await runSecretGate({
           pluginId,
@@ -788,23 +773,16 @@ export function createHostApiFactory(
           },
         });
         if (outcome.kind === "deny") {
-          audit("warn", `hostSecret_denied reason=${outcome.reason} key=${auditKey}`);
+          logPermissionEvent("plugin_secret_denied", { pluginId: permissionLogId(pluginId), reasonCode: outcome.reason }, "warn");
           return null;
         }
         const value = await settingsService.getSecret(key);
         // Block endpoint URLs in API-key-shaped plugin secrets; otherwise own-namespace reads can exfiltrate data.
         if (shouldBlockPluginSecretRead({ pluginId, storageKey: key, value })) {
-          audit(
-            "warn",
-            `pluginSecret_denied reason=endpoint-url-in-api-key-like-secret key=${auditKey}`,
-          );
+          logPermissionEvent("plugin_secret_denied", { pluginId: permissionLogId(pluginId), reasonCode: "endpoint-url-in-api-key-like-secret" }, "warn");
           return null;
         }
-        if (outcome.via === "own-namespace") {
-          audit("info", `pluginSecret_read key=${auditKey}`);
-          return value;
-        }
-        audit("info", `hostSecret_read key=${auditKey}`);
+        logPermissionEvent("plugin_secret_read", { pluginId: permissionLogId(pluginId), scope: outcome.via });
         return value;
       },
       callLlm: async (prompt, opts) => {
@@ -820,15 +798,8 @@ export function createHostApiFactory(
         const fetchEffectContext = currentEffectGateContext();
         // Use the host’s OS proxy and trust-store transport for declared network access.
         // The shared evaluator owns scheme, HTTPS, allow-list, and DNS-aware SSRF checks; audit stays here.
-        const auditEgressDeny = (detail: string) => {
-          try {
-            bootAuditLogger.log({
-              timestamp: new Date().toISOString(),
-              sessionId: "plugin",
-              type: "error",
-              input: `[plugin:${pluginId}] host_fetch_denied ${detail}`,
-            });
-          } catch { /* audit must not break host */ }
+        const logEgressDenial = (reasonCode: HostFetchDenyReason | "redirect-cap" | "capability-missing" | "cookie-header-refused"): void => {
+          logPermissionEvent("plugin_host_fetch_denied", { pluginId: permissionLogId(pluginId), reasonCode }, "warn");
         };
         // Read the plugin-controlled method getter once; effect classification, audit, and wire verb share that snapshot.
         const { method: rawVerb, ...restInit } = init ?? {};
@@ -860,7 +831,7 @@ export function createHostApiFactory(
           ...(effectTarget !== undefined ? { target: effectTarget } : {}),
         });
         if (!manifest.capabilities?.includes(CAPABILITY_EXTERNAL_AUTH_CONSUMER)) {
-          auditEgressDeny("capability external-auth-consumer not declared");
+          logEgressDenial("capability-missing");
           throw new Error(
             `[plugin:${pluginId}] capability not declared: external-auth-consumer (hostFetch)`,
           );
@@ -875,21 +846,15 @@ export function createHostApiFactory(
           allowPrivateNetworks: manifest.networkAccess?.allowPrivateNetworks === true,
         });
         if (!decision.ok) {
-          auditEgressDeny(decision.detail);
+          logEgressDenial(decision.reason);
           throw new Error(decision.message);
         }
-        const url = decision.url;
         // Each exact hop authorizes immediately before transport; manifest and destination checks remain independent.
         assertActiveHostApi(pluginId, hostIncarnation, "hostApi.hostFetch");
         const credentialUse = auth ? credentialRegistry.beginUse(auth.lease, pluginId, hostIncarnation) : undefined;
         credentialUse?.assertLive("after-await");
         try {
-          bootAuditLogger.log({
-            timestamp: new Date().toISOString(),
-            sessionId: "plugin",
-            type: "tool_call",
-            input: `[plugin:${pluginId}] host_fetch ${url.origin} method=${decision.method} effect=${decision.effect}`,
-          });
+          logPermissionEvent("plugin_host_fetch", { sessionId: permissionLogId("plugin"), pluginId: permissionLogId(pluginId) });
         } catch { /* audit must not break host */ }
         // Each redirect reruns the gate before sending; default rejects, manual returns, and follow is bounded.
         // Attach vaulted cookies per hop without exposing values; declaring plugins must not supply a competing Cookie header.
@@ -900,9 +865,7 @@ export function createHostApiFactory(
             (transportInit.headers as HeadersInit | undefined) ?? {},
           ).has("cookie");
           if (pluginSentCookie) {
-            auditEgressDeny(
-              "plugin sent its own Cookie header while authCookiePartition is declared",
-            );
+            logEgressDenial("cookie-header-refused");
             throw new Error(
               `[plugin:${pluginId}] hostFetch: a plugin declaring networkAccess.authCookiePartition `
                 + `must not send its own Cookie header — the host injects session cookies from `
@@ -948,17 +911,8 @@ export function createHostApiFactory(
           allowedDomains: manifest.networkAccess?.allowedDomains ?? [],
           allowPrivateNetworks: manifest.networkAccess?.allowPrivateNetworks === true,
           ...(injectSessionCookie ? { injectSessionCookie } : {}),
-          auditHop: (line) => {
-            try {
-              bootAuditLogger.log({
-                timestamp: new Date().toISOString(),
-                sessionId: "plugin",
-                type: "tool_call",
-                input: `[plugin:${pluginId}] ${line}`,
-              });
-            } catch { /* audit must not break host */ }
-          },
-          auditDeny: (_reason, detail) => auditEgressDeny(detail),
+          auditHop: (hop) => logPermissionEvent("plugin_host_fetch_hop", { pluginId: permissionLogId(pluginId), ...hop }),
+          auditDeny: logEgressDenial,
           onResponseBodyError: (error) => {
             if (error instanceof CredentialLeaseError) leaseDenialAudit.record(pluginId, "hostFetch", error);
           },
@@ -1004,7 +958,6 @@ export function createHostApiFactory(
           url,
           pluginId,
           settingsService,
-          bootAuditLogger,
           openLinkWindowService: (opts) => openLinkWindowService(requireMainWindow(), opts),
           shellOpenExternal,
         });
@@ -1012,26 +965,15 @@ export function createHostApiFactory(
       // Host DNS probing is a bounded UX hint, not a trust boundary.
       // Audit probe host and outcome here because read effects bypass executor audit; cap names to 64 characters.
       probePrivateHost: async (host: string, opts?: { timeoutMs?: number }): Promise<boolean> => {
-        const auditHost = (typeof host === "string" ? host : String(host)).slice(0, 64);
         try {
           const resolved = await probePrivateHost(host, opts);
           try {
-            bootAuditLogger.log({
-              timestamp: new Date().toISOString(),
-              sessionId: "plugin",
-              type: "tool_call",
-              input: `[plugin:${pluginId}] probe_private_host host=${auditHost} resolved=${resolved}`,
-            });
+            logPermissionEvent("plugin_private_host_probe", { sessionId: permissionLogId("plugin"), pluginId: permissionLogId(pluginId) });
           } catch { /* audit must not break host */ }
           return resolved;
         } catch (err) {
           try {
-            bootAuditLogger.log({
-              timestamp: new Date().toISOString(),
-              sessionId: "plugin",
-              type: "warn",
-              input: `[plugin:${pluginId}] probe_private_host_rejected host=${auditHost} reason=${(err as Error).message.slice(0, 120)}`,
-            });
+            logPermissionEvent("plugin_private_host_probe_rejected", { sessionId: permissionLogId("plugin"), pluginId: permissionLogId(pluginId) }, "warn");
           } catch { /* audit must not break host */ }
           throw err;
         }
@@ -1081,12 +1023,7 @@ export function createHostApiFactory(
 
         if (!manifest.capabilities?.includes(CAPABILITY_EXTERNAL_AUTH_CONSUMER)) {
           try {
-            bootAuditLogger.log({
-              timestamp: new Date().toISOString(),
-              sessionId: "plugin",
-              type: "error",
-              input: `[plugin:${pluginId}] open_auth_window_capability_denied url=${safeUrlForLog} missingCapability=external-auth-consumer`,
-            });
+            logPermissionEvent("plugin_auth_window_capability_denied", { sessionId: permissionLogId("plugin"), pluginId: permissionLogId(pluginId) }, "warn");
           } catch { /* audit must not break host */ }
           throw new Error(
             `[plugin:${pluginId}] capability not declared: external-auth-consumer`,
@@ -1097,14 +1034,7 @@ export function createHostApiFactory(
           `plugin:${pluginId} openAuthWindow url=${safeUrlForLog} cookieHostCount=${cookieHostCount}`,
         );
         try {
-          bootAuditLogger.log({
-            timestamp: new Date().toISOString(),
-            sessionId: "plugin",
-            type: "tool_call",
-            input:
-              `[plugin:${pluginId}] openAuthWindow ` +
-              `url=${safeUrlForLog} cookieHostCount=${cookieHostCount}`,
-          });
+          logPermissionEvent("plugin_auth_window_requested", { sessionId: permissionLogId("plugin"), pluginId: permissionLogId(pluginId) });
         } catch { /* audit must not break host */ }
 
         // Default auth partitions are per-plugin and non-persistent so sessions neither leak across plugins nor survive on disk.
@@ -1119,14 +1049,7 @@ export function createHostApiFactory(
           !requested.startsWith(`${allowedPersistBase}:`)
         ) {
           try {
-            bootAuditLogger.log({
-              timestamp: new Date().toISOString(),
-              sessionId: "plugin",
-              type: "error",
-              input:
-                `[plugin:${pluginId}] open_auth_window_invalid_partition ` +
-                `persistPartition=${requested} allowed=${allowedPersistBase}[:<sub>]`,
-            });
+            logPermissionEvent("plugin_auth_window_invalid", { sessionId: permissionLogId("plugin"), pluginId: permissionLogId(pluginId) }, "warn");
           } catch { /* audit must not break host */ }
           throw new Error(
             `[plugin:${pluginId}] openAuthWindow: persistPartition must be '${allowedPersistBase}' or '${allowedPersistBase}:<sub>'`,
@@ -1140,22 +1063,9 @@ export function createHostApiFactory(
 
       // Auth viewers use the caller’s partition and the same capability gate as auth capture.
       openAuthPartitionViewer: async (opts: { url: string; windowTitle?: string }) => {
-        const safeUrlForLog = (() => {
-          try {
-            const parsed = new URL(opts.url);
-            return `${parsed.origin}${parsed.pathname}`;
-          } catch {
-            return "[invalid-url]";
-          }
-        })();
         if (!manifest.capabilities?.includes(CAPABILITY_EXTERNAL_AUTH_CONSUMER)) {
           try {
-            bootAuditLogger.log({
-              timestamp: new Date().toISOString(),
-              sessionId: "plugin",
-              type: "error",
-              input: `[plugin:${pluginId}] open_auth_partition_viewer_capability_denied url=${safeUrlForLog} missingCapability=external-auth-consumer`,
-            });
+            logPermissionEvent("plugin_auth_viewer_capability_denied", { sessionId: permissionLogId("plugin"), pluginId: permissionLogId(pluginId) }, "warn");
           } catch { /* audit must not break host */ }
           throw new Error(
             `[plugin:${pluginId}] capability not declared: external-auth-consumer`,
@@ -1168,12 +1078,7 @@ export function createHostApiFactory(
         } catch (err) {
           const reason = errorMessage(err);
           try {
-            bootAuditLogger.log({
-              timestamp: new Date().toISOString(),
-              sessionId: "plugin",
-              type: "error",
-              input: `[plugin:${pluginId}] open_auth_partition_viewer_manifest_invalid reason=${reason}`,
-            });
+            logPermissionEvent("plugin_auth_viewer_binding_denied", { sessionId: permissionLogId("plugin"), pluginId: permissionLogId(pluginId) }, "warn");
           } catch { /* audit must not break host */ }
           throw new Error(
             `[plugin:${pluginId}] openAuthPartitionViewer: manifest.auth.partitionDomains invalid (${reason})`,
@@ -1192,18 +1097,9 @@ export function createHostApiFactory(
             allowedHosts,
             windowTitle: opts.windowTitle,
             parent: requireDesktopHost(deps.host).getFocusedWindow() ?? requireMainWindow(),
-            audit: (event) => {
+            audit: (_event) => {
               try {
-                bootAuditLogger.log({
-                  timestamp: event.timestamp,
-                  sessionId: "plugin",
-                  type: event.type === "open_auth_partition_viewer" ? "tool_call" : "error",
-                  input:
-                    `[plugin:${event.pluginId}] ${event.type} ` +
-                    `url=${event.url}` +
-                    (event.deniedHost ? ` deniedHost=${event.deniedHost}` : "") +
-                    ` allowedHosts=${event.allowedHosts.join(",")}`,
-                });
+                logPermissionEvent("plugin_auth_viewer_outcome", { sessionId: permissionLogId("plugin"), pluginId: permissionLogId(pluginId) });
               } catch { /* audit must not break host */ }
             },
           },
@@ -1214,12 +1110,7 @@ export function createHostApiFactory(
       clearAuthPartition: async (partition: string): Promise<void> => {
         if (!manifest.capabilities?.includes(CAPABILITY_EXTERNAL_AUTH_CONSUMER)) {
           try {
-            bootAuditLogger.log({
-              timestamp: new Date().toISOString(),
-              sessionId: "plugin",
-              type: "error",
-              input: `[plugin:${pluginId}] clear_auth_partition_capability_denied missingCapability=external-auth-consumer`,
-            });
+            logPermissionEvent("plugin_auth_clear_capability_denied", { sessionId: permissionLogId("plugin"), pluginId: permissionLogId(pluginId) }, "warn");
           } catch { /* audit must not break host */ }
           throw new Error(
             `[plugin:${pluginId}] capability not declared: external-auth-consumer`,
@@ -1237,26 +1128,14 @@ export function createHostApiFactory(
           !partition.startsWith(`${allowedPersistBase}:`)
         ) {
           try {
-            bootAuditLogger.log({
-              timestamp: new Date().toISOString(),
-              sessionId: "plugin",
-              type: "error",
-              input:
-                `[plugin:${pluginId}] clear_auth_partition_invalid_partition ` +
-                `partition=${partition} allowed=${allowedPersistBase}[:<sub>]`,
-            });
+            logPermissionEvent("plugin_auth_clear_binding_denied", { sessionId: permissionLogId("plugin"), pluginId: permissionLogId(pluginId) }, "warn");
           } catch { /* audit must not break host */ }
           throw new Error(
             `[plugin:${pluginId}] clearAuthPartition: partition must be '${allowedPersistBase}' or '${allowedPersistBase}:<sub>'`,
           );
         }
         try {
-          bootAuditLogger.log({
-            timestamp: new Date().toISOString(),
-            sessionId: "plugin",
-            type: "tool_call",
-            input: `[plugin:${pluginId}] clearAuthPartition partition=${partition}`,
-          });
+          logPermissionEvent("plugin_auth_partition_cleared", { sessionId: permissionLogId("plugin"), pluginId: permissionLogId(pluginId) });
         } catch { /* audit must not break host */ }
         await clearAuthPartitionService(partition);
       },
@@ -1267,12 +1146,7 @@ export function createHostApiFactory(
       }): Promise<Array<{ url: string; cookies: AuthPartitionCookie[] }>> => {
         if (!manifest.capabilities?.includes(CAPABILITY_EXTERNAL_AUTH_CONSUMER)) {
           try {
-            bootAuditLogger.log({
-              timestamp: new Date().toISOString(),
-              sessionId: "plugin",
-              type: "error",
-              input: `[plugin:${pluginId}] get_auth_partition_cookies_capability_denied missingCapability=external-auth-consumer`,
-            });
+            logPermissionEvent("plugin_auth_cookie_read_denied", { sessionId: permissionLogId("plugin"), pluginId: permissionLogId(pluginId) }, "warn");
           } catch { /* audit must not break host */ }
           throw new Error(
             `[plugin:${pluginId}] capability not declared: external-auth-consumer`,
@@ -1312,14 +1186,7 @@ export function createHostApiFactory(
           results.push({ url: rawUrl, cookies: scoped });
         }
         try {
-          bootAuditLogger.log({
-            timestamp: new Date().toISOString(),
-            sessionId: "plugin",
-            type: "tool_call",
-            input:
-              `[plugin:${pluginId}] getAuthPartitionCookies partitionSub=${partitionSub} ` +
-              `urls=${urls.length} origins=${results.map((r) => { try { return new URL(r.url).origin; } catch { return "[invalid]"; } }).join(",")}`,
-          });
+          logPermissionEvent("plugin_auth_cookie_read", { sessionId: permissionLogId("plugin"), pluginId: permissionLogId(pluginId) });
         } catch { /* audit must not break host */ }
         return results;
       },
@@ -1358,7 +1225,6 @@ export function createHostApiFactory(
           dedupe: triggerConversationDedupe,
           rateLimiter: triggerConversationRateLimiter,
           denyAuditThrottle: triggerDenyAuditThrottle,
-          auditLogger: bootAuditLogger,
           suggestions: declaredSuggestions === null
             ? undefined
             : { declared: declaredSuggestions, ledger: suggestionLedger },

@@ -1,3 +1,4 @@
+import { collectPermissionEvents } from "../../__tests__/support/permission-events.js";
 import { randomUUID } from "node:crypto";
 import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 // Regression test for the fail-closed gate against legacy user-approval entries with `verdictAtApproval: null`. Earlier the user-approval entry shape did not have a `verdictAtApproval` field. A naive `?? "medium"` coerce on read would have turned every such legacy entry into a medium-risk memory hit — fail-permissive for inputs whose original verdict was HIGH. The fail-closed gate rejects the memory hit and forces a fresh approval flow when `verdictAtApproval == null`. This file is the regression guard for that gate.
@@ -9,10 +10,6 @@ import { canonicalizePathForMatch, caseFoldForMatch } from "../sensitive-paths.j
 // vi.mock must be at top level (hoisted). We feed the mock from a per-test setter so each case can shape the lookup result.
 let mockLookupResult: unknown = null;
 let useActualApprovalStore = false;
-const { emitSandboxAuditMock } = vi.hoisted(() => ({
-  emitSandboxAuditMock: vi.fn(async () => {}),
-}));
-
 vi.mock("../user-approval-store.js", async () => {
   const actual: typeof import("../user-approval-store.js") = await vi.importActual(
     "../user-approval-store.js",
@@ -21,15 +18,6 @@ vi.mock("../user-approval-store.js", async () => {
     ...actual,
     lookupApproval: vi.fn(async (...args: Parameters<typeof actual.lookupApproval>) =>
       useActualApprovalStore ? actual.lookupApproval(...args) : mockLookupResult),
-  };
-});
-
-vi.mock("../../audit/sandbox-audit-sink.js", async () => {
-  const actual: typeof import("../../audit/sandbox-audit-sink.js") =
-    await vi.importActual("../../audit/sandbox-audit-sink.js");
-  return {
-    ...actual,
-    emitSandboxAudit: emitSandboxAuditMock,
   };
 });
 
@@ -48,6 +36,9 @@ import {
   canonicalStringify,
   recordApproval,
 } from "../user-approval-store.js";
+
+let logs: ReturnType<typeof collectPermissionEvents>;
+const reviewLog = () => logs.events.filter(row => row.event === "permission_reviewer_decision").at(-1);
 
 const resources = new PermissionTestResources();
 
@@ -68,12 +59,13 @@ describe("PermissionManager — scoped approval memory with a separate risk ceil
     cwd = resources.makeTmpDir("ave-pm-scoped-approval-project-");
     useActualApprovalStore = true;
     __resetSessionStoreForTest();
-    emitSandboxAuditMock.mockClear();
+    logs = collectPermissionEvents();
     ({ pm } = makeManager());
 
   });
 
   afterEach(() => {
+    logs.restore();
     useActualApprovalStore = false;
     __resetSessionStoreForTest();
     if (previousHome === undefined) delete process.env.AVE_HOME;
@@ -118,13 +110,8 @@ describe("PermissionManager — scoped approval memory with a separate risk ceil
       expect(broadcast).toHaveBeenLastCalledWith({
         toolName: "write_file", scope: "persistent", verdictAtApproval: "high",
       });
-      expect((emitSandboxAuditMock.mock.calls as unknown as [unknown][]).at(-1)?.[0]).toMatchObject({
-        reviewer: {
-          ruleVerdict: "low",
-          finalVerdict: ceiling,
-          llmVerdict: null,
-          userApprovalUsed: { memoryHit: true, verdictAtApproval: "high" },
-        },
+      expect(reviewLog()).toMatchObject({
+        ruleRisk: "low", reviewerRisk: ceiling, modelRisk: undefined, approvalMemoryHit: true,
       });
 
       // The exact tuple still matches, but the current scope no longer admits this target. The deterministic HIGH must survive memory composition.
@@ -137,13 +124,8 @@ describe("PermissionManager — scoped approval memory with a separate risk ceil
       expect(broadcast).toHaveBeenLastCalledWith({
         toolName: "write_file", scope: "persistent", verdictAtApproval: "high",
       });
-      expect((emitSandboxAuditMock.mock.calls as unknown as [unknown][]).at(-1)?.[0]).toMatchObject({
-        reviewer: {
-          ruleVerdict: "high",
-          finalVerdict: "high",
-          llmVerdict: null,
-          userApprovalUsed: { memoryHit: true, verdictAtApproval: "high" },
-        },
+      expect(reviewLog()).toMatchObject({
+        ruleRisk: "high", reviewerRisk: "high", modelRisk: undefined, approvalMemoryHit: true,
       });
 
       const otherCwd = resources.makeTmpDir("ave-pm-scoped-approval-other-");
@@ -203,9 +185,7 @@ describe("PermissionManager — scoped approval memory with a separate risk ceil
 
     expect(result.outcome).not.toBe("approval-memory");
     expect(broadcast).not.toHaveBeenCalled();
-    expect((emitSandboxAuditMock.mock.calls as unknown as [unknown][]).at(-1)?.[0]).toMatchObject({
-      reviewer: { userApprovalUsed: null },
-    });
+    expect(reviewLog()).toMatchObject({ approvalMemoryHit: undefined });
   });
 
   it("reuses an exact remembered decision after a medium risk assessment", async () => {
@@ -276,11 +256,12 @@ describe("PermissionManager — fail-closed gate against legacy null-verdict ent
   beforeEach(() => {
     ({ pm } = makeManager());
     mockLookupResult = null;
-    emitSandboxAuditMock.mockClear();
+    logs = collectPermissionEvents();
     warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
   });
 
   afterEach(() => {
+    logs.restore();
     warnSpy.mockRestore();
   });
 
@@ -362,11 +343,7 @@ describe("PermissionManager — fail-closed gate against legacy null-verdict ent
     expect(payload.toolName).toBe("fs_write");
     expect(payload.scope).toBe("persistent");
     expect(payload.verdictAtApproval).toBe("low");
-    const auditEntry = emitSandboxAuditMock.mock.calls.at(-1)?.[0] as
-      | { reviewer: { llmVerdict: string | null; userApprovalUsed: { memoryHit: boolean } | null } }
-      | undefined;
-    expect(auditEntry?.reviewer.llmVerdict).toBeNull();
-    expect(auditEntry?.reviewer.userApprovalUsed?.memoryHit).toBe(true);
+    expect(reviewLog()).toMatchObject({ tool: "fs_write", modelRisk: undefined, approvalMemoryHit: true });
     const warnedLegacy = warnSpy.mock.calls.some(
       (args: unknown[]) =>
         typeof args[0] === "string" &&
@@ -395,11 +372,7 @@ describe("PermissionManager — fail-closed gate against legacy null-verdict ent
     });
 
     expect(broadcast).not.toHaveBeenCalled();
-    const auditEntry = emitSandboxAuditMock.mock.calls.at(-1)?.[0] as
-      | { reviewer: { llmVerdict: string | null; userApprovalUsed: unknown } }
-      | undefined;
-    expect(auditEntry?.reviewer.llmVerdict).toBeNull();
-    expect(auditEntry?.reviewer.userApprovalUsed).toBeNull();
+    expect(reviewLog()).toMatchObject({ tool: "fs_write", modelRisk: undefined, approvalMemoryHit: undefined });
     const warnedLegacy = warnSpy.mock.calls.some(
       (args: unknown[]) =>
         typeof args[0] === "string" &&
@@ -408,7 +381,7 @@ describe("PermissionManager — fail-closed gate against legacy null-verdict ent
     expect(warnedLegacy).toBe(false);
   });
 
-  it("audit separates raw rule verdict, raw LLM verdict, and final composed verdict", async () => {
+  it("logs separate rule, model, and final risk levels", async () => {
     const pm = new PermissionManager(tmpFile("permissions.json"));
     pm.setMode("auto");
   pm.setMode("auto");
@@ -442,21 +415,11 @@ describe("PermissionManager — fail-closed gate against legacy null-verdict ent
       trustOrigin: "llm-tool-arg" as const,
     });
 
-    const auditEntry = emitSandboxAuditMock.mock.calls.at(-1)?.[0] as
-      | {
-          reviewer: {
-            ruleVerdict: string;
-            llmVerdict: string | null;
-            finalVerdict: string;
-          };
-        }
-      | undefined;
-    expect(auditEntry?.reviewer.ruleVerdict).not.toBe("high");
-    expect(auditEntry?.reviewer.llmVerdict).toBe("high");
-    expect(auditEntry?.reviewer.finalVerdict).toBe("high");
+    expect(reviewLog()).toMatchObject({ modelRisk: "high", reviewerRisk: "high" });
+    expect(reviewLog()?.ruleRisk).not.toBe("high");
   });
 
-  it("reviewer audit masks finalInput and preserves the trust tuple", async () => {
+  it("logs the reviewer source and trust origin with no input or cache key", async () => {
     await pm.dispatchReviewer("plugin_send", {
       invocationId: randomUUID(),
       sessionId: "permission-manager-legacy-null-verdict-session",
@@ -474,26 +437,15 @@ describe("PermissionManager — fail-closed gate against legacy null-verdict ent
       approvalCacheKey: "plugin_send:scope-a", approvalMemory: { kind: "args" } as const,
     });
 
-    const auditEntry = emitSandboxAuditMock.mock.calls.at(-1)?.[0] as
-      | {
-          tool: {
-            args: string;
-            source: string;
-            trustOrigin?: string;
-            approvalCacheKey?: string;
-          };
-        }
-      | undefined;
-    expect(auditEntry?.tool.args).not.toContain("alice@example.com");
-    expect(auditEntry?.tool.args).not.toContain("sk-abcdefghijklmnopqrst");
-    expect(auditEntry?.tool.args).toContain("***@example.com");
-    expect(auditEntry?.tool.args).toContain("[REDACTED:TOKEN]");
-    expect(auditEntry?.tool.source).toBe("plugin");
-    expect(auditEntry?.tool.trustOrigin).toBe("plugin-emitted");
-    expect(auditEntry?.tool.approvalCacheKey).toBe("plugin_send:scope-a");
+    const entry = reviewLog();
+    expect(entry).toMatchObject({ tool: "plugin_send", source: "plugin", trustOrigin: "plugin-emitted" });
+    expect(entry).not.toHaveProperty("args");
+    expect(entry).not.toHaveProperty("approvalCacheKey");
+    expect(JSON.stringify(entry)).not.toContain("alice@example.com");
+    expect(JSON.stringify(entry)).not.toContain("sk-abcdefghijklmnopqrst");
   });
 
-  it("reviewer audit persists the Host-owned governed projection", async () => {
+  it("omits governed inputs from the reviewer log", async () => {
     await pm.dispatchReviewer("plugin_checkin_read", {
       invocationId: randomUUID(),
       sessionId: "permission-manager-legacy-null-verdict-session",
@@ -511,10 +463,9 @@ describe("PermissionManager — fail-closed gate against legacy null-verdict ent
       trustOrigin: "plugin-emitted" as const,
     });
 
-    const auditEntry = emitSandboxAuditMock.mock.calls.at(-1)?.[0] as
-      | { tool: { args: string } }
-      | undefined;
-    expect(auditEntry?.tool.args).toBe('{"operation":"status"}');
-    expect(auditEntry?.tool.args).not.toContain("must-never-reach-audit");
+    const entry = reviewLog();
+    expect(entry).toMatchObject({ tool: "plugin_checkin_read", source: "plugin", trustOrigin: "plugin-emitted" });
+    expect(entry).not.toHaveProperty("args");
+    expect(JSON.stringify(entry)).not.toContain("must-never-reach-audit");
   });
 });

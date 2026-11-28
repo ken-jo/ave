@@ -9,13 +9,11 @@ import type { WorkerEgressAllowlists } from "../permissions/egress-runtime.js";
 import type { AveHomeDocUpgradeMarker } from "../main/seed-ave-home-docs.js";
 import type { PythonRuntimeBootstrapper } from "../main/python-runtime.js";
 import type { BashAstValidator } from "../main/bash-ast-validator.js";
-import type { AuditService } from "../main/audit-service.js";
 import type { SettingsService } from "../data/settings-store.js";
 import type { MemoryManager } from "../memory/memory-manager.js";
 import type { MemoryCaptureService } from "../memory/memory-capture-service.js";
 import type { MemorySaveNotices } from "../memory/memory-save-notices.js";
 import type { ToolRegistry } from "../tools/registry.js";
-import type { AuditLogger } from "../audit/audit-logger.js";
 import type { LLMProvider } from "../engine/llm/types.js";
 import type { NotificationService } from "../main/notification-service.js";
 import type { ApprovalGate } from "../permissions/approval-gate.js";
@@ -103,7 +101,6 @@ export class BootContext {
   declare pythonPath: string | undefined;
   declare pythonRuntime: PythonRuntimeBootstrapper;
   declare bashAstValidator: BashAstValidator;
-  declare auditService: AuditService;
   declare settingsService: SettingsService;
   declare a2aRemoteRuntime: A2ARemoteRuntime | undefined;
   declare remoteA2AActionController: RemoteA2AActionController | undefined;
@@ -114,8 +111,7 @@ export class BootContext {
   declare memorySaveNotices: MemorySaveNotices;
   declare toolRegistry: ToolRegistry;
 
-  // ── Audit + notification (setupAuditAndNotification) ───────────────────────
-  declare bootAuditLogger: AuditLogger;
+
   declare notificationService: NotificationService;
 
   // ── Approval / permission / routines (pre-plugin-runtime) ──────────────────
@@ -242,7 +238,6 @@ const BOOT_CONTEXT_FIELDS = [
   "pythonPath",
   "pythonRuntime",
   "bashAstValidator",
-  "auditService",
   "settingsService",
   "a2aRemoteRuntime",
   "remoteA2AActionController",
@@ -252,7 +247,6 @@ const BOOT_CONTEXT_FIELDS = [
   "memoryCaptureService",
   "memorySaveNotices",
   "toolRegistry",
-  "bootAuditLogger",
   "notificationService",
   "approvalGate",
   "permissionManager",

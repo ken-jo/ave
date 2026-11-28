@@ -20,18 +20,17 @@ vi.mock("electron", () => ({
   app: { getPath: () => join(tmp, "userData") },
 }));
 
+const { logInfo } = vi.hoisted(() => ({ logInfo: vi.fn() }));
 vi.mock("../../../lib/logger.js", () => ({
-  createLogger: () => ({ warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() }),
+  createLogger: () => ({ warn: vi.fn(), info: logInfo, error: vi.fn(), debug: vi.fn() }),
 }));
 
 import { registerDiagnosticsHandlers } from "../diagnostics.js";
 import { CHANNELS } from "../../../contract/app-contract.js";
-import { AuditLogger } from "../../../audit/audit-logger.js";
 import type { IpcDeps } from "../../types.js";
 import { fixtureSecret } from "../../../audit/__tests__/secret-fixtures.js";
 
 let tmp: string;
-let auditLogger: AuditLogger;
 const REJECT_EVENT = { senderFrame: { url: "https://evil.example.com" } };
 // App resources use a per-server origin and must fail the host-renderer guard.
 const PLUGIN_SHELL_EVENT = {
@@ -40,13 +39,11 @@ const PLUGIN_SHELL_EVENT = {
 const ACCEPT_EVENT = { senderFrame: { url: "file:///C:/app/resources/index.html" } };
 
 function makeDeps(overrides?: { includeCrashDumps?: boolean }): IpcDeps {
-  auditLogger = new AuditLogger(join(tmp, "audit"));
   const diagnostics = {
     includeCrashDumps: overrides?.includeCrashDumps ?? false,
     logRetentionDays: 7,
   };
   return {
-    auditLogger,
     settingsService: {
       getAll: () => ({
         llm: { provider: "claude", streamSmoothing: "none", fallbackChain: [], vendors: {} },
@@ -63,16 +60,16 @@ function makeDeps(overrides?: { includeCrashDumps?: boolean }): IpcDeps {
 
 beforeEach(() => {
   handlers.clear();
+  logInfo.mockClear();
   showSaveDialog.mockReset();
   tmp = mkdtempSync(join(tmpdir(), "ave-diag-ipc-"));
   process.env.AVE_HOME = tmp;
   mkdirSync(join(tmp, "logs"), { recursive: true });
-  mkdirSync(join(tmp, "audit"), { recursive: true });
   registerDiagnosticsHandlers(makeDeps());
 });
 
 afterEach(async () => {
-  await cleanupAfterClosing([() => auditLogger.close()], [
+  await cleanupAfterClosing([], [
     () => { delete process.env.AVE_HOME; },
     () => cleanupTmpDir(tmp),
   ]);
@@ -103,6 +100,20 @@ describe("diagnostics IPC — fail-closed sender guard", () => {
 });
 
 describe("ave:logs:tail", () => {
+  it("tails the newest numeric rollover across dates", async () => {
+    for (const [name, msg] of [
+      ["ave-2025-05-31.19.log", "previous day"],
+      ["ave-2025-06-01.log", "first write"],
+      ["ave-2025-06-01.9.log", "ask"],
+      ["ave-2025-06-01.10.log", "deny"],
+    ]) {
+      writeFileSync(join(tmp, "logs", name), `${JSON.stringify({ level: 30, msg })}\n`);
+    }
+    const tail = async (lines: number) => invokeRegisteredHandlerWithEvent(handlers, CHANNELS.logs.tail, ACCEPT_EVENT, { lines }) as Promise<{ ok: boolean; lines: string[] }>;
+    expect((await tail(1)).lines.map((line) => JSON.parse(line).msg)).toEqual(["deny"]);
+    expect((await tail(4)).lines.map((line) => JSON.parse(line).msg)).toEqual(["previous day", "first write", "ask", "deny"]);
+  });
+
   it("returns recent redacted lines", async () => {
     writeFileSync(
       join(tmp, "logs", "ave-2025-06-01.log"),
@@ -290,25 +301,19 @@ describe("ave:diagnostics:export", () => {
     await cleanupTmpDir(crashDir);
   });
 
-  it("emits a diagnostics-export audit row on success (m2 forensics)", async () => {
-    const out = join(tmp, "bundle-audit.zip");
+  it("emits a successful export event without the destination path", async () => {
+    const out = join(tmp, "support-bundle.zip");
     showSaveDialog.mockResolvedValue({ canceled: false, filePath: out });
-    await invokeRegisteredHandlerWithEvent(handlers, CHANNELS.diagnostics.export, ACCEPT_EVENT, {
+    await expect(invokeRegisteredHandlerWithEvent(handlers, CHANNELS.diagnostics.export, ACCEPT_EVENT, {
       dateFrom: "2025-01-01",
       dateTo: "2025-12-31",
-    });
-    const logger = new AuditLogger(join(tmp, "audit"));
-    const { entries } = await logger.search({ dateFrom: "2000-01-01", dateTo: "2099-01-01", limit: 1000, offset: 0 });
-    const exportRow = entries.find((e) => e.type === "diagnostics-export");
-    expect(exportRow).toBeDefined();
-    const payload = JSON.parse(exportRow!.input ?? "{}");
-    expect(payload.includeCrashDumps).toBe(false);
-    expect(payload.bytes).toBeGreaterThan(0);
-    expect(typeof payload.path).toBe("string");
+    })).resolves.toMatchObject({ ok: true });
+    const fields = logInfo.mock.calls.find(([data]) => data?.event === "diagnostics_bundle_exported")?.[0];
+    expect(fields).toMatchObject({ includeCrashDumps: false, bytes: expect.any(Number) });
+    expect(JSON.stringify(fields)).not.toContain(out);
   });
 
-  it("rejects a malformed day key rather than exporting a bundle with its audit section missing", async () => {
-    // Validate the audit key before export; section-level error isolation would otherwise hide a missing audit trail.
+  it("rejects a malformed day key before writing a bundle", async () => {
     const out = join(tmp, "bundle-bad-date.zip");
     showSaveDialog.mockResolvedValue({ canceled: false, filePath: out });
     await expect(
