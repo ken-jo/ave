@@ -145,11 +145,11 @@ const privateTo = (entry: Stats, uid: number): boolean =>
 
 /** Create `path` 0700 if it is absent, then require a real directory of this account closed to every other account.
  * An existing directory that fails is refused as it is: it is never re-moded, replaced or bypassed. */
-export function ensurePrivateDirectory(path: string, uid: number, what: string, { exclusive = false } = {}): string {
+function ensurePrivateDirectory(path: string, uid: number, what: string): string {
   try {
     mkdirSync(path, { mode: 0o700 });
   } catch (error) {
-    if (exclusive || (error as NodeJS.ErrnoException).code !== "EEXIST") refuse(`${what} could not be created`, error);
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") refuse(`${what} could not be created`, error);
   }
   let entry: Stats;
   try {
@@ -711,7 +711,7 @@ export function createMxcRunStaging(host: MxcRuntimeHost = currentMxcRuntimeHost
   liveRuns.add(root);
   try {
     // Exclusive: an existing entry under a fresh random name is not this run's.
-    for (const directory of [root, home, temp]) ensurePrivateDirectory(directory, uid, "Container run staging directory", { exclusive: true });
+    for (const directory of [root, home, temp]) mkdirSync(directory, { mode: 0o700 });
   } catch (error) {
     liveRuns.delete(root);
     try { removeRunTree(root); } catch { /* the marked remainder is left for a sweep */ }
@@ -725,8 +725,12 @@ export function createMxcRunStaging(host: MxcRuntimeHost = currentMxcRuntimeHost
       if (!liveRuns.has(root)) throw new MxcProcessContractError("Container run staging was already removed");
       const directory = socketDirectoryOf(root);
       ensurePrivateDirectory(posixPath.dirname(directory), uid, "Container socket parent");
-      // Exclusive: an existing entry is another run's with the same leading digits, and that run alone removes it.
-      ensurePrivateDirectory(directory, uid, "Container socket directory", { exclusive: true });
+      try {
+        // Exclusive: an existing entry is another run's with the same leading digits, and that run alone removes it.
+        mkdirSync(directory, { mode: 0o700 });
+      } catch (error) {
+        return refuse("Container socket directory could not be created", error);
+      }
       try {
         // The marker names the run the directory belongs to; only a directory so marked is ever removed with a run.
         writeFileSync(`${directory}${OWNER_SUFFIX}`, posixPath.basename(root), { flag: "wx", mode: 0o600 });

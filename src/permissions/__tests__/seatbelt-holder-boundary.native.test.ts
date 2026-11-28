@@ -97,8 +97,10 @@ describe.runIf(NATIVE)("macOS holder boundary (native)", () => {
     const [home, temp, fds] = (await line(started.process.stdout)).split("|") as [string, string, string];
     expect(home).toMatch(/\/staging\/[0-9a-f]{32}\/home$/u);
     expect(temp).toBe(home.replace(/home$/u, "temp"));
-    for (const directory of [dirname(dirname(home)), dirname(home), home, temp, join(dirname(home), ".ave")]) {
-      expect(statSync(directory).mode & 0o777, directory).toBe(0o700);
+    const run = dirname(home);
+    expect(statSync(dirname(run)).mode & 0o777).toBe(0o700);
+    for (const directory of [run, home, temp, join(run, ".ave")]) {
+      expect(statSync(directory).mode & 0o777, directory).toBe(0o777 & ~process.umask());
     }
     expect(fds).toBe("fds=");
     const echoed = line(started.process.stdout);

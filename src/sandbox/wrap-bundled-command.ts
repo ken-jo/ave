@@ -59,7 +59,7 @@ import {
 import { isPathWithin } from "../plugins/plugin-storage-containment.js";
 import { AVE_HOME_RUNTIME_DIRECTORY, AVE_RUNTIME_LAYOUT, aveHome } from "../shared/ave-home.js";
 import { assertMxcHolderStaging } from "../permissions/mxc-filesystem-ownership.js";
-import { ensurePrivateDirectory, mxcStagingParent } from "../permissions/mxc-runtime-root.js";
+import { mxcStagingParent } from "../permissions/mxc-runtime-root.js";
 import { assertWriteGrantsOutsideConfinementState, declaredConfinementStatePaths } from "../permissions/confinement-state-paths.js";
 import { renameDirectory, renameDirectorySyncOnce } from "../lib/transient-fs-lock-retry.js";
 import { openEgressInvocation, type EgressInvocation, type WorkerEgressOwner } from "../permissions/egress-invocations.js";
@@ -649,16 +649,9 @@ function createHolderStaging(): HolderStaging {
   liveStaging.add(root);
   try {
     // Exclusive: an existing entry under a fresh random name is not this holder's.
-    const directories = [root, home, temp, hostPath().join(root, ".ave")];
-    if (process.platform === "win32") {
-      for (const directory of directories) mkdirSync(directory);
-    } else {
-      const uid = process.getuid?.();
-      if (uid === undefined) throw new MxcProcessContractError("Container staging needs the account's user id");
-      for (const directory of directories) {
-        ensurePrivateDirectory(directory, uid, "Container holder directory", { exclusive: true });
-      }
-    }
+    for (const directory of [root, home, temp]) mkdirSync(directory);
+    // Ave owns this fresh staging directory and can prepare the carrier here.
+    mkdirSync(hostPath().join(root, ".ave"));
   } catch (error) {
     liveStaging.delete(root);
     try { removeStagingTree(root); } catch { /* the marked remainder is left for a sweep */ }

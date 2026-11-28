@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { existsSync, lstatSync } from "node:fs";
-import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:net";
 import { networkInterfaces, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,7 +15,7 @@ import {
   parseRawIpProbeOutput, RAW_IP_PROBE_BUDGET_S, RAW_IP_PROBER, rawIpProbeShellLines, RAW_IP_TARGET_DEADLINE_S, rawIpVerdict,
 } from "./mxc-macos-raw-ip.js";
 import { atOrUnder, canonicalPath, posixPolicyLookups, rankPosixContainerRows, type PosixPolicyLookups } from "./mxc-posix.js";
-import { ensurePrivateDirectory, requireMxcContainerStartRoot } from "./mxc-runtime-root.js";
+import { requireMxcContainerStartRoot } from "./mxc-runtime-root.js";
 import { mxcShellSupervisorLocation, stageMxcShellRequest, startMxcShellSupervisor } from "./mxc-shell-supervisor-client.js";
 import { buildPolicyModel, policyFloorRow, policyGrantRow, type PolicyModel } from "./policy-model.js";
 import { buildSeatbeltShellProfile, seatbeltProfileAllowsOnlyProxyIpEgress, splitSeatbeltPolicyRows } from "./seatbelt-profile.js";
@@ -275,11 +275,8 @@ async function runSeatbeltCanary(
     const opened = join(sealed, "open");
     const parent = join(working, "control-parent");
     const protectedChild = join(parent, "protected");
-    const uid = process.getuid?.();
-    if (uid === undefined) throw new Error("Container probe needs the account's user id");
-    for (const directory of [working, sealed, parent, protectedChild, opened]) {
-      ensurePrivateDirectory(directory, uid, "Container probe directory", { exclusive: true });
-    }
+    await mkdir(protectedChild, { recursive: true, mode: 0o700 });
+    await mkdir(opened, { recursive: true, mode: 0o700 });
     const protectedFile = join(sealed, "secret");
     const outsideWrite = join(sealed, "new-file");
     const control = join(working, "control");
@@ -341,7 +338,7 @@ async function runSeatbeltCanary(
       `if /bin/mv ${quoteSandboxWrappedWord(parent)} ${quoteSandboxWrappedWord(renamed)}; then exit 17; fi`,
       `if /usr/bin/stat ${quoteSandboxWrappedWord(protectedFile)}; then exit 18; fi`,
       `if /usr/bin/nc -z -U ${quoteSandboxWrappedWord(unixPath)}; then exit 19; fi`,
-      "/bin/mkdir -m 700 later || exit 20",
+      "/bin/mkdir later || exit 20",
       `if (printf x > ${quoteSandboxWrappedWord(laterFile)}); then exit 21; fi`,
     ];
     // Availability is decided by the checks above alone: their status is taken first, and the raw-IP prober writes
