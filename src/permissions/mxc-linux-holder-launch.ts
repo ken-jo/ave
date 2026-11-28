@@ -333,6 +333,8 @@ export interface StartLinuxHolderOptions {
   readonly startMs?: number;
   /** Whether the call bridges a proxy socket: the helper is then the bridge and the holder its child (design 2.3). */
   readonly online: boolean;
+  /** Where the resident set is read and its stop confirmed; `/proc` through the runtime host unless a caller supplies one. */
+  readonly processReader?: LinuxProcessReader;
 }
 
 const DIAGNOSTIC_BYTES = 4 * 1024;
@@ -431,8 +433,8 @@ export function readLinuxResidentSet(outer: number, online: boolean, launcherCom
 }
 
 /** Still the same process: alive with the start identity recorded at the ready byte. */
-function alive(process: ResidentProcess): boolean {
-  return procReader.start(process.pid) === process.start;
+function alive(process: ResidentProcess, reader: LinuxProcessReader = procReader): boolean {
+  return reader.start(process.pid) === process.start;
 }
 
 type StartObservation =
@@ -447,6 +449,7 @@ type StartObservation =
 export async function startLinuxHolder(call: LinuxHolderCall, options: StartLinuxHolderOptions): Promise<LinuxHolder> {
   // bwrap's parent-death signal belongs to the thread that created it (prctl(2) PR_SET_PDEATHSIG).
   if (!isMainThread) throw new MxcProcessContractError("A Linux holder must be started from the main thread");
+  const reader = options.processReader ?? procReader;
   const replay = linuxHolderReplay(call);
   let observed: ReturnType<typeof observeManagedProcessGroup> | undefined;
   let spawned: ChildProcess | undefined;
@@ -515,7 +518,7 @@ export async function startLinuxHolder(call: LinuxHolderCall, options: StartLinu
   let set: { readonly processes: readonly ResidentProcess[]; readonly holder?: ResidentProcess; readonly helper?: ResidentProcess } = { processes: [] };
   let unread: string | undefined;
   if (observation.kind === "ready") {
-    const read = readLinuxResidentSet(child.pid as number, options.online, call.command);
+    const read = readLinuxResidentSet(child.pid as number, options.online, call.command, reader);
     if (typeof read === "string") unread = read;
     else set = read;
   }
@@ -530,7 +533,7 @@ export async function startLinuxHolder(call: LinuxHolderCall, options: StartLinu
     // 1. The holder's own TERM, so it can see it: TERM to bwrap ends the namespace before the holder runs its handler.
     //    Signalled only while it is still the process recorded at the ready byte, under the same parent.
     const holder = set.holder;
-    if (holder !== undefined && alive(holder) && (set.helper === holder || procReader.parent(holder.pid) === set.helper?.pid)) {
+    if (holder !== undefined && alive(holder, reader) && (set.helper === holder || reader.parent(holder.pid) === set.helper?.pid)) {
       try { process.kill(holder.pid, "SIGTERM"); } catch { /* gone since the check */ }
     }
     // 2. Its grace, ended early when bwrap closes.
@@ -547,8 +550,9 @@ export async function startLinuxHolder(call: LinuxHolderCall, options: StartLinu
     // 5. Verified only when the group ended and every resident process is gone within the tree-kill bound.
     const receipt = await exit.confirmExit(reason);
     const deadline = Date.now() + TOOL_TIMEOUT_POLICY.processTreeKillMs;
-    while (set.processes.some(alive) && Date.now() < deadline) await sleep(20, undefined, { ref: false });
-    const survivors = set.processes.filter(alive);
+    const isAlive = (entry: ResidentProcess): boolean => alive(entry, reader);
+    while (set.processes.some(isAlive) && Date.now() < deadline) await sleep(20, undefined, { ref: false });
+    const survivors = set.processes.filter(isAlive);
     if (receipt !== undefined && survivors.length === 0) {
       await options.afterVerifiedStop?.();
       return receipt;

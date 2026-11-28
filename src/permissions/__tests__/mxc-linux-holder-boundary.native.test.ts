@@ -206,6 +206,43 @@ describe.runIf(NATIVE)("native Linux holder start and stop", () => {
     expect(await holder.process.completion).toMatchObject({ code: expect.any(Number) });
   });
 
+  // Design 10.4 N4: a resident member that cannot be confirmed gone. The process reader the start reads the resident set
+  // through reports the inner bwrap alive after the real one ended; the stop must say "cleanup unverified" and must not
+  // run the verified-stop step that releases the holder's placeholders, Git hold and marker.
+  it("N4: a resident member it cannot confirm gone makes the stop unverified, and nothing a verified stop releases is released", async () => {
+    const stat = (pid: number): string[] | undefined => {
+      try { return readFileSync(`/proc/${pid}/stat`, "utf8").replace(/^.*\) /su, "").split(" "); } catch { return undefined; }
+    };
+    const seen = new Map<number, string>();
+    let stuck: number | undefined;
+    const reader = {
+      start: (pid: number): string | null => {
+        const fields = stat(pid);
+        if (fields === undefined) return pid === stuck ? seen.get(pid) ?? null : null;
+        const start = `boot:${fields[19]}`;
+        seen.set(pid, start);
+        // The inner bwrap: a bwrap whose parent is the outer bwrap, not this process.
+        const words = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0");
+        if (stuck === undefined && words[0]?.endsWith("bwrap") && Number(fields[1]) !== process.pid) stuck = pid;
+        return start;
+      },
+      parent: (pid: number): number | undefined => { const fields = stat(pid); return fields === undefined ? undefined : Number(fields[1]); },
+      children: (pid: number): readonly number[] | undefined => {
+        try { return readFileSync(`/proc/${pid}/task/${pid}/children`, "utf8").trim().split(/\s+/u).filter(Boolean).map(Number); } catch { return undefined; }
+      },
+      commandLine: (pid: number): readonly string[] | undefined => {
+        try { return readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").slice(0, -1); } catch { return undefined; }
+      },
+    };
+    const { holder, events } = await start("echo started; exec /bin/cat", { processReader: reader });
+    expect(await line(holder.process.stdout)).toBe("started");
+    expect(stuck).toBeDefined();
+    await expect(holder.dispose()).rejects.toThrow("Container holder stopped, cleanup unverified");
+    expect(events).not.toContain("after-verified-stop");
+    // The real process is gone: only the reader could not confirm it.
+    expect(stat(stuck as number)).toBeUndefined();
+  }, 30_000);
+
   // Design 10.4 N14: an offline holder has no network but its loopback and no bridge listener on it.
   it("N14: an offline holder sees only lo and no listener on the bridge port", async () => {
     const { holder } = await start("while IFS=: read -r name rest; do case $name in *Inter*|*face*) ;; *) printf '%s ' $name ;; esac; done < /proc/net/dev; echo; if (exec 3<>/dev/tcp/127.0.0.1/3128) 2>/dev/null; then echo bridge; else echo no-bridge; fi");
